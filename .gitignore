@@ -1,0 +1,28 @@
+# IntelliJ / JetBrains
+.idea/
+
+# Logs
+*.log
+
+# Environnements virtuels Python
+env/
+venv/
+
+# Caches Python
+__pycache__/
+*.py[cod]
+
+# Dossiers de build Java
+target/
+build/
+
+# Secrets
+*.env
+.env.*
+
+# Systèmes
+.DS_Store
+Thumbs.db
+
+
+guidelines.txt

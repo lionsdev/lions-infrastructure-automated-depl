@@ -1,0 +1,126 @@
+---
+# Titre: Template de déploiement Kubernetes pour le service de notification
+# Description: Définit le déploiement Kubernetes pour le service de notification
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-08
+# Version: 1.0.0
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "{{ app_name }}"
+  namespace: "{{ app_namespace }}"
+  labels:
+    app: "{{ app_name }}"
+    version: "{{ app_version }}"
+    environment: "{{ app_environment }}"
+    technology: "notification-service"
+  annotations:
+    description: "Déploiement du service de notification {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    deployment.kubernetes.io/revision: "1"
+spec:
+  replicas: {{ notification_replicas[app_environment] | default(1) }}
+  selector:
+    matchLabels:
+      app: "{{ app_name }}"
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: "{{ app_name }}"
+        version: "{{ app_version }}"
+        environment: "{{ app_environment }}"
+        technology: "notification-service"
+      annotations:
+        prometheus.io/scrape: "{{ notification_prometheus_scrape | string | lower }}"
+        prometheus.io/path: "{{ notification_prometheus_path }}"
+        prometheus.io/port: "{{ notification_prometheus_port }}"
+    spec:
+      serviceAccountName: "{{ app_name }}"
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: "{{ app_name }}"
+          image: "registry.lions.dev/{{ app_name }}:{{ app_version }}"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: {{ notification_default_port }}
+              protocol: TCP
+          env:
+            - name: SPRING_PROFILES_ACTIVE
+              value: "{{ app_environment }}"
+            - name: KUBERNETES_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: JAVA_OPTS
+              value: "-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -Djava.net.preferIPv4Stack=true"
+          envFrom:
+            - configMapRef:
+                name: "{{ app_name }}-config"
+            - secretRef:
+                name: "{{ app_name }}-secrets"
+                optional: true
+          resources:
+            requests:
+              cpu: "{{ notification_resources[app_environment].requests.cpu }}"
+              memory: "{{ notification_resources[app_environment].requests.memory }}"
+            limits:
+              cpu: "{{ notification_resources[app_environment].limits.cpu }}"
+              memory: "{{ notification_resources[app_environment].limits.memory }}"
+          readinessProbe:
+            {{- notification_readiness_probe | to_nice_yaml(indent=2) | indent(12) }}
+          livenessProbe:
+            {{- notification_liveness_probe | to_nice_yaml(indent=2) | indent(12) }}
+          volumeMounts:
+            - name: tmp-volume
+              mountPath: /tmp
+            - name: config-volume
+              mountPath: /config
+              readOnly: true
+{% if notification_channels.email.enabled | default(true) | bool %}
+            - name: email-templates
+              mountPath: "{{ notification_templates_path }}/email"
+              readOnly: true
+{% endif %}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+      volumes:
+        - name: tmp-volume
+          emptyDir: {}
+        - name: config-volume
+          configMap:
+            name: "{{ app_name }}-config"
+{% if notification_channels.email.enabled | default(true) | bool %}
+        - name: email-templates
+          configMap:
+            name: "{{ app_name }}-email-templates"
+{% endif %}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - "{{ app_name }}"
+                topologyKey: kubernetes.io/hostname
+      terminationGracePeriodSeconds: 30

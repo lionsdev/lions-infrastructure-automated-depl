@@ -1,0 +1,46 @@
+---
+# Titre: Configuration Kustomize pour l'environnement de production
+# Description: Définit la configuration Kustomize pour l'environnement de production
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-07
+# Version: 1.0.0
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Ressources de base à inclure
+resources:
+  - ../../base/namespaces
+  - ../../base/network-policies
+  - ../../base/rbac
+  - ../../base/resource-quotas
+
+# Patches spécifiques à l'environnement de production
+patchesStrategicMerge:
+  - patches/resource-quotas-patch.yaml
+  - patches/network-policies-patch.yaml
+  - patches/high-availability-patch.yaml
+
+# Configuration des namespaces
+namespace: production
+
+# Labels communs à ajouter à toutes les ressources
+commonLabels:
+  environment: production
+  managed-by: kustomize
+
+# Annotations communes à ajouter à toutes les ressources
+commonAnnotations:
+  environment.lions.dev/description: "Environnement de production pour les applications LIONS"
+  environment.lions.dev/contact: "ops-team@lions.dev"
+  environment.lions.dev/documentation: "https://docs.lions.dev/environments/production"
+
+# Configuration des variables
+vars:
+  - name: ENVIRONMENT
+    objref:
+      kind: Namespace
+      name: production
+      apiVersion: v1
+    fieldref:
+      fieldpath: metadata.name

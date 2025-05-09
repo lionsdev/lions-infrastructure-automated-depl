@@ -1,0 +1,279 @@
+---
+# Titre: Configuration RBAC
+# Description: Définit les rôles et les liaisons de rôles pour l'infrastructure LIONS
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-08
+# Version: 1.0.0
+
+# Rôle pour les développeurs
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: lions-developer
+  labels:
+    app.kubernetes.io/part-of: lions-infrastructure
+spec:
+  rules:
+  # Accès en lecture aux ressources de base
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "services", "endpoints", "persistentvolumeclaims", "configmaps", "secrets"]
+    verbs: ["get", "list", "watch"]
+  # Accès en lecture aux déploiements, statefulsets, etc.
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["get", "list", "watch"]
+  # Accès en lecture aux ingress
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch"]
+  # Accès en lecture aux jobs et cronjobs
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch"]
+  # Accès en lecture aux métriques
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods", "nodes"]
+    verbs: ["get", "list", "watch"]
+  # Accès pour exécuter des commandes dans les pods
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  # Accès pour transférer des fichiers vers/depuis les pods
+  - apiGroups: [""]
+    resources: ["pods/portforward"]
+    verbs: ["create"]
+---
+# Rôle pour les opérateurs
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: lions-operator
+  labels:
+    app.kubernetes.io/part-of: lions-infrastructure
+spec:
+  rules:
+  # Accès complet aux ressources de base
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "pods/exec", "services", "endpoints", "persistentvolumeclaims", "configmaps", "secrets", "namespaces", "events"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Accès complet aux déploiements, statefulsets, etc.
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Accès complet aux ingress
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses", "networkpolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Accès complet aux jobs et cronjobs
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Accès aux métriques
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods", "nodes"]
+    verbs: ["get", "list", "watch"]
+  # Accès aux certificats
+  - apiGroups: ["cert-manager.io"]
+    resources: ["certificates", "issuers", "clusterissuers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Accès aux ressources de monitoring
+  - apiGroups: ["monitoring.coreos.com"]
+    resources: ["servicemonitors", "prometheusrules", "alertmanagers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Accès aux ressources de stockage
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses", "volumeattachments"]
+    verbs: ["get", "list", "watch"]
+  # Accès pour les opérations de scaling
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+# Rôle pour les administrateurs
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: lions-admin
+  labels:
+    app.kubernetes.io/part-of: lions-infrastructure
+spec:
+  rules:
+  # Accès complet à toutes les ressources
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["*"]
+---
+# Rôle pour le monitoring
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: lions-monitoring
+  labels:
+    app.kubernetes.io/part-of: lions-infrastructure
+spec:
+  rules:
+  # Accès en lecture aux ressources de base pour le monitoring
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "services", "endpoints", "nodes", "namespaces"]
+    verbs: ["get", "list", "watch"]
+  # Accès en lecture aux déploiements, statefulsets, etc.
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["get", "list", "watch"]
+  # Accès aux métriques
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods", "nodes"]
+    verbs: ["get", "list", "watch"]
+  # Accès aux ressources de monitoring
+  - apiGroups: ["monitoring.coreos.com"]
+    resources: ["servicemonitors", "prometheusrules", "alertmanagers", "prometheuses"]
+    verbs: ["get", "list", "watch"]
+---
+# Liaison de rôle pour les développeurs dans l'environnement de développement
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: lions-developer-binding
+  namespace: development
+  labels:
+    app.kubernetes.io/part-of: lions-infrastructure
+subjects:
+- kind: Group
+  name: lions-developers
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: lions-developer
+  apiGroup: rbac.authorization.k8s.io
+---
+# Liaison de rôle pour les opérateurs dans tous les environnements
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: lions-operator-binding
+  labels:
+    app.kubernetes.io/part-of: lions-infrastructure
+subjects:
+- kind: Group
+  name: lions-operators
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: lions-operator
+  apiGroup: rbac.authorization.k8s.io
+---
+# Liaison de rôle pour les administrateurs
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: lions-admin-binding
+  labels:
+    app.kubernetes.io/part-of: lions-infrastructure
+subjects:
+- kind: Group
+  name: lions-admins
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: lions-admin
+  apiGroup: rbac.authorization.k8s.io
+---
+# Liaison de rôle pour le monitoring
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: lions-monitoring-binding
+  labels:
+    app.kubernetes.io/part-of: lions-infrastructure
+subjects:
+- kind: ServiceAccount
+  name: prometheus-operator
+  namespace: monitoring
+roleRef:
+  kind: ClusterRole
+  name: lions-monitoring
+  apiGroup: rbac.authorization.k8s.io
+---
+# Rôle spécifique pour les applications Quarkus
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: quarkus-app-role
+  namespace: default
+  labels:
+    app.kubernetes.io/part-of: lions-infrastructure
+    technology: quarkus
+spec:
+  rules:
+  # Accès aux secrets et configmaps
+  - apiGroups: [""]
+    resources: ["secrets", "configmaps"]
+    verbs: ["get", "list", "watch"]
+  # Accès aux services
+  - apiGroups: [""]
+    resources: ["services", "endpoints"]
+    verbs: ["get", "list", "watch"]
+---
+# Rôle spécifique pour les applications PrimeFaces
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: primefaces-app-role
+  namespace: default
+  labels:
+    app.kubernetes.io/part-of: lions-infrastructure
+    technology: primefaces
+spec:
+  rules:
+  # Accès aux secrets et configmaps
+  - apiGroups: [""]
+    resources: ["secrets", "configmaps"]
+    verbs: ["get", "list", "watch"]
+  # Accès aux services
+  - apiGroups: [""]
+    resources: ["services", "endpoints"]
+    verbs: ["get", "list", "watch"]
+---
+# Rôle spécifique pour les applications PrimeReact
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: primereact-app-role
+  namespace: default
+  labels:
+    app.kubernetes.io/part-of: lions-infrastructure
+    technology: primereact
+spec:
+  rules:
+  # Accès aux secrets et configmaps
+  - apiGroups: [""]
+    resources: ["secrets", "configmaps"]
+    verbs: ["get", "list", "watch"]
+  # Accès aux services
+  - apiGroups: [""]
+    resources: ["services", "endpoints"]
+    verbs: ["get", "list", "watch"]
+---
+# Rôle spécifique pour le service de notification
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: notification-service-role
+  namespace: default
+  labels:
+    app.kubernetes.io/part-of: lions-infrastructure
+    technology: notification-service
+spec:
+  rules:
+  # Accès aux secrets et configmaps
+  - apiGroups: [""]
+    resources: ["secrets", "configmaps"]
+    verbs: ["get", "list", "watch"]
+  # Accès aux services
+  - apiGroups: [""]
+    resources: ["services", "endpoints"]
+    verbs: ["get", "list", "watch"]
+  # Accès pour envoyer des notifications
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]

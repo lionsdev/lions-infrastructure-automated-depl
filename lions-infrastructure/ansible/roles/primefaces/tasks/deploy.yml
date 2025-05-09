@@ -1,0 +1,112 @@
+---
+# Titre: Déploiement d'applications PrimeFaces
+# Description: Déploie une application PrimeFaces sur Kubernetes
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-07
+# Version: 1.0.0
+
+- name: Déploiement de l'application PrimeFaces
+  k8s:
+    state: present
+    src: "{{ temp_dir.path }}/deployment.yml"
+  register: deployment_result
+
+- name: Création du service pour l'application
+  k8s:
+    state: present
+    src: "{{ temp_dir.path }}/service.yml"
+  register: service_result
+
+- name: Création de l'ingress pour l'application
+  k8s:
+    state: present
+    src: "{{ temp_dir.path }}/ingress.yml"
+  register: ingress_result
+  when: app_environment != 'development' or (extra_params.create_ingress | default(true) | bool)
+
+- name: Attente du déploiement
+  k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ app_namespace }}"
+    name: "{{ app_name }}"
+  register: deployment_status
+  until: deployment_status.resources[0].status.availableReplicas is defined and deployment_status.resources[0].status.availableReplicas == deployment_status.resources[0].spec.replicas
+  retries: 30
+  delay: 10
+  ignore_errors: yes
+
+- name: Vérification du statut du déploiement
+  fail:
+    msg: "Le déploiement de l'application {{ app_name }} a échoué. Veuillez vérifier les logs pour plus d'informations."
+  when: deployment_status is failed or deployment_status.resources | length == 0
+
+- name: Récupération des informations sur les pods
+  k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: "{{ app_namespace }}"
+    label_selectors:
+      - "app={{ app_name }}"
+  register: pods_info
+
+- name: Affichage des informations sur les pods
+  debug:
+    msg: "Pod {{ item.metadata.name }} est dans l'état {{ item.status.phase }}"
+  loop: "{{ pods_info.resources }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+
+- name: Attente de l'initialisation de l'application PrimeFaces
+  pause:
+    seconds: "{{ primefaces_init_delay | default(30) }}"
+  when: deployment_status is succeeded
+
+- name: Vérification de l'état des pods après initialisation
+  k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: "{{ app_namespace }}"
+    label_selectors:
+      - "app={{ app_name }}"
+  register: pods_info_after_init
+
+- name: Affichage des informations sur les pods après initialisation
+  debug:
+    msg: "Pod {{ item.metadata.name }} est dans l'état {{ item.status.phase }} après initialisation"
+  loop: "{{ pods_info_after_init.resources }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+
+- name: Vérification des logs des pods pour détecter des erreurs
+  shell: "kubectl logs -n {{ app_namespace }} {{ item.metadata.name }} | grep -i error | tail -10"
+  loop: "{{ pods_info_after_init.resources }}"
+  register: pod_logs
+  ignore_errors: yes
+  changed_when: false
+  loop_control:
+    label: "{{ item.metadata.name }}"
+
+- name: Affichage des erreurs dans les logs (si présentes)
+  debug:
+    msg: "Erreurs détectées dans les logs de {{ item.item.metadata.name }}: {{ item.stdout }}"
+  loop: "{{ pod_logs.results }}"
+  when: item.stdout != ""
+  loop_control:
+    label: "{{ item.item.metadata.name }}"
+
+- name: Vérification de la disponibilité de l'API
+  uri:
+    url: "http://{{ app_name }}.{{ app_namespace }}.svc.cluster.local/api/health"
+    method: GET
+    status_code: 200
+  register: api_check
+  ignore_errors: yes
+  retries: 5
+  delay: 10
+  until: api_check is succeeded
+
+- name: Avertissement si l'API n'est pas disponible
+  debug:
+    msg: "AVERTISSEMENT: L'API de l'application {{ app_name }} n'est pas disponible. Vérifiez les logs pour plus d'informations."
+  when: api_check is failed

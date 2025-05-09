@@ -1,0 +1,33 @@
+---
+# Titre: Patch des politiques réseau pour l'environnement de développement
+# Description: Ajuste les politiques réseau pour l'environnement de développement
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-07
+# Version: 1.0.0
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-network-policy
+  namespace: development
+spec:
+  # Politique plus permissive pour l'environnement de développement
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Autoriser tout le trafic entrant depuis les namespaces de développement
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              environment: development
+  egress:
+    # Autoriser tout le trafic sortant
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              # Bloquer uniquement les adresses privées sensibles
+              - 10.0.0.0/16  # Réseau interne de production
+              - 172.16.0.0/16  # Réseau interne de staging

@@ -1,0 +1,496 @@
+#!/bin/bash
+# Titre: Script de Déploiement Unifié - Version Production
+# Description: Permet aux développeurs de déployer des applications en une seule commande
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-07
+# Version: 2.0.0
+
+# Activation du mode strict
+set -euo pipefail
+
+# Configuration
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly CONFIG_DIR="${SCRIPT_DIR}/../config"
+readonly LOG_DIR="/var/log/lions/deployments"
+readonly LOG_FILE="${LOG_DIR}/deploy-$(date +%Y%m%d-%H%M%S).log"
+readonly ANSIBLE_PLAYBOOK="${SCRIPT_DIR}/../ansible/playbooks/deploy-application.yml"
+readonly APPLICATIONS_CATALOG="${SCRIPT_DIR}/../applications/catalog"
+readonly LOG_HISTORY_DIR="${LOG_DIR}/history"
+
+# Environnements disponibles
+readonly ENVIRONMENTS=("production" "staging" "development")
+
+# Technologies supportées
+readonly TECHNOLOGIES=("quarkus" "primefaces" "primereact")
+
+# Couleurs pour l'affichage
+readonly COLOR_RESET="\033[0m"
+readonly COLOR_RED="\033[0;31m"
+readonly COLOR_GREEN="\033[0;32m"
+readonly COLOR_YELLOW="\033[0;33m"
+readonly COLOR_BLUE="\033[0;34m"
+readonly COLOR_MAGENTA="\033[0;35m"
+readonly COLOR_CYAN="\033[0;36m"
+readonly COLOR_WHITE="\033[0;37m"
+readonly COLOR_BOLD="\033[1m"
+readonly COLOR_UNDERLINE="\033[4m"
+readonly COLOR_BG_BLACK="\033[40m"
+readonly COLOR_BG_RED="\033[41m"
+readonly COLOR_BG_GREEN="\033[42m"
+readonly COLOR_BG_YELLOW="\033[43m"
+readonly COLOR_BG_BLUE="\033[44m"
+readonly COLOR_BG_MAGENTA="\033[45m"
+readonly COLOR_BG_CYAN="\033[46m"
+readonly COLOR_BG_WHITE="\033[47m"
+
+# Création des répertoires de logs
+mkdir -p "${LOG_DIR}"
+mkdir -p "${LOG_HISTORY_DIR}"
+
+# Fonction d'affichage du logo
+function afficher_logo() {
+    echo -e "${COLOR_CYAN}${COLOR_BOLD}"
+    echo -e "  _     ___ ___  _   _ ___    ___ _   _ _____ ___    _    "
+    echo -e " | |   |_ _/ _ \| \ | / __|  |_ _| \ | |  ___/ _ \  / \   "
+    echo -e " | |    | | | | |  \| \__ \   | ||  \| | |_ | | | |/ _ \  "
+    echo -e " | |___ | | |_| | |\  |__) |  | || |\  |  _|| |_| / ___ \ "
+    echo -e " |_____|___\___/|_| \_|____/  |___|_| \_|_|   \___/_/   \_\\"
+    echo -e "${COLOR_RESET}"
+    echo -e "${COLOR_YELLOW}${COLOR_BOLD}  Infrastructure de Déploiement Automatisé - v2.0.0${COLOR_RESET}"
+    echo -e "${COLOR_CYAN}  ------------------------------------------------${COLOR_RESET}\n"
+}
+
+# Fonction de logging améliorée
+function log() {
+    local level="$1"
+    local message="$2"
+    local timestamp="$(date +"%Y-%m-%d %H:%M:%S")"
+    local icon=""
+
+    # Sélection de l'icône et de la couleur en fonction du niveau
+    local color="${COLOR_RESET}"
+    case "${level}" in
+        "INFO")     color="${COLOR_GREEN}"; icon="ℹ️ " ;;
+        "WARNING")  color="${COLOR_YELLOW}"; icon="⚠️ " ;;
+        "ERROR")    color="${COLOR_RED}"; icon="❌ " ;;
+        "DEBUG")    color="${COLOR_BLUE}"; icon="🔍 " ;;
+        "SUCCESS")  color="${COLOR_GREEN}"; icon="✅ " ;;
+        "STEP")     color="${COLOR_CYAN}${COLOR_BOLD}"; icon="🔄 " ;;
+    esac
+
+    # Affichage du message avec formatage
+    echo -e "${color}${icon}[${timestamp}] [${level}] ${message}${COLOR_RESET}"
+
+    # Enregistrement dans un fichier de log
+    echo "[${timestamp}] [${level}] ${message}" >> "${LOG_FILE}"
+}
+
+# Fonction d'affichage de la progression
+function afficher_progression() {
+    local etape="$1"
+    local total="$2"
+    local description="$3"
+    local pourcentage=$((etape * 100 / total))
+    local barre=""
+    local longueur=50
+    local rempli=$((pourcentage * longueur / 100))
+
+    for ((i=0; i<longueur; i++)); do
+        if [ $i -lt $rempli ]; then
+            barre+="█"
+        else
+            barre+="░"
+        fi
+    done
+
+    echo -e "\n${COLOR_CYAN}${COLOR_BOLD}Étape ${etape}/${total}: ${description}${COLOR_RESET}"
+    echo -e "${COLOR_BLUE}[${barre}] ${pourcentage}%${COLOR_RESET}\n"
+}
+
+# Fonction d'affichage de l'aide
+function afficher_aide() {
+    afficher_logo
+
+    cat << EOF
+
+${COLOR_CYAN}${COLOR_BOLD}Script de Déploiement Unifié - Infrastructure LIONS${COLOR_RESET}
+
+Ce script permet de déployer facilement n'importe quelle application vers l'infrastructure LIONS.
+
+${COLOR_YELLOW}${COLOR_BOLD}Usage:${COLOR_RESET}
+    $0 [options] <nom_application>
+
+${COLOR_YELLOW}${COLOR_BOLD}Options:${COLOR_RESET}
+    ${COLOR_GREEN}-e, --environment <env>${COLOR_RESET}   Environnement cible (production, staging, development)
+                             Par défaut: development
+    ${COLOR_GREEN}-t, --technology <tech>${COLOR_RESET}   Technologie utilisée (quarkus, primefaces, primereact)
+                             Par défaut: détection automatique
+    ${COLOR_GREEN}-v, --version <version>${COLOR_RESET}   Version spécifique à déployer
+                             Par défaut: latest
+    ${COLOR_GREEN}-f, --file <fichier>${COLOR_RESET}      Fichier de configuration spécifique
+                             Par défaut: application.yaml dans le répertoire courant
+    ${COLOR_GREEN}-p, --params <params>${COLOR_RESET}     Paramètres additionnels pour le déploiement (format JSON)
+    ${COLOR_GREEN}-d, --debug${COLOR_RESET}               Active le mode debug
+    ${COLOR_GREEN}-h, --help${COLOR_RESET}                Affiche cette aide
+
+${COLOR_YELLOW}${COLOR_BOLD}Exemples:${COLOR_RESET}
+    $0 mon-api-backend
+    $0 --environment staging --technology quarkus mon-api-backend
+    $0 -e production -v 1.2.3 mon-application-frontend
+
+EOF
+}
+
+# Fonction de vérification des prérequis
+function verifier_prerequis() {
+    log "STEP" "Vérification des prérequis pour le déploiement"
+
+    # Vérification d'Ansible
+    if ! command -v ansible-playbook &> /dev/null; then
+        log "ERROR" "ansible-playbook n'est pas installé ou n'est pas dans le PATH"
+        exit 1
+    fi
+
+    # Vérification du playbook Ansible
+    if [[ ! -f "${ANSIBLE_PLAYBOOK}" ]]; then
+        log "ERROR" "Le playbook Ansible n'existe pas: ${ANSIBLE_PLAYBOOK}"
+        exit 1
+    fi
+
+    # Vérification de kubectl
+    if ! command -v kubectl &> /dev/null; then
+        log "ERROR" "kubectl n'est pas installé ou n'est pas dans le PATH"
+        exit 1
+    fi
+
+    # Vérification de la connexion au cluster Kubernetes
+    if ! kubectl cluster-info &> /dev/null; then
+        log "ERROR" "Impossible de se connecter au cluster Kubernetes"
+        exit 1
+    fi
+
+    # Vérification des droits d'accès
+    if [[ "${environment}" == "production" ]]; then
+        log "INFO" "Vérification des droits d'accès pour l'environnement de production"
+
+        # Vérification des droits d'administrateur pour la production
+        if ! kubectl auth can-i create deployments --namespace=kube-system &> /dev/null; then
+            log "ERROR" "Droits insuffisants pour déployer en production. Contactez l'équipe d'infrastructure."
+            exit 1
+        fi
+    fi
+
+    log "SUCCESS" "Vérification des prérequis terminée avec succès"
+}
+
+# Fonction de détection automatique de la technologie
+function detecter_technologie() {
+    local app_dir="$1"
+
+    log "STEP" "Détection automatique de la technologie pour ${app_dir}"
+
+    # Vérification Quarkus
+    if [[ -f "${app_dir}/pom.xml" ]] && grep -q "quarkus" "${app_dir}/pom.xml"; then
+        log "SUCCESS" "Technologie détectée: quarkus"
+        echo "quarkus"
+        return
+    fi
+
+    # Vérification PrimeFaces
+    if [[ -f "${app_dir}/pom.xml" ]] && grep -q "primefaces" "${app_dir}/pom.xml"; then
+        log "SUCCESS" "Technologie détectée: primefaces"
+        echo "primefaces"
+        return
+    fi
+
+    # Vérification PrimeReact
+    if [[ -f "${app_dir}/package.json" ]] && grep -q "primereact" "${app_dir}/package.json"; then
+        log "SUCCESS" "Technologie détectée: primereact"
+        echo "primereact"
+        return
+    fi
+
+    # Vérification supplémentaire pour Quarkus
+    if [[ -f "${app_dir}/src/main/resources/application.properties" ]] || [[ -f "${app_dir}/src/main/resources/application.yml" ]]; then
+        log "SUCCESS" "Technologie détectée: quarkus (basé sur la structure du projet)"
+        echo "quarkus"
+        return
+    fi
+
+    # Vérification supplémentaire pour PrimeFaces
+    if [[ -f "${app_dir}/src/main/webapp/WEB-INF/web.xml" ]] && grep -q "javax.faces" "${app_dir}/src/main/webapp/WEB-INF/web.xml"; then
+        log "SUCCESS" "Technologie détectée: primefaces (basé sur la structure du projet)"
+        echo "primefaces"
+        return
+    fi
+
+    # Vérification supplémentaire pour PrimeReact
+    if [[ -f "${app_dir}/src/App.js" ]] || [[ -f "${app_dir}/src/App.jsx" ]]; then
+        log "SUCCESS" "Technologie détectée: primereact (basé sur la structure du projet)"
+        echo "primereact"
+        return
+    fi
+
+    log "ERROR" "Impossible de détecter automatiquement la technologie. Veuillez spécifier la technologie avec l'option --technology."
+    exit 1
+}
+
+# Fonction de validation de la configuration
+function valider_configuration() {
+    local app_name="$1"
+    local environment="$2"
+    local technology="$3"
+
+    log "STEP" "Validation de la configuration de déploiement"
+
+    # Vérification spécifique pour la production
+    if [[ "${environment}" == "production" ]]; then
+        # Vérification de la présence d'un tag de version explicite
+        if [[ "${version}" == "latest" ]]; then
+            log "ERROR" "Le déploiement en production nécessite une version explicite (--version)"
+            exit 1
+        fi
+
+        # Vérification de la présence d'un fichier de configuration
+        if [[ ! -f "${config_file}" ]]; then
+            log "ERROR" "Le déploiement en production nécessite un fichier de configuration valide"
+            exit 1
+        fi
+
+        # Demande de confirmation pour le déploiement en production
+        echo -e "\n${COLOR_BG_RED}${COLOR_WHITE}${COLOR_BOLD} ATTENTION: DÉPLOIEMENT EN PRODUCTION ${COLOR_RESET}\n"
+        echo -e "${COLOR_YELLOW}Vous êtes sur le point de déployer l'application ${COLOR_BOLD}${app_name}${COLOR_RESET}${COLOR_YELLOW} en ${COLOR_BOLD}PRODUCTION${COLOR_RESET}${COLOR_YELLOW}.${COLOR_RESET}"
+        echo -e "${COLOR_YELLOW}Version: ${COLOR_BOLD}${version}${COLOR_RESET}"
+        echo -e "${COLOR_YELLOW}Technologie: ${COLOR_BOLD}${technology}${COLOR_RESET}\n"
+
+        read -p "Êtes-vous sûr de vouloir continuer? (oui/NON): " confirmation
+        if [[ "${confirmation}" != "oui" ]]; then
+            log "INFO" "Déploiement en production annulé par l'utilisateur"
+            exit 0
+        fi
+    fi
+
+    log "SUCCESS" "Configuration validée avec succès"
+}
+
+# Fonction principale de déploiement
+function deployer_application() {
+    local app_name="$1"
+    local environment="$2"
+    local technology="$3"
+    local version="$4"
+    local config_file="$5"
+    local extra_params="$6"
+    local debug_mode="$7"
+
+    # Affichage du logo
+    afficher_logo
+
+    # Validation de la configuration
+    valider_configuration "${app_name}" "${environment}" "${technology}"
+
+    # Affichage de la progression
+    afficher_progression 1 5 "Préparation du déploiement"
+
+    log "INFO" "Démarrage du déploiement de l'application ${app_name}"
+    log "INFO" "Environnement: ${environment}"
+    log "INFO" "Technologie: ${technology}"
+    log "INFO" "Version: ${version}"
+
+    # Création d'un fichier de variables temporaire pour Ansible
+    local vars_file=$(mktemp)
+    cat > "${vars_file}" << EOF
+---
+application_name: "${app_name}"
+environment: "${environment}"
+technology: "${technology}"
+version: "${version}"
+config_file: "${config_file}"
+extra_params: ${extra_params}
+deployment_timestamp: "$(date +%Y%m%d%H%M%S)"
+deployment_user: "$(whoami)"
+EOF
+
+    # Affichage de la progression
+    afficher_progression 2 5 "Exécution du playbook Ansible"
+
+    # Commande Ansible avec les options appropriées
+    local ansible_cmd="ansible-playbook ${ANSIBLE_PLAYBOOK} --extra-vars @${vars_file}"
+
+    # Activation du mode verbeux si debug est activé
+    if [[ "${debug_mode}" == "true" ]]; then
+        ansible_cmd="${ansible_cmd} -vvv"
+    fi
+
+    log "INFO" "Exécution de la commande Ansible: ${ansible_cmd}"
+
+    # Exécution de la commande Ansible
+    if eval "${ansible_cmd}"; then
+        # Affichage de la progression
+        afficher_progression 3 5 "Vérification du déploiement"
+
+        log "SUCCESS" "Déploiement terminé avec succès"
+
+        # Affichage de la progression
+        afficher_progression 4 5 "Récupération des informations sur le déploiement"
+
+        # Récupération de l'URL d'accès
+        local app_url=""
+        local domain_suffix=""
+        case "${environment}" in
+            "production")
+                domain_suffix="lions.dev"
+                ;;
+            "staging")
+                domain_suffix="staging.lions.dev"
+                ;;
+            "development")
+                domain_suffix="dev.lions.dev"
+                ;;
+        esac
+
+        app_url="https://${app_name}.${domain_suffix}"
+
+        # Récupération des informations sur les pods
+        local pods_info=$(kubectl get pods -n "${app_name}-${environment}" -o wide 2>/dev/null || echo "Aucun pod trouvé")
+
+        # Récupération des informations sur les services
+        local services_info=$(kubectl get services -n "${app_name}-${environment}" 2>/dev/null || echo "Aucun service trouvé")
+
+        # Récupération des informations sur les ingress
+        local ingress_info=$(kubectl get ingress -n "${app_name}-${environment}" 2>/dev/null || echo "Aucun ingress trouvé")
+
+        # Affichage de la progression
+        afficher_progression 5 5 "Finalisation du déploiement"
+
+        # Affichage des informations de déploiement
+        cat << EOF
+
+${COLOR_BG_GREEN}${COLOR_BLACK}${COLOR_BOLD} DÉPLOIEMENT RÉUSSI ${COLOR_RESET}
+
+${COLOR_CYAN}${COLOR_BOLD}Informations sur l'application:${COLOR_RESET}
+${COLOR_CYAN}Application:${COLOR_RESET} ${app_name}
+${COLOR_CYAN}Version:${COLOR_RESET} ${version}
+${COLOR_CYAN}Environnement:${COLOR_RESET} ${environment}
+${COLOR_CYAN}Technologie:${COLOR_RESET} ${technology}
+
+${COLOR_CYAN}${COLOR_BOLD}Accès:${COLOR_RESET}
+${COLOR_CYAN}URL d'accès:${COLOR_RESET} ${app_url}
+
+${COLOR_CYAN}${COLOR_BOLD}Ressources Kubernetes:${COLOR_RESET}
+${COLOR_CYAN}Namespace:${COLOR_RESET} ${app_name}-${environment}
+
+${COLOR_CYAN}${COLOR_BOLD}Pods:${COLOR_RESET}
+${pods_info}
+
+${COLOR_CYAN}${COLOR_BOLD}Services:${COLOR_RESET}
+${services_info}
+
+${COLOR_CYAN}${COLOR_BOLD}Ingress:${COLOR_RESET}
+${ingress_info}
+
+${COLOR_CYAN}${COLOR_BOLD}Logs:${COLOR_RESET}
+${COLOR_CYAN}Journal de déploiement:${COLOR_RESET} ${LOG_FILE}
+
+${COLOR_CYAN}${COLOR_BOLD}Commandes utiles:${COLOR_RESET}
+${COLOR_GREEN}Afficher les logs:${COLOR_RESET} kubectl logs -n ${app_name}-${environment} deployment/${app_name}
+${COLOR_GREEN}Redémarrer l'application:${COLOR_RESET} kubectl rollout restart -n ${app_name}-${environment} deployment/${app_name}
+${COLOR_GREEN}Supprimer l'application:${COLOR_RESET} kubectl delete -n ${app_name}-${environment} deployment/${app_name}
+
+${COLOR_GREEN}${COLOR_BOLD}===========================================================${COLOR_RESET}
+
+EOF
+    else
+        log "ERROR" "Le déploiement a échoué"
+        exit 1
+    fi
+
+    # Nettoyage du fichier temporaire
+    rm -f "${vars_file}"
+}
+
+# Parsing des arguments
+app_name=""
+environment="development"
+technology=""
+version="latest"
+config_file="./application.yaml"
+extra_params="{}"
+debug_mode="false"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -e|--environment)
+            environment="$2"
+            shift 2
+            ;;
+        -t|--technology)
+            technology="$2"
+            shift 2
+            ;;
+        -v|--version)
+            version="$2"
+            shift 2
+            ;;
+        -f|--file)
+            config_file="$2"
+            shift 2
+            ;;
+        -p|--params)
+            extra_params="$2"
+            shift 2
+            ;;
+        -d|--debug)
+            debug_mode="true"
+            shift
+            ;;
+        -h|--help)
+            afficher_aide
+            exit 0
+            ;;
+        *)
+            if [[ -z "${app_name}" ]]; then
+                app_name="$1"
+            else
+                log "ERROR" "Argument inconnu: $1"
+                afficher_aide
+                exit 1
+            fi
+            shift
+            ;;
+    esac
+done
+
+# Vérification de l'application
+if [[ -z "${app_name}" ]]; then
+    log "ERROR" "Nom d'application non spécifié"
+    afficher_aide
+    exit 1
+fi
+
+# Vérification de l'environnement
+if [[ ! " ${ENVIRONMENTS[*]} " =~ " ${environment} " ]]; then
+    log "ERROR" "Environnement non valide: ${environment}"
+    log "ERROR" "Valeurs autorisées: ${ENVIRONMENTS[*]}"
+    exit 1
+fi
+
+# Détection automatique de la technologie si non spécifiée
+if [[ -z "${technology}" ]]; then
+    technology=$(detecter_technologie ".")
+fi
+
+# Vérification de la technologie
+if [[ ! " ${TECHNOLOGIES[*]} " =~ " ${technology} " ]]; then
+    log "ERROR" "Technologie non valide: ${technology}"
+    log "ERROR" "Valeurs autorisées: ${TECHNOLOGIES[*]}"
+    exit 1
+fi
+
+# Vérification des prérequis
+verifier_prerequis
+
+# Lancement du déploiement
+deployer_application "${app_name}" "${environment}" "${technology}" "${version}" "${config_file}" "${extra_params}" "${debug_mode}"
+
+exit 0

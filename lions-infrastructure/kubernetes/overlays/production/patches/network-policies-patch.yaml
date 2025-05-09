@@ -1,0 +1,72 @@
+---
+# Titre: Patch des politiques réseau pour l'environnement de production
+# Description: Ajuste les politiques réseau pour l'environnement de production
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-07
+# Version: 1.0.0
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-network-policy
+  namespace: production
+spec:
+  # Politique stricte pour l'environnement de production
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Autoriser le trafic entrant uniquement depuis l'ingress-controller
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress-nginx
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ingress-nginx
+    
+    # Autoriser le trafic entrant depuis le namespace de monitoring
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+    
+    # Autoriser le trafic entrant depuis le même namespace
+    - from:
+        - podSelector: {}
+  
+  egress:
+    # Autoriser le trafic sortant vers les serveurs DNS
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    
+    # Autoriser le trafic sortant vers les services internes du même namespace
+    - to:
+        - podSelector: {}
+    
+    # Autoriser le trafic sortant vers les services de monitoring
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+    
+    # Autoriser le trafic sortant vers les API externes spécifiques
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443

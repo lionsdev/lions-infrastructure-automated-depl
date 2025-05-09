@@ -1,0 +1,138 @@
+---
+# Titre: Déploiement de MongoDB
+# Description: Déploie MongoDB sur Kubernetes
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-08
+# Version: 1.0.0
+
+- name: Déploiement de MongoDB via StatefulSet
+  k8s:
+    state: present
+    src: "{{ temp_dir.path }}/statefulset.yml"
+  register: statefulset_result
+
+- name: Création du service pour MongoDB
+  k8s:
+    state: present
+    src: "{{ temp_dir.path }}/service.yml"
+  register: service_result
+
+- name: Attente du déploiement
+  k8s_info:
+    api_version: apps/v1
+    kind: StatefulSet
+    namespace: "{{ app_namespace }}"
+    name: "{{ app_name }}"
+  register: statefulset_status
+  until: statefulset_status.resources[0].status.readyReplicas is defined and statefulset_status.resources[0].status.readyReplicas == statefulset_status.resources[0].spec.replicas
+  retries: 30
+  delay: 10
+  ignore_errors: yes
+
+- name: Vérification du statut du déploiement
+  fail:
+    msg: "Le déploiement de MongoDB a échoué. Veuillez vérifier les logs pour plus d'informations."
+  when: statefulset_status is failed or statefulset_status.resources | length == 0
+
+- name: Récupération des informations sur les pods
+  k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: "{{ app_namespace }}"
+    label_selectors:
+      - "app={{ app_name }}"
+  register: pods_info
+
+- name: Affichage des informations sur les pods
+  debug:
+    msg: "Pod {{ item.metadata.name }} est dans l'état {{ item.status.phase }}"
+  loop: "{{ pods_info.resources }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+
+- name: Attente de l'initialisation de MongoDB
+  pause:
+    seconds: "{{ mongodb_init_delay | default(30) }}"
+  when: statefulset_status is succeeded
+
+- name: Vérification de l'état des pods après initialisation
+  k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: "{{ app_namespace }}"
+    label_selectors:
+      - "app={{ app_name }}"
+  register: pods_info_after_init
+
+- name: Affichage des informations sur les pods après initialisation
+  debug:
+    msg: "Pod {{ item.metadata.name }} est dans l'état {{ item.status.phase }} après initialisation"
+  loop: "{{ pods_info_after_init.resources }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+
+- name: Vérification des logs des pods pour détecter des erreurs
+  shell: "kubectl logs -n {{ app_namespace }} {{ item.metadata.name }} | grep -i error | tail -10"
+  loop: "{{ pods_info_after_init.resources }}"
+  register: pod_logs
+  ignore_errors: yes
+  changed_when: false
+  loop_control:
+    label: "{{ item.metadata.name }}"
+
+- name: Affichage des erreurs dans les logs (si présentes)
+  debug:
+    msg: "Erreurs détectées dans les logs de {{ item.item.metadata.name }}: {{ item.stdout }}"
+  loop: "{{ pod_logs.results }}"
+  when: item.stdout != ""
+  loop_control:
+    label: "{{ item.item.metadata.name }}"
+
+- name: Vérification de la disponibilité de MongoDB
+  shell: "kubectl exec -n {{ app_namespace }} {{ pods_info_after_init.resources[0].metadata.name }} -- mongosh --quiet --eval 'db.runCommand({ ping: 1 })'"
+  register: mongo_ready_check
+  ignore_errors: yes
+  retries: 5
+  delay: 10
+  until: mongo_ready_check.rc == 0
+  changed_when: false
+
+- name: Avertissement si MongoDB n'est pas disponible
+  debug:
+    msg: "AVERTISSEMENT: MongoDB n'est pas disponible. Vérifiez les logs pour plus d'informations."
+  when: mongo_ready_check is failed
+
+- name: Vérification du statut du replica set (si activé)
+  shell: "kubectl exec -n {{ app_namespace }} {{ pods_info_after_init.resources[0].metadata.name }} -- mongosh --quiet --eval 'rs.status()'"
+  register: replicaset_check
+  ignore_errors: yes
+  when: mongodb_replica_set_enabled | bool and pods_info_after_init.resources | length > 1
+  changed_when: false
+
+- name: Affichage du statut du replica set
+  debug:
+    msg: "Statut du replica set MongoDB: {{ replicaset_check.stdout }}"
+  when: replicaset_check is succeeded
+
+- name: Avertissement si le replica set n'est pas configuré correctement
+  debug:
+    msg: "AVERTISSEMENT: Le replica set MongoDB n'est pas configuré correctement. Vérifiez les logs pour plus d'informations."
+  when: mongodb_replica_set_enabled | bool and pods_info_after_init.resources | length > 1 and replicaset_check is failed
+
+- name: Création des bases de données requises pour les applications
+  shell: "kubectl exec -n {{ app_namespace }} {{ pods_info_after_init.resources[0].metadata.name }} -- mongosh --quiet --eval 'use {{ item }}; db.createCollection(\"init\")'"
+  loop:
+    - "keycloak"
+    - "gitea"
+  register: create_db_result
+  ignore_errors: yes
+  changed_when: false
+  when: mongo_ready_check is succeeded
+
+- name: Affichage du résultat de la création des bases de données
+  debug:
+    msg: "Création de la base de données {{ item.item }}: {{ item.stdout }}"
+  loop: "{{ create_db_result.results }}"
+  when: create_db_result is succeeded
+  loop_control:
+    label: "{{ item.item }}"

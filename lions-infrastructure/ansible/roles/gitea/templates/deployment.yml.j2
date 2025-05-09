@@ -1,0 +1,164 @@
+---
+# Titre: Template de déploiement Kubernetes pour Gitea
+# Description: Définit le déploiement Kubernetes pour Gitea
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-07
+# Version: 1.0.0
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "{{ app_name }}"
+  namespace: "{{ app_namespace }}"
+  labels:
+    app: "{{ app_name }}"
+    version: "{{ app_version }}"
+    environment: "{{ app_environment }}"
+    technology: "gitea"
+  annotations:
+    description: "Déploiement de Gitea {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    deployment.kubernetes.io/revision: "1"
+spec:
+  replicas: {{ gitea_replicas[app_environment] }}
+  selector:
+    matchLabels:
+      app: "{{ app_name }}"
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: "{{ app_name }}"
+        version: "{{ app_version }}"
+        environment: "{{ app_environment }}"
+        technology: "gitea"
+      annotations:
+        prometheus.io/scrape: "{{ gitea_prometheus_scrape | string | lower }}"
+        prometheus.io/path: "{{ gitea_prometheus_path }}"
+        prometheus.io/port: "{{ gitea_prometheus_port | string }}"
+    spec:
+      serviceAccountName: "{{ app_name }}"
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: "{{ app_name }}"
+          image: "gitea/gitea:{{ app_version }}"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: {{ gitea_default_port }}
+              protocol: TCP
+            - name: ssh
+              containerPort: {{ gitea_ssh_port }}
+              protocol: TCP
+          env:
+            - name: GITEA__database__DB_TYPE
+              value: "postgres"
+            - name: GITEA__database__HOST
+              value: "{{ gitea_database_service }}.{{ gitea_database_namespace }}:5432"
+            - name: GITEA__database__NAME
+              value: "{{ gitea_database_name }}"
+            - name: GITEA__database__USER
+              value: "{{ gitea_database_user }}"
+            - name: GITEA__database__PASSWD
+              valueFrom:
+                secretKeyRef:
+                  name: "{{ gitea_database_password_secret }}"
+                  key: "password"
+            - name: GITEA__security__INSTALL_LOCK
+              value: "true"
+            - name: GITEA__server__DOMAIN
+              value: "{{ app_domain }}"
+            - name: GITEA__server__ROOT_URL
+              value: "{{ gitea_root_url }}"
+            - name: GITEA__server__SSH_DOMAIN
+              value: "{{ app_domain }}"
+            - name: GITEA__server__SSH_PORT
+              value: "{{ gitea_ssh_port | string }}"
+            - name: GITEA__server__APP_NAME
+              value: "{{ gitea_app_name }}"
+            - name: GITEA__service__DISABLE_REGISTRATION
+              value: "{{ gitea_disable_registration | string | lower }}"
+            - name: GITEA__service__REQUIRE_SIGNIN_VIEW
+              value: "{{ gitea_require_signin_view | string | lower }}"
+            - name: GITEA_ADMIN_USER
+              value: "{{ gitea_admin_user }}"
+            - name: GITEA_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: "{{ gitea_admin_password_secret }}"
+                  key: "password"
+            - name: KUBERNETES_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          envFrom:
+            - configMapRef:
+                name: "{{ app_name }}-config"
+          resources:
+            requests:
+              cpu: "{{ gitea_resources[app_environment].requests.cpu }}"
+              memory: "{{ gitea_resources[app_environment].requests.memory }}"
+            limits:
+              cpu: "{{ gitea_resources[app_environment].limits.cpu }}"
+              memory: "{{ gitea_resources[app_environment].limits.memory }}"
+          readinessProbe:
+            {{- gitea_readiness_probe | to_nice_yaml(indent=2) | indent(12) }}
+          livenessProbe:
+            {{- gitea_liveness_probe | to_nice_yaml(indent=2) | indent(12) }}
+          volumeMounts:
+            - name: tmp-volume
+              mountPath: /tmp
+            - name: config-volume
+              mountPath: /etc/gitea
+              readOnly: true
+            {% if gitea_persistent_storage | bool %}
+            - name: data-volume
+              mountPath: /data
+            {% endif %}
+            - name: ssh-keys
+              mountPath: /data/ssh
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: false
+      volumes:
+        - name: tmp-volume
+          emptyDir: {}
+        - name: config-volume
+          configMap:
+            name: "{{ app_name }}-config"
+        {% if gitea_persistent_storage | bool %}
+        - name: data-volume
+          persistentVolumeClaim:
+            claimName: "{{ app_name }}-pvc"
+        {% endif %}
+        - name: ssh-keys
+          secret:
+            secretName: "{{ app_name }}-ssh-keys"
+            defaultMode: 0600
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - "{{ app_name }}"
+                topologyKey: kubernetes.io/hostname
+      terminationGracePeriodSeconds: 60

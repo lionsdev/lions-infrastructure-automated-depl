@@ -1,0 +1,105 @@
+---
+# Titre: Variables pour le déploiement du service de notification
+# Description: Variables spécifiques au service de notification
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-08
+# Version: 1.0.0
+
+# Configuration par défaut pour le service de notification
+notification_version: "1.0"
+notification_default_port: 8080
+notification_health_path: "/health"
+notification_metrics_path: "/metrics"
+notification_admin_user: "admin"
+notification_admin_password_secret: "notification-admin-password"
+
+# Configuration des sondes de santé
+notification_readiness_probe:
+  httpGet:
+    path: "/health/readiness"
+    port: 8080
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+notification_liveness_probe:
+  httpGet:
+    path: "/health/liveness"
+    port: 8080
+  initialDelaySeconds: 60
+  periodSeconds: 20
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# Configuration du monitoring
+notification_prometheus_port: 8080
+notification_prometheus_path: "/metrics"
+notification_prometheus_scrape: true
+notification_init_delay: 30
+
+# Configuration des ressources par environnement
+notification_resources:
+  development:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+  staging:
+    requests:
+      cpu: "200m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+  production:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "2000m"
+      memory: "2Gi"
+
+# Configuration des réplicas par environnement
+notification_replicas:
+  development: 1
+  staging: 2
+  production: 3
+
+# Configuration de la persistance
+notification_persistent_storage: false
+notification_storage_size: "1Gi"
+notification_storage_class: "standard"
+
+# Configuration des canaux de notification
+notification_channels:
+  email:
+    enabled: true
+    smtp_host: "smtp.example.com"
+    smtp_port: 587
+    smtp_user_secret: "notification-smtp-user"
+    smtp_password_secret: "notification-smtp-password"
+    from_address: "notifications@lions.dev"
+  slack:
+    enabled: true
+    webhook_url_secret: "notification-slack-webhook"
+    default_channel: "#notifications"
+  sms:
+    enabled: false
+    provider: "twilio"
+    account_sid_secret: "notification-twilio-sid"
+    auth_token_secret: "notification-twilio-token"
+    from_number: "+1234567890"
+
+# Configuration des templates de notification
+notification_templates_path: "/app/templates"
+notification_default_language: "fr"
+notification_available_languages: ["fr", "en"]
+
+# Configuration de la sécurité
+notification_tls_enabled: false
+notification_tls_secret: "notification-tls"
+notification_auth_enabled: true
+notification_rate_limit: 100

@@ -1,0 +1,21 @@
+---
+# Titre: Tâches pour le déploiement d'applications Quarkus
+# Description: Déploie une application Quarkus sur Kubernetes
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-07
+# Version: 1.0.0
+
+- name: Vérification des prérequis pour Quarkus
+  include_tasks: prerequisites.yml
+
+- name: Préparation des ressources Kubernetes
+  include_tasks: prepare.yml
+
+- name: Déploiement de l'application Quarkus
+  include_tasks: deploy.yml
+
+- name: Configuration du monitoring pour Quarkus
+  include_tasks: monitoring.yml
+
+- name: Validation post-déploiement
+  include_tasks: validate.yml

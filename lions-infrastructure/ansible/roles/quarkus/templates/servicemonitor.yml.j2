@@ -1,0 +1,49 @@
+---
+# Titre: Template de ServiceMonitor Kubernetes pour Quarkus
+# Description: Définit le ServiceMonitor Kubernetes pour une application Quarkus
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-07
+# Version: 1.0.0
+
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: "{{ app_name }}"
+  namespace: "{{ app_namespace }}"
+  labels:
+    app: "{{ app_name }}"
+    version: "{{ app_version }}"
+    environment: "{{ app_environment }}"
+    technology: "quarkus"
+    prometheus: k8s
+  annotations:
+    description: "ServiceMonitor pour l'application {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+spec:
+  selector:
+    matchLabels:
+      app: "{{ app_name }}"
+  namespaceSelector:
+    matchNames:
+      - "{{ app_namespace }}"
+  endpoints:
+    - port: http
+      path: "{{ quarkus_prometheus_path }}"
+      interval: 15s
+      scrapeTimeout: 10s
+      honorLabels: true
+      metricRelabelings:
+        - sourceLabels: [__name__]
+          regex: 'jvm_.*'
+          action: keep
+        - sourceLabels: [__name__]
+          regex: 'http_.*'
+          action: keep
+        - sourceLabels: [__name__]
+          regex: 'process_.*'
+          action: keep
+        - sourceLabels: [__name__]
+          regex: 'system_.*'
+          action: keep
+        - sourceLabels: [__name__]
+          regex: 'application_.*'
+          action: keep

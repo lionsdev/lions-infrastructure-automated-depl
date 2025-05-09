@@ -1,0 +1,431 @@
+---
+# Titre: Playbook de restauration
+# Description: Restaure les données à partir des sauvegardes
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-08
+# Version: 1.0.0
+
+- name: Restauration des données de l'infrastructure LIONS
+  hosts: all
+  become: true
+  gather_facts: true
+  
+  vars:
+    restore_timestamp: "{{ ansible_date_time.date }}_{{ ansible_date_time.hour }}{{ ansible_date_time.minute }}{{ ansible_date_time.second }}"
+    backup_root_dir: "/var/backups/lions"
+    restore_log_file: "/var/log/lions/restores/restore-{{ restore_timestamp }}.log"
+    backup_file: ""  # À spécifier via --extra-vars
+    restore_temp_dir: "/tmp/lions-restore-{{ restore_timestamp }}"
+    restore_components:
+      - name: "Bases de données PostgreSQL"
+        enabled: true
+      - name: "Bases de données MongoDB"
+        enabled: true
+      - name: "Volumes persistants Kubernetes"
+        enabled: true
+      - name: "Configurations Kubernetes"
+        enabled: false  # Désactivé par défaut pour éviter les conflits
+      - name: "Certificats et secrets"
+        enabled: false  # Désactivé par défaut pour des raisons de sécurité
+  
+  tasks:
+    - name: Vérification du fichier de sauvegarde
+      stat:
+        path: "{{ backup_file }}"
+      register: backup_file_stat
+      failed_when: not backup_file_stat.stat.exists
+    
+    - name: Création des répertoires de restauration et de logs
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0750'
+      with_items:
+        - "{{ restore_temp_dir }}"
+        - "{{ restore_temp_dir }}/databases"
+        - "{{ restore_temp_dir }}/kubernetes"
+        - "{{ restore_temp_dir }}/certificates"
+        - "/var/log/lions/restores"
+      ignore_errors: yes
+    
+    - name: Affichage du début de la restauration
+      debug:
+        msg: "Début des tâches de restauration - {{ ansible_date_time.iso8601 }}"
+    
+    - name: Enregistrement du début de la restauration
+      lineinfile:
+        path: "{{ restore_log_file }}"
+        line: "Début des tâches de restauration - {{ ansible_date_time.iso8601 }}"
+        create: yes
+        mode: '0640'
+      ignore_errors: yes
+    
+    - name: Extraction de l'archive de sauvegarde
+      unarchive:
+        src: "{{ backup_file }}"
+        dest: "{{ restore_temp_dir }}"
+        remote_src: yes
+      register: extract_result
+    
+    - name: Recherche du répertoire de sauvegarde extrait
+      find:
+        paths: "{{ restore_temp_dir }}"
+        file_type: directory
+        recurse: no
+      register: extracted_dirs
+    
+    - name: Définition du chemin de la sauvegarde
+      set_fact:
+        backup_path: "{{ extracted_dirs.files[0].path if extracted_dirs.matched > 0 else restore_temp_dir }}"
+    
+    # Restauration des bases de données PostgreSQL
+    - name: Restauration des bases de données PostgreSQL
+      block:
+        - name: Recherche des fichiers de sauvegarde PostgreSQL
+          find:
+            paths: "{{ backup_path }}/databases"
+            patterns: "*.dump"
+            recurse: no
+          register: postgres_dumps
+        
+        - name: Affichage des sauvegardes PostgreSQL trouvées
+          debug:
+            msg: "Sauvegardes PostgreSQL trouvées: {{ postgres_dumps.files | map(attribute='path') | list }}"
+        
+        - name: Extraction des informations de namespace et de base de données
+          set_fact:
+            postgres_restore_info: "{{ postgres_restore_info | default([]) + [{'namespace': item.path | basename | regex_replace('^([^-]+)-([^-]+)-.*$', '\\1'), 'database': item.path | basename | regex_replace('^([^-]+)-([^-]+)-.*$', '\\2'), 'file': item.path}] }}"
+          with_items: "{{ postgres_dumps.files }}"
+          loop_control:
+            label: "{{ item.path | basename }}"
+        
+        - name: Restauration de chaque base de données PostgreSQL
+          block:
+            - name: Récupération des pods PostgreSQL dans le namespace
+              shell: kubectl get pods -n {{ item.namespace }} -l technology=postgres -o jsonpath='{.items[0].metadata.name}'
+              register: postgres_pod
+              changed_when: false
+              ignore_errors: yes
+            
+            - name: Vérification de l'existence de la base de données
+              shell: kubectl exec -n {{ item.namespace }} {{ postgres_pod.stdout }} -- psql -U postgres -lqt | cut -d \| -f 1 | grep -qw {{ item.database }}
+              register: db_exists
+              ignore_errors: yes
+              changed_when: false
+            
+            - name: Création de la base de données si elle n'existe pas
+              shell: kubectl exec -n {{ item.namespace }} {{ postgres_pod.stdout }} -- psql -U postgres -c "CREATE DATABASE {{ item.database }}"
+              when: db_exists.rc != 0
+              ignore_errors: yes
+            
+            - name: Copie du fichier de sauvegarde vers le pod
+              shell: kubectl cp {{ item.file }} {{ item.namespace }}/{{ postgres_pod.stdout }}:/tmp/{{ item.database }}.dump
+              ignore_errors: yes
+            
+            - name: Restauration de la base de données
+              shell: kubectl exec -n {{ item.namespace }} {{ postgres_pod.stdout }} -- pg_restore -U postgres -d {{ item.database }} -c /tmp/{{ item.database }}.dump
+              register: postgres_restore_result
+              ignore_errors: yes
+            
+            - name: Nettoyage du fichier temporaire
+              shell: kubectl exec -n {{ item.namespace }} {{ postgres_pod.stdout }} -- rm /tmp/{{ item.database }}.dump
+              ignore_errors: yes
+            
+            - name: Enregistrement du résultat de la restauration
+              lineinfile:
+                path: "{{ restore_log_file }}"
+                line: "Restauration PostgreSQL pour {{ item.namespace }}/{{ item.database }} - {{ 'Succès' if postgres_restore_result.rc == 0 else 'Échec' }}"
+                create: yes
+              ignore_errors: yes
+          when: postgres_pod.stdout is defined and postgres_pod.stdout != ""
+          loop: "{{ postgres_restore_info }}"
+          loop_control:
+            label: "{{ item.namespace }}/{{ item.database }}"
+        
+        - name: Enregistrement de la restauration PostgreSQL
+          lineinfile:
+            path: "{{ restore_log_file }}"
+            line: "Restauration des bases de données PostgreSQL terminée - {{ ansible_date_time.iso8601 }}"
+            create: yes
+          ignore_errors: yes
+      when: restore_components | selectattr('name', 'equalto', 'Bases de données PostgreSQL') | selectattr('enabled') | list | length > 0
+      ignore_errors: yes
+    
+    # Restauration des bases de données MongoDB
+    - name: Restauration des bases de données MongoDB
+      block:
+        - name: Recherche des fichiers de sauvegarde MongoDB
+          find:
+            paths: "{{ backup_path }}/databases"
+            patterns: "*.archive"
+            recurse: no
+          register: mongodb_archives
+        
+        - name: Affichage des sauvegardes MongoDB trouvées
+          debug:
+            msg: "Sauvegardes MongoDB trouvées: {{ mongodb_archives.files | map(attribute='path') | list }}"
+        
+        - name: Extraction des informations de namespace et de base de données
+          set_fact:
+            mongodb_restore_info: "{{ mongodb_restore_info | default([]) + [{'namespace': item.path | basename | regex_replace('^([^-]+)-([^-]+)-.*$', '\\1'), 'database': item.path | basename | regex_replace('^([^-]+)-([^-]+)-.*$', '\\2'), 'file': item.path}] }}"
+          with_items: "{{ mongodb_archives.files }}"
+          loop_control:
+            label: "{{ item.path | basename }}"
+        
+        - name: Restauration de chaque base de données MongoDB
+          block:
+            - name: Récupération des pods MongoDB dans le namespace
+              shell: kubectl get pods -n {{ item.namespace }} -l technology=mongodb -o jsonpath='{.items[0].metadata.name}'
+              register: mongodb_pod
+              changed_when: false
+              ignore_errors: yes
+            
+            - name: Copie du fichier de sauvegarde vers le pod
+              shell: kubectl cp {{ item.file }} {{ item.namespace }}/{{ mongodb_pod.stdout }}:/tmp/{{ item.database }}.archive
+              ignore_errors: yes
+            
+            - name: Suppression de la base de données existante
+              shell: kubectl exec -n {{ item.namespace }} {{ mongodb_pod.stdout }} -- mongosh --quiet --eval "db.getSiblingDB('{{ item.database }}').dropDatabase()"
+              ignore_errors: yes
+            
+            - name: Restauration de la base de données
+              shell: kubectl exec -n {{ item.namespace }} {{ mongodb_pod.stdout }} -- mongorestore --db={{ item.database }} --archive=/tmp/{{ item.database }}.archive
+              register: mongodb_restore_result
+              ignore_errors: yes
+            
+            - name: Nettoyage du fichier temporaire
+              shell: kubectl exec -n {{ item.namespace }} {{ mongodb_pod.stdout }} -- rm /tmp/{{ item.database }}.archive
+              ignore_errors: yes
+            
+            - name: Enregistrement du résultat de la restauration
+              lineinfile:
+                path: "{{ restore_log_file }}"
+                line: "Restauration MongoDB pour {{ item.namespace }}/{{ item.database }} - {{ 'Succès' if mongodb_restore_result.rc == 0 else 'Échec' }}"
+                create: yes
+              ignore_errors: yes
+          when: mongodb_pod.stdout is defined and mongodb_pod.stdout != ""
+          loop: "{{ mongodb_restore_info }}"
+          loop_control:
+            label: "{{ item.namespace }}/{{ item.database }}"
+        
+        - name: Enregistrement de la restauration MongoDB
+          lineinfile:
+            path: "{{ restore_log_file }}"
+            line: "Restauration des bases de données MongoDB terminée - {{ ansible_date_time.iso8601 }}"
+            create: yes
+          ignore_errors: yes
+      when: restore_components | selectattr('name', 'equalto', 'Bases de données MongoDB') | selectattr('enabled') | list | length > 0
+      ignore_errors: yes
+    
+    # Restauration des volumes persistants Kubernetes
+    - name: Restauration des volumes persistants Kubernetes
+      block:
+        - name: Recherche des fichiers de sauvegarde des volumes
+          find:
+            paths: "{{ backup_path }}/kubernetes"
+            patterns: "*.tar.gz"
+            recurse: no
+          register: volume_backups
+        
+        - name: Affichage des sauvegardes de volumes trouvées
+          debug:
+            msg: "Sauvegardes de volumes trouvées: {{ volume_backups.files | map(attribute='path') | list }}"
+        
+        - name: Extraction des informations de namespace et de PVC
+          set_fact:
+            volume_restore_info: "{{ volume_restore_info | default([]) + [{'namespace': item.path | basename | regex_replace('^([^-]+)-([^-]+)-.*$', '\\1'), 'pvc': item.path | basename | regex_replace('^([^-]+)-([^-]+)-.*$', '\\2'), 'file': item.path}] }}"
+          with_items: "{{ volume_backups.files }}"
+          loop_control:
+            label: "{{ item.path | basename }}"
+        
+        - name: Restauration de chaque volume persistant
+          block:
+            - name: Vérification de l'existence du PVC
+              shell: kubectl get pvc {{ item.pvc }} -n {{ item.namespace }}
+              register: pvc_exists
+              ignore_errors: yes
+              changed_when: false
+            
+            - name: Création d'un pod de restauration
+              shell: |
+                cat <<EOF | kubectl apply -f -
+                apiVersion: v1
+                kind: Pod
+                metadata:
+                  name: restore-{{ item.pvc }}
+                  namespace: {{ item.namespace }}
+                  labels:
+                    app: restore-pod
+                spec:
+                  volumes:
+                    - name: data
+                      persistentVolumeClaim:
+                        claimName: {{ item.pvc }}
+                    - name: backup
+                      emptyDir: {}
+                  containers:
+                    - name: restore
+                      image: busybox
+                      command: ["sh", "-c", "while true; do sleep 3600; done"]
+                      volumeMounts:
+                        - name: data
+                          mountPath: /data
+                        - name: backup
+                          mountPath: /backup
+                  restartPolicy: Never
+                EOF
+              when: pvc_exists.rc == 0
+              ignore_errors: yes
+              register: restore_pod_creation
+            
+            - name: Attente de la création du pod de restauration
+              shell: kubectl wait --for=condition=ready --timeout=60s pod/restore-{{ item.pvc }} -n {{ item.namespace }}
+              when: restore_pod_creation is succeeded
+              ignore_errors: yes
+              register: pod_ready
+            
+            - name: Copie de l'archive vers le pod
+              shell: kubectl cp {{ item.file }} {{ item.namespace }}/restore-{{ item.pvc }}:/backup/backup.tar.gz
+              when: pod_ready is succeeded
+              ignore_errors: yes
+              register: copy_result
+            
+            - name: Extraction de l'archive dans le volume
+              shell: |
+                kubectl exec -n {{ item.namespace }} restore-{{ item.pvc }} -- sh -c "rm -rf /data/* && tar -xzf /backup/backup.tar.gz -C /data"
+              when: copy_result is succeeded
+              ignore_errors: yes
+              register: extract_volume_result
+            
+            - name: Suppression du pod de restauration
+              shell: kubectl delete pod restore-{{ item.pvc }} -n {{ item.namespace }}
+              when: restore_pod_creation is succeeded
+              ignore_errors: yes
+            
+            - name: Enregistrement du résultat de la restauration
+              lineinfile:
+                path: "{{ restore_log_file }}"
+                line: "Restauration du volume {{ item.namespace }}/{{ item.pvc }} - {{ 'Succès' if extract_volume_result is succeeded else 'Échec' }}"
+                create: yes
+              ignore_errors: yes
+          when: pvc_exists.rc is defined
+          loop: "{{ volume_restore_info }}"
+          loop_control:
+            label: "{{ item.namespace }}/{{ item.pvc }}"
+        
+        - name: Enregistrement de la restauration des volumes
+          lineinfile:
+            path: "{{ restore_log_file }}"
+            line: "Restauration des volumes persistants terminée - {{ ansible_date_time.iso8601 }}"
+            create: yes
+          ignore_errors: yes
+      when: restore_components | selectattr('name', 'equalto', 'Volumes persistants Kubernetes') | selectattr('enabled') | list | length > 0
+      ignore_errors: yes
+    
+    # Restauration des configurations Kubernetes
+    - name: Restauration des configurations Kubernetes
+      block:
+        - name: Recherche des fichiers de configuration Kubernetes
+          find:
+            paths: "{{ backup_path }}/kubernetes"
+            patterns: "*.yaml"
+            excludes: "*secrets*,*certificates*"
+            recurse: no
+          register: k8s_configs
+        
+        - name: Affichage des configurations trouvées
+          debug:
+            msg: "Configurations Kubernetes trouvées: {{ k8s_configs.files | map(attribute='path') | list }}"
+        
+        - name: Demande de confirmation pour la restauration des configurations
+          pause:
+            prompt: "ATTENTION: La restauration des configurations Kubernetes peut causer des conflits avec les ressources existantes. Êtes-vous sûr de vouloir continuer? (yes/no)"
+          register: confirmation
+        
+        - name: Restauration des configurations Kubernetes
+          shell: kubectl apply -f {{ item.path }}
+          with_items: "{{ k8s_configs.files }}"
+          when: confirmation.user_input | lower == 'yes'
+          register: k8s_restore_results
+          ignore_errors: yes
+        
+        - name: Enregistrement des résultats de restauration
+          lineinfile:
+            path: "{{ restore_log_file }}"
+            line: "Restauration de {{ item.item.path | basename }} - {{ 'Succès' if item.rc == 0 else 'Échec' }}"
+            create: yes
+          with_items: "{{ k8s_restore_results.results }}"
+          when: k8s_restore_results is defined
+          ignore_errors: yes
+        
+        - name: Enregistrement de la restauration des configurations
+          lineinfile:
+            path: "{{ restore_log_file }}"
+            line: "Restauration des configurations Kubernetes terminée - {{ ansible_date_time.iso8601 }}"
+            create: yes
+          ignore_errors: yes
+      when: restore_components | selectattr('name', 'equalto', 'Configurations Kubernetes') | selectattr('enabled') | list | length > 0
+      ignore_errors: yes
+    
+    # Restauration des certificats et secrets
+    - name: Restauration des certificats et secrets
+      block:
+        - name: Recherche des fichiers de certificats et secrets
+          find:
+            paths: "{{ backup_path }}/certificates"
+            patterns: "certificates-*.yaml"
+            recurse: no
+          register: cert_files
+        
+        - name: Affichage des certificats trouvés
+          debug:
+            msg: "Certificats trouvés: {{ cert_files.files | map(attribute='path') | list }}"
+        
+        - name: Demande de confirmation pour la restauration des certificats
+          pause:
+            prompt: "ATTENTION: La restauration des certificats peut causer des problèmes de sécurité. Êtes-vous sûr de vouloir continuer? (yes/no)"
+          register: cert_confirmation
+        
+        - name: Restauration des certificats
+          shell: kubectl apply -f {{ item.path }}
+          with_items: "{{ cert_files.files }}"
+          when: cert_confirmation.user_input | lower == 'yes'
+          register: cert_restore_results
+          ignore_errors: yes
+        
+        - name: Enregistrement des résultats de restauration des certificats
+          lineinfile:
+            path: "{{ restore_log_file }}"
+            line: "Restauration de {{ item.item.path | basename }} - {{ 'Succès' if item.rc == 0 else 'Échec' }}"
+            create: yes
+          with_items: "{{ cert_restore_results.results }}"
+          when: cert_restore_results is defined
+          ignore_errors: yes
+        
+        - name: Enregistrement de la restauration des certificats
+          lineinfile:
+            path: "{{ restore_log_file }}"
+            line: "Restauration des certificats terminée - {{ ansible_date_time.iso8601 }}"
+            create: yes
+          ignore_errors: yes
+      when: restore_components | selectattr('name', 'equalto', 'Certificats et secrets') | selectattr('enabled') | list | length > 0
+      ignore_errors: yes
+    
+    # Nettoyage
+    - name: Nettoyage des fichiers temporaires
+      file:
+        path: "{{ restore_temp_dir }}"
+        state: absent
+      ignore_errors: yes
+    
+    - name: Affichage de la fin de la restauration
+      debug:
+        msg: "Fin des tâches de restauration - {{ ansible_date_time.iso8601 }}"
+    
+    - name: Enregistrement de la fin de la restauration
+      lineinfile:
+        path: "{{ restore_log_file }}"
+        line: "Fin des tâches de restauration - {{ ansible_date_time.iso8601 }}"
+        create: yes
+        mode: '0640'
+      ignore_errors: yes

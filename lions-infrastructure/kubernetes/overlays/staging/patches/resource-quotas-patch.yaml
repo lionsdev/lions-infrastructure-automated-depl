@@ -1,0 +1,21 @@
+# Titre: Patch de quotas de ressources pour l'environnement de staging
+# Description: Ajuste les quotas de ressources pour l'environnement de staging
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-08
+# Version: 1.0.0
+
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: compute-resources
+spec:
+  hard:
+    requests.cpu: '8'
+    requests.memory: 16Gi
+    limits.cpu: '16'
+    limits.memory: 32Gi
+    pods: '40'
+    services: '25'
+    persistentvolumeclaims: '15'
+    secrets: '25'
+    configmaps: '25'

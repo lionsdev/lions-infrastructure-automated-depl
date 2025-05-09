@@ -1,0 +1,20 @@
+# Titre: Liaison de rôle pour le monitoring
+# Description: Définit la liaison de rôle pour le monitoring dans l'infrastructure LIONS
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-08
+# Version: 1.0.0
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: lions-monitoring-binding
+  labels:
+    app.kubernetes.io/part-of: lions-infrastructure
+subjects:
+- kind: ServiceAccount
+  name: prometheus-operator
+  namespace: monitoring
+roleRef:
+  kind: ClusterRole
+  name: lions-monitoring
+  apiGroup: rbac.authorization.k8s.io

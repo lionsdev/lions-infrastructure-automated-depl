@@ -1,0 +1,102 @@
+@startuml LIONS Infrastructure Architecture
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+title "LIONS Infrastructure - Architecture Globale"
+
+Person(developer, "Développeur", "Développe et déploie des applications")
+Person(ops, "Opérateur", "Gère l'infrastructure")
+
+System_Boundary(lions_infra, "Infrastructure LIONS") {
+    Container(ci_cd, "Pipeline CI/CD", "Jenkins/GitLab CI", "Automatise le build et le déploiement")
+    
+    Container(registry, "Registre d'Images", "Harbor", "Stocke les images Docker")
+    
+    System_Boundary(k8s_cluster, "Cluster Kubernetes") {
+        Container(k8s_api, "API Kubernetes", "API Server", "Point d'entrée pour la gestion du cluster")
+        
+        System_Boundary(env_dev, "Environnement de Développement") {
+            Container(dev_ns, "Namespaces Dev", "Kubernetes", "Isolation des applications")
+            Container(dev_apps, "Applications Dev", "Conteneurs", "Applications en développement")
+        }
+        
+        System_Boundary(env_staging, "Environnement de Staging") {
+            Container(staging_ns, "Namespaces Staging", "Kubernetes", "Isolation des applications")
+            Container(staging_apps, "Applications Staging", "Conteneurs", "Applications en pré-production")
+        }
+        
+        System_Boundary(env_prod, "Environnement de Production") {
+            Container(prod_ns, "Namespaces Production", "Kubernetes", "Isolation des applications")
+            Container(prod_apps, "Applications Production", "Conteneurs", "Applications en production")
+        }
+        
+        System_Boundary(shared_services, "Services Partagés") {
+            Container(ingress, "Ingress Controller", "NGINX", "Routage HTTP/HTTPS")
+            Container(cert_manager, "Cert Manager", "cert-manager", "Gestion des certificats TLS")
+            Container(storage, "Stockage Persistant", "CSI", "Stockage pour les applications")
+        }
+        
+        System_Boundary(monitoring, "Surveillance") {
+            Container(prometheus, "Prometheus", "Prometheus", "Collecte et stockage des métriques")
+            Container(grafana, "Grafana", "Grafana", "Visualisation des métriques")
+            Container(alertmanager, "Alertmanager", "Alertmanager", "Gestion des alertes")
+            Container(loki, "Loki", "Loki", "Agrégation des logs")
+            Container(jaeger, "Jaeger", "Jaeger", "Traçage distribué")
+        }
+        
+        System_Boundary(security, "Sécurité") {
+            Container(rbac, "RBAC", "Kubernetes", "Contrôle d'accès")
+            Container(network_policies, "Network Policies", "Kubernetes", "Isolation réseau")
+            Container(secrets, "Secrets", "Kubernetes", "Gestion des secrets")
+            Container(vault, "Vault", "HashiCorp Vault", "Gestion avancée des secrets")
+        }
+    }
+    
+    Container(deploy_tool, "Outil de Déploiement", "Script Bash/Ansible", "Interface de déploiement pour les développeurs")
+}
+
+' Relations
+Rel(developer, deploy_tool, "Utilise", "CLI")
+Rel(developer, ci_cd, "Pousse du code", "Git")
+Rel(ops, k8s_api, "Administre", "kubectl")
+
+Rel(deploy_tool, k8s_api, "Déploie", "kubectl/API")
+Rel(ci_cd, registry, "Pousse des images", "Docker")
+Rel(ci_cd, k8s_api, "Déploie", "kubectl/API")
+
+Rel(k8s_api, dev_ns, "Gère")
+Rel(k8s_api, staging_ns, "Gère")
+Rel(k8s_api, prod_ns, "Gère")
+
+Rel(dev_ns, dev_apps, "Contient")
+Rel(staging_ns, staging_apps, "Contient")
+Rel(prod_ns, prod_apps, "Contient")
+
+Rel(dev_apps, storage, "Utilise")
+Rel(staging_apps, storage, "Utilise")
+Rel(prod_apps, storage, "Utilise")
+
+Rel(ingress, dev_apps, "Route le trafic")
+Rel(ingress, staging_apps, "Route le trafic")
+Rel(ingress, prod_apps, "Route le trafic")
+
+Rel(prometheus, dev_apps, "Surveille")
+Rel(prometheus, staging_apps, "Surveille")
+Rel(prometheus, prod_apps, "Surveille")
+
+Rel(prometheus, alertmanager, "Envoie des alertes")
+Rel(grafana, prometheus, "Visualise les données")
+Rel(loki, dev_apps, "Collecte les logs")
+Rel(loki, staging_apps, "Collecte les logs")
+Rel(loki, prod_apps, "Collecte les logs")
+
+Rel(rbac, k8s_api, "Contrôle l'accès")
+Rel(network_policies, dev_apps, "Isole")
+Rel(network_policies, staging_apps, "Isole")
+Rel(network_policies, prod_apps, "Isole")
+
+Rel(dev_apps, secrets, "Utilise")
+Rel(staging_apps, secrets, "Utilise")
+Rel(prod_apps, secrets, "Utilise")
+Rel(secrets, vault, "Stocke dans")
+
+@enduml

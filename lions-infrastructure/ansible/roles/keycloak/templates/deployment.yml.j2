@@ -1,0 +1,152 @@
+---
+# Titre: Template de déploiement Kubernetes pour Keycloak
+# Description: Définit le déploiement Kubernetes pour Keycloak
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-07
+# Version: 1.0.0
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "{{ app_name }}"
+  namespace: "{{ app_namespace }}"
+  labels:
+    app: "{{ app_name }}"
+    version: "{{ app_version }}"
+    environment: "{{ app_environment }}"
+    technology: "keycloak"
+  annotations:
+    description: "Déploiement de Keycloak {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    deployment.kubernetes.io/revision: "1"
+spec:
+  replicas: {{ keycloak_replicas[app_environment] }}
+  selector:
+    matchLabels:
+      app: "{{ app_name }}"
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: "{{ app_name }}"
+        version: "{{ app_version }}"
+        environment: "{{ app_environment }}"
+        technology: "keycloak"
+      annotations:
+        prometheus.io/scrape: "{{ keycloak_prometheus_scrape | string | lower }}"
+        prometheus.io/path: "{{ keycloak_prometheus_path }}"
+        prometheus.io/port: "{{ keycloak_prometheus_port | string }}"
+    spec:
+      serviceAccountName: "{{ app_name }}"
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: "{{ app_name }}"
+          image: "quay.io/keycloak/keycloak:{{ app_version }}"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: {{ keycloak_default_port }}
+              protocol: TCP
+          env:
+            - name: KC_DB
+              value: "postgres"
+            - name: KC_DB_URL
+              value: "jdbc:postgresql://{{ keycloak_database_service }}.{{ keycloak_database_namespace }}:5432/{{ keycloak_database_name }}"
+            - name: KC_DB_USERNAME
+              value: "{{ keycloak_database_user }}"
+            - name: KC_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: "{{ keycloak_database_password_secret }}"
+                  key: "password"
+            - name: KEYCLOAK_ADMIN
+              value: "{{ keycloak_admin_user }}"
+            - name: KEYCLOAK_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: "{{ keycloak_admin_password_secret }}"
+                  key: "password"
+            - name: KC_PROXY
+              value: "edge"
+            - name: KC_HOSTNAME_STRICT
+              value: "false"
+            - name: KC_HTTP_RELATIVE_PATH
+              value: "/auth"
+            - name: KC_HEALTH_ENABLED
+              value: "true"
+            - name: KC_METRICS_ENABLED
+              value: "{{ keycloak_prometheus_scrape | string | lower }}"
+            - name: JAVA_OPTS_APPEND
+              value: "-Dkeycloak.profile.feature.upload_scripts=enabled -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0"
+            - name: KC_HOSTNAME_URL
+              value: "{{ keycloak_frontend_url }}"
+            - name: KC_PROXY_ADDRESS_FORWARDING
+              value: "{{ keycloak_proxy_address_forwarding | string | lower }}"
+            - name: KUBERNETES_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          envFrom:
+            - configMapRef:
+                name: "{{ app_name }}-config"
+          resources:
+            requests:
+              cpu: "{{ keycloak_resources[app_environment].requests.cpu }}"
+              memory: "{{ keycloak_resources[app_environment].requests.memory }}"
+            limits:
+              cpu: "{{ keycloak_resources[app_environment].limits.cpu }}"
+              memory: "{{ keycloak_resources[app_environment].limits.memory }}"
+          readinessProbe:
+            {{- keycloak_readiness_probe | to_nice_yaml(indent=2) | indent(12) }}
+          livenessProbe:
+            {{- keycloak_liveness_probe | to_nice_yaml(indent=2) | indent(12) }}
+          volumeMounts:
+            - name: tmp-volume
+              mountPath: /tmp
+            - name: config-volume
+              mountPath: /opt/keycloak/conf
+              readOnly: true
+            {% if keycloak_persistent_storage | bool %}
+            - name: data-volume
+              mountPath: /opt/keycloak/data
+            {% endif %}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: false
+      volumes:
+        - name: tmp-volume
+          emptyDir: {}
+        - name: config-volume
+          configMap:
+            name: "{{ app_name }}-config"
+        {% if keycloak_persistent_storage | bool %}
+        - name: data-volume
+          persistentVolumeClaim:
+            claimName: "{{ app_name }}-pvc"
+        {% endif %}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - "{{ app_name }}"
+                topologyKey: kubernetes.io/hostname
+      terminationGracePeriodSeconds: 60

@@ -1,0 +1,78 @@
+# Titre: Règles d'alerte pour les applications PrimeFaces
+# Description: Définit les règles d'alerte pour les applications PrimeFaces
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-08
+# Version: 1.0.0
+
+groups:
+- name: primefaces-alerts
+  rules:
+  - alert: PrimeFacesHighErrorRate
+    expr: sum(rate(tomcat_request_seconds_count{status=~"5.."}[5m])) / sum(rate(tomcat_request_seconds_count[5m])) > 0.05
+    for: 5m
+    labels:
+      severity: critical
+      technology: primefaces
+    annotations:
+      summary: "Taux d'erreur élevé pour l'application PrimeFaces"
+      description: "L'application {{ $labels.application }} a un taux d'erreur supérieur à 5% depuis 5 minutes."
+      
+  - alert: PrimeFacesHighResponseTime
+    expr: histogram_quantile(0.95, sum(rate(tomcat_request_seconds_bucket[5m])) by (le, application)) > 1
+    for: 5m
+    labels:
+      severity: warning
+      technology: primefaces
+    annotations:
+      summary: "Temps de réponse élevé pour l'application PrimeFaces"
+      description: "L'application {{ $labels.application }} a un temps de réponse au 95e percentile supérieur à 1 seconde depuis 5 minutes."
+      
+  - alert: PrimeFacesHighMemoryUsage
+    expr: sum(jvm_memory_used_bytes{area="heap"}) / sum(jvm_memory_max_bytes{area="heap"}) > 0.85
+    for: 5m
+    labels:
+      severity: warning
+      technology: primefaces
+    annotations:
+      summary: "Utilisation élevée de la mémoire pour l'application PrimeFaces"
+      description: "L'application {{ $labels.application }} utilise plus de 85% de sa mémoire heap depuis 5 minutes."
+      
+  - alert: PrimeFacesInstanceDown
+    expr: up{technology="primefaces"} == 0
+    for: 1m
+    labels:
+      severity: critical
+      technology: primefaces
+    annotations:
+      summary: "Instance PrimeFaces indisponible"
+      description: "L'instance {{ $labels.instance }} de l'application {{ $labels.application }} est indisponible."
+      
+  - alert: PrimeFacesHighCpuUsage
+    expr: rate(process_cpu_seconds_total{technology="primefaces"}[5m]) * 100 > 80
+    for: 5m
+    labels:
+      severity: warning
+      technology: primefaces
+    annotations:
+      summary: "Utilisation élevée du CPU pour l'application PrimeFaces"
+      description: "L'application {{ $labels.application }} utilise plus de 80% du CPU depuis 5 minutes."
+      
+  - alert: PrimeFacesHighSessionCount
+    expr: tomcat_sessions_active_current_sessions > 500
+    for: 5m
+    labels:
+      severity: warning
+      technology: primefaces
+    annotations:
+      summary: "Nombre élevé de sessions pour l'application PrimeFaces"
+      description: "L'application {{ $labels.application }} a plus de 500 sessions actives depuis 5 minutes."
+      
+  - alert: PrimeFacesHighJdbcConnections
+    expr: tomcat_jdbc_connections_active / tomcat_jdbc_connections_max > 0.8
+    for: 5m
+    labels:
+      severity: warning
+      technology: primefaces
+    annotations:
+      summary: "Nombre élevé de connexions JDBC pour l'application PrimeFaces"
+      description: "L'application {{ $labels.application }} utilise plus de 80% des connexions JDBC disponibles depuis 5 minutes."

@@ -1,0 +1,95 @@
+---
+# Titre: Variables pour le déploiement de MongoDB
+# Description: Variables spécifiques à MongoDB
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-08
+# Version: 1.0.0
+
+# Configuration par défaut pour MongoDB
+mongodb_version: "6.0"
+mongodb_default_port: 27017
+mongodb_health_path: "/healthz"
+mongodb_metrics_path: "/metrics"
+mongodb_admin_user: "admin"
+mongodb_admin_password_secret: "mongodb-admin-password"
+
+# Configuration des sondes de santé
+mongodb_readiness_probe:
+  exec:
+    command:
+      - /bin/sh
+      - -c
+      - mongosh --quiet --eval "db.runCommand({ ping: 1 })"
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+mongodb_liveness_probe:
+  exec:
+    command:
+      - /bin/sh
+      - -c
+      - mongosh --quiet --eval "db.runCommand({ ping: 1 })"
+  initialDelaySeconds: 60
+  periodSeconds: 20
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# Configuration du monitoring
+mongodb_prometheus_port: 9216
+mongodb_prometheus_path: "/metrics"
+mongodb_prometheus_scrape: true
+mongodb_init_delay: 30
+
+# Configuration des ressources par environnement
+mongodb_resources:
+  development:
+    requests:
+      cpu: "200m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+  staging:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "2000m"
+      memory: "2Gi"
+  production:
+    requests:
+      cpu: "1000m"
+      memory: "2Gi"
+    limits:
+      cpu: "4000m"
+      memory: "4Gi"
+
+# Configuration des réplicas par environnement (pour les déploiements en mode HA)
+mongodb_replicas:
+  development: 1
+  staging: 1
+  production: 3
+
+# Configuration de la persistance
+mongodb_persistent_storage: true
+mongodb_storage_size: "20Gi"
+mongodb_storage_class: "standard"
+
+# Configuration de MongoDB
+mongodb_wiredtiger_cache_size: "0.5"
+mongodb_max_connections: 100
+mongodb_oplog_size: "2048"
+mongodb_journal_enabled: true
+mongodb_auth_enabled: true
+
+# Configuration du replica set
+mongodb_replica_set_enabled: "{{ app_environment == 'production' }}"
+mongodb_replica_set_name: "rs0"
+mongodb_replica_set_key_secret: "mongodb-replica-set-key"
+
+# Configuration de la sécurité
+mongodb_tls_enabled: false
+mongodb_tls_secret: "mongodb-tls"
+mongodb_network_bind_all: false

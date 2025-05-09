@@ -1,0 +1,158 @@
+---
+# Titre: Template de StatefulSet Kubernetes pour Redis
+# Description: Définit le StatefulSet Kubernetes pour Redis
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-08
+# Version: 1.0.0
+
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: "{{ app_name }}"
+  namespace: "{{ app_namespace }}"
+  labels:
+    app: "{{ app_name }}"
+    version: "{{ app_version }}"
+    environment: "{{ app_environment }}"
+    technology: "redis"
+  annotations:
+    description: "Déploiement de Redis {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    deployment.kubernetes.io/revision: "1"
+spec:
+  serviceName: "{{ app_name }}"
+  replicas: {{ redis_replicas[app_environment] | default(1) }}
+  selector:
+    matchLabels:
+      app: "{{ app_name }}"
+  template:
+    metadata:
+      labels:
+        app: "{{ app_name }}"
+        version: "{{ app_version }}"
+        environment: "{{ app_environment }}"
+        technology: "redis"
+      annotations:
+        prometheus.io/scrape: "{{ redis_prometheus_scrape | string | lower }}"
+        prometheus.io/path: "{{ redis_prometheus_path }}"
+        prometheus.io/port: "{{ redis_prometheus_port }}"
+    spec:
+      serviceAccountName: "{{ app_name }}"
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        fsGroup: 999
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - "{{ app_name }}"
+                topologyKey: kubernetes.io/hostname
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: "{{ app_name }}"
+          image: "redis:{{ redis_version }}"
+          imagePullPolicy: IfNotPresent
+          command:
+            - redis-server
+            - /etc/redis/redis.conf
+          ports:
+            - name: redis
+              containerPort: {{ redis_default_port }}
+              protocol: TCP
+          env:
+            - name: KUBERNETES_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+          resources:
+            requests:
+              cpu: "{{ redis_resources[app_environment].requests.cpu }}"
+              memory: "{{ redis_resources[app_environment].requests.memory }}"
+            limits:
+              cpu: "{{ redis_resources[app_environment].limits.cpu }}"
+              memory: "{{ redis_resources[app_environment].limits.memory }}"
+          readinessProbe:
+            {{- redis_readiness_probe | to_nice_yaml(indent=2) | indent(12) }}
+          livenessProbe:
+            {{- redis_liveness_probe | to_nice_yaml(indent=2) | indent(12) }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: config
+              mountPath: /etc/redis
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: false
+{% if redis_prometheus_scrape | bool %}
+        - name: redis-exporter
+          image: "oliver006/redis_exporter:latest"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: metrics
+              containerPort: {{ redis_prometheus_port }}
+              protocol: TCP
+          env:
+            - name: REDIS_ADDR
+              value: "redis://localhost:{{ redis_default_port }}"
+{% if redis_password_enabled | bool %}
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: "{{ redis_password_secret }}"
+                  key: password
+{% endif %}
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "100m"
+              memory: "128Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+{% endif %}
+      volumes:
+        - name: config
+          configMap:
+            name: "{{ app_name }}-config"
+        - name: tmp
+          emptyDir: {}
+{% if not redis_persistent_storage | bool %}
+        - name: data
+          emptyDir: {}
+{% endif %}
+{% if redis_persistent_storage | bool %}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: "{{ redis_storage_class }}"
+        resources:
+          requests:
+            storage: "{{ redis_storage_size }}"
+{% endif %}

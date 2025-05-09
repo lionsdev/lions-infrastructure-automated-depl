@@ -1,0 +1,41 @@
+# Titre: Rôle pour les développeurs
+# Description: Définit le rôle pour les développeurs dans l'infrastructure LIONS
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-08
+# Version: 1.0.0
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: lions-developer
+  labels:
+    app.kubernetes.io/part-of: lions-infrastructure
+rules:
+# Accès en lecture aux ressources de base
+- apiGroups: [""]
+  resources: ["pods", "pods/log", "services", "endpoints", "persistentvolumeclaims", "configmaps", "secrets"]
+  verbs: ["get", "list", "watch"]
+# Accès en lecture aux déploiements, statefulsets, etc.
+- apiGroups: ["apps"]
+  resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+  verbs: ["get", "list", "watch"]
+# Accès en lecture aux ingress
+- apiGroups: ["networking.k8s.io"]
+  resources: ["ingresses"]
+  verbs: ["get", "list", "watch"]
+# Accès en lecture aux jobs et cronjobs
+- apiGroups: ["batch"]
+  resources: ["jobs", "cronjobs"]
+  verbs: ["get", "list", "watch"]
+# Accès en lecture aux métriques
+- apiGroups: ["metrics.k8s.io"]
+  resources: ["pods", "nodes"]
+  verbs: ["get", "list", "watch"]
+# Accès pour exécuter des commandes dans les pods
+- apiGroups: [""]
+  resources: ["pods/exec"]
+  verbs: ["create"]
+# Accès pour transférer des fichiers vers/depuis les pods
+- apiGroups: [""]
+  resources: ["pods/portforward"]
+  verbs: ["create"]

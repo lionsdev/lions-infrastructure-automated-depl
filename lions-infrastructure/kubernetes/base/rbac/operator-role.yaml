@@ -1,0 +1,49 @@
+# Titre: Rôle pour les opérateurs
+# Description: Définit le rôle pour les opérateurs dans l'infrastructure LIONS
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-08
+# Version: 1.0.0
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: lions-operator
+  labels:
+    app.kubernetes.io/part-of: lions-infrastructure
+rules:
+# Accès complet aux ressources de base
+- apiGroups: [""]
+  resources: ["pods", "pods/log", "pods/exec", "services", "endpoints", "persistentvolumeclaims", "configmaps", "secrets", "namespaces", "events"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+# Accès complet aux déploiements, statefulsets, etc.
+- apiGroups: ["apps"]
+  resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+# Accès complet aux ingress
+- apiGroups: ["networking.k8s.io"]
+  resources: ["ingresses", "networkpolicies"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+# Accès complet aux jobs et cronjobs
+- apiGroups: ["batch"]
+  resources: ["jobs", "cronjobs"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+# Accès aux métriques
+- apiGroups: ["metrics.k8s.io"]
+  resources: ["pods", "nodes"]
+  verbs: ["get", "list", "watch"]
+# Accès aux certificats
+- apiGroups: ["cert-manager.io"]
+  resources: ["certificates", "issuers", "clusterissuers"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+# Accès aux ressources de monitoring
+- apiGroups: ["monitoring.coreos.com"]
+  resources: ["servicemonitors", "prometheusrules", "alertmanagers"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+# Accès aux ressources de stockage
+- apiGroups: ["storage.k8s.io"]
+  resources: ["storageclasses", "volumeattachments"]
+  verbs: ["get", "list", "watch"]
+# Accès pour les opérations de scaling
+- apiGroups: ["autoscaling"]
+  resources: ["horizontalpodautoscalers"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

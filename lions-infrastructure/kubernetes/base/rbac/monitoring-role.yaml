@@ -1,0 +1,29 @@
+# Titre: Rôle pour le monitoring
+# Description: Définit le rôle pour le monitoring dans l'infrastructure LIONS
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-08
+# Version: 1.0.0
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: lions-monitoring
+  labels:
+    app.kubernetes.io/part-of: lions-infrastructure
+rules:
+# Accès en lecture aux ressources de base pour le monitoring
+- apiGroups: [""]
+  resources: ["pods", "pods/log", "services", "endpoints", "nodes", "namespaces"]
+  verbs: ["get", "list", "watch"]
+# Accès en lecture aux déploiements, statefulsets, etc.
+- apiGroups: ["apps"]
+  resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+  verbs: ["get", "list", "watch"]
+# Accès aux métriques
+- apiGroups: ["metrics.k8s.io"]
+  resources: ["pods", "nodes"]
+  verbs: ["get", "list", "watch"]
+# Accès aux ressources de monitoring
+- apiGroups: ["monitoring.coreos.com"]
+  resources: ["servicemonitors", "prometheusrules", "alertmanagers", "prometheuses"]
+  verbs: ["get", "list", "watch"]

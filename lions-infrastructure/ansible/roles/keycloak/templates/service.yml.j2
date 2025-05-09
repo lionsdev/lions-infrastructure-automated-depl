@@ -1,0 +1,31 @@
+---
+# Titre: Template de service Kubernetes pour Keycloak
+# Description: Définit le service Kubernetes pour Keycloak
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-07
+# Version: 1.0.0
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: "{{ app_name }}"
+  namespace: "{{ app_namespace }}"
+  labels:
+    app: "{{ app_name }}"
+    version: "{{ app_version }}"
+    environment: "{{ app_environment }}"
+    technology: "keycloak"
+  annotations:
+    description: "Service pour Keycloak {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    prometheus.io/scrape: "{{ keycloak_prometheus_scrape | string | lower }}"
+    prometheus.io/path: "{{ keycloak_prometheus_path }}"
+    prometheus.io/port: "{{ keycloak_prometheus_port | string }}"
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+  selector:
+    app: "{{ app_name }}"

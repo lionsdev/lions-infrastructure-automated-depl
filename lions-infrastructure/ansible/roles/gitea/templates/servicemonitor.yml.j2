@@ -1,0 +1,46 @@
+---
+# Titre: Template de ServiceMonitor Kubernetes pour Gitea
+# Description: Définit le ServiceMonitor Kubernetes pour Gitea
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-07
+# Version: 1.0.0
+
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: "{{ app_name }}"
+  namespace: "{{ app_namespace }}"
+  labels:
+    app: "{{ app_name }}"
+    version: "{{ app_version }}"
+    environment: "{{ app_environment }}"
+    technology: "gitea"
+    prometheus: k8s
+  annotations:
+    description: "ServiceMonitor pour Gitea {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+spec:
+  selector:
+    matchLabels:
+      app: "{{ app_name }}"
+  namespaceSelector:
+    matchNames:
+      - "{{ app_namespace }}"
+  endpoints:
+    - port: http
+      path: "{{ gitea_metrics_path }}"
+      interval: 15s
+      scrapeTimeout: 10s
+      honorLabels: true
+      metricRelabelings:
+        - sourceLabels: [__name__]
+          regex: 'gitea_.*'
+          action: keep
+        - sourceLabels: [__name__]
+          regex: 'go_.*'
+          action: keep
+        - sourceLabels: [__name__]
+          regex: 'process_.*'
+          action: keep
+        - sourceLabels: [__name__]
+          regex: 'promhttp_.*'
+          action: keep

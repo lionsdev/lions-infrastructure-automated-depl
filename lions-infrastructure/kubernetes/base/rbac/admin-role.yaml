@@ -1,0 +1,17 @@
+# Titre: Rôle pour les administrateurs
+# Description: Définit le rôle pour les administrateurs dans l'infrastructure LIONS
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-08
+# Version: 1.0.0
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: lions-admin
+  labels:
+    app.kubernetes.io/part-of: lions-infrastructure
+rules:
+# Accès complet à toutes les ressources
+- apiGroups: ["*"]
+  resources: ["*"]
+  verbs: ["*"]

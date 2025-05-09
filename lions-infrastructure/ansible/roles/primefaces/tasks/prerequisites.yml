@@ -1,0 +1,80 @@
+---
+# Titre: Vérification des prérequis pour PrimeFaces
+# Description: Vérifie que tous les prérequis sont satisfaits pour déployer une application PrimeFaces
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-07
+# Version: 1.0.0
+
+- name: Vérification de l'existence du namespace
+  k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: "{{ app_namespace }}"
+  register: namespace_info
+  failed_when: namespace_info.resources | length == 0
+
+- name: Vérification des droits d'accès au namespace
+  k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "access-check"
+        namespace: "{{ app_namespace }}"
+      data:
+        check: "true"
+  register: access_check
+  ignore_errors: yes
+
+- name: Suppression du ConfigMap de vérification
+  k8s:
+    state: absent
+    api_version: v1
+    kind: ConfigMap
+    name: "access-check"
+    namespace: "{{ app_namespace }}"
+  when: access_check is succeeded
+
+- name: Échec si les droits d'accès sont insuffisants
+  fail:
+    msg: "Droits d'accès insuffisants pour déployer dans le namespace {{ app_namespace }}"
+  when: access_check is failed
+
+- name: Vérification de l'existence du registre Docker
+  k8s_info:
+    api_version: v1
+    kind: Service
+    name: registry
+    namespace: registry
+  register: registry_info
+  failed_when: registry_info.resources | length == 0
+
+- name: Vérification de l'existence de l'ingress controller
+  k8s_info:
+    api_version: v1
+    kind: Service
+    name: ingress-nginx-controller
+    namespace: ingress-nginx
+  register: ingress_info
+  ignore_errors: yes
+
+- name: Avertissement si l'ingress controller n'est pas trouvé
+  debug:
+    msg: "AVERTISSEMENT: L'ingress controller n'a pas été trouvé. L'application ne sera pas accessible via une URL."
+  when: ingress_info is failed or ingress_info.resources | length == 0
+
+- name: Vérification des prérequis spécifiques à PrimeFaces
+  debug:
+    msg: "Vérification des prérequis spécifiques à PrimeFaces"
+
+- name: Vérification de la présence de Java
+  shell: "kubectl exec -n {{ app_namespace }} -l app=tools -- java -version"
+  register: java_check
+  ignore_errors: yes
+  changed_when: false
+
+- name: Avertissement si Java n'est pas disponible
+  debug:
+    msg: "AVERTISSEMENT: Java n'est pas disponible dans le cluster. Certaines fonctionnalités de PrimeFaces pourraient ne pas fonctionner correctement."
+  when: java_check is failed

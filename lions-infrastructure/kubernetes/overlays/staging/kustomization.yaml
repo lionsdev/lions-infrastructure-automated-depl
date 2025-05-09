@@ -1,0 +1,40 @@
+---
+# Titre: Configuration Kustomize pour l'environnement de staging
+# Description: Définit la configuration Kustomize pour l'environnement de staging
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-07
+# Version: 1.0.0
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Ressources de base à inclure
+resources:
+  - ../../base/namespaces
+  - ../../base/network-policies
+  - ../../base/rbac
+  - ../../base/resource-quotas
+
+# Configuration des namespaces
+namespace: staging
+
+# Labels communs à ajouter à toutes les ressources
+commonLabels:
+  environment: staging
+  managed-by: kustomize
+
+# Annotations communes à ajouter à toutes les ressources
+commonAnnotations:
+  environment.lions.dev/description: "Environnement de staging pour les applications LIONS"
+  environment.lions.dev/contact: "staging-team@lions.dev"
+  environment.lions.dev/documentation: "https://docs.lions.dev/environments/staging"
+
+# Configuration des variables
+vars:
+  - name: ENVIRONMENT
+    objref:
+      kind: Namespace
+      name: staging
+      apiVersion: v1
+    fieldref:
+      fieldpath: metadata.name

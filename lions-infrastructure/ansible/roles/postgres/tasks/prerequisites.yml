@@ -1,0 +1,89 @@
+---
+# Titre: Vérification des prérequis pour PostgreSQL
+# Description: Vérifie que tous les prérequis sont satisfaits pour déployer PostgreSQL
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-07
+# Version: 1.0.0
+
+- name: Vérification de l'existence du namespace
+  k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: "{{ app_namespace }}"
+  register: namespace_info
+  failed_when: namespace_info.resources | length == 0
+
+- name: Vérification des droits d'accès au namespace
+  k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "access-check"
+        namespace: "{{ app_namespace }}"
+      data:
+        check: "true"
+  register: access_check
+  ignore_errors: yes
+
+- name: Suppression du ConfigMap de vérification
+  k8s:
+    state: absent
+    api_version: v1
+    kind: ConfigMap
+    name: "access-check"
+    namespace: "{{ app_namespace }}"
+  when: access_check is succeeded
+
+- name: Échec si les droits d'accès sont insuffisants
+  fail:
+    msg: "Droits d'accès insuffisants pour déployer dans le namespace {{ app_namespace }}"
+  when: access_check is failed
+
+- name: Vérification de l'existence du registre Docker
+  k8s_info:
+    api_version: v1
+    kind: Service
+    name: registry
+    namespace: registry
+  register: registry_info
+  failed_when: registry_info.resources | length == 0
+
+- name: Vérification de l'existence de l'ingress controller
+  k8s_info:
+    api_version: v1
+    kind: Service
+    name: ingress-nginx-controller
+    namespace: ingress-nginx
+  register: ingress_info
+  ignore_errors: yes
+
+- name: Avertissement si l'ingress controller n'est pas trouvé
+  debug:
+    msg: "AVERTISSEMENT: L'ingress controller n'a pas été trouvé. L'interface d'administration de PostgreSQL ne sera pas accessible via une URL."
+  when: ingress_info is failed or ingress_info.resources | length == 0
+
+- name: Vérification de la disponibilité du stockage persistant
+  k8s_info:
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+    name: "{{ postgres_storage_class }}"
+  register: storage_class_info
+  ignore_errors: yes
+
+- name: Avertissement si la classe de stockage n'est pas trouvée
+  debug:
+    msg: "AVERTISSEMENT: La classe de stockage {{ postgres_storage_class }} n'a pas été trouvée. PostgreSQL nécessite un stockage persistant pour fonctionner correctement."
+  when: storage_class_info is failed or storage_class_info.resources | length == 0
+
+- name: Vérification des ressources disponibles sur les nœuds
+  shell: "kubectl describe nodes | grep -A 5 'Allocated resources' | grep -v 'Allocated resources'"
+  register: node_resources
+  changed_when: false
+  ignore_errors: yes
+
+- name: Avertissement si les ressources sont limitées
+  debug:
+    msg: "AVERTISSEMENT: Vérifiez que les nœuds disposent de suffisamment de ressources pour PostgreSQL. Ressources actuelles: {{ node_resources.stdout }}"
+  when: node_resources is succeeded

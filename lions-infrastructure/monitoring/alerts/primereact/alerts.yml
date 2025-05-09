@@ -1,0 +1,78 @@
+# Titre: Règles d'alerte pour les applications PrimeReact
+# Description: Définit les règles d'alerte pour les applications PrimeReact
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-08
+# Version: 1.0.0
+
+groups:
+- name: primereact-alerts
+  rules:
+  - alert: PrimeReactHighErrorRate
+    expr: sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m])) > 0.05
+    for: 5m
+    labels:
+      severity: critical
+      technology: primereact
+    annotations:
+      summary: "Taux d'erreur élevé pour l'application PrimeReact"
+      description: "L'application {{ $labels.application }} a un taux d'erreur supérieur à 5% depuis 5 minutes."
+      
+  - alert: PrimeReactHighResponseTime
+    expr: histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, application)) > 1
+    for: 5m
+    labels:
+      severity: warning
+      technology: primereact
+    annotations:
+      summary: "Temps de réponse élevé pour l'application PrimeReact"
+      description: "L'application {{ $labels.application }} a un temps de réponse au 95e percentile supérieur à 1 seconde depuis 5 minutes."
+      
+  - alert: PrimeReactHighMemoryUsage
+    expr: process_resident_memory_bytes / process_memory_limit_bytes > 0.85
+    for: 5m
+    labels:
+      severity: warning
+      technology: primereact
+    annotations:
+      summary: "Utilisation élevée de la mémoire pour l'application PrimeReact"
+      description: "L'application {{ $labels.application }} utilise plus de 85% de sa mémoire depuis 5 minutes."
+      
+  - alert: PrimeReactInstanceDown
+    expr: up{technology="primereact"} == 0
+    for: 1m
+    labels:
+      severity: critical
+      technology: primereact
+    annotations:
+      summary: "Instance PrimeReact indisponible"
+      description: "L'instance {{ $labels.instance }} de l'application {{ $labels.application }} est indisponible."
+      
+  - alert: PrimeReactHighCpuUsage
+    expr: rate(process_cpu_seconds_total{technology="primereact"}[5m]) * 100 > 80
+    for: 5m
+    labels:
+      severity: warning
+      technology: primereact
+    annotations:
+      summary: "Utilisation élevée du CPU pour l'application PrimeReact"
+      description: "L'application {{ $labels.application }} utilise plus de 80% du CPU depuis 5 minutes."
+      
+  - alert: PrimeReactHighHeapUsage
+    expr: nodejs_heap_size_used_bytes / nodejs_heap_size_total_bytes > 0.85
+    for: 5m
+    labels:
+      severity: warning
+      technology: primereact
+    annotations:
+      summary: "Utilisation élevée du heap Node.js pour l'application PrimeReact"
+      description: "L'application {{ $labels.application }} utilise plus de 85% de son heap Node.js depuis 5 minutes."
+      
+  - alert: PrimeReactHighEventLoopLag
+    expr: nodejs_eventloop_lag_seconds > 0.1
+    for: 5m
+    labels:
+      severity: warning
+      technology: primereact
+    annotations:
+      summary: "Latence élevée de l'event loop pour l'application PrimeReact"
+      description: "L'application {{ $labels.application }} a une latence d'event loop supérieure à 100ms depuis 5 minutes."

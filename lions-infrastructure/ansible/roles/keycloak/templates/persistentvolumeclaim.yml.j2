@@ -1,0 +1,26 @@
+---
+# Titre: Template de PersistentVolumeClaim Kubernetes pour Keycloak
+# Description: Définit le PersistentVolumeClaim Kubernetes pour Keycloak
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-07
+# Version: 1.0.0
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: "{{ app_name }}-pvc"
+  namespace: "{{ app_namespace }}"
+  labels:
+    app: "{{ app_name }}"
+    version: "{{ app_version }}"
+    environment: "{{ app_environment }}"
+    technology: "keycloak"
+  annotations:
+    description: "PersistentVolumeClaim pour Keycloak {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: "{{ keycloak_storage_class }}"
+  resources:
+    requests:
+      storage: "{{ keycloak_storage_size }}"

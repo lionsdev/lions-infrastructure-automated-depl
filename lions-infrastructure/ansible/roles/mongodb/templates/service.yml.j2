@@ -1,0 +1,35 @@
+---
+# Titre: Template de Service Kubernetes pour MongoDB
+# Description: Définit le Service Kubernetes pour MongoDB
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-08
+# Version: 1.0.0
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: "{{ app_name }}"
+  namespace: "{{ app_namespace }}"
+  labels:
+    app: "{{ app_name }}"
+    version: "{{ app_version }}"
+    environment: "{{ app_environment }}"
+    technology: "mongodb"
+  annotations:
+    description: "Service pour MongoDB {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+spec:
+  selector:
+    app: "{{ app_name }}"
+  ports:
+    - name: mongodb
+      port: {{ mongodb_default_port }}
+      targetPort: mongodb
+      protocol: TCP
+{% if mongodb_prometheus_scrape | bool %}
+    - name: metrics
+      port: {{ mongodb_prometheus_port }}
+      targetPort: metrics
+      protocol: TCP
+{% endif %}
+  type: ClusterIP
+  sessionAffinity: None

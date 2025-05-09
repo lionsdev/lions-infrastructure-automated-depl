@@ -1,0 +1,48 @@
+---
+# Titre: Template de ServiceMonitor Kubernetes pour le service de notification
+# Description: Définit le ServiceMonitor Kubernetes pour le service de notification
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-08
+# Version: 1.0.0
+
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: "{{ app_name }}"
+  namespace: "{{ app_namespace }}"
+  labels:
+    app: "{{ app_name }}"
+    version: "{{ app_version }}"
+    environment: "{{ app_environment }}"
+    technology: "notification-service"
+    prometheus: "kube-prometheus"
+  annotations:
+    description: "ServiceMonitor pour le service de notification {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+spec:
+  selector:
+    matchLabels:
+      app: "{{ app_name }}"
+  namespaceSelector:
+    matchNames:
+      - "{{ app_namespace }}"
+  endpoints:
+    - port: http
+      path: "{{ notification_prometheus_path }}"
+      interval: 30s
+      scrapeTimeout: 10s
+      honorLabels: true
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          action: replace
+          targetLabel: pod
+        - sourceLabels: [__meta_kubernetes_namespace]
+          action: replace
+          targetLabel: namespace
+        - sourceLabels: [__meta_kubernetes_service_name]
+          action: replace
+          targetLabel: service
+  targetLabels:
+    - app
+    - version
+    - environment
+    - technology

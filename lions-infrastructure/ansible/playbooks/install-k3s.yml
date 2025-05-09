@@ -1,0 +1,354 @@
+---
+# Titre: Playbook d'installation de K3s
+# Description: Installe et configure K3s sur le VPS
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2023-05-15
+# Version: 1.0.0
+
+- name: Installation de K3s sur le VPS
+  hosts: vps
+  become: yes
+
+  vars:
+    k3s_version: "v1.25.6+k3s1"  # Version stable de K3s
+    k3s_server_args: "--disable traefik --disable servicelb --disable-cloud-controller --kube-controller-manager-arg bind-address=0.0.0.0 --kube-scheduler-arg bind-address=0.0.0.0"
+    kubeconfig_local_path: "~/.kube/config"
+
+  tasks:
+    - name: Vérification de l'installation existante de K3s
+      stat:
+        path: /usr/local/bin/k3s
+      register: k3s_binary
+
+    - name: Téléchargement du script d'installation K3s
+      get_url:
+        url: https://get.k3s.io
+        dest: /tmp/k3s-install.sh
+        mode: '0755'
+      when: not k3s_binary.stat.exists
+
+    - name: Installation de K3s
+      environment:
+        INSTALL_K3S_VERSION: "{{ k3s_version }}"
+        INSTALL_K3S_EXEC: "{{ k3s_server_args }}"
+      command: /tmp/k3s-install.sh
+      args:
+        creates: /usr/local/bin/k3s
+      register: k3s_installed
+      when: not k3s_binary.stat.exists
+
+    - name: Attente que K3s soit prêt
+      wait_for:
+        path: /var/lib/rancher/k3s/server/node-token
+        state: present
+        delay: 10
+        timeout: 300
+      when: k3s_installed.changed
+
+    - name: Attente que le serveur API K3s soit prêt
+      wait_for:
+        port: 6443
+        delay: 10
+        timeout: 300
+      when: k3s_installed.changed
+
+    - name: Création du répertoire .kube pour l'utilisateur
+      file:
+        path: /home/{{ ansible_user }}/.kube
+        state: directory
+        mode: '0755'
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+
+    - name: Copie du fichier kubeconfig pour l'utilisateur
+      copy:
+        src: /etc/rancher/k3s/k3s.yaml
+        dest: /home/{{ ansible_user }}/.kube/config
+        remote_src: yes
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0600'
+
+    - name: Mise à jour du fichier kubeconfig avec l'adresse IP externe
+      replace:
+        path: /home/{{ ansible_user }}/.kube/config
+        regexp: 'https://127.0.0.1:6443'
+        replace: 'https://{{ ansible_host }}:6443'
+
+    - name: Configuration de l'accès à kubectl
+      lineinfile:
+        path: /home/{{ ansible_user }}/.bashrc
+        line: 'export KUBECONFIG=/home/{{ ansible_user }}/.kube/config'
+        state: present
+
+    - name: Installation de kubectl
+      block:
+        - name: Ajout de la clé GPG de Kubernetes
+          apt_key:
+            url: https://packages.cloud.google.com/apt/doc/apt-key.gpg
+            state: present
+
+        - name: Ajout du dépôt Kubernetes
+          apt_repository:
+            repo: deb https://apt.kubernetes.io/ kubernetes-xenial main
+            state: present
+            filename: kubernetes
+
+        - name: Installation de kubectl
+          apt:
+            name: kubectl
+            state: present
+            update_cache: yes
+      when: not k3s_binary.stat.exists
+
+    - name: Récupération du fichier kubeconfig pour utilisation locale
+      fetch:
+        src: /home/{{ ansible_user }}/.kube/config
+        dest: "{{ kubeconfig_local_path }}"
+        flat: yes
+      when: kubeconfig_local_path is defined
+
+    - name: Installation de Helm
+      block:
+        - name: Téléchargement du script d'installation de Helm
+          get_url:
+            url: https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+            dest: /tmp/get-helm-3.sh
+            mode: '0755'
+
+        - name: Exécution du script d'installation de Helm
+          command: /tmp/get-helm-3.sh
+          args:
+            creates: /usr/local/bin/helm
+      when: not k3s_binary.stat.exists
+
+    - name: Vérification de l'installation de K3s
+      command: k3s kubectl get nodes
+      register: k3s_nodes
+      changed_when: false
+
+    - name: Affichage des nœuds K3s
+      debug:
+        var: k3s_nodes.stdout_lines
+
+    - name: Vérification des pods système
+      command: k3s kubectl get pods -n kube-system
+      register: k3s_system_pods
+      changed_when: false
+
+    - name: Affichage des pods système
+      debug:
+        var: k3s_system_pods.stdout_lines
+
+    - name: Installation de MetalLB pour le LoadBalancer
+      block:
+        - name: Création du namespace metallb-system
+          k8s:
+            name: metallb-system
+            api_version: v1
+            kind: Namespace
+            state: present
+
+        - name: Déploiement de MetalLB via Helm
+          kubernetes.core.helm:
+            name: metallb
+            chart_ref: metallb/metallb
+            release_namespace: metallb-system
+            create_namespace: true
+            wait: true
+
+        - name: Configuration de l'IPAddressPool pour MetalLB
+          k8s:
+            state: present
+            definition:
+              apiVersion: metallb.io/v1beta1
+              kind: IPAddressPool
+              metadata:
+                name: first-pool
+                namespace: metallb-system
+              spec:
+                addresses:
+                  - "{{ ansible_host }}/32"  # Utilise l'adresse IP du VPS
+
+        - name: Configuration de L2Advertisement pour MetalLB
+          k8s:
+            state: present
+            definition:
+              apiVersion: metallb.io/v1beta1
+              kind: L2Advertisement
+              metadata:
+                name: l2-advert
+                namespace: metallb-system
+              spec:
+                ipAddressPools:
+                  - first-pool
+      when: k3s_installed.changed
+
+    - name: Installation de cert-manager pour les certificats TLS
+      block:
+        - name: Ajout du dépôt Helm de cert-manager
+          kubernetes.core.helm_repository:
+            name: jetstack
+            repo_url: https://charts.jetstack.io
+
+        - name: Déploiement de cert-manager via Helm
+          kubernetes.core.helm:
+            name: cert-manager
+            chart_ref: jetstack/cert-manager
+            release_namespace: cert-manager
+            create_namespace: true
+            wait: true
+            set_values:
+              - value: installCRDs=true
+      when: k3s_installed.changed
+
+    - name: Installation de Nginx Ingress Controller
+      block:
+        - name: Ajout du dépôt Helm de nginx-ingress
+          kubernetes.core.helm_repository:
+            name: ingress-nginx
+            repo_url: https://kubernetes.github.io/ingress-nginx
+
+        - name: Déploiement de nginx-ingress via Helm
+          kubernetes.core.helm:
+            name: ingress-nginx
+            chart_ref: ingress-nginx/ingress-nginx
+            release_namespace: ingress-nginx
+            create_namespace: true
+            wait: true
+      when: k3s_installed.changed
+
+    - name: Installation du Kubernetes Dashboard
+      block:
+        - name: Création du namespace kubernetes-dashboard
+          k8s:
+            name: kubernetes-dashboard
+            api_version: v1
+            kind: Namespace
+            state: present
+
+        - name: Déploiement du Kubernetes Dashboard
+          k8s:
+            state: present
+            src: https://raw.githubusercontent.com/kubernetes/dashboard/v2.7.0/aio/deploy/recommended.yaml
+
+        - name: Création du Service NodePort pour exposer le Dashboard
+          k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: Service
+              metadata:
+                name: kubernetes-dashboard-nodeport
+                namespace: kubernetes-dashboard
+              spec:
+                ports:
+                - port: 443
+                  targetPort: 8443
+                  nodePort: 30001
+                selector:
+                  k8s-app: kubernetes-dashboard
+                type: NodePort
+
+        - name: Création d'un compte de service avec droits d'administration
+          k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: ServiceAccount
+              metadata:
+                name: dashboard-admin
+                namespace: kubernetes-dashboard
+
+        - name: Création d'un ClusterRoleBinding pour le compte admin
+          k8s:
+            state: present
+            definition:
+              apiVersion: rbac.authorization.k8s.io/v1
+              kind: ClusterRoleBinding
+              metadata:
+                name: dashboard-admin
+              roleRef:
+                apiGroup: rbac.authorization.k8s.io
+                kind: ClusterRole
+                name: cluster-admin
+              subjects:
+              - kind: ServiceAccount
+                name: dashboard-admin
+                namespace: kubernetes-dashboard
+
+        - name: Création de l'Ingress pour le Kubernetes Dashboard (Production)
+          k8s:
+            state: present
+            definition:
+              apiVersion: networking.k8s.io/v1
+              kind: Ingress
+              metadata:
+                name: kubernetes-dashboard-prod
+                namespace: kubernetes-dashboard
+                annotations:
+                  kubernetes.io/ingress.class: nginx
+                  cert-manager.io/cluster-issuer: letsencrypt-prod
+                  nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+                  nginx.ingress.kubernetes.io/ssl-passthrough: "true"
+              spec:
+                tls:
+                  - hosts:
+                      - "k3s.lions.dev"
+                    secretName: kubernetes-dashboard-tls-prod
+                rules:
+                  - host: "k3s.lions.dev"
+                    http:
+                      paths:
+                        - path: /
+                          pathType: Prefix
+                          backend:
+                            service:
+                              name: kubernetes-dashboard
+                              port:
+                                number: 443
+
+        - name: Création de l'Ingress pour le Kubernetes Dashboard (Développement)
+          k8s:
+            state: present
+            definition:
+              apiVersion: networking.k8s.io/v1
+              kind: Ingress
+              metadata:
+                name: kubernetes-dashboard-dev
+                namespace: kubernetes-dashboard
+                annotations:
+                  kubernetes.io/ingress.class: nginx
+                  cert-manager.io/cluster-issuer: letsencrypt-prod
+                  nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+                  nginx.ingress.kubernetes.io/ssl-passthrough: "true"
+              spec:
+                tls:
+                  - hosts:
+                      - "k3s.dev.lions.dev"
+                    secretName: kubernetes-dashboard-tls-dev
+                rules:
+                  - host: "k3s.dev.lions.dev"
+                    http:
+                      paths:
+                        - path: /
+                          pathType: Prefix
+                          backend:
+                            service:
+                              name: kubernetes-dashboard
+                              port:
+                                number: 443
+
+        - name: Génération d'un token pour l'accès au Dashboard
+          command: k3s kubectl create token dashboard-admin -n kubernetes-dashboard
+          register: dashboard_token
+          changed_when: false
+
+        - name: Affichage du token pour l'accès au Dashboard
+          debug:
+            msg: "Token pour l'accès au Kubernetes Dashboard: {{ dashboard_token.stdout }}"
+      when: k3s_installed.changed
+
+    - name: Vérification finale de l'installation
+      debug:
+        msg: "K3s a été installé avec succès sur le VPS et est prêt à recevoir les applications."

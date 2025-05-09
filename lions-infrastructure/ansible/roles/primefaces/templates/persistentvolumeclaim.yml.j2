@@ -1,0 +1,26 @@
+---
+# Titre: Template de PersistentVolumeClaim Kubernetes pour PrimeFaces
+# Description: Définit le PersistentVolumeClaim Kubernetes pour une application PrimeFaces
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-07
+# Version: 1.0.0
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: "{{ app_name }}-pvc"
+  namespace: "{{ app_namespace }}"
+  labels:
+    app: "{{ app_name }}"
+    version: "{{ app_version }}"
+    environment: "{{ app_environment }}"
+    technology: "primefaces"
+  annotations:
+    description: "PersistentVolumeClaim pour l'application {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: "{{ primefaces_storage_class }}"
+  resources:
+    requests:
+      storage: "{{ primefaces_storage_size }}"

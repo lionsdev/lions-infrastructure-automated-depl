@@ -1,0 +1,58 @@
+# Titre: Règles d'alerte pour les applications Quarkus
+# Description: Définit les règles d'alerte pour les applications Quarkus
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-08
+# Version: 1.0.0
+
+groups:
+- name: quarkus-alerts
+  rules:
+  - alert: QuarkusHighErrorRate
+    expr: sum(rate(http_server_requests_seconds_count{status=~"5.."}[5m])) / sum(rate(http_server_requests_seconds_count[5m])) > 0.05
+    for: 5m
+    labels:
+      severity: critical
+      technology: quarkus
+    annotations:
+      summary: "Taux d'erreur élevé pour l'application Quarkus"
+      description: "L'application {{ $labels.application }} a un taux d'erreur supérieur à 5% depuis 5 minutes."
+      
+  - alert: QuarkusHighResponseTime
+    expr: http_server_requests_seconds_sum{quantile="0.95"} / http_server_requests_seconds_count > 1
+    for: 5m
+    labels:
+      severity: warning
+      technology: quarkus
+    annotations:
+      summary: "Temps de réponse élevé pour l'application Quarkus"
+      description: "L'application {{ $labels.application }} a un temps de réponse au 95e percentile supérieur à 1 seconde depuis 5 minutes."
+      
+  - alert: QuarkusHighMemoryUsage
+    expr: sum(jvm_memory_used_bytes{area="heap"}) / sum(jvm_memory_max_bytes{area="heap"}) > 0.85
+    for: 5m
+    labels:
+      severity: warning
+      technology: quarkus
+    annotations:
+      summary: "Utilisation élevée de la mémoire pour l'application Quarkus"
+      description: "L'application {{ $labels.application }} utilise plus de 85% de sa mémoire heap depuis 5 minutes."
+      
+  - alert: QuarkusInstanceDown
+    expr: up{technology="quarkus"} == 0
+    for: 1m
+    labels:
+      severity: critical
+      technology: quarkus
+    annotations:
+      summary: "Instance Quarkus indisponible"
+      description: "L'instance {{ $labels.instance }} de l'application {{ $labels.application }} est indisponible."
+      
+  - alert: QuarkusHighCpuUsage
+    expr: rate(process_cpu_seconds_total{technology="quarkus"}[5m]) * 100 > 80
+    for: 5m
+    labels:
+      severity: warning
+      technology: quarkus
+    annotations:
+      summary: "Utilisation élevée du CPU pour l'application Quarkus"
+      description: "L'application {{ $labels.application }} utilise plus de 80% du CPU depuis 5 minutes."

@@ -1,0 +1,70 @@
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: compute-resources
+  namespace: default
+spec:
+  hard:
+    requests.cpu: "10"
+    requests.memory: 20Gi
+    limits.cpu: "20"
+    limits.memory: 40Gi
+    requests.nvidia.com/gpu: "0"
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: object-counts
+  namespace: default
+spec:
+  hard:
+    configmaps: "50"
+    persistentvolumeclaims: "20"
+    pods: "50"
+    replicationcontrollers: "20"
+    secrets: "100"
+    services: "30"
+    services.loadbalancers: "5"
+---
+# Development environment quotas (more restrictive)
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: compute-resources-dev
+  namespace: development
+spec:
+  hard:
+    requests.cpu: "4"
+    requests.memory: 8Gi
+    limits.cpu: "8"
+    limits.memory: 16Gi
+    requests.nvidia.com/gpu: "0"
+---
+# Staging environment quotas
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: compute-resources-staging
+  namespace: staging
+spec:
+  hard:
+    requests.cpu: "8"
+    requests.memory: 16Gi
+    limits.cpu: "16"
+    limits.memory: 32Gi
+    requests.nvidia.com/gpu: "0"
+---
+# Production environment quotas
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: compute-resources-prod
+  namespace: production
+spec:
+  hard:
+    requests.cpu: "20"
+    requests.memory: 40Gi
+    limits.cpu: "40"
+    limits.memory: 80Gi
+    requests.nvidia.com/gpu: "0"

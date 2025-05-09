@@ -1,0 +1,84 @@
+---
+# Titre: Template de ConfigMap Kubernetes pour PrimeReact
+# Description: Définit la ConfigMap Kubernetes pour une application PrimeReact
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-07
+# Version: 1.0.0
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: "{{ app_name }}-config"
+  namespace: "{{ app_namespace }}"
+  labels:
+    app: "{{ app_name }}"
+    version: "{{ app_version }}"
+    environment: "{{ app_environment }}"
+    technology: "primereact"
+  annotations:
+    description: "ConfigMap pour l'application {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+data:
+  # Variables d'environnement pour l'application
+  NODE_ENV: "{{ primereact_node_env }}"
+  PORT: "{{ primereact_default_port | string }}"
+  APP_NAME: "{{ app_name }}"
+  APP_VERSION: "{{ app_version }}"
+  
+  # Variables spécifiques à l'environnement
+  LOG_LEVEL: "{% if app_environment == 'production' %}warn{% elif app_environment == 'staging' %}info{% else %}debug{% endif %}"
+  API_URL: "{% if app_environment == 'production' %}https://api.{{ app_domain }}{% elif app_environment == 'staging' %}https://api.staging.{{ app_domain }}{% else %}https://api.dev.{{ app_domain }}{% endif %}"
+  
+  # Variables pour PrimeReact
+  PRIMEREACT_THEME: "{{ primereact_theme }}"
+  PRIMEREACT_RIPPLE: "{{ primereact_ripple | string | lower }}"
+  PRIMEREACT_RESPONSIVE: "{{ primereact_responsive | string | lower }}"
+  
+  # Variables pour Redis
+  REDIS_ENABLED: "{{ primereact_use_redis | string | lower }}"
+  {% if primereact_use_redis | bool %}
+  REDIS_HOST: "{{ primereact_redis_service }}"
+  REDIS_PORT: "{{ primereact_redis_port | string }}"
+  {% endif %}
+  
+  # Configuration .env
+  env.config: |
+    # Configuration de l'application
+    NODE_ENV={{ primereact_node_env }}
+    PORT={{ primereact_default_port }}
+    
+    # Configuration de l'API
+    API_URL={% if app_environment == 'production' %}https://api.{{ app_domain }}{% elif app_environment == 'staging' %}https://api.staging.{{ app_domain }}{% else %}https://api.dev.{{ app_domain }}{% endif %}
+    
+    # Configuration des logs
+    LOG_LEVEL={% if app_environment == 'production' %}warn{% elif app_environment == 'staging' %}info{% else %}debug{% endif %}
+    
+    # Configuration PrimeReact
+    PRIMEREACT_THEME={{ primereact_theme }}
+    PRIMEREACT_RIPPLE={{ primereact_ripple | string | lower }}
+    PRIMEREACT_RESPONSIVE={{ primereact_responsive | string | lower }}
+    
+    # Configuration Redis
+    REDIS_ENABLED={{ primereact_use_redis | string | lower }}
+    {% if primereact_use_redis | bool %}
+    REDIS_HOST={{ primereact_redis_service }}
+    REDIS_PORT={{ primereact_redis_port }}
+    {% endif %}
+    
+    # Configuration du monitoring
+    PROMETHEUS_METRICS_ENABLED={{ primereact_prometheus_scrape | string | lower }}
+    METRICS_PATH={{ primereact_prometheus_path }}
+    
+    # Configuration spécifique à l'environnement
+    {% if app_environment == 'production' %}
+    # Configuration de production
+    CACHE_ENABLED=true
+    COMPRESSION_ENABLED=true
+    {% elif app_environment == 'staging' %}
+    # Configuration de staging
+    CACHE_ENABLED=true
+    COMPRESSION_ENABLED=true
+    {% else %}
+    # Configuration de développement
+    CACHE_ENABLED=false
+    COMPRESSION_ENABLED=false
+    {% endif %}

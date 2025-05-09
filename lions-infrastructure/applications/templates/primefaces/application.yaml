@@ -1,0 +1,172 @@
+---
+# Titre: Template d'application PrimeFaces
+# Description: Configuration par défaut pour les applications PrimeFaces
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-07
+# Version: 1.0.0
+
+# Métadonnées de l'application
+metadata:
+  technology: primefaces
+  category: frontend
+  language: java
+
+# Configuration de déploiement
+deployment:
+  # Configuration des ressources
+  resources:
+    requests:
+      cpu: "300m"
+      memory: "1Gi"
+    limits:
+      cpu: "1000m"
+      memory: "2Gi"
+  
+  # Configuration des réplicas
+  replicas:
+    development: 1
+    staging: 2
+    production: 3
+  
+  # Configuration de l'autoscaling
+  autoscaling:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 70
+  
+  # Configuration de la haute disponibilité
+  highAvailability:
+    enabled: true
+    podDisruptionBudget:
+      minAvailable: 1
+  
+  # Configuration de la persistance
+  persistence:
+    enabled: true
+    size: "10Gi"
+    storageClass: "standard"
+    mountPath: "/data"
+  
+  # Configuration des sondes de santé
+  probes:
+    readiness:
+      path: "/health"
+      initialDelaySeconds: 30
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 3
+    liveness:
+      path: "/health"
+      initialDelaySeconds: 60
+      periodSeconds: 20
+      timeoutSeconds: 5
+      failureThreshold: 3
+
+# Configuration du monitoring
+monitoring:
+  # Configuration de Prometheus
+  prometheus:
+    enabled: true
+    path: "/metrics"
+    port: 8080
+  
+  # Configuration des alertes
+  alerts:
+    - name: InstanceDown
+      expr: up{job="{{ app_name }}"} == 0
+      for: 5m
+      severity: critical
+      description: "L'instance {{ app_name }} est indisponible depuis plus de 5 minutes."
+    - name: HighMemoryUsage
+      expr: container_memory_usage_bytes{pod=~"{{ app_name }}.*"} / container_spec_memory_limit_bytes{pod=~"{{ app_name }}.*"} > 0.85
+      for: 10m
+      severity: warning
+      description: "L'instance {{ app_name }} utilise plus de 85% de sa mémoire allouée depuis plus de 10 minutes."
+    - name: HighCPUUsage
+      expr: container_cpu_usage_seconds_total{pod=~"{{ app_name }}.*"} / container_spec_cpu_quota{pod=~"{{ app_name }}.*"} > 0.85
+      for: 10m
+      severity: warning
+      description: "L'instance {{ app_name }} utilise plus de 85% de son CPU alloué depuis plus de 10 minutes."
+    - name: HighResponseTime
+      expr: http_server_requests_seconds_max{service="{{ app_name }}"} > 2
+      for: 5m
+      severity: warning
+      description: "L'instance {{ app_name }} a un temps de réponse élevé (>2s) depuis plus de 5 minutes."
+
+# Configuration de la sécurité
+security:
+  # Configuration des politiques réseau
+  networkPolicies:
+    enabled: true
+    ingress:
+      - from:
+          - namespaceSelector:
+              matchLabels:
+                name: ingress-nginx
+            podSelector:
+              matchLabels:
+                app.kubernetes.io/name: ingress-nginx
+      - from:
+          - namespaceSelector:
+              matchLabels:
+                name: monitoring
+    egress:
+      - to:
+          - namespaceSelector: {}
+            podSelector:
+              matchLabels:
+                k8s-app: kube-dns
+        ports:
+          - protocol: UDP
+            port: 53
+          - protocol: TCP
+            port: 53
+      - to:
+          - ipBlock:
+              cidr: 0.0.0.0/0
+              except:
+                - 10.0.0.0/8
+                - 172.16.0.0/12
+                - 192.168.0.0/16
+  
+  # Configuration des secrets
+  secrets:
+    - name: database-credentials
+      keys:
+        - DB_USERNAME
+        - DB_PASSWORD
+    - name: app-secrets
+      keys:
+        - APP_SECRET_KEY
+        - MAIL_PASSWORD
+
+# Configuration spécifique à PrimeFaces
+primefaces:
+  # Configuration de l'environnement
+  env:
+    SPRING_PROFILES_ACTIVE: "${ENVIRONMENT}"
+    SPRING_DATASOURCE_URL: "jdbc:postgresql://${DB_HOST}:${DB_PORT}/${DB_NAME}"
+    SPRING_DATASOURCE_USERNAME: "${DB_USERNAME}"
+    SPRING_DATASOURCE_PASSWORD: "${DB_PASSWORD}"
+    SERVER_PORT: "8080"
+    LOGGING_LEVEL_ROOT: "INFO"
+    LOGGING_LEVEL_ORG_SPRINGFRAMEWORK: "INFO"
+    SPRING_JPA_HIBERNATE_DDL_AUTO: "validate"
+    SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT: "org.hibernate.dialect.PostgreSQLDialect"
+    SPRING_JPA_PROPERTIES_HIBERNATE_FORMAT_SQL: "true"
+    SPRING_JPA_SHOW_SQL: "false"
+  
+  # Configuration de PrimeFaces
+  config:
+    PRIMEFACES_THEME: "saga"
+    PRIMEFACES_FONT_AWESOME: "true"
+    PRIMEFACES_RESPONSIVE: "true"
+  
+  # Configuration du serveur d'application
+  server:
+    type: "tomcat"
+    version: "10.0"
+    contextPath: "/"
+    sessionTimeout: 30

@@ -1,0 +1,102 @@
+---
+# Titre: Catalogue des applications LIONS
+# Description: Liste des applications disponibles pour déploiement
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-07
+# Version: 1.0.0
+
+applications:
+  # Applications backend
+  - name: api-gateway
+    description: "Passerelle API pour toutes les applications LIONS"
+    technology: quarkus
+    repository: "https://github.com/lions-org/api-gateway"
+    maintainer: "backend-team@lions.dev"
+    dependencies:
+      - service-registry
+      - auth-service
+    versions:
+      - version: "1.0.0"
+        status: stable
+        releaseDate: "2025-01-15"
+      - version: "1.1.0"
+        status: latest
+        releaseDate: "2025-04-20"
+  
+  - name: auth-service
+    description: "Service d'authentification et d'autorisation"
+    technology: quarkus
+    repository: "https://github.com/lions-org/auth-service"
+    maintainer: "security-team@lions.dev"
+    dependencies:
+      - user-service
+      - database-service
+    versions:
+      - version: "1.0.0"
+        status: stable
+        releaseDate: "2025-01-10"
+      - version: "1.0.1"
+        status: latest
+        releaseDate: "2025-03-05"
+  
+  - name: user-service
+    description: "Service de gestion des utilisateurs"
+    technology: quarkus
+    repository: "https://github.com/lions-org/user-service"
+    maintainer: "backend-team@lions.dev"
+    dependencies:
+      - database-service
+    versions:
+      - version: "1.0.0"
+        status: stable
+        releaseDate: "2025-01-05"
+      - version: "1.1.0"
+        status: latest
+        releaseDate: "2025-04-10"
+  
+  # Applications frontend
+  - name: admin-dashboard
+    description: "Interface d'administration pour les gestionnaires"
+    technology: primereact
+    repository: "https://github.com/lions-org/admin-dashboard"
+    maintainer: "frontend-team@lions.dev"
+    dependencies:
+      - api-gateway
+    versions:
+      - version: "1.0.0"
+        status: stable
+        releaseDate: "2025-02-01"
+      - version: "1.2.0"
+        status: latest
+        releaseDate: "2025-05-01"
+  
+  - name: user-portal
+    description: "Portail utilisateur pour les clients"
+    technology: primereact
+    repository: "https://github.com/lions-org/user-portal"
+    maintainer: "frontend-team@lions.dev"
+    dependencies:
+      - api-gateway
+    versions:
+      - version: "1.0.0"
+        status: stable
+        releaseDate: "2025-02-10"
+      - version: "1.1.0"
+        status: latest
+        releaseDate: "2025-04-15"
+  
+  # Applications legacy
+  - name: legacy-portal
+    description: "Ancien portail client (en cours de remplacement)"
+    technology: primefaces
+    repository: "https://github.com/lions-org/legacy-portal"
+    maintainer: "legacy-team@lions.dev"
+    dependencies:
+      - database-service
+    versions:
+      - version: "3.5.0"
+        status: stable
+        releaseDate: "2024-10-01"
+      - version: "3.5.1"
+        status: latest
+        releaseDate: "2025-01-20"

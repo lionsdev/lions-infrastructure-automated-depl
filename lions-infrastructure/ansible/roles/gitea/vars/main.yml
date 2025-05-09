@@ -1,0 +1,95 @@
+---
+# Titre: Variables pour le déploiement de Gitea
+# Description: Variables spécifiques à Gitea
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-07
+# Version: 1.0.0
+
+# Configuration par défaut pour Gitea
+gitea_default_port: 3000
+gitea_ssh_port: 22
+gitea_health_path: "/api/healthz"
+gitea_metrics_path: "/metrics"
+gitea_admin_user: "gitea_admin"
+gitea_admin_password_secret: "gitea-admin-password"
+gitea_database_service: "postgres"
+gitea_database_name: "gitea"
+gitea_database_user: "gitea"
+gitea_database_password_secret: "gitea-db-password"
+gitea_database_namespace: "{{ app_namespace }}"
+
+# Configuration des sondes de santé
+gitea_readiness_probe:
+  httpGet:
+    path: "{{ gitea_health_path }}"
+    port: http
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+gitea_liveness_probe:
+  httpGet:
+    path: "{{ gitea_health_path }}"
+    port: http
+  initialDelaySeconds: 60
+  periodSeconds: 20
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# Configuration du monitoring
+gitea_prometheus_port: 3000
+gitea_prometheus_path: "/metrics"
+gitea_prometheus_scrape: true
+gitea_init_delay: 45
+
+# Configuration des ressources par environnement
+gitea_resources:
+  development:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+  staging:
+    requests:
+      cpu: "200m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+  production:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "1500m"
+      memory: "2Gi"
+
+# Configuration des réplicas par environnement
+gitea_replicas:
+  development: 1
+  staging: 2
+  production: 2
+
+# Configuration de l'ingress
+gitea_ingress_annotations:
+  kubernetes.io/ingress.class: "nginx"
+  cert-manager.io/cluster-issuer: "letsencrypt-prod"
+  nginx.ingress.kubernetes.io/ssl-redirect: "true"
+  nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+  nginx.ingress.kubernetes.io/proxy-connect-timeout: "300"
+  nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+  nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+
+# Configuration de la persistance
+gitea_persistent_storage: true
+gitea_storage_size: "10Gi"
+gitea_storage_class: "standard"
+
+# Configuration de Gitea
+gitea_app_name: "LIONS Git Service"
+gitea_root_url: "https://{{ app_domain }}"
+gitea_disable_registration: "{{ app_environment == 'production' }}"
+gitea_require_signin_view: "{{ app_environment == 'production' }}"

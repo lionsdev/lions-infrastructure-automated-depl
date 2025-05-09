@@ -1,0 +1,21 @@
+# Titre: Patch de quotas de ressources pour l'environnement de production
+# Description: Ajuste les quotas de ressources pour l'environnement de production
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-08
+# Version: 1.0.0
+
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: compute-resources
+spec:
+  hard:
+    requests.cpu: '16'
+    requests.memory: 32Gi
+    limits.cpu: '32'
+    limits.memory: 64Gi
+    pods: '100'
+    services: '50'
+    persistentvolumeclaims: '30'
+    secrets: '50'
+    configmaps: '50'

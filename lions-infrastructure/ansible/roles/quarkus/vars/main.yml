@@ -1,0 +1,74 @@
+---
+# Titre: Variables pour le déploiement d'applications Quarkus
+# Description: Variables spécifiques aux applications Quarkus
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-07
+# Version: 1.0.0
+
+# Configuration par défaut pour Quarkus
+quarkus_default_port: 8080
+quarkus_health_path: "/q/health"
+quarkus_metrics_path: "/q/metrics"
+quarkus_profile: "{{ app_environment }}"
+
+# Configuration des sondes de santé
+quarkus_readiness_probe:
+  httpGet:
+    path: "{{ quarkus_health_path }}/ready"
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+quarkus_liveness_probe:
+  httpGet:
+    path: "{{ quarkus_health_path }}/live"
+    port: http
+  initialDelaySeconds: 20
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+# Configuration du monitoring
+quarkus_prometheus_port: 8080
+quarkus_prometheus_path: "/q/metrics"
+quarkus_prometheus_scrape: true
+quarkus_init_delay: 15
+
+# Configuration des ressources par environnement
+quarkus_resources:
+  development:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+  staging:
+    requests:
+      cpu: "200m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+  production:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "2000m"
+      memory: "2Gi"
+
+# Configuration des réplicas par environnement
+quarkus_replicas:
+  development: 1
+  staging: 2
+  production: 3
+
+# Configuration de l'ingress
+quarkus_ingress_annotations:
+  kubernetes.io/ingress.class: "nginx"
+  cert-manager.io/cluster-issuer: "letsencrypt-prod"
+  nginx.ingress.kubernetes.io/ssl-redirect: "true"
+  nginx.ingress.kubernetes.io/proxy-body-size: "10m"

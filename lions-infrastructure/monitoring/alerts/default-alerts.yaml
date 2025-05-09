@@ -1,0 +1,112 @@
+---
+# Titre: Règles d'alerte par défaut
+# Description: Définit les règles d'alerte par défaut pour toutes les applications
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-07
+# Version: 1.0.0
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: default-alerts
+  namespace: monitoring
+  labels:
+    prometheus: k8s
+    role: alert-rules
+spec:
+  groups:
+    - name: kubernetes.rules
+      rules:
+        - alert: KubernetesPodCrashLooping
+          expr: rate(kube_pod_container_status_restarts_total[15m]) * 60 * 5 > 5
+          for: 15m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Pod crash looping détecté"
+            description: "Le pod {{ $labels.namespace }}/{{ $labels.pod }} redémarre fréquemment."
+            runbook_url: "https://docs.lions.dev/runbooks/pod-crash-looping"
+
+        - alert: KubernetesPodNotReady
+          expr: sum by (namespace, pod) (kube_pod_status_phase{phase=~"Pending|Unknown"}) > 0
+          for: 15m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Pod non prêt"
+            description: "Le pod {{ $labels.namespace }}/{{ $labels.pod }} est dans un état non prêt depuis plus de 15 minutes."
+            runbook_url: "https://docs.lions.dev/runbooks/pod-not-ready"
+
+        - alert: KubernetesDeploymentReplicasMismatch
+          expr: kube_deployment_spec_replicas != kube_deployment_status_replicas_available
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Mismatch de réplicas dans le déploiement"
+            description: "Le déploiement {{ $labels.namespace }}/{{ $labels.deployment }} n'a pas toutes ses réplicas disponibles."
+            runbook_url: "https://docs.lions.dev/runbooks/deployment-replicas-mismatch"
+
+    - name: node.rules
+      rules:
+        - alert: NodeHighCPUUsage
+          expr: instance:node_cpu_utilisation:rate5m > 0.8
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Utilisation CPU élevée sur le nœud"
+            description: "Le nœud {{ $labels.instance }} a une utilisation CPU supérieure à 80% depuis plus de 10 minutes."
+            runbook_url: "https://docs.lions.dev/runbooks/node-high-cpu"
+
+        - alert: NodeHighMemoryUsage
+          expr: instance:node_memory_utilisation:ratio > 0.85
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Utilisation mémoire élevée sur le nœud"
+            description: "Le nœud {{ $labels.instance }} a une utilisation mémoire supérieure à 85% depuis plus de 10 minutes."
+            runbook_url: "https://docs.lions.dev/runbooks/node-high-memory"
+
+        - alert: NodeDiskSpaceFilling
+          expr: node_filesystem_free_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} < 0.1
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Espace disque faible sur le nœud"
+            description: "Le nœud {{ $labels.instance }} a moins de 10% d'espace disque libre sur le point de montage {{ $labels.mountpoint }}."
+            runbook_url: "https://docs.lions.dev/runbooks/node-disk-space"
+
+    - name: application.rules
+      rules:
+        - alert: ApplicationHighErrorRate
+          expr: sum(rate(http_requests_total{status=~"5.."}[5m])) by (app, instance) / sum(rate(http_requests_total[5m])) by (app, instance) > 0.05
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Taux d'erreur élevé pour l'application"
+            description: "L'application {{ $labels.app }} sur l'instance {{ $labels.instance }} a un taux d'erreur supérieur à 5% depuis plus de 5 minutes."
+            runbook_url: "https://docs.lions.dev/runbooks/application-high-error-rate"
+
+        - alert: ApplicationHighLatency
+          expr: http_request_duration_seconds{quantile="0.9"} > 1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Latence élevée pour l'application"
+            description: "L'application {{ $labels.app }} a une latence P90 supérieure à 1 seconde depuis plus de 5 minutes."
+            runbook_url: "https://docs.lions.dev/runbooks/application-high-latency"
+
+        - alert: ApplicationHighCPUUsage
+          expr: sum(rate(container_cpu_usage_seconds_total{container!="POD",container!=""}[5m])) by (pod, namespace) / sum(kube_pod_container_resource_limits_cpu_cores) by (pod, namespace) > 0.8
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Utilisation CPU élevée pour l'application"
+            description: "L'application dans le pod {{ $labels.pod }} du namespace {{ $labels.namespace }} utilise plus de 80% de sa limite CPU depuis plus de 10 minutes."
+            runbook_url: "https://docs.lions.dev/runbooks/application-high-cpu"

@@ -1,0 +1,123 @@
+---
+# Titre: SLOs par défaut
+# Description: Définit les objectifs de niveau de service (SLOs) par défaut pour toutes les applications
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-07
+# Version: 1.0.0
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: default-slos
+  namespace: monitoring
+  labels:
+    prometheus: k8s
+    role: slo-rules
+spec:
+  groups:
+    - name: availability.slo
+      rules:
+        # Définition des SLOs de disponibilité
+        - record: slo:availability:ratio
+          expr: sum(rate(http_requests_total{status!~"5.."}[5m])) / sum(rate(http_requests_total[5m]))
+        
+        # Objectif: 99.9% de disponibilité sur 30 jours
+        - record: slo:availability:target
+          expr: 0.999
+        
+        # Budget d'erreur: 0.1% sur 30 jours = 43.2 minutes
+        - record: slo:availability:error_budget_minutes
+          expr: (1 - slo:availability:target) * 60 * 24 * 30
+        
+        # Consommation du budget d'erreur
+        - record: slo:availability:error_budget_consumed
+          expr: (1 - slo:availability:ratio) * 60 * 24 * 30
+        
+        # Pourcentage du budget d'erreur consommé
+        - record: slo:availability:error_budget_consumed_ratio
+          expr: slo:availability:error_budget_consumed / slo:availability:error_budget_minutes
+        
+        # Alerte si plus de 75% du budget d'erreur est consommé
+        - alert: AvailabilityBudgetBurning
+          expr: slo:availability:error_budget_consumed_ratio > 0.75
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Budget d'erreur de disponibilité en épuisement"
+            description: "Plus de 75% du budget d'erreur de disponibilité a été consommé."
+            runbook_url: "https://docs.lions.dev/runbooks/availability-budget-burning"
+
+    - name: latency.slo
+      rules:
+        # Définition des SLOs de latence
+        # Objectif: 95% des requêtes doivent être traitées en moins de 200ms
+        - record: slo:latency:ratio
+          expr: sum(rate(http_request_duration_seconds_bucket{le="0.2"}[5m])) / sum(rate(http_request_duration_seconds_count[5m]))
+        
+        # Objectif: 95% de requêtes rapides
+        - record: slo:latency:target
+          expr: 0.95
+        
+        # Budget d'erreur: 5% sur 30 jours
+        - record: slo:latency:error_budget_ratio
+          expr: 1 - slo:latency:target
+        
+        # Consommation du budget d'erreur
+        - record: slo:latency:error_budget_consumed_ratio
+          expr: (1 - slo:latency:ratio) / slo:latency:error_budget_ratio
+        
+        # Alerte si plus de 75% du budget d'erreur est consommé
+        - alert: LatencyBudgetBurning
+          expr: slo:latency:error_budget_consumed_ratio > 0.75
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Budget d'erreur de latence en épuisement"
+            description: "Plus de 75% du budget d'erreur de latence a été consommé."
+            runbook_url: "https://docs.lions.dev/runbooks/latency-budget-burning"
+
+    - name: error_rate.slo
+      rules:
+        # Définition des SLOs de taux d'erreur
+        # Objectif: moins de 0.1% d'erreurs 5xx
+        - record: slo:error_rate:ratio
+          expr: sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m]))
+        
+        # Objectif: 0.1% d'erreurs maximum
+        - record: slo:error_rate:target
+          expr: 0.001
+        
+        # Alerte si le taux d'erreur dépasse l'objectif
+        - alert: ErrorRateTooHigh
+          expr: slo:error_rate:ratio > slo:error_rate:target
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Taux d'erreur trop élevé"
+            description: "Le taux d'erreur dépasse l'objectif de 0.1%."
+            runbook_url: "https://docs.lions.dev/runbooks/error-rate-too-high"
+
+    - name: slo_status
+      rules:
+        # Statut global des SLOs
+        - record: slo:status
+          expr: |
+            (
+              (slo:availability:ratio >= slo:availability:target) and
+              (slo:latency:ratio >= slo:latency:target) and
+              (slo:error_rate:ratio <= slo:error_rate:target)
+            ) * 1
+        
+        # Alerte si les SLOs ne sont pas respectés
+        - alert: SLOsNotMet
+          expr: slo:status == 0
+          for: 15m
+          labels:
+            severity: critical
+          annotations:
+            summary: "SLOs non respectés"
+            description: "Un ou plusieurs SLOs ne sont pas respectés depuis plus de 15 minutes."
+            runbook_url: "https://docs.lions.dev/runbooks/slos-not-met"

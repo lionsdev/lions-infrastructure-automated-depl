@@ -1,0 +1,179 @@
+---
+# Titre: Template d'application PrimeReact
+# Description: Configuration par défaut pour les applications PrimeReact
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-07
+# Version: 1.0.0
+
+# Métadonnées de l'application
+metadata:
+  technology: primereact
+  category: frontend
+  language: javascript
+  framework: react
+
+# Configuration de déploiement
+deployment:
+  # Configuration des ressources
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+  
+  # Configuration des réplicas
+  replicas:
+    development: 1
+    staging: 2
+    production: 3
+  
+  # Configuration de l'autoscaling
+  autoscaling:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 80
+    targetMemoryUtilizationPercentage: 80
+  
+  # Configuration de la haute disponibilité
+  highAvailability:
+    enabled: true
+    podDisruptionBudget:
+      minAvailable: 1
+  
+  # Configuration de la persistance
+  persistence:
+    enabled: false
+  
+  # Configuration des sondes de santé
+  probes:
+    readiness:
+      path: "/api/health"
+      initialDelaySeconds: 20
+      periodSeconds: 10
+      timeoutSeconds: 3
+      failureThreshold: 3
+    liveness:
+      path: "/api/health"
+      initialDelaySeconds: 40
+      periodSeconds: 20
+      timeoutSeconds: 3
+      failureThreshold: 3
+
+# Configuration du monitoring
+monitoring:
+  # Configuration de Prometheus
+  prometheus:
+    enabled: true
+    path: "/metrics"
+    port: 3000
+  
+  # Configuration des alertes
+  alerts:
+    - name: InstanceDown
+      expr: up{job="{{ app_name }}"} == 0
+      for: 5m
+      severity: critical
+      description: "L'instance {{ app_name }} est indisponible depuis plus de 5 minutes."
+    - name: HighMemoryUsage
+      expr: container_memory_usage_bytes{pod=~"{{ app_name }}.*"} / container_spec_memory_limit_bytes{pod=~"{{ app_name }}.*"} > 0.85
+      for: 10m
+      severity: warning
+      description: "L'instance {{ app_name }} utilise plus de 85% de sa mémoire allouée depuis plus de 10 minutes."
+    - name: HighCPUUsage
+      expr: container_cpu_usage_seconds_total{pod=~"{{ app_name }}.*"} / container_spec_cpu_quota{pod=~"{{ app_name }}.*"} > 0.85
+      for: 10m
+      severity: warning
+      description: "L'instance {{ app_name }} utilise plus de 85% de son CPU alloué depuis plus de 10 minutes."
+    - name: APIHighLatency
+      expr: http_request_duration_seconds{service="{{ app_name }}", handler="/api/*"} > 1
+      for: 5m
+      severity: warning
+      description: "L'API de l'instance {{ app_name }} a un temps de réponse élevé (>1s) depuis plus de 5 minutes."
+
+# Configuration de la sécurité
+security:
+  # Configuration des politiques réseau
+  networkPolicies:
+    enabled: true
+    ingress:
+      - from:
+          - namespaceSelector:
+              matchLabels:
+                name: ingress-nginx
+            podSelector:
+              matchLabels:
+                app.kubernetes.io/name: ingress-nginx
+      - from:
+          - namespaceSelector:
+              matchLabels:
+                name: monitoring
+    egress:
+      - to:
+          - namespaceSelector: {}
+            podSelector:
+              matchLabels:
+                k8s-app: kube-dns
+        ports:
+          - protocol: UDP
+            port: 53
+          - protocol: TCP
+            port: 53
+      - to:
+          - ipBlock:
+              cidr: 0.0.0.0/0
+              except:
+                - 10.0.0.0/8
+                - 172.16.0.0/12
+                - 192.168.0.0/16
+  
+  # Configuration des secrets
+  secrets:
+    - name: api-credentials
+      keys:
+        - API_KEY
+        - API_SECRET
+    - name: app-secrets
+      keys:
+        - APP_SECRET_KEY
+        - OAUTH_CLIENT_SECRET
+
+# Configuration spécifique à PrimeReact
+primereact:
+  # Configuration de l'environnement
+  env:
+    NODE_ENV: "${ENVIRONMENT}"
+    PORT: "3000"
+    API_URL: "{% if environment == 'production' %}https://api.{{ domain_name }}{% elif environment == 'staging' %}https://api.staging.{{ domain_name }}{% else %}https://api.dev.{{ domain_name }}{% endif %}"
+    LOG_LEVEL: "{% if environment == 'production' %}warn{% elif environment == 'staging' %}info{% else %}debug{% endif %}"
+  
+  # Configuration de PrimeReact
+  config:
+    PRIMEREACT_THEME: "saga"
+    PRIMEREACT_RIPPLE: "true"
+    PRIMEREACT_RESPONSIVE: "true"
+  
+  # Configuration du serveur
+  server:
+    type: "node"
+    version: "18.x"
+    compression: true
+    cors:
+      enabled: true
+      origins: 
+        - "https://*.{{ domain_name }}"
+  
+  # Configuration du cache
+  cache:
+    enabled: "{% if environment == 'production' or environment == 'staging' %}true{% else %}false{% endif %}"
+    redis:
+      enabled: false
+      host: "redis"
+      port: 6379
+  
+  # Configuration des fonctionnalités
+  features:
+    analytics: "{% if environment == 'production' %}true{% else %}false{% endif %}"
+    errorReporting: "{% if environment == 'production' or environment == 'staging' %}true{% else %}false{% endif %}"

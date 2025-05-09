@@ -1,0 +1,55 @@
+---
+# Titre: Vérification des prérequis pour MongoDB
+# Description: Vérifie que tous les prérequis sont satisfaits pour déployer MongoDB
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-08
+# Version: 1.0.0
+
+- name: Vérification de l'existence du namespace
+  k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: "{{ app_namespace }}"
+  register: namespace_info
+  failed_when: namespace_info.resources | length == 0
+
+- name: Vérification des droits d'accès
+  k8s_info:
+    api_version: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    namespace: "{{ app_namespace }}"
+  register: rolebinding_info
+  ignore_errors: yes
+
+- name: Vérification de la classe de stockage
+  k8s_info:
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+    name: "{{ mongodb_storage_class | default('standard') }}"
+  register: storageclass_info
+  ignore_errors: yes
+  when: mongodb_persistent_storage | default(true) | bool
+
+- name: Avertissement si la classe de stockage n'existe pas
+  debug:
+    msg: "AVERTISSEMENT: La classe de stockage {{ mongodb_storage_class | default('standard') }} n'existe pas. Le déploiement pourrait échouer si la persistance est activée."
+  when: mongodb_persistent_storage | default(true) | bool and (storageclass_info is failed or storageclass_info.resources | length == 0)
+
+- name: Vérification de la disponibilité des ressources
+  k8s_info:
+    api_version: v1
+    kind: ResourceQuota
+    namespace: "{{ app_namespace }}"
+  register: resourcequota_info
+  ignore_errors: yes
+
+- name: Vérification de la version de Kubernetes
+  shell: "kubectl version --short | grep Server"
+  register: k8s_version
+  changed_when: false
+  ignore_errors: yes
+
+- name: Affichage de la version de Kubernetes
+  debug:
+    msg: "Version de Kubernetes: {{ k8s_version.stdout }}"
+  when: k8s_version is succeeded

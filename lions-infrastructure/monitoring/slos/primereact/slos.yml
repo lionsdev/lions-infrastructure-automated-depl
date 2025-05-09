@@ -1,0 +1,102 @@
+# Titre: Service Level Objectives pour les applications PrimeReact
+# Description: Définit les SLOs pour les applications PrimeReact
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-08
+# Version: 1.0.0
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: primereact-slos
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: lions-infrastructure
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+  - name: primereact-slos
+    rules:
+    # Enregistrement des métriques SLO
+    - record: slo:http_requests_total:availability_ratio
+      expr: sum(rate(http_requests_total{status!~"5.."}[5m])) / sum(rate(http_requests_total[5m]))
+      
+    - record: slo:http_requests_total:latency_ratio
+      expr: sum(rate(http_request_duration_seconds_bucket{le="0.5"}[5m])) / sum(rate(http_request_duration_seconds_count[5m]))
+      
+    # Alertes basées sur les SLOs
+    - alert: SLOAvailabilityBudgetBurning
+      expr: slo:http_requests_total:availability_ratio < 0.99
+      for: 15m
+      labels:
+        severity: warning
+        slo: availability
+        technology: primereact
+      annotations:
+        summary: "Budget d'erreur SLO en cours d'épuisement"
+        description: "Le ratio de disponibilité est inférieur à 99% depuis 15 minutes."
+        
+    - alert: SLOLatencyBudgetBurning
+      expr: slo:http_requests_total:latency_ratio < 0.95
+      for: 15m
+      labels:
+        severity: warning
+        slo: latency
+        technology: primereact
+      annotations:
+        summary: "Budget de latence SLO en cours d'épuisement"
+        description: "Moins de 95% des requêtes sont traitées en moins de 500ms depuis 15 minutes."
+        
+    # Métriques de fenêtre glissante pour les SLOs
+    - record: slo:http_requests_total:availability_ratio_1h
+      expr: sum(rate(http_requests_total{status!~"5.."}[1h])) / sum(rate(http_requests_total[1h]))
+      
+    - record: slo:http_requests_total:availability_ratio_6h
+      expr: sum(rate(http_requests_total{status!~"5.."}[6h])) / sum(rate(http_requests_total[6h]))
+      
+    - record: slo:http_requests_total:availability_ratio_1d
+      expr: sum(rate(http_requests_total{status!~"5.."}[1d])) / sum(rate(http_requests_total[1d]))
+      
+    - record: slo:http_requests_total:availability_ratio_30d
+      expr: sum(rate(http_requests_total{status!~"5.."}[30d])) / sum(rate(http_requests_total[30d]))
+      
+    # Alertes sur les SLOs à long terme
+    - alert: SLOAvailabilityBudgetBurned
+      expr: slo:http_requests_total:availability_ratio_30d < 0.999
+      for: 1h
+      labels:
+        severity: critical
+        slo: availability
+        technology: primereact
+      annotations:
+        summary: "Budget d'erreur SLO épuisé"
+        description: "Le ratio de disponibilité sur 30 jours est inférieur à 99.9%."
+        
+    # SLOs spécifiques à PrimeReact
+    - record: slo:nodejs_memory:usage_ratio
+      expr: process_resident_memory_bytes / process_memory_limit_bytes
+      
+    - alert: SLOMemoryBudgetBurning
+      expr: slo:nodejs_memory:usage_ratio > 0.8
+      for: 15m
+      labels:
+        severity: warning
+        slo: memory
+        technology: primereact
+      annotations:
+        summary: "Budget de mémoire SLO en cours d'épuisement"
+        description: "Plus de 80% de la mémoire disponible est utilisée depuis 15 minutes."
+        
+    - record: slo:nodejs_eventloop:lag_ratio
+      expr: nodejs_eventloop_lag_seconds / 0.1
+      
+    - alert: SLOEventLoopLagBudgetBurning
+      expr: slo:nodejs_eventloop:lag_ratio > 0.8
+      for: 5m
+      labels:
+        severity: warning
+        slo: responsiveness
+        technology: primereact
+      annotations:
+        summary: "Budget de latence de l'event loop SLO en cours d'épuisement"
+        description: "La latence de l'event loop est supérieure à 80ms depuis 5 minutes."

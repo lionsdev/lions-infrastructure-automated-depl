@@ -1,0 +1,88 @@
+# Titre: Service Level Objectives pour les applications PrimeFaces
+# Description: Définit les SLOs pour les applications PrimeFaces
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-08
+# Version: 1.0.0
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: primefaces-slos
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: lions-infrastructure
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+  - name: primefaces-slos
+    rules:
+    # Enregistrement des métriques SLO
+    - record: slo:tomcat_requests_total:availability_ratio
+      expr: sum(rate(tomcat_request_seconds_count{status!~"5.."}[5m])) / sum(rate(tomcat_request_seconds_count[5m]))
+      
+    - record: slo:tomcat_requests_total:latency_ratio
+      expr: sum(rate(tomcat_request_seconds_bucket{le="0.5"}[5m])) / sum(rate(tomcat_request_seconds_count[5m]))
+      
+    # Alertes basées sur les SLOs
+    - alert: SLOAvailabilityBudgetBurning
+      expr: slo:tomcat_requests_total:availability_ratio < 0.99
+      for: 15m
+      labels:
+        severity: warning
+        slo: availability
+        technology: primefaces
+      annotations:
+        summary: "Budget d'erreur SLO en cours d'épuisement"
+        description: "Le ratio de disponibilité est inférieur à 99% depuis 15 minutes."
+        
+    - alert: SLOLatencyBudgetBurning
+      expr: slo:tomcat_requests_total:latency_ratio < 0.95
+      for: 15m
+      labels:
+        severity: warning
+        slo: latency
+        technology: primefaces
+      annotations:
+        summary: "Budget de latence SLO en cours d'épuisement"
+        description: "Moins de 95% des requêtes sont traitées en moins de 500ms depuis 15 minutes."
+        
+    # Métriques de fenêtre glissante pour les SLOs
+    - record: slo:tomcat_requests_total:availability_ratio_1h
+      expr: sum(rate(tomcat_request_seconds_count{status!~"5.."}[1h])) / sum(rate(tomcat_request_seconds_count[1h]))
+      
+    - record: slo:tomcat_requests_total:availability_ratio_6h
+      expr: sum(rate(tomcat_request_seconds_count{status!~"5.."}[6h])) / sum(rate(tomcat_request_seconds_count[6h]))
+      
+    - record: slo:tomcat_requests_total:availability_ratio_1d
+      expr: sum(rate(tomcat_request_seconds_count{status!~"5.."}[1d])) / sum(rate(tomcat_request_seconds_count[1d]))
+      
+    - record: slo:tomcat_requests_total:availability_ratio_30d
+      expr: sum(rate(tomcat_request_seconds_count{status!~"5.."}[30d])) / sum(rate(tomcat_request_seconds_count[30d]))
+      
+    # Alertes sur les SLOs à long terme
+    - alert: SLOAvailabilityBudgetBurned
+      expr: slo:tomcat_requests_total:availability_ratio_30d < 0.999
+      for: 1h
+      labels:
+        severity: critical
+        slo: availability
+        technology: primefaces
+      annotations:
+        summary: "Budget d'erreur SLO épuisé"
+        description: "Le ratio de disponibilité sur 30 jours est inférieur à 99.9%."
+        
+    # SLOs spécifiques à PrimeFaces
+    - record: slo:tomcat_sessions:active_ratio
+      expr: tomcat_sessions_active_current_sessions / tomcat_sessions_active_max_sessions
+      
+    - alert: SLOSessionsBudgetBurning
+      expr: slo:tomcat_sessions:active_ratio > 0.8
+      for: 15m
+      labels:
+        severity: warning
+        slo: sessions
+        technology: primefaces
+      annotations:
+        summary: "Budget de sessions SLO en cours d'épuisement"
+        description: "Plus de 80% des sessions disponibles sont utilisées depuis 15 minutes."

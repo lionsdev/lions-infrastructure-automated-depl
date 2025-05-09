@@ -1,0 +1,107 @@
+---
+# Titre: Validation post-déploiement pour Redis
+# Description: Effectue des validations après le déploiement de Redis
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-08
+# Version: 1.0.0
+
+- name: Vérification de l'état des pods Redis
+  k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: "{{ app_namespace }}"
+    label_selectors:
+      - "app={{ app_name }}"
+  register: pods_status
+  until: pods_status.resources | length > 0 and pods_status.resources | map(attribute='status.phase') | list | unique | first == "Running"
+  retries: 10
+  delay: 10
+
+- name: Vérification de l'état du service Redis
+  k8s_info:
+    api_version: v1
+    kind: Service
+    namespace: "{{ app_namespace }}"
+    name: "{{ app_name }}"
+  register: service_status
+  failed_when: service_status.resources | length == 0
+
+- name: Vérification de la connectivité Redis
+  shell: "kubectl exec -n {{ app_namespace }} {{ pods_status.resources[0].metadata.name }} -- redis-cli ping"
+  register: redis_ping
+  ignore_errors: yes
+  changed_when: false
+
+- name: Affichage du résultat de la connectivité
+  debug:
+    msg: "Connectivité Redis: {{ 'OK' if redis_ping is succeeded and redis_ping.stdout == 'PONG' else 'ÉCHEC' }}"
+
+- name: Vérification des métriques Prometheus (si activé)
+  shell: "kubectl exec -n {{ app_namespace }} {{ pods_status.resources[0].metadata.name }} -- curl -s http://localhost:{{ redis_prometheus_port | default(9121) }}{{ redis_prometheus_path | default('/metrics') }} | head -10"
+  register: metrics_check
+  ignore_errors: yes
+  changed_when: false
+  when: redis_prometheus_scrape | default(true) | bool
+
+- name: Affichage des métriques Prometheus
+  debug:
+    msg: "Métriques Prometheus: {{ metrics_check.stdout_lines if metrics_check is succeeded else 'Non disponibles' }}"
+  when: redis_prometheus_scrape | default(true) | bool
+
+- name: Vérification de la configuration Redis
+  shell: "kubectl exec -n {{ app_namespace }} {{ pods_status.resources[0].metadata.name }} -- redis-cli info"
+  register: redis_info
+  ignore_errors: yes
+  changed_when: false
+
+- name: Analyse de la configuration Redis
+  debug:
+    msg: "Configuration Redis: {{ 'OK' if redis_info is succeeded else 'À vérifier' }}"
+  when: redis_info is succeeded
+
+- name: Vérification des ressources utilisées
+  shell: "kubectl top pod -n {{ app_namespace }} {{ pods_status.resources[0].metadata.name }}"
+  register: resources_check
+  ignore_errors: yes
+  changed_when: false
+
+- name: Affichage des ressources utilisées
+  debug:
+    msg: "Ressources utilisées: {{ resources_check.stdout if resources_check is succeeded else 'Non disponibles' }}"
+
+- name: Vérification de la persistance (si activée)
+  shell: "kubectl exec -n {{ app_namespace }} {{ pods_status.resources[0].metadata.name }} -- redis-cli config get dir"
+  register: redis_dir
+  ignore_errors: yes
+  changed_when: false
+  when: redis_persistent_storage | default(true) | bool
+
+- name: Affichage du répertoire de données Redis
+  debug:
+    msg: "Répertoire de données Redis: {{ redis_dir.stdout_lines[1] if redis_dir is succeeded and redis_dir.stdout_lines | length > 1 else 'Non disponible' }}"
+  when: redis_persistent_storage | default(true) | bool
+
+- name: Résumé du déploiement
+  debug:
+    msg: |
+      =====================================================
+      RÉSUMÉ DU DÉPLOIEMENT REDIS
+      =====================================================
+      Nom: {{ app_name }}
+      Namespace: {{ app_namespace }}
+      Environnement: {{ app_environment }}
+      Version: {{ redis_version | default('latest') }}
+      Pods en cours d'exécution: {{ pods_status.resources | length }}
+      Service disponible: {{ 'Oui' if service_status.resources | length > 0 else 'Non' }}
+      Connectivité: {{ 'OK' if redis_ping is succeeded and redis_ping.stdout == 'PONG' else 'ÉCHEC' }}
+      Monitoring: {{ 'Activé' if redis_prometheus_scrape | default(true) | bool else 'Désactivé' }}
+      Cluster: {{ 'Activé' if redis_cluster_enabled | default(false) | bool else 'Désactivé' }}
+      Persistance: {{ 'Activée' if redis_persistent_storage | default(true) | bool else 'Désactivée' }}
+      =====================================================
+      STATUT FINAL: {{ 'SUCCÈS' if redis_ping is succeeded and redis_ping.stdout == 'PONG' and service_status.resources | length > 0 and pods_status.resources | length > 0 else 'ÉCHEC' }}
+      =====================================================
+
+- name: Échec si la validation échoue
+  fail:
+    msg: "La validation du déploiement Redis a échoué. Veuillez vérifier les logs pour plus d'informations."
+  when: redis_ping is failed or redis_ping.stdout != 'PONG' or service_status.resources | length == 0 or pods_status.resources | length == 0

@@ -1,0 +1,160 @@
+---
+# Titre: Template d'application Quarkus
+# Description: Configuration par défaut pour les applications Quarkus
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-07
+# Version: 1.0.0
+
+# Métadonnées de l'application
+metadata:
+  technology: quarkus
+  category: backend
+  language: java
+
+# Configuration de déploiement
+deployment:
+  # Configuration des ressources
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+  
+  # Configuration des réplicas
+  replicas:
+    development: 1
+    staging: 2
+    production: 3
+  
+  # Configuration de l'autoscaling
+  autoscaling:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 80
+    targetMemoryUtilizationPercentage: 80
+  
+  # Configuration de la haute disponibilité
+  highAvailability:
+    enabled: true
+    podDisruptionBudget:
+      minAvailable: 1
+  
+  # Configuration de la persistance
+  persistence:
+    enabled: false
+  
+  # Configuration des sondes de santé
+  probes:
+    readiness:
+      path: "/q/health/ready"
+      initialDelaySeconds: 20
+      periodSeconds: 10
+      timeoutSeconds: 3
+      failureThreshold: 3
+    liveness:
+      path: "/q/health/live"
+      initialDelaySeconds: 40
+      periodSeconds: 20
+      timeoutSeconds: 3
+      failureThreshold: 3
+
+# Configuration du monitoring
+monitoring:
+  # Configuration de Prometheus
+  prometheus:
+    enabled: true
+    path: "/q/metrics"
+    port: 8080
+  
+  # Configuration des alertes
+  alerts:
+    - name: InstanceDown
+      expr: up{job="{{ app_name }}"} == 0
+      for: 5m
+      severity: critical
+      description: "L'instance {{ app_name }} est indisponible depuis plus de 5 minutes."
+    - name: HighMemoryUsage
+      expr: container_memory_usage_bytes{pod=~"{{ app_name }}.*"} / container_spec_memory_limit_bytes{pod=~"{{ app_name }}.*"} > 0.85
+      for: 10m
+      severity: warning
+      description: "L'instance {{ app_name }} utilise plus de 85% de sa mémoire allouée depuis plus de 10 minutes."
+    - name: HighCPUUsage
+      expr: container_cpu_usage_seconds_total{pod=~"{{ app_name }}.*"} / container_spec_cpu_quota{pod=~"{{ app_name }}.*"} > 0.85
+      for: 10m
+      severity: warning
+      description: "L'instance {{ app_name }} utilise plus de 85% de son CPU alloué depuis plus de 10 minutes."
+
+# Configuration de la sécurité
+security:
+  # Configuration des politiques réseau
+  networkPolicies:
+    enabled: true
+    ingress:
+      - from:
+          - namespaceSelector:
+              matchLabels:
+                name: ingress-nginx
+            podSelector:
+              matchLabels:
+                app.kubernetes.io/name: ingress-nginx
+      - from:
+          - namespaceSelector:
+              matchLabels:
+                name: monitoring
+    egress:
+      - to:
+          - namespaceSelector: {}
+            podSelector:
+              matchLabels:
+                k8s-app: kube-dns
+        ports:
+          - protocol: UDP
+            port: 53
+          - protocol: TCP
+            port: 53
+      - to:
+          - ipBlock:
+              cidr: 0.0.0.0/0
+              except:
+                - 10.0.0.0/8
+                - 172.16.0.0/12
+                - 192.168.0.0/16
+  
+  # Configuration des secrets
+  secrets:
+    - name: database-credentials
+      keys:
+        - DB_USERNAME
+        - DB_PASSWORD
+    - name: api-keys
+      keys:
+        - API_KEY
+
+# Configuration spécifique à Quarkus
+quarkus:
+  # Configuration de l'environnement
+  env:
+    QUARKUS_PROFILE: "${ENVIRONMENT}"
+    QUARKUS_LOG_LEVEL: "INFO"
+    QUARKUS_HIBERNATE_ORM_DATABASE_GENERATION: "validate"
+    QUARKUS_DATASOURCE_JDBC_URL: "jdbc:postgresql://${DB_HOST}:${DB_PORT}/${DB_NAME}"
+    QUARKUS_DATASOURCE_USERNAME: "${DB_USERNAME}"
+    QUARKUS_DATASOURCE_PASSWORD: "${DB_PASSWORD}"
+    QUARKUS_HTTP_PORT: "8080"
+    QUARKUS_HTTP_CORS: "true"
+    QUARKUS_HTTP_CORS_ORIGINS: "*"
+    QUARKUS_SWAGGER_UI_ALWAYS_INCLUDE: "true"
+  
+  # Configuration des extensions
+  extensions:
+    - quarkus-resteasy-reactive
+    - quarkus-resteasy-reactive-jackson
+    - quarkus-hibernate-orm-panache
+    - quarkus-jdbc-postgresql
+    - quarkus-smallrye-health
+    - quarkus-smallrye-metrics
+    - quarkus-smallrye-openapi
+    - quarkus-smallrye-jwt
