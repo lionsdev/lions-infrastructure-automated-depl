@@ -109,7 +109,7 @@ function verifier_prerequis() {
 function initialiser_vps() {
     log "INFO" "Initialisation du VPS..."
 
-    local ansible_cmd="ansible-playbook -i ${ANSIBLE_DIR}/${inventory_file} ${ANSIBLE_DIR}/playbooks/init-vps.yml"
+    local ansible_cmd="ansible-playbook -i ${ANSIBLE_DIR}/${inventory_file} ${ANSIBLE_DIR}/playbooks/init-vps.yml --ask-become-pass"
 
     if [[ "${debug_mode}" == "true" ]]; then
         ansible_cmd="${ansible_cmd} -vvv"
@@ -129,7 +129,7 @@ function initialiser_vps() {
 function installer_k3s() {
     log "INFO" "Installation de K3s..."
 
-    local ansible_cmd="ansible-playbook -i ${ANSIBLE_DIR}/${inventory_file} ${ANSIBLE_DIR}/playbooks/install-k3s.yml"
+    local ansible_cmd="ansible-playbook -i ${ANSIBLE_DIR}/${inventory_file} ${ANSIBLE_DIR}/playbooks/install-k3s.yml --ask-become-pass"
 
     if [[ "${debug_mode}" == "true" ]]; then
         ansible_cmd="${ansible_cmd} -vvv"
