@@ -1,57 +1,9 @@
 ---
 # Titre: Configuration RBAC
-# Description: Définit les liaisons de rôles pour l'infrastructure LIONS
+# Description: Définit les rôles spécifiques aux applications pour l'infrastructure LIONS
 # Auteur: Équipe LIONS Infrastructure
 # Date: 2025-05-08
 # Version: 1.0.0
----
-# Liaison de rôle pour les opérateurs dans tous les environnements
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: lions-operator-binding
-  labels:
-    app.kubernetes.io/part-of: lions-infrastructure
-subjects:
-- kind: Group
-  name: lions-operators
-  apiGroup: rbac.authorization.k8s.io
-roleRef:
-  kind: ClusterRole
-  name: lions-operator
-  apiGroup: rbac.authorization.k8s.io
----
-# Liaison de rôle pour les administrateurs
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: lions-admin-binding
-  labels:
-    app.kubernetes.io/part-of: lions-infrastructure
-subjects:
-- kind: Group
-  name: lions-admins
-  apiGroup: rbac.authorization.k8s.io
-roleRef:
-  kind: ClusterRole
-  name: lions-admin
-  apiGroup: rbac.authorization.k8s.io
----
-# Liaison de rôle pour le monitoring
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: lions-monitoring-binding
-  labels:
-    app.kubernetes.io/part-of: lions-infrastructure
-subjects:
-- kind: ServiceAccount
-  name: prometheus-operator
-  namespace: monitoring
-roleRef:
-  kind: ClusterRole
-  name: lions-monitoring
-  apiGroup: rbac.authorization.k8s.io
 ---
 # Rôle spécifique pour les applications Quarkus
 apiVersion: rbac.authorization.k8s.io/v1
