@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - admin-binding.yaml
+  - admin-role.yaml
+  - developer-binding.yaml
+  - developer-role.yaml
+  - monitoring-binding.yaml
+  - monitoring-role.yaml
+  - operator-binding.yaml
+  - operator-role.yaml
+  - rbac.yaml
