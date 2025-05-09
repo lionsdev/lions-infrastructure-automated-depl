@@ -5,23 +5,6 @@
 # Date: 2025-05-08
 # Version: 1.0.0
 ---
-# Liaison de rôle pour les développeurs dans l'environnement de développement
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: lions-developer-binding
-  namespace: development
-  labels:
-    app.kubernetes.io/part-of: lions-infrastructure
-subjects:
-- kind: Group
-  name: lions-developers
-  apiGroup: rbac.authorization.k8s.io
-roleRef:
-  kind: ClusterRole
-  name: lions-developer
-  apiGroup: rbac.authorization.k8s.io
----
 # Liaison de rôle pour les opérateurs dans tous les environnements
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
