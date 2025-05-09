@@ -90,7 +90,7 @@
 
         - name: Ajout du dépôt Kubernetes
           apt_repository:
-            repo: deb https://apt.kubernetes.io/ kubernetes-xenial main
+            repo: deb https://apt.kubernetes.io/ kubernetes-focal main
             state: present
             filename: kubernetes
 
