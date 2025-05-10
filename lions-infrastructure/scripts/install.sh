@@ -1198,7 +1198,7 @@ function check_network() {
         log "WARNING" "Ports fermés: ${closed_ports[*]}"
 
         # Vérification si les ports essentiels sont ouverts
-        local essential_ports=(22 "${target_port}")
+        local essential_ports=("${target_port}")
         local missing_essential=false
 
         for port in "${essential_ports[@]}"; do
@@ -1216,11 +1216,8 @@ function check_network() {
             return 1
         else
             log "WARNING" "Certains ports non essentiels ne sont pas accessibles, l'installation peut continuer mais certaines fonctionnalités pourraient ne pas fonctionner correctement"
-            log "INFO" "Voulez-vous continuer malgré tout? (o/N)"
-            read -r answer
-            if [[ ! "${answer}" =~ ^[Oo]$ ]]; then
-                return 1
-            fi
+            # Continuer automatiquement si seuls des ports non essentiels sont inaccessibles
+            log "INFO" "Continuation automatique de l'installation..."
         fi
     fi
 
