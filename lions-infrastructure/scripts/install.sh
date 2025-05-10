@@ -1295,21 +1295,21 @@ function verifier_prerequis() {
     # Vérification du verrouillage
     if [[ -f "${LOCK_FILE}" ]]; then
         log "WARNING" "Une autre instance du script semble être en cours d'exécution"
-        log "WARNING" "Si ce n'est pas le cas, supprimez le fichier ${LOCK_FILE} et réessayez"
 
         # Vérification de l'âge du fichier de verrouillage
         local lock_file_age=$(( $(date +%s) - $(stat -c %Y "${LOCK_FILE}" 2>/dev/null || echo $(date +%s)) ))
-        if [[ ${lock_file_age} -gt 3600 ]]; then
-            log "WARNING" "Le fichier de verrouillage existe depuis plus d'une heure, il pourrait être obsolète"
-            log "INFO" "Voulez-vous supprimer le fichier de verrouillage et continuer? (o/N)"
-            read -r answer
-            if [[ "${answer}" =~ ^[Oo]$ ]]; then
-                log "INFO" "Suppression du fichier de verrouillage obsolète"
-                rm -f "${LOCK_FILE}"
-            else
-                exit 1
-            fi
+
+        # Vérification de l'uptime du système
+        local uptime_seconds=$(cat /proc/uptime 2>/dev/null | awk '{print int($1)}' || echo 999999)
+
+        # Si le système a redémarré après la création du fichier de verrouillage
+        # ou si le fichier de verrouillage existe depuis plus d'une heure
+        if [[ ${uptime_seconds} -lt ${lock_file_age} || ${lock_file_age} -gt 3600 ]]; then
+            log "INFO" "Le système a redémarré ou le fichier de verrouillage est obsolète (âge: ${lock_file_age}s, uptime: ${uptime_seconds}s)"
+            log "INFO" "Suppression automatique du fichier de verrouillage obsolète"
+            rm -f "${LOCK_FILE}"
         else
+            log "WARNING" "Si ce n'est pas le cas, supprimez le fichier ${LOCK_FILE} et réessayez"
             exit 1
         fi
     fi
@@ -2667,8 +2667,23 @@ log "INFO" "Fichier de log: ${LOG_FILE}"
 # Vérification qu'une seule instance du script est en cours d'exécution
 if [[ -f "${LOCK_FILE}" ]]; then
     log "WARNING" "Une autre instance du script semble être en cours d'exécution"
-    log "WARNING" "Si ce n'est pas le cas, supprimez le fichier ${LOCK_FILE} et réessayez"
-    exit 1
+
+    # Vérification de l'âge du fichier de verrouillage
+    local lock_file_age=$(( $(date +%s) - $(stat -c %Y "${LOCK_FILE}" 2>/dev/null || echo $(date +%s)) ))
+
+    # Vérification de l'uptime du système
+    local uptime_seconds=$(cat /proc/uptime 2>/dev/null | awk '{print int($1)}' || echo 999999)
+
+    # Si le système a redémarré après la création du fichier de verrouillage
+    # ou si le fichier de verrouillage existe depuis plus d'une heure
+    if [[ ${uptime_seconds} -lt ${lock_file_age} || ${lock_file_age} -gt 3600 ]]; then
+        log "INFO" "Le système a redémarré ou le fichier de verrouillage est obsolète (âge: ${lock_file_age}s, uptime: ${uptime_seconds}s)"
+        log "INFO" "Suppression automatique du fichier de verrouillage obsolète"
+        rm -f "${LOCK_FILE}"
+    else
+        log "WARNING" "Si ce n'est pas le cas, supprimez le fichier ${LOCK_FILE} et réessayez"
+        exit 1
+    fi
 fi
 
 # Création du fichier de verrouillage
