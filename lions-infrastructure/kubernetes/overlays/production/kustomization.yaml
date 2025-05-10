@@ -10,16 +10,16 @@ kind: Kustomization
 
 # Ressources de base à inclure
 resources:
-  - ../../base/namespaces
+  - namespace.yaml
   - ../../base/network-policies
   - ../../base/rbac
   - ../../base/resource-quotas
+  - patches/high-availability-patch.yaml
 
 # Patches spécifiques à l'environnement de production
-patchesStrategicMerge:
-  - patches/resource-quotas-patch.yaml
-  - patches/network-policies-patch.yaml
-  - patches/high-availability-patch.yaml
+patches:
+  - path: patches/resource-quotas-patch.yaml
+  - path: patches/network-policies-patch.yaml
 
 # Configuration des namespaces
 namespace: production
@@ -35,12 +35,16 @@ commonAnnotations:
   environment.lions.dev/contact: "ops-team@lions.dev"
   environment.lions.dev/documentation: "https://docs.lions.dev/environments/production"
 
-# Configuration des variables
-vars:
-  - name: ENVIRONMENT
-    objref:
+# Configuration des remplacements
+replacements:
+  - source:
       kind: Namespace
       name: production
-      apiVersion: v1
-    fieldref:
-      fieldpath: metadata.name
+      fieldPath: metadata.name
+    targets:
+      - select:
+          kind: "*"
+        fieldPaths:
+          - metadata.namespace
+        options:
+          create: true

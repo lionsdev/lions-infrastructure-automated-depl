@@ -9,7 +9,6 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: default-network-policy
-  namespace: production
 spec:
   # Politique stricte pour l'environnement de production
   podSelector: {}
@@ -25,17 +24,17 @@ spec:
           podSelector:
             matchLabels:
               app.kubernetes.io/name: ingress-nginx
-    
+
     # Autoriser le trafic entrant depuis le namespace de monitoring
     - from:
         - namespaceSelector:
             matchLabels:
               name: monitoring
-    
+
     # Autoriser le trafic entrant depuis le même namespace
     - from:
         - podSelector: {}
-  
+
   egress:
     # Autoriser le trafic sortant vers les serveurs DNS
     - to:
@@ -48,17 +47,17 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
-    
+
     # Autoriser le trafic sortant vers les services internes du même namespace
     - to:
         - podSelector: {}
-    
+
     # Autoriser le trafic sortant vers les services de monitoring
     - to:
         - namespaceSelector:
             matchLabels:
               name: monitoring
-    
+
     # Autoriser le trafic sortant vers les API externes spécifiques
     - to:
         - ipBlock:

@@ -1,0 +1,12 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: staging
+  labels:
+    environment: staging
+    managed-by: kustomize
+  annotations:
+    environment.lions.dev/description: "Environnement de staging pour les applications LIONS"
+    environment.lions.dev/contact: "staging-team@lions.dev"
+    environment.lions.dev/documentation: "https://docs.lions.dev/environments/staging"

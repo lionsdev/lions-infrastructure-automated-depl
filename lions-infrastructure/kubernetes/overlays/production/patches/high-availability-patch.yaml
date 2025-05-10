@@ -9,7 +9,6 @@ apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
   name: default-pdb
-  namespace: production
 spec:
   minAvailable: 2
   selector:
@@ -20,7 +19,6 @@ apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
   name: default-hpa
-  namespace: production
 spec:
   scaleTargetRef:
     apiVersion: apps/v1

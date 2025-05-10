@@ -1,0 +1,12 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: development
+  labels:
+    environment: development
+    managed-by: kustomize
+  annotations:
+    environment.lions.dev/description: "Environnement de développement pour les applications LIONS"
+    environment.lions.dev/contact: "dev-team@lions.dev"
+    environment.lions.dev/documentation: "https://docs.lions.dev/environments/development"

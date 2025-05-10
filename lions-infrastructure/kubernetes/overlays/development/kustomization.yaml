@@ -10,7 +10,7 @@ kind: Kustomization
 
 # Ressources de base à inclure
 resources:
-  - ../../base/namespaces
+  - namespace.yaml
   - ../../base/network-policies
   - ../../base/rbac
   - ../../base/resource-quotas
@@ -24,7 +24,7 @@ patches:
 namespace: development
 
 # Labels communs à ajouter à toutes les ressources
-commonLabels:
+labels:
   environment: development
   managed-by: kustomize
 
@@ -41,12 +41,6 @@ replacements:
       name: development
       fieldPath: metadata.name
     targets:
-      - select:
-          kind: Namespace
-        fieldPaths:
-          - metadata.name
-        options:
-          create: false
       - select:
           kind: "*"
         fieldPaths:

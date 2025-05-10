@@ -10,10 +10,14 @@ kind: Kustomization
 
 # Ressources de base à inclure
 resources:
-  - ../../base/namespaces
+  - namespace.yaml
   - ../../base/network-policies
   - ../../base/rbac
   - ../../base/resource-quotas
+
+# Patches spécifiques à l'environnement de staging
+patches:
+  - path: patches/resource-quotas-patch.yaml
 
 # Configuration des namespaces
 namespace: staging
@@ -29,12 +33,16 @@ commonAnnotations:
   environment.lions.dev/contact: "staging-team@lions.dev"
   environment.lions.dev/documentation: "https://docs.lions.dev/environments/staging"
 
-# Configuration des variables
-vars:
-  - name: ENVIRONMENT
-    objref:
+# Configuration des remplacements
+replacements:
+  - source:
       kind: Namespace
       name: staging
-      apiVersion: v1
-    fieldref:
-      fieldpath: metadata.name
+      fieldPath: metadata.name
+    targets:
+      - select:
+          kind: "*"
+        fieldPaths:
+          - metadata.namespace
+        options:
+          create: true

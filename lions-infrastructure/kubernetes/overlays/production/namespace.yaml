@@ -1,0 +1,12 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+  labels:
+    environment: production
+    managed-by: kustomize
+  annotations:
+    environment.lions.dev/description: "Environnement de production pour les applications LIONS"
+    environment.lions.dev/contact: "ops-team@lions.dev"
+    environment.lions.dev/documentation: "https://docs.lions.dev/environments/production"
