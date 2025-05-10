@@ -1,0 +1,57 @@
+---
+# Titre: Template de ServiceMonitor Kubernetes pour la registry de conteneurs
+# Description: Définit le ServiceMonitor Kubernetes pour la registry de conteneurs Docker
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-10
+# Version: 1.0.0
+
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: "{{ app_name | default('registry') }}"
+  namespace: monitoring
+  labels:
+    app: "{{ app_name | default('registry') }}"
+    version: "{{ app_version | default('latest') }}"
+    environment: "{{ app_environment | default('development') }}"
+    technology: "registry"
+    release: prometheus
+  annotations:
+    description: "ServiceMonitor pour la registry {{ app_name | default('registry') }} ({{ app_version | default('latest') }}) en environnement {{ app_environment | default('development') }}"
+spec:
+  selector:
+    matchLabels:
+      app: "{{ app_name | default('registry') }}"
+      technology: "registry"
+  namespaceSelector:
+    matchNames:
+      - "{{ app_namespace | default('registry') }}"
+  endpoints:
+    - port: http
+      path: "{{ registry_prometheus_path | default('/metrics') }}"
+      interval: 30s
+      scrapeTimeout: 10s
+      honorLabels: true
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          action: replace
+          targetLabel: pod
+        - sourceLabels: [__meta_kubernetes_namespace]
+          action: replace
+          targetLabel: namespace
+        - sourceLabels: [__meta_kubernetes_service_name]
+          action: replace
+          targetLabel: service
+        - sourceLabels: [__meta_kubernetes_service_label_app]
+          action: replace
+          targetLabel: app
+        - sourceLabels: [__meta_kubernetes_service_label_version]
+          action: replace
+          targetLabel: version
+        - sourceLabels: [__meta_kubernetes_service_label_environment]
+          action: replace
+          targetLabel: environment
+      metricRelabelings:
+        - sourceLabels: [__name__]
+          regex: 'registry_.*'
+          action: keep

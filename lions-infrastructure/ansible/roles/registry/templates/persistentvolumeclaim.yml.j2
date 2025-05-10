@@ -1,0 +1,26 @@
+---
+# Titre: Template de PersistentVolumeClaim Kubernetes pour la registry de conteneurs
+# Description: Définit le PersistentVolumeClaim Kubernetes pour la registry de conteneurs Docker
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-10
+# Version: 1.0.0
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: "{{ app_name | default('registry') }}-data"
+  namespace: "{{ app_namespace | default('registry') }}"
+  labels:
+    app: "{{ app_name | default('registry') }}"
+    version: "{{ app_version | default('latest') }}"
+    environment: "{{ app_environment | default('development') }}"
+    technology: "registry"
+  annotations:
+    description: "PersistentVolumeClaim pour la registry {{ app_name | default('registry') }} ({{ app_version | default('latest') }}) en environnement {{ app_environment | default('development') }}"
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ registry_storage_size | default('10Gi') }}
+  storageClassName: {{ registry_storage_class | default('standard') }}

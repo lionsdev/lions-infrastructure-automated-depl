@@ -1,0 +1,36 @@
+---
+# Titre: Tâches pour le déploiement de la registry de conteneurs
+# Description: Déploie la registry de conteneurs Docker sur Kubernetes
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-10
+# Version: 1.0.0
+
+- name: Vérification des prérequis pour la registry
+  import_tasks: prerequisites.yml
+  tags:
+    - registry
+    - prerequisites
+
+- name: Préparation des ressources pour la registry
+  import_tasks: prepare.yml
+  tags:
+    - registry
+    - prepare
+
+- name: Déploiement de la registry
+  import_tasks: deploy.yml
+  tags:
+    - registry
+    - deploy
+
+- name: Configuration du monitoring pour la registry
+  import_tasks: monitoring.yml
+  tags:
+    - registry
+    - monitoring
+
+- name: Validation du déploiement de la registry
+  import_tasks: validate.yml
+  tags:
+    - registry
+    - validate

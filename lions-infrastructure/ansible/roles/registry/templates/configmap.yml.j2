@@ -1,0 +1,64 @@
+---
+# Titre: Template de ConfigMap Kubernetes pour la registry de conteneurs
+# Description: Définit la ConfigMap Kubernetes pour la registry de conteneurs Docker
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-10
+# Version: 1.0.0
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: "{{ app_name | default('registry') }}-config"
+  namespace: "{{ app_namespace | default('registry') }}"
+  labels:
+    app: "{{ app_name | default('registry') }}"
+    version: "{{ app_version | default('latest') }}"
+    environment: "{{ app_environment | default('development') }}"
+    technology: "registry"
+  annotations:
+    description: "ConfigMap pour la registry {{ app_name | default('registry') }} ({{ app_version | default('latest') }}) en environnement {{ app_environment | default('development') }}"
+data:
+  # Configuration personnalisée pour la registry Docker
+  config.yml: |
+    version: 0.1
+    log:
+      level: {{ registry_log_level | default('info') }}
+      formatter: json
+      fields:
+        service: registry
+        environment: {{ app_environment | default('development') }}
+    
+    storage:
+      filesystem:
+        rootdirectory: /var/lib/registry
+      delete:
+        enabled: true
+      maintenance:
+        uploadpurging:
+          enabled: true
+          age: 168h
+          interval: 24h
+          dryrun: false
+        readonly:
+          enabled: false
+    
+    http:
+      addr: :{{ registry_default_port | default(5000) }}
+      headers:
+        X-Content-Type-Options: [nosniff]
+      debug:
+        addr: :{{ registry_debug_port | default(5001) }}
+        prometheus:
+          enabled: {{ registry_prometheus_scrape | default(true) | string | lower }}
+          path: {{ registry_prometheus_path | default('/metrics') }}
+    
+    auth:
+      htpasswd:
+        realm: Registry Realm
+        path: /auth/htpasswd
+    
+    health:
+      storagedriver:
+        enabled: true
+        interval: 10s
+        threshold: 3

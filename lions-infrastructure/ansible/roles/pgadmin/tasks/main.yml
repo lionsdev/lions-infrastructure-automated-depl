@@ -1,0 +1,36 @@
+---
+# Titre: Tâches pour le déploiement de pgAdmin
+# Description: Déploie pgAdmin sur Kubernetes
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-10
+# Version: 1.0.0
+
+- name: Vérification des prérequis pour pgAdmin
+  import_tasks: prerequisites.yml
+  tags:
+    - pgadmin
+    - prerequisites
+
+- name: Préparation des ressources pour pgAdmin
+  import_tasks: prepare.yml
+  tags:
+    - pgadmin
+    - prepare
+
+- name: Déploiement de pgAdmin
+  import_tasks: deploy.yml
+  tags:
+    - pgadmin
+    - deploy
+
+- name: Configuration du monitoring pour pgAdmin
+  import_tasks: monitoring.yml
+  tags:
+    - pgadmin
+    - monitoring
+
+- name: Validation du déploiement de pgAdmin
+  import_tasks: validate.yml
+  tags:
+    - pgadmin
+    - validate

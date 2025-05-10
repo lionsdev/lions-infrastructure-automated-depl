@@ -1,0 +1,61 @@
+---
+# Titre: Déploiement de pgAdmin
+# Description: Déploie pgAdmin sur Kubernetes
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-10
+# Version: 1.0.0
+
+- name: Déploiement de pgAdmin
+  k8s:
+    state: present
+    src: "{{ temp_dir.path }}/deployment.yml"
+  register: deployment_result
+
+- name: Création du service pour pgAdmin
+  k8s:
+    state: present
+    src: "{{ temp_dir.path }}/service.yml"
+  register: service_result
+
+- name: Création de l'ingress pour pgAdmin
+  k8s:
+    state: present
+    src: "{{ temp_dir.path }}/ingress.yml"
+  register: ingress_result
+  failed_when: false
+
+- name: Vérification du déploiement
+  k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: "{{ app_name }}"
+    namespace: "{{ app_namespace }}"
+  register: deployment_info
+  until: deployment_info.resources | length > 0 and deployment_info.resources[0].status.availableReplicas is defined and deployment_info.resources[0].status.availableReplicas > 0
+  retries: 30
+  delay: 10
+  failed_when: false
+
+- name: Échec si le déploiement n'est pas réussi
+  fail:
+    msg: "Le déploiement de pgAdmin a échoué. Veuillez vérifier les logs pour plus d'informations."
+  when: deployment_info.resources | length == 0 or deployment_info.resources[0].status.availableReplicas is not defined or deployment_info.resources[0].status.availableReplicas == 0
+
+- name: Récupération des informations sur les pods
+  k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: "{{ app_namespace }}"
+    label_selectors:
+      - app={{ app_name }}
+  register: pods_info
+
+- name: Affichage des informations sur les pods
+  debug:
+    var: pods_info.resources[0].metadata.name
+  when: pods_info.resources | length > 0
+
+- name: Attente de l'initialisation de pgAdmin
+  pause:
+    seconds: "{{ pgadmin_init_delay | default(30) }}"
+  when: deployment_result.changed

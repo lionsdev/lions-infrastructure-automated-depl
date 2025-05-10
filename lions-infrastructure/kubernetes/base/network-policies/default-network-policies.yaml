@@ -46,7 +46,7 @@ spec:
   policyTypes:
   - Ingress
 ---
-# Politique pour autoriser le trafic depuis le namespace ingress-nginx
+# Politique pour autoriser le trafic depuis le namespace kube-system (où Traefik s'exécute)
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -58,7 +58,10 @@ spec:
   - from:
     - namespaceSelector:
         matchLabels:
-          name: ingress-nginx
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          app: traefik
   policyTypes:
   - Ingress
 ---
@@ -100,7 +103,10 @@ spec:
   - from:
     - namespaceSelector:
         matchLabels:
-          name: ingress-nginx
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          app: traefik
     ports:
     - protocol: TCP
       port: 8080
@@ -166,7 +172,10 @@ spec:
   - from:
     - namespaceSelector:
         matchLabels:
-          name: ingress-nginx
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          app: traefik
     ports:
     - protocol: TCP
       port: 8080
@@ -216,7 +225,10 @@ spec:
   - from:
     - namespaceSelector:
         matchLabels:
-          name: ingress-nginx
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          app: traefik
     ports:
     - protocol: TCP
       port: 80
@@ -404,7 +416,10 @@ spec:
   - from:
     - namespaceSelector:
         matchLabels:
-          name: ingress-nginx
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          app: traefik
     ports:
     - protocol: TCP
       port: 8080

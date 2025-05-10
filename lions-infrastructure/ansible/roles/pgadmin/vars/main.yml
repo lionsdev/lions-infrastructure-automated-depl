@@ -1,0 +1,81 @@
+---
+# Titre: Variables pour le déploiement de pgAdmin
+# Description: Variables spécifiques à pgAdmin
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-10
+# Version: 1.0.0
+
+# Configuration par défaut pour pgAdmin
+pgadmin_version: "7.8"
+pgadmin_default_port: 80
+pgadmin_health_path: "/"
+pgadmin_metrics_path: "/metrics"
+pgadmin_admin_email: "admin@lions.dev"
+pgadmin_admin_password_secret: "pgadmin-admin-password"
+pgadmin_database_service: "postgres"
+pgadmin_database_port: 5432
+pgadmin_database_user: "postgres"
+pgadmin_database_password_secret: "postgres-admin-password"
+pgadmin_log_level: 10  # INFO
+
+# Configuration des sondes de disponibilité
+pgadmin_readiness_probe:
+  httpGet:
+    path: /
+    port: 80
+  initialDelaySeconds: 30
+  timeoutSeconds: 5
+  periodSeconds: 10
+  successThreshold: 1
+  failureThreshold: 3
+
+pgadmin_liveness_probe:
+  httpGet:
+    path: /
+    port: 80
+  initialDelaySeconds: 60
+  timeoutSeconds: 5
+  periodSeconds: 10
+  successThreshold: 1
+  failureThreshold: 3
+
+# Configuration du monitoring
+pgadmin_prometheus_port: 80
+pgadmin_prometheus_path: "/metrics"
+pgadmin_prometheus_scrape: true
+pgadmin_init_delay: 30
+
+# Configuration des ressources
+pgadmin_resources:
+  development:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+  staging:
+    requests:
+      cpu: "200m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+  production:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "2000m"
+      memory: "2Gi"
+
+# Configuration de la haute disponibilité
+pgadmin_replicas:
+  development: 1
+  staging: 2
+  production: 3
+
+# Configuration du stockage
+pgadmin_persistent_storage: true
+pgadmin_storage_size: "5Gi"
+pgadmin_storage_class: "standard"

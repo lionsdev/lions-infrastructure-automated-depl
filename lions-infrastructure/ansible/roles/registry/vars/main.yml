@@ -1,0 +1,78 @@
+---
+# Titre: Variables pour le déploiement de la registry de conteneurs
+# Description: Variables spécifiques à la registry de conteneurs Docker
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-10
+# Version: 1.0.0
+
+# Configuration par défaut pour la registry
+registry_version: "2.8.2"
+registry_default_port: 5000
+registry_debug_port: 5001
+registry_health_path: "/v2/"
+registry_metrics_path: "/metrics"
+registry_auth_secret: "registry-auth"
+registry_http_secret: "changeme"  # À remplacer par une valeur sécurisée en production
+registry_log_level: "info"
+registry_init_delay: 30
+
+# Configuration des sondes de disponibilité
+registry_readiness_probe:
+  httpGet:
+    path: /v2/
+    port: 5000
+  initialDelaySeconds: 10
+  timeoutSeconds: 5
+  periodSeconds: 10
+  successThreshold: 1
+  failureThreshold: 3
+
+registry_liveness_probe:
+  httpGet:
+    path: /v2/
+    port: 5000
+  initialDelaySeconds: 20
+  timeoutSeconds: 5
+  periodSeconds: 10
+  successThreshold: 1
+  failureThreshold: 3
+
+# Configuration du monitoring
+registry_prometheus_port: 5000
+registry_prometheus_path: "/metrics"
+registry_prometheus_scrape: true
+
+# Configuration des ressources
+registry_resources:
+  development:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+  staging:
+    requests:
+      cpu: "200m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+  production:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "2000m"
+      memory: "2Gi"
+
+# Configuration de la haute disponibilité
+registry_replicas:
+  development: 1
+  staging: 2
+  production: 3
+
+# Configuration du stockage
+registry_persistent_storage: true
+registry_storage_size: "10Gi"
+registry_storage_class: "standard"

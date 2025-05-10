@@ -11,7 +11,7 @@
 
   vars:
     k3s_version: "v1.25.6+k3s1"  # Version stable de K3s
-    k3s_server_args: "--disable traefik --disable servicelb --disable-cloud-controller --kube-controller-manager-arg bind-address=0.0.0.0 --kube-scheduler-arg bind-address=0.0.0.0"
+    k3s_server_args: "--disable servicelb --disable-cloud-controller --kube-controller-manager-arg bind-address=0.0.0.0 --kube-scheduler-arg bind-address=0.0.0.0"
     kubeconfig_local_path: "~/.kube/config"
 
   tasks:
@@ -202,21 +202,9 @@
               - value: installCRDs=true
       when: k3s_installed.changed
 
-    - name: Installation de Nginx Ingress Controller
-      block:
-        - name: Ajout du dépôt Helm de nginx-ingress
-          kubernetes.core.helm_repository:
-            name: ingress-nginx
-            repo_url: https://kubernetes.github.io/ingress-nginx
-
-        - name: Déploiement de nginx-ingress via Helm
-          kubernetes.core.helm:
-            name: ingress-nginx
-            chart_ref: ingress-nginx/ingress-nginx
-            release_namespace: ingress-nginx
-            create_namespace: true
-            wait: true
-      when: k3s_installed.changed
+    # Traefik est maintenant utilisé comme contrôleur d'ingress par défaut
+    # Le bloc d'installation de Nginx Ingress Controller a été supprimé
+    # Traefik est installé automatiquement avec K3s
 
     - name: Installation du Kubernetes Dashboard
       block:

@@ -1,0 +1,76 @@
+---
+# Titre: Configuration du monitoring pour la registry de conteneurs
+# Description: Configure le monitoring pour la registry de conteneurs Docker
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-10
+# Version: 1.0.0
+
+- name: Vérification de l'existence de Prometheus
+  k8s_info:
+    api_version: v1
+    kind: Service
+    namespace: monitoring
+    name: prometheus-kube-prometheus-prometheus
+  register: prometheus_info
+  failed_when: false
+
+- name: Avertissement si Prometheus n'est pas trouvé
+  debug:
+    msg: "AVERTISSEMENT: Le service Prometheus n'a pas été trouvé. Le monitoring de la registry ne sera pas configuré."
+  when: prometheus_info.resources | length == 0
+
+- name: Création du ServiceMonitor pour la registry
+  k8s:
+    state: present
+    src: "{{ temp_dir.path }}/servicemonitor.yml"
+  register: servicemonitor_result
+  when:
+    - prometheus_info.resources | length > 0
+    - registry_prometheus_scrape | default(true) | bool
+
+- name: Configuration des règles d'alerte pour la registry
+  k8s:
+    state: present
+    definition:
+      apiVersion: monitoring.coreos.com/v1
+      kind: PrometheusRule
+      metadata:
+        name: "{{ app_name | default('registry') }}-alerts"
+        namespace: monitoring
+        labels:
+          app: "{{ app_name | default('registry') }}"
+          technology: "registry"
+          prometheus: kube-prometheus
+      spec:
+        groups:
+          - name: registry.rules
+            rules:
+              - alert: RegistryInstanceDown
+                expr: absent(up{job="{{ app_name | default('registry') }}"})
+                for: 5m
+                labels:
+                  severity: critical
+                annotations:
+                  summary: "Instance registry {{ app_name | default('registry') }} down"
+                  description: "L'instance registry {{ app_name | default('registry') }} est indisponible depuis 5 minutes."
+                  runbook_url: "https://docs.lions.dev/runbooks/registry-down"
+              - alert: RegistryHighStorageUsage
+                expr: container_fs_usage_bytes{container="{{ app_name | default('registry') }}"} / container_fs_limit_bytes{container="{{ app_name | default('registry') }}"} > 0.85
+                for: 10m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: "Utilisation élevée du stockage de la registry"
+                  description: "La registry {{ app_name | default('registry') }} utilise plus de 85% de son espace de stockage alloué."
+                  runbook_url: "https://docs.lions.dev/runbooks/registry-storage"
+  register: prometheusrule_result
+  when:
+    - prometheus_info.resources | length > 0
+    - registry_prometheus_scrape | default(true) | bool
+
+- name: Affichage des informations sur le monitoring
+  debug:
+    msg: "Le monitoring a été configuré pour la registry. ServiceMonitor: {{ servicemonitor_result.changed | default(false) }}, PrometheusRule: {{ prometheusrule_result.changed | default(false) }}"
+  when:
+    - prometheus_info.resources | length > 0
+    - registry_prometheus_scrape | default(true) | bool
