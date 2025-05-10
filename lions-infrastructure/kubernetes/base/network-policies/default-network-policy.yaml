@@ -1,0 +1,41 @@
+---
+# Titre: Politique réseau par défaut pour tous les environnements
+# Description: Définit la politique réseau par défaut pour tous les environnements
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-10
+# Version: 1.0.0
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-network-policy
+  namespace: default
+spec:
+  # Politique restrictive par défaut
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Autoriser uniquement le trafic entrant depuis les namespaces spécifiques
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress-nginx
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+  egress:
+    # Autoriser uniquement le trafic sortant vers les services essentiels
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
