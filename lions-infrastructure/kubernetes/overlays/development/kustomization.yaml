@@ -16,9 +16,9 @@ resources:
   - ../../base/resource-quotas
 
 # Patches spécifiques à l'environnement de développement
-patchesStrategicMerge:
-  - patches/resource-quotas-patch.yaml
-  - patches/network-policies-patch.yaml
+patches:
+  - path: patches/resource-quotas-patch.yaml
+  - path: patches/network-policies-patch.yaml
 
 # Configuration des namespaces
 namespace: development
@@ -34,12 +34,22 @@ commonAnnotations:
   environment.lions.dev/contact: "dev-team@lions.dev"
   environment.lions.dev/documentation: "https://docs.lions.dev/environments/development"
 
-# Configuration des variables
-vars:
-  - name: ENVIRONMENT
-    objref:
+# Configuration des remplacements
+replacements:
+  - source:
       kind: Namespace
       name: development
-      apiVersion: v1
-    fieldref:
-      fieldpath: metadata.name
+      fieldPath: metadata.name
+    targets:
+      - select:
+          kind: Namespace
+        fieldPaths:
+          - metadata.name
+        options:
+          create: false
+      - select:
+          kind: "*"
+        fieldPaths:
+          - metadata.namespace
+        options:
+          create: true
