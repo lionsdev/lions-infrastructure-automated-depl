@@ -3046,7 +3046,8 @@ function verifier_installation() {
 
     # Vérification des événements récents
     log "INFO" "Événements récents (dernières 5 minutes):"
-    kubectl get events --all-namespaces --sort-by='.lastTimestamp' --field-selector type=Warning --since=5m
+    # Using a more compatible approach without --since flag
+    kubectl get events --all-namespaces --sort-by='.lastTimestamp' --field-selector type=Warning | head -20
 
     # Vérification de la connectivité externe
     log "INFO" "Vérification de la connectivité externe..."
