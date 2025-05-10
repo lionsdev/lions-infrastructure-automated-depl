@@ -2664,30 +2664,8 @@ log "INFO" "Mode debug: ${debug_mode}"
 log "INFO" "Mode test: ${test_mode}"
 log "INFO" "Fichier de log: ${LOG_FILE}"
 
-# Vérification qu'une seule instance du script est en cours d'exécution
-if [[ -f "${LOCK_FILE}" ]]; then
-    log "WARNING" "Une autre instance du script semble être en cours d'exécution"
-
-    # Vérification de l'âge du fichier de verrouillage
-    local lock_file_age=$(( $(date +%s) - $(stat -c %Y "${LOCK_FILE}" 2>/dev/null || echo $(date +%s)) ))
-
-    # Vérification de l'uptime du système
-    local uptime_seconds=$(cat /proc/uptime 2>/dev/null | awk '{print int($1)}' || echo 999999)
-
-    # Si le système a redémarré après la création du fichier de verrouillage
-    # ou si le fichier de verrouillage existe depuis plus d'une heure
-    if [[ ${uptime_seconds} -lt ${lock_file_age} || ${lock_file_age} -gt 3600 ]]; then
-        log "INFO" "Le système a redémarré ou le fichier de verrouillage est obsolète (âge: ${lock_file_age}s, uptime: ${uptime_seconds}s)"
-        log "INFO" "Suppression automatique du fichier de verrouillage obsolète"
-        rm -f "${LOCK_FILE}"
-    else
-        log "WARNING" "Si ce n'est pas le cas, supprimez le fichier ${LOCK_FILE} et réessayez"
-        exit 1
-    fi
-fi
-
-# Création du fichier de verrouillage
-touch "${LOCK_FILE}"
+# La vérification du fichier de verrouillage est déjà effectuée dans la fonction verifier_prerequis
+# Ne pas créer de fichier de verrouillage ici pour éviter les conflits
 
 # Exécution des tests de robustesse si demandé
 if [[ "${test_mode}" == "true" ]]; then
