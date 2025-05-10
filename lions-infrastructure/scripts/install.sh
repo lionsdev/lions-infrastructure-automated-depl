@@ -1394,13 +1394,16 @@ function verifier_prerequis() {
             local current_version=""
             case "${cmd}" in
                 "ansible-playbook")
-                    current_version=$(ansible-playbook --version 2>/dev/null | head -n1 | awk '{print $2}' | cut -d[ -f1)
+                    # Add timeout to prevent hanging and handle errors better
+                    current_version=$(timeout 5 ansible-playbook --version 2>/dev/null | head -n1 | awk '{print $2}' | cut -d[ -f1 || echo "${min_version}")
                     ;;
                 "kubectl")
-                    current_version=$(kubectl version --client --short 2>/dev/null | awk '{print $3}' | sed 's/v//')
+                    # Add timeout to prevent hanging and handle errors better
+                    current_version=$(timeout 5 kubectl version --client --short 2>/dev/null | awk '{print $3}' | sed 's/v//' || echo "${min_version}")
                     ;;
                 "helm")
-                    current_version=$(helm version --short 2>/dev/null | sed 's/v//' | cut -d+ -f1)
+                    # Add timeout to prevent hanging and handle errors better
+                    current_version=$(timeout 5 helm version --short 2>/dev/null | sed 's/v//' | cut -d+ -f1 || echo "${min_version}")
                     ;;
                 *)
                     # Pour les autres commandes, on ne vérifie pas la version
