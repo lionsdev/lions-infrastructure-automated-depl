@@ -24,7 +24,7 @@ patches:
 namespace: development
 
 # Labels communs à ajouter à toutes les ressources
-labels:
+commonLabels:
   environment: development
   managed-by: kustomize
 
