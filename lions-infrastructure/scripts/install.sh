@@ -1348,6 +1348,9 @@ function run_with_timeout() {
     local cmd="$1"
     local timeout="${2:-${TIMEOUT_SECONDS}}"
     local cmd_type="${3:-generic}"
+    local max_retries=3
+    local retry_count=0
+    local backoff_time=5
 
     log "INFO" "Exécution de la commande avec timeout ${timeout}s: ${cmd}"
     LAST_COMMAND="${cmd}"
@@ -1358,81 +1361,125 @@ function run_with_timeout() {
     # Sauvegarde de l'état avant l'exécution pour permettre une reprise
     echo "${INSTALLATION_STEP}" > "${STATE_FILE}"
 
-    # Vérification de la connectivité avant l'exécution
-    if [[ "${cmd_type}" == "ansible_playbook" || "${cmd_type}" == "ssh" ]]; then
-        if ! ping -c 1 -W 5 "${ansible_host}" &>/dev/null; then
-            log "ERROR" "Connectivité réseau perdue avec le VPS (${ansible_host})"
-            log "ERROR" "Impossible d'exécuter la commande sans connectivité réseau"
-            return 1
+    # Fonction pour vérifier si l'erreur est liée au réseau
+    function is_network_error() {
+        local output="$1"
+        local exit_code="$2"
+
+        # Codes d'erreur typiques des problèmes réseau
+        if [[ ${exit_code} -eq 124 || ${exit_code} -eq 255 ]]; then
+            return 0
         fi
-    fi
 
-    # Exécution de la commande avec timeout et capture de la sortie
-    log "DEBUG" "Début de l'exécution de la commande..."
-
-    # Création d'un fichier temporaire pour la sortie
-    local output_file=$(mktemp)
-
-    # Exécution de la commande avec timeout et redirection de la sortie
-    timeout ${timeout} bash -c "${cmd}" > "${output_file}" 2>&1
-    local exit_code=$?
-
-    # Lecture de la sortie
-    local command_output=$(cat "${output_file}")
-    rm -f "${output_file}"
-
-    # Journalisation de la sortie si en mode debug
-    if [[ "${debug_mode}" == "true" ]]; then
-        log "DEBUG" "Sortie de la commande:"
-        echo "${command_output}" | while IFS= read -r line; do
-            log "DEBUG" "  ${line}"
-        done
-    fi
-
-    # Analyse du code de retour
-    if [[ ${exit_code} -eq 124 ]]; then
-        log "ERROR" "La commande a dépassé le délai d'attente (${timeout}s)"
-
-        # Tentative de diagnostic pour les timeouts
-        case "${cmd_type}" in
-            "ansible_playbook")
-                log "INFO" "Vérification de la connectivité SSH..."
-                if ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "echo 'Test de connexion'" &>/dev/null; then
-                    log "INFO" "La connexion SSH fonctionne, le problème pourrait être lié à Ansible ou à une opération longue"
-                else
-                    log "ERROR" "La connexion SSH ne fonctionne pas, vérifiez les paramètres de connexion"
-                fi
-                ;;
-            "kubectl_apply")
-                log "INFO" "Vérification de l'accès à l'API Kubernetes..."
-                if kubectl cluster-info &>/dev/null; then
-                    log "INFO" "L'accès à l'API Kubernetes fonctionne, le problème pourrait être lié à une opération longue"
-                else
-                    log "ERROR" "L'accès à l'API Kubernetes ne fonctionne pas, vérifiez la configuration de kubectl"
-                fi
-                ;;
-        esac
+        # Messages d'erreur typiques des problèmes réseau
+        if echo "${output}" | grep -q -E "Connection refused|Connection timed out|Network is unreachable|Unable to connect|Connection reset by peer|Temporary failure in name resolution|Could not resolve host|Network error"; then
+            return 0
+        fi
 
         return 1
-    elif [[ ${exit_code} -ne 0 ]]; then
-        log "ERROR" "La commande a échoué avec le code ${exit_code}"
+    }
 
-        # Analyse de la sortie pour des erreurs connues
-        if echo "${command_output}" | grep -q "Connection refused"; then
-            log "ERROR" "Connexion refusée - vérifiez que le service est en cours d'exécution et accessible"
-        elif echo "${command_output}" | grep -q "Permission denied"; then
-            log "ERROR" "Permission refusée - vérifiez les droits d'accès"
-        elif echo "${command_output}" | grep -q "No space left on device"; then
-            log "ERROR" "Plus d'espace disque disponible - libérez de l'espace et réessayez"
-        elif echo "${command_output}" | grep -q "Unable to connect to the server"; then
-            log "ERROR" "Impossible de se connecter au serveur Kubernetes - vérifiez que K3s est en cours d'exécution"
+    while true; do
+        # Vérification de la connectivité avant l'exécution
+        if [[ "${cmd_type}" == "ansible_playbook" || "${cmd_type}" == "ssh" ]]; then
+            if ! ping -c 1 -W 5 "${ansible_host}" &>/dev/null; then
+                if [[ ${retry_count} -lt ${max_retries} ]]; then
+                    retry_count=$((retry_count + 1))
+                    log "WARNING" "Connectivité réseau perdue avec le VPS (${ansible_host}). Tentative ${retry_count}/${max_retries} dans ${backoff_time} secondes..."
+                    sleep ${backoff_time}
+                    backoff_time=$((backoff_time * 2))  # Backoff exponentiel
+                    continue
+                else
+                    log "ERROR" "Connectivité réseau perdue avec le VPS (${ansible_host})"
+                    log "ERROR" "Impossible d'exécuter la commande sans connectivité réseau après ${max_retries} tentatives"
+                    return 1
+                fi
+            fi
         fi
 
-        return ${exit_code}
-    fi
+        # Exécution de la commande avec timeout et capture de la sortie
+        log "DEBUG" "Début de l'exécution de la commande..."
 
-    log "DEBUG" "Commande exécutée avec succès"
-    return 0
+        # Création d'un fichier temporaire pour la sortie
+        local output_file=$(mktemp)
+
+        # Exécution de la commande avec timeout et redirection de la sortie
+        timeout ${timeout} bash -c "${cmd}" > "${output_file}" 2>&1
+        local exit_code=$?
+
+        # Lecture de la sortie
+        local command_output=$(cat "${output_file}")
+        rm -f "${output_file}"
+
+        # Journalisation de la sortie si en mode debug
+        if [[ "${debug_mode}" == "true" ]]; then
+            log "DEBUG" "Sortie de la commande:"
+            echo "${command_output}" | while IFS= read -r line; do
+                log "DEBUG" "  ${line}"
+            done
+        fi
+
+        # Vérification si l'erreur est liée au réseau et si on doit réessayer
+        if [[ ${exit_code} -ne 0 ]] && is_network_error "${command_output}" ${exit_code}; then
+            if [[ ${retry_count} -lt ${max_retries} ]]; then
+                retry_count=$((retry_count + 1))
+                log "WARNING" "Erreur réseau détectée (code ${exit_code}). Tentative ${retry_count}/${max_retries} dans ${backoff_time} secondes..."
+                sleep ${backoff_time}
+                backoff_time=$((backoff_time * 2))  # Backoff exponentiel
+                continue
+            fi
+        fi
+
+        # Analyse du code de retour
+        if [[ ${exit_code} -eq 124 ]]; then
+            log "ERROR" "La commande a dépassé le délai d'attente (${timeout}s)"
+
+            # Tentative de diagnostic pour les timeouts
+            case "${cmd_type}" in
+                "ansible_playbook")
+                    log "INFO" "Vérification de la connectivité SSH..."
+                    if ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "echo 'Test de connexion'" &>/dev/null; then
+                        log "INFO" "La connexion SSH fonctionne, le problème pourrait être lié à Ansible ou à une opération longue"
+                    else
+                        log "ERROR" "La connexion SSH ne fonctionne pas, vérifiez les paramètres de connexion"
+                    fi
+                    ;;
+                "kubectl_apply")
+                    log "INFO" "Vérification de l'accès à l'API Kubernetes..."
+                    if kubectl cluster-info &>/dev/null; then
+                        log "INFO" "L'accès à l'API Kubernetes fonctionne, le problème pourrait être lié à une opération longue"
+                    else
+                        log "ERROR" "L'accès à l'API Kubernetes ne fonctionne pas, vérifiez la configuration de kubectl"
+                    fi
+                    ;;
+            esac
+
+            return 1
+        elif [[ ${exit_code} -ne 0 ]]; then
+            log "ERROR" "La commande a échoué avec le code ${exit_code}"
+
+            # Analyse de la sortie pour des erreurs connues
+            if echo "${command_output}" | grep -q "Connection refused"; then
+                log "ERROR" "Connexion refusée - vérifiez que le service est en cours d'exécution et accessible"
+            elif echo "${command_output}" | grep -q "Permission denied"; then
+                log "ERROR" "Permission refusée - vérifiez les droits d'accès"
+            elif echo "${command_output}" | grep -q "No space left on device"; then
+                log "ERROR" "Plus d'espace disque disponible - libérez de l'espace et réessayez"
+            elif echo "${command_output}" | grep -q "Unable to connect to the server"; then
+                log "ERROR" "Impossible de se connecter au serveur Kubernetes - vérifiez que K3s est en cours d'exécution"
+            fi
+
+            return ${exit_code}
+        fi
+
+        # Si on arrive ici, c'est que la commande a réussi
+        if [[ ${retry_count} -gt 0 ]]; then
+            log "SUCCESS" "Commande exécutée avec succès après ${retry_count} tentatives"
+        else
+            log "DEBUG" "Commande exécutée avec succès"
+        fi
+        return 0
+    done
 }
 
 # Fonction d'affichage de l'aide
@@ -2775,8 +2822,61 @@ function test_robustesse() {
     # Restauration du timeout original
     TIMEOUT_SECONDS="${original_timeout}"
 
-    # Test 4: Simulation d'une erreur de ressources insuffisantes
-    log "INFO" "Test 4: Simulation d'une erreur de ressources insuffisantes..."
+    # Test 4: Test du mécanisme de retry pour les erreurs réseau
+    log "INFO" "Test 4: Test du mécanisme de retry pour les erreurs réseau..."
+
+    # Création d'un script temporaire qui échoue les premières fois puis réussit
+    local temp_script=$(mktemp)
+    cat > "${temp_script}" << 'EOF'
+#!/bin/bash
+COUNTER_FILE="/tmp/retry_test_counter"
+
+# Initialiser le compteur s'il n'existe pas
+if [[ ! -f "${COUNTER_FILE}" ]]; then
+    echo "0" > "${COUNTER_FILE}"
+fi
+
+# Lire le compteur actuel
+COUNTER=$(cat "${COUNTER_FILE}")
+
+# Incrémenter le compteur
+COUNTER=$((COUNTER + 1))
+echo "${COUNTER}" > "${COUNTER_FILE}"
+
+# Échouer les 2 premières fois avec une erreur réseau
+if [[ ${COUNTER} -le 2 ]]; then
+    echo "Connection timed out"
+    exit 1
+fi
+
+# Réussir la 3ème fois
+echo "Opération réussie"
+exit 0
+EOF
+
+    chmod +x "${temp_script}"
+
+    # Réinitialiser le compteur
+    echo "0" > "/tmp/retry_test_counter"
+
+    # Exécuter la commande avec le mécanisme de retry
+    if run_with_timeout "${temp_script}" 10 "network_test"; then
+        # Vérifier que le compteur est à 3 (2 échecs + 1 succès)
+        local final_counter=$(cat "/tmp/retry_test_counter")
+        if [[ "${final_counter}" -eq 3 ]]; then
+            log "SUCCESS" "Test 4 réussi: Le mécanisme de retry a fonctionné correctement (${final_counter} tentatives)"
+        else
+            log "ERROR" "Test 4 échoué: Le nombre de tentatives (${final_counter}) ne correspond pas à l'attendu (3)"
+        fi
+    else
+        log "ERROR" "Test 4 échoué: La commande n'a pas réussi malgré le mécanisme de retry"
+    fi
+
+    # Nettoyage
+    rm -f "${temp_script}" "/tmp/retry_test_counter"
+
+    # Test 5: Simulation d'une erreur de ressources insuffisantes
+    log "INFO" "Test 5: Simulation d'une erreur de ressources insuffisantes..."
     local original_required_space="${REQUIRED_SPACE_MB}"
     REQUIRED_SPACE_MB=999999999
 
