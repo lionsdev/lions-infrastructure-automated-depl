@@ -1470,6 +1470,13 @@ function run_with_timeout() {
     local max_retries=3
     local retry_count=0
     local backoff_time=5
+    local interactive=false
+
+    # Vérifier si la commande est interactive (nécessite une entrée utilisateur)
+    if [[ "${cmd}" == *"--ask-become-pass"* || "${cmd}" == *"--ask-pass"* || "${cmd}" == *"-K"* || "${cmd}" == *"-k"* ]]; then
+        interactive=true
+        log "INFO" "Commande interactive détectée, l'entrée utilisateur sera requise"
+    fi
 
     log "INFO" "Exécution de la commande avec timeout ${timeout}s: ${cmd}"
     LAST_COMMAND="${cmd}"
@@ -1516,22 +1523,28 @@ function run_with_timeout() {
             fi
         fi
 
-        # Exécution de la commande avec timeout et capture de la sortie
+        # Exécution de la commande avec timeout
         log "DEBUG" "Début de l'exécution de la commande..."
 
-        # Création d'un fichier temporaire pour la sortie
-        local output_file=$(mktemp)
+        local exit_code=0
+        local command_output=""
 
-        # Exécution de la commande avec timeout et redirection de la sortie
-        timeout ${timeout} bash -c "${cmd}" > "${output_file}" 2>&1
-        local exit_code=$?
+        if [[ "${interactive}" == "true" ]]; then
+            # Pour les commandes interactives, exécuter sans redirection pour permettre l'entrée utilisateur
+            log "INFO" "Exécution de la commande interactive, veuillez répondre aux invites si nécessaire..."
+            timeout ${timeout} bash -c "${cmd}"
+            exit_code=$?
+        else
+            # Pour les commandes non interactives, capturer la sortie
+            local output_file=$(mktemp)
+            timeout ${timeout} bash -c "${cmd}" > "${output_file}" 2>&1
+            exit_code=$?
+            command_output=$(cat "${output_file}")
+            rm -f "${output_file}"
+        fi
 
-        # Lecture de la sortie
-        local command_output=$(cat "${output_file}")
-        rm -f "${output_file}"
-
-        # Journalisation de la sortie si en mode debug
-        if [[ "${debug_mode}" == "true" ]]; then
+        # Journalisation de la sortie si en mode debug et si la commande n'était pas interactive
+        if [[ "${debug_mode}" == "true" && -n "${command_output}" ]]; then
             log "DEBUG" "Sortie de la commande:"
             echo "${command_output}" | while IFS= read -r line; do
                 log "DEBUG" "  ${line}"
@@ -1539,13 +1552,28 @@ function run_with_timeout() {
         fi
 
         # Vérification si l'erreur est liée au réseau et si on doit réessayer
-        if [[ ${exit_code} -ne 0 ]] && is_network_error "${command_output}" ${exit_code}; then
-            if [[ ${retry_count} -lt ${max_retries} ]]; then
-                retry_count=$((retry_count + 1))
-                log "WARNING" "Erreur réseau détectée (code ${exit_code}). Tentative ${retry_count}/${max_retries} dans ${backoff_time} secondes..."
-                sleep ${backoff_time}
-                backoff_time=$((backoff_time * 2))  # Backoff exponentiel
-                continue
+        if [[ ${exit_code} -ne 0 ]]; then
+            # Pour les commandes interactives, on ne peut pas analyser la sortie
+            if [[ "${interactive}" == "true" ]]; then
+                # Si c'est une erreur de timeout, on considère que c'est une erreur réseau
+                if [[ ${exit_code} -eq 124 || ${exit_code} -eq 255 ]]; then
+                    if [[ ${retry_count} -lt ${max_retries} ]]; then
+                        retry_count=$((retry_count + 1))
+                        log "WARNING" "Erreur possible de réseau pour la commande interactive (code ${exit_code}). Tentative ${retry_count}/${max_retries} dans ${backoff_time} secondes..."
+                        sleep ${backoff_time}
+                        backoff_time=$((backoff_time * 2))  # Backoff exponentiel
+                        continue
+                    fi
+                fi
+            # Pour les commandes non interactives, on peut analyser la sortie
+            elif is_network_error "${command_output}" ${exit_code}; then
+                if [[ ${retry_count} -lt ${max_retries} ]]; then
+                    retry_count=$((retry_count + 1))
+                    log "WARNING" "Erreur réseau détectée (code ${exit_code}). Tentative ${retry_count}/${max_retries} dans ${backoff_time} secondes..."
+                    sleep ${backoff_time}
+                    backoff_time=$((backoff_time * 2))  # Backoff exponentiel
+                    continue
+                fi
             fi
         fi
 
@@ -1577,15 +1605,27 @@ function run_with_timeout() {
         elif [[ ${exit_code} -ne 0 ]]; then
             log "ERROR" "La commande a échoué avec le code ${exit_code}"
 
-            # Analyse de la sortie pour des erreurs connues
-            if echo "${command_output}" | grep -q "Connection refused"; then
-                log "ERROR" "Connexion refusée - vérifiez que le service est en cours d'exécution et accessible"
-            elif echo "${command_output}" | grep -q "Permission denied"; then
-                log "ERROR" "Permission refusée - vérifiez les droits d'accès"
-            elif echo "${command_output}" | grep -q "No space left on device"; then
-                log "ERROR" "Plus d'espace disque disponible - libérez de l'espace et réessayez"
-            elif echo "${command_output}" | grep -q "Unable to connect to the server"; then
-                log "ERROR" "Impossible de se connecter au serveur Kubernetes - vérifiez que K3s est en cours d'exécution"
+            # Analyse de la sortie pour des erreurs connues (seulement pour les commandes non interactives)
+            if [[ "${interactive}" == "false" && -n "${command_output}" ]]; then
+                if echo "${command_output}" | grep -q "Connection refused"; then
+                    log "ERROR" "Connexion refusée - vérifiez que le service est en cours d'exécution et accessible"
+                elif echo "${command_output}" | grep -q "Permission denied"; then
+                    log "ERROR" "Permission refusée - vérifiez les droits d'accès"
+                elif echo "${command_output}" | grep -q "No space left on device"; then
+                    log "ERROR" "Plus d'espace disque disponible - libérez de l'espace et réessayez"
+                elif echo "${command_output}" | grep -q "Unable to connect to the server"; then
+                    log "ERROR" "Impossible de se connecter au serveur Kubernetes - vérifiez que K3s est en cours d'exécution"
+                fi
+            elif [[ "${interactive}" == "true" ]]; then
+                log "INFO" "La commande interactive a échoué. Vérifiez les erreurs affichées ci-dessus."
+
+                # Suggestions spécifiques pour les commandes interactives
+                if [[ "${cmd}" == *"ansible-playbook"* && "${cmd}" == *"--ask-become-pass"* ]]; then
+                    log "INFO" "Suggestions pour les erreurs Ansible avec --ask-become-pass:"
+                    log "INFO" "1. Vérifiez que vous avez entré le bon mot de passe sudo"
+                    log "INFO" "2. Vérifiez que l'utilisateur a les droits sudo sur le VPS"
+                    log "INFO" "3. Vérifiez la configuration de sudoers sur le VPS"
+                fi
             fi
 
             return ${exit_code}
@@ -1595,7 +1635,11 @@ function run_with_timeout() {
         if [[ ${retry_count} -gt 0 ]]; then
             log "SUCCESS" "Commande exécutée avec succès après ${retry_count} tentatives"
         else
-            log "DEBUG" "Commande exécutée avec succès"
+            if [[ "${interactive}" == "true" ]]; then
+                log "SUCCESS" "Commande interactive exécutée avec succès"
+            else
+                log "DEBUG" "Commande exécutée avec succès"
+            fi
         fi
         return 0
     done
@@ -2021,7 +2065,7 @@ function initialiser_vps() {
     LAST_COMMAND="${ansible_cmd}"
 
     # Exécution de la commande avec timeout
-    if run_with_timeout "${ansible_cmd}"; then
+    if run_with_timeout "${ansible_cmd}" "${TIMEOUT_SECONDS}" "ansible_playbook"; then
         log "SUCCESS" "Initialisation du VPS terminée avec succès"
 
         # Vérification de l'état du VPS après initialisation
@@ -2081,7 +2125,7 @@ function installer_k3s() {
     LAST_COMMAND="${ansible_cmd}"
 
     # Exécution de la commande avec timeout
-    if run_with_timeout "${ansible_cmd}" 3600; then  # Timeout plus long (1h) pour l'installation de K3s
+    if run_with_timeout "${ansible_cmd}" 3600 "ansible_playbook"; then  # Timeout plus long (1h) pour l'installation de K3s
         log "SUCCESS" "Installation de K3s terminée avec succès"
 
         # Vérification de l'installation de K3s
