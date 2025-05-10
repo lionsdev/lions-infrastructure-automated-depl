@@ -485,6 +485,182 @@ function command_exists() {
     command -v "$1" &> /dev/null
 }
 
+# Fonction pour installer les commandes manquantes
+function install_missing_commands() {
+    local commands=("$@")
+    local os_name=$(uname -s)
+    local success=true
+
+    log "INFO" "Détection du système d'exploitation: ${os_name}"
+
+    # Détection du gestionnaire de paquets
+    local pkg_manager=""
+    local install_cmd=""
+
+    if [[ "${os_name}" == "Linux" ]]; then
+        # Détection de la distribution Linux
+        if command_exists apt-get; then
+            pkg_manager="apt"
+            install_cmd="apt-get install -y"
+        elif command_exists dnf; then
+            pkg_manager="dnf"
+            install_cmd="dnf install -y"
+        elif command_exists yum; then
+            pkg_manager="yum"
+            install_cmd="yum install -y"
+        elif command_exists pacman; then
+            pkg_manager="pacman"
+            install_cmd="pacman -S --noconfirm"
+        elif command_exists zypper; then
+            pkg_manager="zypper"
+            install_cmd="zypper install -y"
+        else
+            log "ERROR" "Gestionnaire de paquets non reconnu sur ce système Linux"
+            return 1
+        fi
+    elif [[ "${os_name}" == "Darwin" ]]; then
+        # macOS - vérification de Homebrew
+        if command_exists brew; then
+            pkg_manager="brew"
+            install_cmd="brew install"
+        else
+            log "ERROR" "Homebrew n'est pas installé sur ce système macOS"
+            log "INFO" "Installez Homebrew avec: /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""
+            return 1
+        fi
+    else
+        log "ERROR" "Système d'exploitation non supporté pour l'installation automatique: ${os_name}"
+        return 1
+    fi
+
+    log "INFO" "Utilisation du gestionnaire de paquets: ${pkg_manager}"
+
+    # Mise à jour des dépôts si nécessaire
+    if [[ "${pkg_manager}" == "apt" ]]; then
+        log "INFO" "Mise à jour des dépôts apt..."
+        if ! sudo apt-get update &>/dev/null; then
+            log "WARNING" "Impossible de mettre à jour les dépôts apt"
+        fi
+    elif [[ "${pkg_manager}" == "dnf" || "${pkg_manager}" == "yum" ]]; then
+        log "INFO" "Mise à jour des dépôts ${pkg_manager}..."
+        if ! sudo ${pkg_manager} check-update &>/dev/null; then
+            log "WARNING" "Impossible de mettre à jour les dépôts ${pkg_manager}"
+        fi
+    fi
+
+    # Installation des commandes manquantes
+    for cmd in "${commands[@]}"; do
+        log "INFO" "Installation de la commande: ${cmd}"
+
+        # Mapping des noms de commandes aux noms de paquets
+        local pkg_name=""
+        case "${cmd}" in
+            "jq")
+                pkg_name="jq"
+                ;;
+            "ansible-playbook")
+                if [[ "${pkg_manager}" == "apt" ]]; then
+                    pkg_name="ansible"
+                elif [[ "${pkg_manager}" == "brew" ]]; then
+                    pkg_name="ansible"
+                else
+                    pkg_name="ansible"
+                fi
+                ;;
+            "kubectl")
+                if [[ "${pkg_manager}" == "apt" ]]; then
+                    # Pour Debian/Ubuntu, kubectl nécessite un dépôt spécial
+                    log "INFO" "Configuration du dépôt Kubernetes pour apt..."
+                    if ! command_exists curl; then
+                        sudo apt-get install -y curl &>/dev/null
+                    fi
+                    curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add - &>/dev/null
+                    echo "deb https://apt.kubernetes.io/ kubernetes-xenial main" | sudo tee /etc/apt/sources.list.d/kubernetes.list &>/dev/null
+                    sudo apt-get update &>/dev/null
+                    pkg_name="kubectl"
+                elif [[ "${pkg_manager}" == "brew" ]]; then
+                    pkg_name="kubernetes-cli"
+                else
+                    pkg_name="kubectl"
+                fi
+                ;;
+            "helm")
+                if [[ "${pkg_manager}" == "apt" ]]; then
+                    # Pour Debian/Ubuntu, helm nécessite un dépôt spécial
+                    log "INFO" "Configuration du dépôt Helm pour apt..."
+                    if ! command_exists curl; then
+                        sudo apt-get install -y curl &>/dev/null
+                    fi
+                    curl https://baltocdn.com/helm/signing.asc | sudo apt-key add - &>/dev/null
+                    echo "deb https://baltocdn.com/helm/stable/debian/ all main" | sudo tee /etc/apt/sources.list.d/helm-stable-debian.list &>/dev/null
+                    sudo apt-get update &>/dev/null
+                    pkg_name="helm"
+                elif [[ "${pkg_manager}" == "brew" ]]; then
+                    pkg_name="helm"
+                else
+                    pkg_name="helm"
+                fi
+                ;;
+            "timeout")
+                if [[ "${pkg_manager}" == "apt" ]]; then
+                    pkg_name="coreutils"
+                elif [[ "${pkg_manager}" == "brew" ]]; then
+                    pkg_name="coreutils"
+                else
+                    pkg_name="coreutils"
+                fi
+                ;;
+            "nc")
+                if [[ "${pkg_manager}" == "apt" ]]; then
+                    pkg_name="netcat"
+                elif [[ "${pkg_manager}" == "brew" ]]; then
+                    pkg_name="netcat"
+                else
+                    pkg_name="netcat"
+                fi
+                ;;
+            "ping")
+                if [[ "${pkg_manager}" == "apt" ]]; then
+                    pkg_name="iputils-ping"
+                elif [[ "${pkg_manager}" == "brew" ]]; then
+                    pkg_name="inetutils"
+                else
+                    pkg_name="iputils"
+                fi
+                ;;
+            "ssh"|"scp")
+                if [[ "${pkg_manager}" == "apt" ]]; then
+                    pkg_name="openssh-client"
+                elif [[ "${pkg_manager}" == "brew" ]]; then
+                    pkg_name="openssh"
+                else
+                    pkg_name="openssh"
+                fi
+                ;;
+            *)
+                # Si la commande n'est pas dans notre mapping, on utilise le même nom
+                pkg_name="${cmd}"
+                ;;
+        esac
+
+        # Installation du paquet
+        log "INFO" "Installation du paquet: ${pkg_name}"
+        if ! sudo ${install_cmd} ${pkg_name} &>/dev/null; then
+            log "ERROR" "Échec de l'installation de ${pkg_name}"
+            success=false
+        else
+            log "SUCCESS" "Installation de ${pkg_name} réussie"
+            # Vérification que la commande est maintenant disponible
+            if ! command_exists "${cmd}"; then
+                log "WARNING" "La commande ${cmd} n'est toujours pas disponible après l'installation"
+                success=false
+            fi
+        fi
+    done
+
+    return $( [[ "${success}" == "true" ]] && echo 0 || echo 1 )
+}
+
 # Fonction pour vérifier les ressources système locales
 function check_local_resources() {
     log "INFO" "Vérification des ressources système locales..."
@@ -1420,10 +1596,32 @@ function verifier_prerequis() {
     done
 
     if [[ ${#missing_commands[@]} -gt 0 ]]; then
-        log "ERROR" "Commandes requises non trouvées: ${missing_commands[*]}"
-        log "ERROR" "Veuillez installer ces commandes avant de continuer"
-        cleanup
-        exit 1
+        log "WARNING" "Commandes requises non trouvées: ${missing_commands[*]}"
+        log "INFO" "Tentative d'installation automatique des commandes manquantes..."
+
+        if install_missing_commands "${missing_commands[@]}"; then
+            log "SUCCESS" "Installation des commandes manquantes réussie"
+            # Vérifier à nouveau les commandes
+            missing_commands=()
+            for cmd_with_version in "${required_commands[@]}"; do
+                local cmd="${cmd_with_version%%:*}"
+                if ! command_exists "${cmd}"; then
+                    missing_commands+=("${cmd}")
+                fi
+            done
+
+            if [[ ${#missing_commands[@]} -gt 0 ]]; then
+                log "ERROR" "Certaines commandes n'ont pas pu être installées: ${missing_commands[*]}"
+                log "ERROR" "Veuillez installer ces commandes manuellement avant de continuer"
+                cleanup
+                exit 1
+            fi
+        else
+            log "ERROR" "Échec de l'installation automatique des commandes manquantes"
+            log "ERROR" "Veuillez installer ces commandes manuellement avant de continuer"
+            cleanup
+            exit 1
+        fi
     fi
 
     if [[ ${#outdated_commands[@]} -gt 0 ]]; then
