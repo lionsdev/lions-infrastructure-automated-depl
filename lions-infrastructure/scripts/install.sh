@@ -1056,6 +1056,112 @@ EOF
     return 0
 }
 
+# Fonction pour ouvrir les ports requis sur le VPS
+function open_required_ports() {
+    local target_host="${ansible_host}"
+    local target_port="${ansible_port}"
+    local ports_to_open=("$@")
+    local timeout=10
+    local success=true
+
+    log "INFO" "Tentative d'ouverture des ports requis sur ${target_host}..."
+
+    # Vérification que nous avons des ports à ouvrir
+    if [[ ${#ports_to_open[@]} -eq 0 ]]; then
+        log "WARNING" "Aucun port à ouvrir spécifié"
+        return 0
+    fi
+
+    # Vérification de la connexion SSH
+    if ! ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${target_port}" "${ansible_user}@${target_host}" "echo 'Test de connexion'" &>/dev/null; then
+        log "ERROR" "Impossible de se connecter au VPS via SSH pour ouvrir les ports"
+        return 1
+    fi
+
+    # Vérification que UFW est installé et actif
+    if ! ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${target_port}" "${ansible_user}@${target_host}" "command -v ufw &>/dev/null && systemctl is-active --quiet ufw" &>/dev/null; then
+        log "WARNING" "UFW n'est pas installé ou n'est pas actif sur le VPS"
+        log "INFO" "Tentative d'installation et d'activation de UFW..."
+
+        # Installation de UFW si nécessaire
+        if ! ssh -o BatchMode=yes -o ConnectTimeout=${timeout} -p "${target_port}" "${ansible_user}@${target_host}" "sudo apt-get update && sudo apt-get install -y ufw" &>/dev/null; then
+            log "ERROR" "Impossible d'installer UFW sur le VPS"
+            return 1
+        fi
+
+        # Activation de UFW
+        if ! ssh -o BatchMode=yes -o ConnectTimeout=${timeout} -p "${target_port}" "${ansible_user}@${target_host}" "sudo ufw --force enable" &>/dev/null; then
+            log "ERROR" "Impossible d'activer UFW sur le VPS"
+            return 1
+        fi
+
+        log "SUCCESS" "UFW installé et activé avec succès"
+    fi
+
+    # Ouverture des ports
+    log "INFO" "Ouverture des ports: ${ports_to_open[*]}"
+
+    for port in "${ports_to_open[@]}"; do
+        log "INFO" "Ouverture du port ${port}..."
+
+        # Vérification si le port est déjà ouvert
+        if ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${target_port}" "${ansible_user}@${target_host}" "sudo ufw status | grep -E \"^${port}/(tcp|udp)\"" &>/dev/null; then
+            log "INFO" "Le port ${port} est déjà ouvert dans UFW"
+            continue
+        fi
+
+        # Ouverture du port TCP
+        if ! ssh -o BatchMode=yes -o ConnectTimeout=${timeout} -p "${target_port}" "${ansible_user}@${target_host}" "sudo ufw allow ${port}/tcp" &>/dev/null; then
+            log "ERROR" "Impossible d'ouvrir le port ${port}/tcp sur le VPS"
+            success=false
+            continue
+        fi
+
+        # Ouverture du port UDP
+        if ! ssh -o BatchMode=yes -o ConnectTimeout=${timeout} -p "${target_port}" "${ansible_user}@${target_host}" "sudo ufw allow ${port}/udp" &>/dev/null; then
+            log "WARNING" "Impossible d'ouvrir le port ${port}/udp sur le VPS"
+            # Ne pas échouer pour UDP, car certains services n'utilisent que TCP
+        fi
+
+        log "SUCCESS" "Port ${port} ouvert avec succès"
+    done
+
+    # Rechargement des règles UFW
+    if ! ssh -o BatchMode=yes -o ConnectTimeout=${timeout} -p "${target_port}" "${ansible_user}@${target_host}" "sudo ufw reload" &>/dev/null; then
+        log "WARNING" "Impossible de recharger les règles UFW"
+        # Ne pas échouer pour le rechargement, car les règles sont déjà appliquées
+    fi
+
+    # Vérification que les ports sont bien ouverts
+    log "INFO" "Vérification que les ports sont bien ouverts..."
+    local failed_ports=()
+
+    for port in "${ports_to_open[@]}"; do
+        if ! ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${target_port}" "${ansible_user}@${target_host}" "sudo ufw status | grep -E \"^${port}/(tcp|udp)\"" &>/dev/null; then
+            log "WARNING" "Le port ${port} ne semble pas être correctement ouvert dans UFW"
+            failed_ports+=("${port}")
+            success=false
+        fi
+    done
+
+    if [[ ${#failed_ports[@]} -gt 0 ]]; then
+        log "WARNING" "Les ports suivants n'ont pas pu être ouverts: ${failed_ports[*]}"
+    fi
+
+    # Affichage du statut UFW
+    local ufw_status=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${target_port}" "${ansible_user}@${target_host}" "sudo ufw status" 2>/dev/null || echo "Impossible de récupérer le statut UFW")
+    log "INFO" "Statut UFW actuel:"
+    echo "${ufw_status}"
+
+    if [[ "${success}" == "true" ]]; then
+        log "SUCCESS" "Tous les ports ont été ouverts avec succès"
+        return 0
+    else
+        log "WARNING" "Certains ports n'ont pas pu être ouverts"
+        return 1
+    fi
+}
+
 # Fonction pour vérifier la connectivité réseau de manière approfondie
 function check_network() {
     local target_host="${ansible_host}"
@@ -1206,6 +1312,43 @@ function check_network() {
         log "INFO" "Ports ouverts: ${open_ports[*]}"
         log "WARNING" "Ports fermés: ${closed_ports[*]}"
 
+        # Demande à l'utilisateur s'il souhaite ouvrir les ports automatiquement
+        log "INFO" "Des ports requis sont fermés. Souhaitez-vous les ouvrir automatiquement? (o/N)"
+        read -r answer
+
+        if [[ "${answer}" =~ ^[Oo]$ ]]; then
+            # Tentative d'ouverture des ports fermés
+            log "INFO" "Tentative d'ouverture automatique des ports fermés..."
+            if open_required_ports "${closed_ports[@]}"; then
+                log "SUCCESS" "Ports ouverts avec succès"
+
+                # Vérification que les ports sont maintenant accessibles
+                local still_closed_ports=()
+                for port in "${closed_ports[@]}"; do
+                    if ! nc -z -w ${timeout} "${target_host}" "${port}" &>/dev/null; then
+                        still_closed_ports+=("${port}")
+                    else
+                        open_ports+=("${port}")
+                    fi
+                done
+
+                if [[ ${#still_closed_ports[@]} -eq 0 ]]; then
+                    log "SUCCESS" "Tous les ports sont maintenant accessibles"
+                    closed_ports=()
+                else
+                    log "WARNING" "Certains ports sont toujours inaccessibles malgré l'ouverture dans le pare-feu"
+                    log "WARNING" "Cela peut être dû à un pare-feu externe ou à des services non démarrés"
+                    closed_ports=("${still_closed_ports[@]}")
+                    log "INFO" "Ports toujours fermés: ${closed_ports[*]}"
+                fi
+            else
+                log "WARNING" "Impossible d'ouvrir automatiquement certains ports"
+                log "WARNING" "Vous devrez peut-être les ouvrir manuellement"
+            fi
+        else
+            log "INFO" "Ouverture automatique des ports annulée par l'utilisateur"
+        fi
+
         # Vérification si les ports essentiels sont ouverts
         local essential_ports=("${target_port}")
         local missing_essential=false
@@ -1251,7 +1394,8 @@ function check_network() {
 
 # Fonction pour sauvegarder l'état avant modification
 function backup_state() {
-    local backup_name="backup-$(date +%Y%m%d-%H%M%S)"
+    local backup_name="${1:-backup-$(date +%Y%m%d-%H%M%S)}"
+    local optional="${2:-false}"  # New parameter to make backup optional
     local backup_file="${BACKUP_DIR}/${backup_name}.tar.gz"
     local metadata_file="${BACKUP_DIR}/${backup_name}.json"
 
@@ -1296,9 +1440,34 @@ EOF
         exclude_args="${exclude_args} --exclude='${pattern}'"
     done
 
-    # Construction de la commande de sauvegarde
-    local backup_cmd="sudo tar -czf /tmp/${backup_name}.tar.gz ${exclude_args}"
+    # Vérification de l'existence des répertoires avant la sauvegarde
+    local existing_dirs=()
     for dir in "${backup_dirs[@]}"; do
+        if ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "[ -d \"${dir}\" ]" &>/dev/null; then
+            existing_dirs+=("${dir}")
+            log "DEBUG" "Répertoire trouvé pour sauvegarde: ${dir}"
+        else
+            log "DEBUG" "Répertoire non trouvé, ignoré pour la sauvegarde: ${dir}"
+        fi
+    done
+
+    # Si aucun répertoire n'existe, log un avertissement et retourne 0 si optionnel
+    if [[ ${#existing_dirs[@]} -eq 0 ]]; then
+        log "WARNING" "Aucun répertoire à sauvegarder n'existe encore sur le VPS"
+        if [[ "${optional}" == "true" ]]; then
+            log "INFO" "Sauvegarde ignorée (optionnelle)"
+            rm -f "${metadata_file}"
+            return 0
+        else
+            log "WARNING" "Impossible de créer une sauvegarde de l'état actuel sur le VPS"
+            rm -f "${metadata_file}"
+            return 1
+        fi
+    fi
+
+    # Construction de la commande de sauvegarde avec les répertoires existants
+    local backup_cmd="sudo tar -czf /tmp/${backup_name}.tar.gz ${exclude_args}"
+    for dir in "${existing_dirs[@]}"; do
         backup_cmd="${backup_cmd} ${dir}"
     done
     backup_cmd="${backup_cmd} 2>/dev/null || true"
@@ -1337,12 +1506,22 @@ EOF
         else
             log "WARNING" "Impossible de récupérer le fichier de sauvegarde depuis le VPS"
             rm -f "${metadata_file}"
-            return 1
+            if [[ "${optional}" == "true" ]]; then
+                log "INFO" "Continuation de l'installation malgré l'échec de la sauvegarde (optionnelle)"
+                return 0
+            else
+                return 1
+            fi
         fi
     else
         log "WARNING" "Impossible de créer une sauvegarde de l'état actuel sur le VPS"
         rm -f "${metadata_file}"
-        return 1
+        if [[ "${optional}" == "true" ]]; then
+            log "INFO" "Continuation de l'installation malgré l'échec de la sauvegarde (optionnelle)"
+            return 0
+        else
+            return 1
+        fi
     fi
 }
 
@@ -3169,8 +3348,8 @@ verifier_prerequis
 # Extraction des informations d'inventaire
 extraire_informations_inventaire
 
-# Sauvegarde de l'état initial
-backup_state "pre-installation"
+# Sauvegarde de l'état initial (optionnelle)
+backup_state "pre-installation" "true"
 
 if [[ "${skip_init}" == "false" ]]; then
     initialiser_vps
