@@ -906,14 +906,127 @@ except Exception as e:
 EOF
 )
 
-    # Exécution du script Python
-    local inventory_info=$(python3 -c "${python_script}" "${ANSIBLE_DIR}/${inventory_file}" 2>/dev/null)
+    # Exécution du script Python avec timeout
+    log "DEBUG" "Exécution du script Python pour extraire les informations d'inventaire..."
 
-    if [[ $? -ne 0 ]]; then
-        log "ERROR" "Impossible d'extraire les informations d'inventaire"
-        log "ERROR" "Vérifiez le format du fichier d'inventaire"
+    # Vérification que Python3 est installé
+    if ! command_exists python3; then
+        log "ERROR" "Python3 n'est pas installé, impossible d'extraire les informations d'inventaire"
+        log "ERROR" "Installez Python3 avec: sudo apt-get install python3 (Debian/Ubuntu)"
+        log "ERROR" "ou l'équivalent pour votre distribution"
+
+        # Passage directement à la méthode fallback
+        log "WARNING" "Tentative de fallback avec grep pour extraire les informations d'inventaire..."
+
+        # Utilisation de grep avec timeout pour éviter les blocages
+        ansible_host=$(timeout 5 grep -A10 "hosts:" "${ANSIBLE_DIR}/${inventory_file}" | grep "ansible_host:" | head -1 | awk -F': ' '{print $2}' | tr -d ' ' 2>/dev/null || echo "")
+        ansible_port=$(timeout 5 grep -A10 "hosts:" "${ANSIBLE_DIR}/${inventory_file}" | grep "ansible_port:" | head -1 | awk -F': ' '{print $2}' | tr -d ' ' 2>/dev/null || echo "22")
+        ansible_user=$(timeout 5 grep -A10 "hosts:" "${ANSIBLE_DIR}/${inventory_file}" | grep "ansible_user:" | head -1 | awk -F': ' '{print $2}' | tr -d ' ' 2>/dev/null || echo "")
+
+        # Si toujours pas trouvé, chercher dans les variables globales
+        if [[ -z "${ansible_user}" ]]; then
+            ansible_user=$(timeout 5 grep -A10 "vars:" "${ANSIBLE_DIR}/${inventory_file}" | grep "ansible_user:" | head -1 | awk -F': ' '{print $2}' | tr -d ' ' 2>/dev/null || echo "")
+        fi
+
+        # Vérification des valeurs extraites par fallback
+        if [[ -n "${ansible_host}" && -n "${ansible_user}" ]]; then
+            log "SUCCESS" "Extraction des informations d'inventaire réussie avec la méthode fallback"
+            log "INFO" "Informations d'inventaire extraites (fallback):"
+            log "INFO" "- Hôte: ${ansible_host}"
+            log "INFO" "- Port: ${ansible_port}"
+            log "INFO" "- Utilisateur: ${ansible_user}"
+            return 0
+        else
+            log "ERROR" "Échec de l'extraction des informations d'inventaire, même avec la méthode fallback"
+            cleanup
+            exit 1
+        fi
+    fi
+
+    # Affichage du contenu du fichier d'inventaire en mode debug
+    if [[ "${debug_mode}" == "true" ]]; then
+        log "DEBUG" "Contenu du fichier d'inventaire (${ANSIBLE_DIR}/${inventory_file}):"
+        cat "${ANSIBLE_DIR}/${inventory_file}" | while IFS= read -r line; do
+            log "DEBUG" "  ${line}"
+        done
+    fi
+
+    # Exécution avec timeout pour éviter les blocages
+    local inventory_info=$(timeout 10 python3 -c "${python_script}" "${ANSIBLE_DIR}/${inventory_file}" 2>&1)
+    local exit_code=$?
+
+    if [[ ${exit_code} -eq 124 ]]; then
+        log "ERROR" "Timeout lors de l'extraction des informations d'inventaire"
+        log "ERROR" "Le script Python a pris trop de temps pour s'exécuter"
+        log "ERROR" "Vérifiez le fichier d'inventaire et les dépendances Python"
         cleanup
         exit 1
+    elif [[ ${exit_code} -ne 0 ]]; then
+        log "ERROR" "Impossible d'extraire les informations d'inventaire (code ${exit_code})"
+        log "ERROR" "Erreur: ${inventory_info}"
+        log "ERROR" "Vérifiez le format du fichier d'inventaire et les dépendances Python (yaml)"
+
+        # Vérification de la présence du module yaml
+        if ! python3 -c "import yaml" &>/dev/null; then
+            log "WARNING" "Le module Python 'yaml' n'est pas installé"
+            log "INFO" "Tentative d'installation automatique du module yaml..."
+
+            # Vérification de pip
+            if ! command_exists pip3 && ! command_exists pip; then
+                log "ERROR" "pip n'est pas installé, impossible d'installer le module yaml"
+                log "ERROR" "Installez pip avec: sudo apt-get install python3-pip (Debian/Ubuntu)"
+                log "ERROR" "ou l'équivalent pour votre distribution"
+            else
+                # Installation du module yaml
+                local pip_cmd="pip3"
+                if ! command_exists pip3; then
+                    pip_cmd="pip"
+                fi
+
+                if sudo ${pip_cmd} install pyyaml &>/dev/null; then
+                    log "SUCCESS" "Module yaml installé avec succès"
+                    # Réessayer l'extraction après l'installation
+                    inventory_info=$(timeout 10 python3 -c "${python_script}" "${ANSIBLE_DIR}/${inventory_file}" 2>&1)
+                    exit_code=$?
+
+                    if [[ ${exit_code} -eq 0 ]]; then
+                        log "SUCCESS" "Extraction des informations d'inventaire réussie après installation du module yaml"
+                    else
+                        log "ERROR" "Échec de l'extraction des informations d'inventaire même après installation du module yaml"
+                    fi
+                else
+                    log "ERROR" "Échec de l'installation du module yaml"
+                    log "ERROR" "Installez-le manuellement avec: sudo pip3 install pyyaml"
+                fi
+            fi
+        fi
+
+        # Tentative de fallback avec grep si le script Python échoue
+        log "WARNING" "Tentative de fallback avec grep pour extraire les informations d'inventaire..."
+
+        # Utilisation de grep avec timeout pour éviter les blocages
+        ansible_host=$(timeout 5 grep -A10 "hosts:" "${ANSIBLE_DIR}/${inventory_file}" | grep "ansible_host:" | head -1 | awk -F': ' '{print $2}' | tr -d ' ' 2>/dev/null || echo "")
+        ansible_port=$(timeout 5 grep -A10 "hosts:" "${ANSIBLE_DIR}/${inventory_file}" | grep "ansible_port:" | head -1 | awk -F': ' '{print $2}' | tr -d ' ' 2>/dev/null || echo "22")
+        ansible_user=$(timeout 5 grep -A10 "hosts:" "${ANSIBLE_DIR}/${inventory_file}" | grep "ansible_user:" | head -1 | awk -F': ' '{print $2}' | tr -d ' ' 2>/dev/null || echo "")
+
+        # Si toujours pas trouvé, chercher dans les variables globales
+        if [[ -z "${ansible_user}" ]]; then
+            ansible_user=$(timeout 5 grep -A10 "vars:" "${ANSIBLE_DIR}/${inventory_file}" | grep "ansible_user:" | head -1 | awk -F': ' '{print $2}' | tr -d ' ' 2>/dev/null || echo "")
+        fi
+
+        # Vérification des valeurs extraites par fallback
+        if [[ -n "${ansible_host}" && -n "${ansible_user}" ]]; then
+            log "SUCCESS" "Extraction des informations d'inventaire réussie avec la méthode fallback"
+            log "INFO" "Informations d'inventaire extraites (fallback):"
+            log "INFO" "- Hôte: ${ansible_host}"
+            log "INFO" "- Port: ${ansible_port}"
+            log "INFO" "- Utilisateur: ${ansible_user}"
+            return 0
+        else
+            log "ERROR" "Échec de l'extraction des informations d'inventaire, même avec la méthode fallback"
+            cleanup
+            exit 1
+        fi
     fi
 
     # Extraction des valeurs
@@ -1724,9 +1837,13 @@ function verifier_prerequis() {
 
     # Extraction des informations de connexion
     log "INFO" "Extraction des informations de connexion..."
-    ansible_host=$(grep -A1 "contabo-vps" "${ANSIBLE_DIR}/${inventory_file}" | grep "ansible_host" | awk -F': ' '{print $2}')
-    ansible_port=$(grep -A1 "contabo-vps" "${ANSIBLE_DIR}/${inventory_file}" | grep "ansible_port" | awk -F': ' '{print $2}')
-    ansible_user=$(grep -A1 "contabo-vps" "${ANSIBLE_DIR}/${inventory_file}" | grep "ansible_user" | awk -F': ' '{print $2}')
+
+    # Utilisation de la fonction robuste d'extraction d'informations d'inventaire
+    if ! extraire_informations_inventaire; then
+        log "ERROR" "Échec de l'extraction des informations de connexion"
+        cleanup
+        exit 1
+    fi
 
     if [[ -z "${ansible_host}" || -z "${ansible_port}" || -z "${ansible_user}" ]]; then
         log "ERROR" "Impossible d'extraire les informations de connexion du fichier d'inventaire"
