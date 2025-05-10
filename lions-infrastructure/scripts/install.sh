@@ -2230,8 +2230,8 @@ function initialiser_vps() {
     # Sauvegarde de l'état actuel
     echo "${INSTALLATION_STEP}" > "${STATE_FILE}"
 
-    # Sauvegarde de l'état du VPS avant modification
-    backup_state
+    # Sauvegarde de l'état du VPS avant modification (optionnelle)
+    backup_state "pre-init-vps" "true"
 
     # Construction de la commande Ansible
     local ansible_cmd="ansible-playbook -i ${ANSIBLE_DIR}/${inventory_file} ${ANSIBLE_DIR}/playbooks/init-vps.yml --ask-become-pass"
@@ -2290,8 +2290,8 @@ function installer_k3s() {
     # Sauvegarde de l'état actuel
     echo "${INSTALLATION_STEP}" > "${STATE_FILE}"
 
-    # Sauvegarde de l'état du VPS avant modification
-    backup_state
+    # Sauvegarde de l'état du VPS avant modification (optionnelle)
+    backup_state "pre-install-k3s" "true"
 
     # Construction de la commande Ansible
     local ansible_cmd="ansible-playbook -i ${ANSIBLE_DIR}/${inventory_file} ${ANSIBLE_DIR}/playbooks/install-k3s.yml --ask-become-pass"
@@ -3126,8 +3126,8 @@ function verifier_installation() {
 function test_robustesse() {
     log "INFO" "Exécution des tests de robustesse..."
 
-    # Sauvegarde de l'état actuel
-    backup_state
+    # Sauvegarde de l'état actuel (optionnelle)
+    backup_state "pre-test-robustesse" "true"
 
     # Test 1: Simulation d'une erreur de connexion SSH
     log "INFO" "Test 1: Simulation d'une erreur de connexion SSH..."
@@ -3359,18 +3359,18 @@ fi
 
 installer_k3s
 
-# Sauvegarde de l'état après installation de K3s
-backup_state "post-k3s"
+# Sauvegarde de l'état après installation de K3s (optionnelle)
+backup_state "post-k3s" "true"
 
 deployer_infrastructure_base
 
-# Sauvegarde de l'état après déploiement de l'infrastructure
-backup_state "post-infrastructure"
+# Sauvegarde de l'état après déploiement de l'infrastructure (optionnelle)
+backup_state "post-infrastructure" "true"
 
 deployer_monitoring
 
-# Sauvegarde de l'état après déploiement du monitoring
-backup_state "post-monitoring"
+# Sauvegarde de l'état après déploiement du monitoring (optionnelle)
+backup_state "post-monitoring" "true"
 
 verifier_installation
 
