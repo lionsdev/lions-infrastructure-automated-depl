@@ -304,7 +304,16 @@ function handle_error() {
         # Suppression du fichier de verrouillage avant la reprise
         if [[ -f "${LOCK_FILE}" ]]; then
             log "INFO" "Suppression du fichier de verrouillage avant la reprise..."
-            rm -f "${LOCK_FILE}"
+            # Tentative de suppression sans sudo d'abord
+            if ! rm -f "${LOCK_FILE}" 2>/dev/null; then
+                log "WARNING" "Impossible de supprimer le fichier de verrouillage sans sudo, tentative avec sudo..."
+                # Si ça échoue, essayer avec sudo
+                if sudo rm -f "${LOCK_FILE}"; then
+                    log "SUCCESS" "Fichier de verrouillage supprimé avec succès (sudo)"
+                else
+                    log "WARNING" "Impossible de supprimer le fichier de verrouillage, même avec sudo"
+                fi
+            fi
         fi
 
         # Attente avant la reprise pour permettre au système de se stabiliser
@@ -470,7 +479,16 @@ function cleanup() {
 
     # Suppression du fichier de verrouillage
     if [[ -f "${LOCK_FILE}" ]]; then
-        rm -f "${LOCK_FILE}"
+        # Tentative de suppression sans sudo d'abord
+        if ! rm -f "${LOCK_FILE}" 2>/dev/null; then
+            log "WARNING" "Impossible de supprimer le fichier de verrouillage sans sudo, tentative avec sudo..."
+            # Si ça échoue, essayer avec sudo
+            if sudo rm -f "${LOCK_FILE}"; then
+                log "SUCCESS" "Fichier de verrouillage supprimé avec succès (sudo)"
+            else
+                log "WARNING" "Impossible de supprimer le fichier de verrouillage, même avec sudo"
+            fi
+        fi
     fi
 
     # Affichage des informations de diagnostic
@@ -487,7 +505,7 @@ function cleanup() {
 trap 'handle_error ${LINENO} "${COMMAND_NAME:-unknown}"' ERR
 
 # Configuration du gestionnaire de sortie pour s'assurer que le fichier de verrouillage est toujours supprimé
-trap 'if [[ -f "${LOCK_FILE}" ]]; then rm -f "${LOCK_FILE}"; fi' EXIT
+trap 'if [[ -f "${LOCK_FILE}" ]]; then if ! rm -f "${LOCK_FILE}" 2>/dev/null; then sudo rm -f "${LOCK_FILE}" 2>/dev/null || true; fi; fi' EXIT
 
 # Fonction pour vérifier si une commande existe
 function command_exists() {
@@ -1868,11 +1886,27 @@ function verifier_prerequis() {
         if [[ ${uptime_seconds} -lt ${lock_file_age} || ${lock_file_age} -gt 3600 || ${script_count} -le 1 ]]; then
             log "INFO" "Le système a redémarré ou le fichier de verrouillage est obsolète (âge: ${lock_file_age}s, uptime: ${uptime_seconds}s) ou aucune autre instance n'est en cours d'exécution"
             log "INFO" "Suppression automatique du fichier de verrouillage obsolète"
-            rm -f "${LOCK_FILE}"
+            # Tentative de suppression sans sudo d'abord
+            if ! rm -f "${LOCK_FILE}" 2>/dev/null; then
+                log "WARNING" "Impossible de supprimer le fichier de verrouillage sans sudo, tentative avec sudo..."
+                # Si ça échoue, essayer avec sudo
+                if sudo rm -f "${LOCK_FILE}"; then
+                    log "SUCCESS" "Fichier de verrouillage obsolète supprimé avec succès (sudo)"
+                else
+                    log "WARNING" "Impossible de supprimer le fichier de verrouillage obsolète, même avec sudo"
+                fi
+            fi
         else
-            log "WARNING" "Si ce n'est pas le cas, supprimez le fichier ${LOCK_FILE} et réessayez"
-            log "INFO" "Commande pour supprimer le fichier de verrouillage: sudo rm -f ${LOCK_FILE}"
-            exit 1
+            log "WARNING" "Si ce n'est pas le cas, tentative de suppression du fichier de verrouillage avec sudo"
+            log "INFO" "Exécution de la commande: sudo rm -f ${LOCK_FILE}"
+            # Utilisation de sudo pour supprimer le fichier, ce qui demandera le mot de passe si nécessaire
+            if sudo rm -f "${LOCK_FILE}"; then
+                log "SUCCESS" "Fichier de verrouillage supprimé avec succès"
+            else
+                log "ERROR" "Impossible de supprimer le fichier de verrouillage, même avec sudo"
+                log "ERROR" "Veuillez le supprimer manuellement: sudo rm -f ${LOCK_FILE}"
+                exit 1
+            fi
         fi
     fi
 
@@ -3110,7 +3144,22 @@ function verifier_installation() {
     log "INFO" "Rapport de vérification généré: ${report_file}"
 
     # Nettoyage du fichier de verrouillage et d'état
-    rm -f "${LOCK_FILE}" "${STATE_FILE}"
+    # Suppression du fichier d'état (toujours local)
+    rm -f "${STATE_FILE}"
+
+    # Suppression du fichier de verrouillage
+    if [[ -f "${LOCK_FILE}" ]]; then
+        # Tentative de suppression sans sudo d'abord
+        if ! rm -f "${LOCK_FILE}" 2>/dev/null; then
+            log "WARNING" "Impossible de supprimer le fichier de verrouillage sans sudo, tentative avec sudo..."
+            # Si ça échoue, essayer avec sudo
+            if sudo rm -f "${LOCK_FILE}"; then
+                log "SUCCESS" "Fichier de verrouillage supprimé avec succès (sudo)"
+            else
+                log "WARNING" "Impossible de supprimer le fichier de verrouillage, même avec sudo"
+            fi
+        fi
+    fi
 }
 
 # Fonction pour tester la robustesse du script
@@ -3328,7 +3377,18 @@ if [[ "${test_mode}" == "true" ]]; then
     log "INFO" "Mode test terminé"
 
     # Suppression du fichier de verrouillage
-    rm -f "${LOCK_FILE}"
+    if [[ -f "${LOCK_FILE}" ]]; then
+        # Tentative de suppression sans sudo d'abord
+        if ! rm -f "${LOCK_FILE}" 2>/dev/null; then
+            log "WARNING" "Impossible de supprimer le fichier de verrouillage sans sudo, tentative avec sudo..."
+            # Si ça échoue, essayer avec sudo
+            if sudo rm -f "${LOCK_FILE}"; then
+                log "SUCCESS" "Fichier de verrouillage supprimé avec succès (sudo)"
+            else
+                log "WARNING" "Impossible de supprimer le fichier de verrouillage, même avec sudo"
+            fi
+        fi
+    fi
 
     exit 0
 fi
@@ -3414,6 +3474,17 @@ report_file="${LOG_DIR}/installation-report-$(date +%Y%m%d-%H%M%S).txt"
 log "INFO" "Rapport d'installation généré: ${report_file}"
 
 # Suppression du fichier de verrouillage
-rm -f "${LOCK_FILE}"
+if [[ -f "${LOCK_FILE}" ]]; then
+    # Tentative de suppression sans sudo d'abord
+    if ! rm -f "${LOCK_FILE}" 2>/dev/null; then
+        log "WARNING" "Impossible de supprimer le fichier de verrouillage sans sudo, tentative avec sudo..."
+        # Si ça échoue, essayer avec sudo
+        if sudo rm -f "${LOCK_FILE}"; then
+            log "SUCCESS" "Fichier de verrouillage supprimé avec succès (sudo)"
+        else
+            log "WARNING" "Impossible de supprimer le fichier de verrouillage, même avec sudo"
+        fi
+    fi
+fi
 
 exit 0
