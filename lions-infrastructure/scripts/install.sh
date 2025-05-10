@@ -1349,22 +1349,12 @@ function check_network() {
             log "INFO" "Ouverture automatique des ports annulée par l'utilisateur"
         fi
 
-        # Vérification si les ports essentiels sont ouverts
-        local essential_ports=("${target_port}")
-        local missing_essential=false
-
-        for port in "${essential_ports[@]}"; do
-            if ! nc -z -w ${timeout} "${target_host}" "${port}" &>/dev/null; then
-                missing_essential=true
-                break
-            fi
-        done
-
-        if [[ "${missing_essential}" == "true" ]]; then
-            log "ERROR" "Des ports essentiels ne sont pas accessibles, impossible de continuer"
+        # Vérification si le port SSH est ouvert (seul port vraiment essentiel)
+        if ! nc -z -w ${timeout} "${target_host}" "${target_port}" &>/dev/null; then
+            log "ERROR" "Le port SSH (${target_port}) n'est pas accessible, impossible de continuer"
             log "INFO" "Suggestions:"
             log "INFO" "1. Vérifiez les règles de pare-feu sur le VPS"
-            log "INFO" "2. Vérifiez que les services sont en cours d'exécution sur le VPS"
+            log "INFO" "2. Vérifiez que le service SSH est en cours d'exécution sur le VPS"
             return 1
         else
             log "WARNING" "Certains ports non essentiels ne sont pas accessibles, l'installation peut continuer mais certaines fonctionnalités pourraient ne pas fonctionner correctement"
