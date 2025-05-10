@@ -301,6 +301,12 @@ function handle_error() {
         RETRY_COUNT=$((RETRY_COUNT + 1))
         log "WARNING" "Tentative de reprise (${RETRY_COUNT}/${MAX_RETRIES})..."
 
+        # Suppression du fichier de verrouillage avant la reprise
+        if [[ -f "${LOCK_FILE}" ]]; then
+            log "INFO" "Suppression du fichier de verrouillage avant la reprise..."
+            rm -f "${LOCK_FILE}"
+        fi
+
         # Attente avant la reprise pour permettre au système de se stabiliser
         log "INFO" "Attente de 10 secondes avant reprise..."
         sleep 10
@@ -479,6 +485,9 @@ function cleanup() {
 
 # Configuration du gestionnaire d'erreurs
 trap 'handle_error ${LINENO} "${COMMAND_NAME:-unknown}"' ERR
+
+# Configuration du gestionnaire de sortie pour s'assurer que le fichier de verrouillage est toujours supprimé
+trap 'if [[ -f "${LOCK_FILE}" ]]; then rm -f "${LOCK_FILE}"; fi' EXIT
 
 # Fonction pour vérifier si une commande existe
 function command_exists() {
@@ -1635,14 +1644,20 @@ function verifier_prerequis() {
         # Vérification de l'uptime du système
         local uptime_seconds=$(cat /proc/uptime 2>/dev/null | awk '{print int($1)}' || echo 999999)
 
+        # Vérification des processus en cours d'exécution
+        local script_name=$(basename "$0")
+        local script_count=$(ps aux | grep -v grep | grep -c "${script_name}" || echo 1)
+
         # Si le système a redémarré après la création du fichier de verrouillage
         # ou si le fichier de verrouillage existe depuis plus d'une heure
-        if [[ ${uptime_seconds} -lt ${lock_file_age} || ${lock_file_age} -gt 3600 ]]; then
-            log "INFO" "Le système a redémarré ou le fichier de verrouillage est obsolète (âge: ${lock_file_age}s, uptime: ${uptime_seconds}s)"
+        # ou si aucun autre processus du script n'est en cours d'exécution
+        if [[ ${uptime_seconds} -lt ${lock_file_age} || ${lock_file_age} -gt 3600 || ${script_count} -le 1 ]]; then
+            log "INFO" "Le système a redémarré ou le fichier de verrouillage est obsolète (âge: ${lock_file_age}s, uptime: ${uptime_seconds}s) ou aucune autre instance n'est en cours d'exécution"
             log "INFO" "Suppression automatique du fichier de verrouillage obsolète"
             rm -f "${LOCK_FILE}"
         else
             log "WARNING" "Si ce n'est pas le cas, supprimez le fichier ${LOCK_FILE} et réessayez"
+            log "INFO" "Commande pour supprimer le fichier de verrouillage: sudo rm -f ${LOCK_FILE}"
             exit 1
         fi
     fi
