@@ -93,6 +93,55 @@ function log() {
     fi
 }
 
+# Fonction pour exécuter une commande avec timeout, avec fallback si la commande timeout n'est pas disponible
+function run_with_timeout_fallback() {
+    local timeout_seconds="$1"
+    shift
+    local cmd="$@"
+
+    # Vérifier si la commande timeout est disponible
+    if command -v timeout &>/dev/null; then
+        timeout "${timeout_seconds}" ${cmd}
+        return $?
+    else
+        # Fallback: exécuter la commande en arrière-plan et la tuer si elle prend trop de temps
+        log "DEBUG" "Commande timeout non disponible, utilisation du fallback"
+
+        # Créer un fichier temporaire pour stocker le PID
+        local pid_file=$(mktemp)
+
+        # Exécuter la commande en arrière-plan
+        (${cmd}) & echo $! > "${pid_file}" &
+        local cmd_pid=$(cat "${pid_file}")
+
+        # Attendre que la commande se termine ou que le timeout soit atteint
+        local start_time=$(date +%s)
+        local end_time=$((start_time + timeout_seconds))
+        local current_time=$(date +%s)
+
+        while [[ ${current_time} -lt ${end_time} ]]; do
+            # Vérifier si le processus est toujours en cours d'exécution
+            if ! kill -0 "${cmd_pid}" 2>/dev/null; then
+                # Le processus s'est terminé
+                wait "${cmd_pid}"
+                local exit_code=$?
+                rm -f "${pid_file}"
+                return ${exit_code}
+            fi
+
+            # Attendre un peu avant de vérifier à nouveau
+            sleep 1
+            current_time=$(date +%s)
+        done
+
+        # Si on arrive ici, c'est que le timeout a été atteint
+        log "DEBUG" "Timeout atteint, arrêt forcé de la commande"
+        kill -9 "${cmd_pid}" 2>/dev/null || true
+        rm -f "${pid_file}"
+        return 124  # Code de retour standard pour timeout
+    fi
+}
+
 # Fonction pour collecter et analyser les logs
 function collect_logs() {
     local output_dir="${LOG_DIR}/diagnostic-$(date +%Y%m%d-%H%M%S)"
@@ -1451,11 +1500,13 @@ EOF
     # Vérification de l'existence des répertoires avant la sauvegarde
     local existing_dirs=()
     for dir in "${backup_dirs[@]}"; do
-        if ssh -t -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo [ -d \"${dir}\" ]" &>/dev/null; then
+        log "DEBUG" "Vérification de l'existence du répertoire: ${dir}"
+        # Utilisation de run_with_timeout_fallback pour éviter que la commande ne se bloque indéfiniment
+        if run_with_timeout_fallback 10 ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo test -d ${dir}" 2>/dev/null; then
             existing_dirs+=("${dir}")
             log "DEBUG" "Répertoire trouvé pour sauvegarde: ${dir}"
         else
-            log "DEBUG" "Répertoire non trouvé, ignoré pour la sauvegarde: ${dir}"
+            log "DEBUG" "Répertoire non trouvé ou erreur d'accès, ignoré pour la sauvegarde: ${dir}"
         fi
     done
 
@@ -1481,11 +1532,14 @@ EOF
     backup_cmd="${backup_cmd} 2>/dev/null || true"
 
     # Exécution de la commande de sauvegarde
-    if ssh -t -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "${backup_cmd}"; then
-        # Récupération du fichier de sauvegarde
-        if scp -P "${ansible_port}" "${ansible_user}@${ansible_host}:/tmp/${backup_name}.tar.gz" "${backup_file}" &>/dev/null; then
+    log "DEBUG" "Exécution de la commande de sauvegarde: ${backup_cmd}"
+    if run_with_timeout_fallback 60 ssh -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "${backup_cmd}"; then
+        log "DEBUG" "Commande de sauvegarde exécutée avec succès, récupération du fichier..."
+        # Récupération du fichier de sauvegarde avec timeout
+        if run_with_timeout_fallback 60 scp -o ConnectTimeout=10 -P "${ansible_port}" "${ansible_user}@${ansible_host}:/tmp/${backup_name}.tar.gz" "${backup_file}" 2>/dev/null; then
+            log "DEBUG" "Fichier de sauvegarde récupéré avec succès, nettoyage du fichier temporaire..."
             # Nettoyage du fichier temporaire sur le VPS
-            ssh -t -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo rm -f /tmp/${backup_name}.tar.gz"
+            run_with_timeout_fallback 10 ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo rm -f /tmp/${backup_name}.tar.gz" 2>/dev/null || log "WARNING" "Impossible de supprimer le fichier temporaire sur le VPS"
 
             # Vérification de la taille du fichier de sauvegarde
             local backup_size=$(du -h "${backup_file}" | awk '{print $1}')
@@ -1513,6 +1567,14 @@ EOF
             return 0
         else
             log "WARNING" "Impossible de récupérer le fichier de sauvegarde depuis le VPS"
+            log "DEBUG" "Vérification de l'existence du fichier temporaire sur le VPS..."
+            if run_with_timeout_fallback 10 ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "ls -la /tmp/${backup_name}.tar.gz" 2>/dev/null; then
+                log "DEBUG" "Le fichier temporaire existe sur le VPS mais n'a pas pu être récupéré"
+                log "DEBUG" "Tentative de suppression du fichier temporaire..."
+                run_with_timeout_fallback 10 ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo rm -f /tmp/${backup_name}.tar.gz" 2>/dev/null || log "WARNING" "Impossible de supprimer le fichier temporaire sur le VPS"
+            else
+                log "DEBUG" "Le fichier temporaire n'existe pas sur le VPS, problème lors de la création de l'archive"
+            fi
             rm -f "${metadata_file}"
             if [[ "${optional}" == "true" ]]; then
                 log "INFO" "Continuation de l'installation malgré l'échec de la sauvegarde (optionnelle)"
@@ -1523,6 +1585,11 @@ EOF
         fi
     else
         log "WARNING" "Impossible de créer une sauvegarde de l'état actuel sur le VPS"
+        log "DEBUG" "La commande de sauvegarde a échoué: ${backup_cmd}"
+        log "DEBUG" "Vérification des permissions sur les répertoires à sauvegarder..."
+        for dir in "${existing_dirs[@]}"; do
+            run_with_timeout_fallback 10 ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo ls -la ${dir} 2>&1 | head -5" 2>/dev/null || log "DEBUG" "Impossible d'accéder au répertoire ${dir}"
+        done
         rm -f "${metadata_file}"
         if [[ "${optional}" == "true" ]]; then
             log "INFO" "Continuation de l'installation malgré l'échec de la sauvegarde (optionnelle)"
@@ -1581,57 +1648,88 @@ function restore_state() {
 
     # Copie du fichier de sauvegarde vers le VPS
     log "INFO" "Copie du fichier de sauvegarde vers le VPS..."
-    if ! scp -P "${ansible_port}" "${backup_file}" "${ansible_user}@${ansible_host}:/tmp/${backup_name}.tar.gz" &>/dev/null; then
+    log "DEBUG" "Taille du fichier de sauvegarde: $(du -h "${backup_file}" | awk '{print $1}')"
+    if ! run_with_timeout_fallback 60 scp -o ConnectTimeout=10 -P "${ansible_port}" "${backup_file}" "${ansible_user}@${ansible_host}:/tmp/${backup_name}.tar.gz" 2>/dev/null; then
         log "ERROR" "Impossible de copier le fichier de sauvegarde vers le VPS"
+        log "DEBUG" "Vérification de l'espace disque disponible sur le VPS..."
+        run_with_timeout_fallback 10 ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "df -h /tmp" 2>/dev/null || log "DEBUG" "Impossible de vérifier l'espace disque sur le VPS"
+        return 1
+    fi
+
+    # Vérification que le fichier a bien été copié
+    log "DEBUG" "Vérification que le fichier a bien été copié sur le VPS..."
+    if ! run_with_timeout_fallback 10 ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "ls -la /tmp/${backup_name}.tar.gz" 2>/dev/null; then
+        log "ERROR" "Le fichier de sauvegarde n'a pas été correctement copié sur le VPS"
         return 1
     fi
 
     # Arrêt des services avant restauration
     log "INFO" "Arrêt des services avant restauration..."
-    ssh -t -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl stop k3s || true" &>/dev/null
+    if ! run_with_timeout_fallback 30 ssh -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl stop k3s || true" 2>/dev/null; then
+        log "WARNING" "Impossible d'arrêter le service K3s, tentative de restauration quand même"
+    fi
 
     # Restauration des fichiers
     log "INFO" "Restauration des fichiers..."
-    if ! ssh -t -o ConnectTimeout=30 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo tar -xzf /tmp/${backup_name}.tar.gz -C / 2>/dev/null"; then
+    if ! run_with_timeout_fallback 60 ssh -o ConnectTimeout=30 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo tar -xzf /tmp/${backup_name}.tar.gz -C / 2>/dev/null"; then
         log "ERROR" "Échec de la restauration des fichiers"
+        log "DEBUG" "Vérification du contenu de l'archive..."
+        run_with_timeout_fallback 10 ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo tar -tvf /tmp/${backup_name}.tar.gz | head -10" 2>/dev/null || log "DEBUG" "Impossible de lister le contenu de l'archive"
 
         # Redémarrage des services en cas d'échec
-        ssh -t -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl start k3s || true" &>/dev/null
+        log "INFO" "Tentative de redémarrage des services après échec..."
+        run_with_timeout_fallback 30 ssh -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl start k3s || true" 2>/dev/null
 
         return 1
     fi
 
     # Nettoyage du fichier temporaire
-    ssh -t -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo rm -f /tmp/${backup_name}.tar.gz" &>/dev/null
+    log "DEBUG" "Nettoyage du fichier temporaire sur le VPS..."
+    run_with_timeout_fallback 10 ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo rm -f /tmp/${backup_name}.tar.gz" 2>/dev/null || log "WARNING" "Impossible de supprimer le fichier temporaire sur le VPS"
 
     # Redémarrage des services
     log "INFO" "Redémarrage des services..."
-    if ! ssh -t -o ConnectTimeout=30 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl daemon-reload && sudo systemctl start k3s"; then
+    if ! run_with_timeout_fallback 60 ssh -o ConnectTimeout=30 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl daemon-reload && sudo systemctl start k3s"; then
         log "WARNING" "Échec du redémarrage des services"
+        log "DEBUG" "Vérification de l'état du service K3s..."
+        run_with_timeout_fallback 10 ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl status k3s" 2>/dev/null || log "DEBUG" "Impossible de vérifier l'état du service K3s"
         log "WARNING" "Vous devrez peut-être redémarrer manuellement le VPS"
         return 1
     fi
 
     # Attente que K3s soit prêt
     log "INFO" "Attente que K3s soit prêt..."
-    local timeout=60
+    local k3s_timeout=120  # Augmentation du timeout à 2 minutes
     local start_time=$(date +%s)
     local k3s_ready=false
+    local check_count=0
 
     while [[ "${k3s_ready}" == "false" ]]; do
         local current_time=$(date +%s)
         local elapsed_time=$((current_time - start_time))
 
-        if [[ ${elapsed_time} -gt ${timeout} ]]; then
+        if [[ ${elapsed_time} -gt ${k3s_timeout} ]]; then
             log "WARNING" "Timeout atteint en attendant que K3s soit prêt"
+            log "DEBUG" "Vérification des logs de K3s..."
+            run_with_timeout_fallback 10 ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo journalctl -u k3s --no-pager -n 20" 2>/dev/null || log "DEBUG" "Impossible de récupérer les logs de K3s"
             break
         fi
 
-        if ssh -t -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo kubectl get nodes" &>/dev/null; then
+        # Toutes les 3 tentatives, afficher plus d'informations de diagnostic
+        if [[ $((check_count % 3)) -eq 0 ]]; then
+            log "DEBUG" "Vérification de l'état du service K3s (tentative ${check_count})..."
+            run_with_timeout_fallback 10 ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl is-active k3s" 2>/dev/null || log "DEBUG" "Service K3s non actif"
+        fi
+
+        if run_with_timeout_fallback 15 ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo kubectl get nodes" 2>/dev/null; then
             k3s_ready=true
             log "SUCCESS" "K3s est prêt"
+            # Afficher les nœuds pour confirmation
+            log "DEBUG" "Nœuds K3s disponibles:"
+            run_with_timeout_fallback 10 ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo kubectl get nodes" 2>/dev/null || log "DEBUG" "Impossible de lister les nœuds K3s"
         else
             log "INFO" "En attente que K3s soit prêt... (${elapsed_time}s)"
+            check_count=$((check_count + 1))
             sleep 5
         fi
     done
