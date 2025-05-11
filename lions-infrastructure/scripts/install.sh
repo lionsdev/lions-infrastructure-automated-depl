@@ -2357,7 +2357,24 @@ function initialiser_vps() {
     backup_state "pre-init-vps" "true"
 
     # Construction de la commande Ansible
-    local ansible_cmd="ansible-playbook -i ${ANSIBLE_DIR}/${inventory_file} ${ANSIBLE_DIR}/playbooks/init-vps.yml --ask-become-pass"
+    # Utilisation de chemins absolus pour éviter les problèmes de résolution de chemin
+    local inventory_path="${ANSIBLE_DIR}/${inventory_file}"
+    local playbook_path="${ANSIBLE_DIR}/playbooks/init-vps.yml"
+
+    # Vérification que les fichiers existent
+    if [[ ! -f "${inventory_path}" ]]; then
+        log "ERROR" "Fichier d'inventaire non trouvé: ${inventory_path}"
+        log "ERROR" "Vérifiez que le chemin est correct et que le fichier existe"
+        return 1
+    fi
+
+    if [[ ! -f "${playbook_path}" ]]; then
+        log "ERROR" "Fichier de playbook non trouvé: ${playbook_path}"
+        log "ERROR" "Vérifiez que le chemin est correct et que le fichier existe"
+        return 1
+    fi
+
+    local ansible_cmd="ansible-playbook -i \"${inventory_path}\" \"${playbook_path}\" --ask-become-pass"
 
     if [[ "${debug_mode}" == "true" ]]; then
         ansible_cmd="${ansible_cmd} -vvv"
@@ -2417,7 +2434,24 @@ function installer_k3s() {
     backup_state "pre-install-k3s" "true"
 
     # Construction de la commande Ansible
-    local ansible_cmd="ansible-playbook -i ${ANSIBLE_DIR}/${inventory_file} ${ANSIBLE_DIR}/playbooks/install-k3s.yml --ask-become-pass"
+    # Utilisation de chemins absolus pour éviter les problèmes de résolution de chemin
+    local inventory_path="${ANSIBLE_DIR}/${inventory_file}"
+    local playbook_path="${ANSIBLE_DIR}/playbooks/install-k3s.yml"
+
+    # Vérification que les fichiers existent
+    if [[ ! -f "${inventory_path}" ]]; then
+        log "ERROR" "Fichier d'inventaire non trouvé: ${inventory_path}"
+        log "ERROR" "Vérifiez que le chemin est correct et que le fichier existe"
+        return 1
+    fi
+
+    if [[ ! -f "${playbook_path}" ]]; then
+        log "ERROR" "Fichier de playbook non trouvé: ${playbook_path}"
+        log "ERROR" "Vérifiez que le chemin est correct et que le fichier existe"
+        return 1
+    fi
+
+    local ansible_cmd="ansible-playbook -i \"${inventory_path}\" \"${playbook_path}\" --ask-become-pass"
 
     if [[ "${debug_mode}" == "true" ]]; then
         ansible_cmd="${ansible_cmd} -vvv"
@@ -3530,22 +3564,32 @@ INSTALLATION_STEP="deploy_services"
 echo "${INSTALLATION_STEP}" > "${STATE_FILE}"
 
 # Construction de la commande Ansible
-ansible_cmd="ansible-playbook ${ANSIBLE_DIR}/playbooks/deploy-infrastructure-services.yml --extra-vars \"environment=${environment}\" --ask-become-pass"
+# Utilisation de chemins absolus pour éviter les problèmes de résolution de chemin
+playbook_path="${ANSIBLE_DIR}/playbooks/deploy-infrastructure-services.yml"
 
-if [[ "${debug_mode}" == "true" ]]; then
-    ansible_cmd="${ansible_cmd} -vvv"
-fi
-
-log "INFO" "Exécution de la commande: ${ansible_cmd}"
-LAST_COMMAND="${ansible_cmd}"
-
-# Exécution de la commande avec timeout
-if run_with_timeout "${ansible_cmd}" 1800 "ansible_playbook"; then
-    log "SUCCESS" "Déploiement des services d'infrastructure terminé avec succès"
+# Vérification que le fichier existe
+if [[ ! -f "${playbook_path}" ]]; then
+    log "ERROR" "Fichier de playbook non trouvé: ${playbook_path}"
+    log "ERROR" "Vérifiez que le chemin est correct et que le fichier existe"
+    log "WARNING" "Déploiement des services d'infrastructure ignoré"
 else
-    log "WARNING" "Échec du déploiement des services d'infrastructure"
-    log "WARNING" "Vous pouvez les déployer manuellement plus tard avec la commande:"
-    log "WARNING" "ansible-playbook ${ANSIBLE_DIR}/playbooks/deploy-infrastructure-services.yml --extra-vars \"environment=${environment}\" --ask-become-pass"
+    ansible_cmd="ansible-playbook \"${playbook_path}\" --extra-vars \"environment=${environment}\" --ask-become-pass"
+
+    if [[ "${debug_mode}" == "true" ]]; then
+        ansible_cmd="${ansible_cmd} -vvv"
+    fi
+
+    log "INFO" "Exécution de la commande: ${ansible_cmd}"
+    LAST_COMMAND="${ansible_cmd}"
+
+    # Exécution de la commande avec timeout
+    if run_with_timeout "${ansible_cmd}" 1800 "ansible_playbook"; then
+        log "SUCCESS" "Déploiement des services d'infrastructure terminé avec succès"
+    else
+        log "WARNING" "Échec du déploiement des services d'infrastructure"
+        log "WARNING" "Vous pouvez les déployer manuellement plus tard avec la commande:"
+        log "WARNING" "ansible-playbook ${ANSIBLE_DIR}/playbooks/deploy-infrastructure-services.yml --extra-vars \"environment=${environment}\" --ask-become-pass"
+    fi
 fi
 
 # Sauvegarde de l'état après déploiement des services (optionnelle)
