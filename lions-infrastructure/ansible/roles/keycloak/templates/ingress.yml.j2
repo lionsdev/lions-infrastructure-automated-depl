@@ -21,7 +21,7 @@ metadata:
     {{ key }}: "{{ value }}"
     {% endfor %}
 spec:
-  ingressClassName: nginx
+  ingressClassName: traefik
   tls:
     - hosts:
         - "{{ app_domain }}"

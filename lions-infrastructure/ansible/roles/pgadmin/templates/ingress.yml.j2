@@ -17,6 +17,12 @@ metadata:
     technology: "pgadmin"
   annotations:
     description: "Ingress pour pgAdmin {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    # Annotations pour Let's Encrypt
+    {% if app_environment == 'production' %}
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    {% else %}
+    cert-manager.io/cluster-issuer: "letsencrypt-staging"
+    {% endif %}
     # Annotations spécifiques à Traefik
     traefik.ingress.kubernetes.io/router.entrypoints: "websecure"
     traefik.ingress.kubernetes.io/router.tls: "true"

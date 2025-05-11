@@ -3432,7 +3432,7 @@ INSTALLATION_STEP="deploy_services"
 echo "${INSTALLATION_STEP}" > "${STATE_FILE}"
 
 # Construction de la commande Ansible
-local ansible_cmd="ansible-playbook ${ANSIBLE_DIR}/playbooks/deploy-infrastructure-services.yml --extra-vars \"environment=${environment}\""
+ansible_cmd="ansible-playbook ${ANSIBLE_DIR}/playbooks/deploy-infrastructure-services.yml --extra-vars \"environment=${environment}\""
 
 if [[ "${debug_mode}" == "true" ]]; then
     ansible_cmd="${ansible_cmd} -vvv"
