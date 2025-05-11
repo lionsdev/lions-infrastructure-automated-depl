@@ -97,22 +97,25 @@ function log() {
 function run_with_timeout_fallback() {
     local timeout_seconds="$1"
     shift
-    local cmd="$@"
+    # Utiliser un tableau pour stocker la commande et ses arguments
+    local -a cmd_array=("$@")
 
     # Vérifier si la commande timeout est disponible
     if command -v timeout &>/dev/null; then
-        timeout "${timeout_seconds}" ${cmd}
+        timeout "${timeout_seconds}" "${cmd_array[@]}"
         return $?
     else
         # Fallback: exécuter la commande en arrière-plan et la tuer si elle prend trop de temps
         log "DEBUG" "Commande timeout non disponible, utilisation du fallback"
 
         # Créer un fichier temporaire pour stocker le PID
-        local pid_file=$(mktemp)
+        local pid_file
+        pid_file=$(mktemp)
 
         # Exécuter la commande en arrière-plan
-        (${cmd}) & echo $! > "${pid_file}" &
-        local cmd_pid=$(cat "${pid_file}")
+        ("${cmd_array[@]}") & echo $! > "${pid_file}" &
+        local cmd_pid
+        cmd_pid=$(cat "${pid_file}")
 
         # Attendre que la commande se termine ou que le timeout soit atteint
         local start_time=$(date +%s)
@@ -193,10 +196,10 @@ if command -v kubectl &>/dev/null; then
 
     # Logs des pods en erreur
     for pod in $(kubectl get pods --all-namespaces -o jsonpath='{range .items[?(@.status.phase!="Running")]}{.metadata.namespace}/{.metadata.name}{"\n"}{end}'); do
-        ns=$(echo ${pod} | cut -d/ -f1)
-        name=$(echo ${pod} | cut -d/ -f2)
-        kubectl logs -n ${ns} ${name} > "${OUTPUT_DIR}/pod_${ns}_${name}.log" 2>/dev/null || true
-        kubectl describe pod -n ${ns} ${name} > "${OUTPUT_DIR}/pod_${ns}_${name}_describe.log" 2>/dev/null || true
+        ns=$(echo "${pod}" | cut -d/ -f1)
+        name=$(echo "${pod}" | cut -d/ -f2)
+        kubectl logs -n "${ns}" "${name}" > "${OUTPUT_DIR}/pod_${ns}_${name}.log" 2>/dev/null || true
+        kubectl describe pod -n "${ns}" "${name}" > "${OUTPUT_DIR}/pod_${ns}_${name}_describe.log" 2>/dev/null || true
     done
 fi
 
@@ -1749,7 +1752,7 @@ function restore_state() {
 
 # Fonction pour exécuter une commande avec timeout
 function run_with_timeout() {
-    local cmd="$1"
+    local cmd_str="$1"
     local timeout="${2:-${TIMEOUT_SECONDS}}"
     local cmd_type="${3:-generic}"
     local max_retries=3
@@ -1758,13 +1761,13 @@ function run_with_timeout() {
     local interactive=false
 
     # Vérifier si la commande est interactive (nécessite une entrée utilisateur)
-    if [[ "${cmd}" == *"--ask-become-pass"* || "${cmd}" == *"--ask-pass"* || "${cmd}" == *"-K"* || "${cmd}" == *"-k"* ]]; then
+    if [[ "${cmd_str}" == *"--ask-become-pass"* || "${cmd_str}" == *"--ask-pass"* || "${cmd_str}" == *"-K"* || "${cmd_str}" == *"-k"* ]]; then
         interactive=true
         log "INFO" "Commande interactive détectée, l'entrée utilisateur sera requise"
     fi
 
-    log "INFO" "Exécution de la commande avec timeout ${timeout}s: ${cmd}"
-    LAST_COMMAND="${cmd}"
+    log "INFO" "Exécution de la commande avec timeout ${timeout}s: ${cmd_str}"
+    LAST_COMMAND="${cmd_str}"
 
     # Définition du type de commande pour la gestion des erreurs
     COMMAND_NAME="${cmd_type}"
@@ -1818,12 +1821,13 @@ function run_with_timeout() {
             # Pour les commandes interactives, exécuter avec un timeout mais permettre l'entrée utilisateur
             log "INFO" "Exécution de la commande interactive, veuillez répondre aux invites si nécessaire..."
             # Utiliser run_with_timeout_fallback pour exécuter la commande avec un timeout
-            run_with_timeout_fallback ${timeout} bash -c "${cmd}"
+            run_with_timeout_fallback "${timeout}" bash -c "${cmd_str}"
             exit_code=$?
         else
             # Pour les commandes non interactives, capturer la sortie
-            local output_file=$(mktemp)
-            timeout ${timeout} bash -c "${cmd}" > "${output_file}" 2>&1
+            local output_file
+            output_file=$(mktemp)
+            timeout "${timeout}" bash -c "${cmd_str}" > "${output_file}" 2>&1
             exit_code=$?
             command_output=$(cat "${output_file}")
             rm -f "${output_file}"
@@ -2375,15 +2379,37 @@ function initialiser_vps() {
     fi
 
     # Détection du système d'exploitation pour le formatage des chemins
-    local os_name=$(uname -s)
+    local os_name
+    os_name=$(uname -s)
     if [[ "${os_name}" == *"MINGW"* || "${os_name}" == *"MSYS"* || "${os_name}" == *"CYGWIN"* || "${os_name}" == *"Windows"* ]]; then
         # Windows: convertir les chemins Unix en chemins Windows
         log "DEBUG" "Système Windows détecté, conversion des chemins"
-        # Remplacer les slashes par des backslashes et échapper les backslashes pour bash
-        inventory_path=$(echo "${inventory_path}" | sed 's/\//\\/g')
-        playbook_path=$(echo "${playbook_path}" | sed 's/\//\\/g')
-        log "DEBUG" "Chemin d'inventaire converti: ${inventory_path}"
-        log "DEBUG" "Chemin de playbook converti: ${playbook_path}"
+
+        # Vérifier si les chemins contiennent déjà des backslashes
+        if [[ "${inventory_path}" != *"\\"* ]]; then
+            # Remplacer les slashes par des backslashes pour Windows
+            inventory_path=$(echo "${inventory_path}" | tr '/' '\\')
+            log "DEBUG" "Chemin d'inventaire converti: ${inventory_path}"
+        fi
+
+        if [[ "${playbook_path}" != *"\\"* ]]; then
+            # Remplacer les slashes par des backslashes pour Windows
+            playbook_path=$(echo "${playbook_path}" | tr '/' '\\')
+            log "DEBUG" "Chemin de playbook converti: ${playbook_path}"
+        fi
+
+        # Vérifier si les chemins existent après conversion
+        if [[ ! -f "${inventory_path}" ]]; then
+            log "WARNING" "Le chemin d'inventaire converti n'existe pas: ${inventory_path}"
+            log "DEBUG" "Tentative d'utilisation du chemin original"
+            inventory_path="${ANSIBLE_DIR}/${inventory_file}"
+        fi
+
+        if [[ ! -f "${playbook_path}" ]]; then
+            log "WARNING" "Le chemin de playbook converti n'existe pas: ${playbook_path}"
+            log "DEBUG" "Tentative d'utilisation du chemin original"
+            playbook_path="${ANSIBLE_DIR}/playbooks/init-vps.yml"
+        fi
     fi
 
     local ansible_cmd="ansible-playbook -i \"${inventory_path}\" \"${playbook_path}\" --ask-become-pass"
@@ -2400,7 +2426,7 @@ function initialiser_vps() {
         log "SUCCESS" "Initialisation du VPS terminée avec succès"
 
         # Vérification de l'état du VPS après initialisation
-        if ! ssh -t -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl is-active --quiet sshd && sudo systemctl is-active --quiet fail2ban && sudo systemctl is-active --quiet ufw" &>/dev/null; then
+        if ! ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl is-active --quiet sshd && sudo systemctl is-active --quiet fail2ban && sudo systemctl is-active --quiet ufw" &>/dev/null; then
             log "WARNING" "Certains services essentiels ne sont pas actifs après l'initialisation"
             log "WARNING" "Vérifiez manuellement l'état des services sur le VPS"
         else
@@ -2410,22 +2436,23 @@ function initialiser_vps() {
         log "ERROR" "Échec de l'initialisation du VPS"
 
         # Vérification des erreurs courantes
-        if ssh -t -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo grep -i 'failed=' /var/log/ansible.log 2>/dev/null | tail -10" &>/dev/null; then
+        if ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo grep -i 'failed=' /var/log/ansible.log 2>/dev/null | tail -10" &>/dev/null; then
             log "INFO" "Dernières erreurs Ansible sur le VPS:"
-            ssh -t -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo grep -i 'failed=' /var/log/ansible.log 2>/dev/null | tail -10" 2>/dev/null || true
+            ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo grep -i 'failed=' /var/log/ansible.log 2>/dev/null | tail -10" 2>/dev/null || true
         fi
 
         # Tentative de diagnostic
         log "INFO" "Tentative de diagnostic des problèmes..."
 
         # Vérification des droits sudo
-        if ! ssh -t -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo -n true" &>/dev/null; then
+        if ! ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo -n true" &>/dev/null; then
             log "ERROR" "L'utilisateur ${ansible_user} n'a pas les droits sudo sans mot de passe"
             log "ERROR" "Assurez-vous que l'utilisateur est configuré correctement dans le fichier sudoers"
         fi
 
         # Vérification de l'espace disque sur le VPS
-        local disk_info=$(ssh -t -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo df -h /" 2>/dev/null || echo "Impossible de vérifier l'espace disque")
+        local disk_info
+        disk_info=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo df -h /" 2>/dev/null || echo "Impossible de vérifier l'espace disque")
         log "INFO" "Espace disque sur le VPS:"
         echo "${disk_info}"
 
@@ -2464,15 +2491,37 @@ function installer_k3s() {
     fi
 
     # Détection du système d'exploitation pour le formatage des chemins
-    local os_name=$(uname -s)
+    local os_name
+    os_name=$(uname -s)
     if [[ "${os_name}" == *"MINGW"* || "${os_name}" == *"MSYS"* || "${os_name}" == *"CYGWIN"* || "${os_name}" == *"Windows"* ]]; then
         # Windows: convertir les chemins Unix en chemins Windows
         log "DEBUG" "Système Windows détecté, conversion des chemins"
-        # Remplacer les slashes par des backslashes et échapper les backslashes pour bash
-        inventory_path=$(echo "${inventory_path}" | sed 's/\//\\/g')
-        playbook_path=$(echo "${playbook_path}" | sed 's/\//\\/g')
-        log "DEBUG" "Chemin d'inventaire converti: ${inventory_path}"
-        log "DEBUG" "Chemin de playbook converti: ${playbook_path}"
+
+        # Vérifier si les chemins contiennent déjà des backslashes
+        if [[ "${inventory_path}" != *"\\"* ]]; then
+            # Remplacer les slashes par des backslashes pour Windows
+            inventory_path=$(echo "${inventory_path}" | tr '/' '\\')
+            log "DEBUG" "Chemin d'inventaire converti: ${inventory_path}"
+        fi
+
+        if [[ "${playbook_path}" != *"\\"* ]]; then
+            # Remplacer les slashes par des backslashes pour Windows
+            playbook_path=$(echo "${playbook_path}" | tr '/' '\\')
+            log "DEBUG" "Chemin de playbook converti: ${playbook_path}"
+        fi
+
+        # Vérifier si les chemins existent après conversion
+        if [[ ! -f "${inventory_path}" ]]; then
+            log "WARNING" "Le chemin d'inventaire converti n'existe pas: ${inventory_path}"
+            log "DEBUG" "Tentative d'utilisation du chemin original"
+            inventory_path="${ANSIBLE_DIR}/${inventory_file}"
+        fi
+
+        if [[ ! -f "${playbook_path}" ]]; then
+            log "WARNING" "Le chemin de playbook converti n'existe pas: ${playbook_path}"
+            log "DEBUG" "Tentative d'utilisation du chemin original"
+            playbook_path="${ANSIBLE_DIR}/playbooks/install-k3s.yml"
+        fi
     fi
 
     local ansible_cmd="ansible-playbook -i \"${inventory_path}\" \"${playbook_path}\" --ask-become-pass"
@@ -2489,14 +2538,15 @@ function installer_k3s() {
         log "SUCCESS" "Installation de K3s terminée avec succès"
 
         # Vérification de l'installation de K3s
-        if ! ssh -t -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl is-active --quiet k3s" &>/dev/null; then
+        if ! ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl is-active --quiet k3s" &>/dev/null; then
             log "WARNING" "Le service K3s ne semble pas être actif après l'installation"
             log "WARNING" "Vérifiez manuellement l'état du service sur le VPS"
         else
             log "INFO" "Service K3s actif et fonctionnel"
 
             # Vérification des pods système
-            local pods_status=$(ssh -t -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo kubectl get pods -n kube-system -o wide" 2>/dev/null || echo "Impossible de vérifier les pods")
+            local pods_status
+            pods_status=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo kubectl get pods -n kube-system -o wide" 2>/dev/null || echo "Impossible de vérifier les pods")
             log "INFO" "État des pods système:"
             echo "${pods_status}"
 
@@ -2523,13 +2573,14 @@ function installer_k3s() {
         log "ERROR" "Échec de l'installation de K3s"
 
         # Vérification des erreurs courantes
-        if ssh -t -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo grep -i 'failed=' /var/log/ansible.log 2>/dev/null | tail -10" &>/dev/null; then
+        if ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo grep -i 'failed=' /var/log/ansible.log 2>/dev/null | tail -10" &>/dev/null; then
             log "INFO" "Dernières erreurs Ansible sur le VPS:"
-            ssh -t -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo grep -i 'failed=' /var/log/ansible.log 2>/dev/null | tail -10" 2>/dev/null || true
+            ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo grep -i 'failed=' /var/log/ansible.log 2>/dev/null | tail -10" 2>/dev/null || true
         fi
 
         # Vérification des logs de K3s
-        local k3s_logs=$(ssh -t -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo journalctl -u k3s --no-pager -n 50" 2>/dev/null || echo "Impossible de récupérer les logs de K3s")
+        local k3s_logs
+        k3s_logs=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo journalctl -u k3s --no-pager -n 50" 2>/dev/null || echo "Impossible de récupérer les logs de K3s")
         log "INFO" "Derniers logs de K3s:"
         echo "${k3s_logs}"
 
@@ -2545,7 +2596,8 @@ function installer_k3s() {
 
         # Vérification des prérequis système pour K3s
         log "INFO" "Vérification des prérequis système pour K3s..."
-        local system_info=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "uname -a && cat /etc/os-release | grep PRETTY_NAME && free -h && df -h / && sysctl -a | grep -E 'vm.max_map_count|net.ipv4.ip_forward'" 2>/dev/null || echo "Impossible de récupérer les informations système")
+        local system_info
+        system_info=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "uname -a && cat /etc/os-release | grep PRETTY_NAME && free -h && df -h / && sysctl -a | grep -E 'vm.max_map_count|net.ipv4.ip_forward'" 2>/dev/null || echo "Impossible de récupérer les informations système")
         log "INFO" "Informations système:"
         echo "${system_info}"
 
@@ -3528,6 +3580,27 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Détection du système d'exploitation pour le formatage des chemins
+os_name=$(uname -s)
+if [[ "${os_name}" == *"MINGW"* || "${os_name}" == *"MSYS"* || "${os_name}" == *"CYGWIN"* || "${os_name}" == *"Windows"* ]]; then
+    log "DEBUG" "Système Windows détecté, adaptation des chemins..."
+
+    # Convertir les chemins de fichiers pour Windows si nécessaire
+    if [[ "${inventory_file}" == *"/"* && "${inventory_file}" != *"\\"* ]]; then
+        # Remplacer les slashes par des backslashes pour Windows
+        inventory_file_win=$(echo "${inventory_file}" | tr '/' '\\')
+        log "DEBUG" "Chemin d'inventaire adapté pour Windows: ${inventory_file_win}"
+
+        # Vérifier si le chemin converti existe
+        if [[ -f "${inventory_file_win}" ]]; then
+            log "DEBUG" "Utilisation du chemin Windows pour l'inventaire"
+            inventory_file="${inventory_file_win}"
+        else
+            log "DEBUG" "Le chemin Windows n'existe pas, conservation du chemin original"
+        fi
+    fi
+fi
+
 # Affichage du titre
 echo -e "${COLOR_CYAN}${COLOR_BOLD}"
 echo -e "  _     ___ ___  _   _ ___    ___ _   _ _____ ___    _    "
@@ -3584,31 +3657,61 @@ if [[ "${test_mode}" == "true" ]]; then
 fi
 
 # Exécution des étapes d'installation
-verifier_prerequis
+if ! verifier_prerequis; then
+    log "ERROR" "Échec de la vérification des prérequis"
+    cleanup
+    exit 1
+fi
 
 # Extraction des informations d'inventaire
-extraire_informations_inventaire
+if ! extraire_informations_inventaire; then
+    log "ERROR" "Échec de l'extraction des informations d'inventaire"
+    cleanup
+    exit 1
+fi
 
 # Sauvegarde de l'état initial (optionnelle)
 backup_state "pre-installation" "true"
 
+# Initialisation du VPS si nécessaire
 if [[ "${skip_init}" == "false" ]]; then
-    initialiser_vps
+    if ! initialiser_vps; then
+        log "ERROR" "Échec de l'initialisation du VPS"
+        log "INFO" "Vous pouvez réessayer avec l'option --skip-init si le VPS a déjà été initialisé"
+        cleanup
+        exit 1
+    fi
 else
     log "INFO" "Initialisation du VPS ignorée"
 fi
 
-installer_k3s
+# Installation de K3s
+if ! installer_k3s; then
+    log "ERROR" "Échec de l'installation de K3s"
+    log "INFO" "Vérifiez les logs pour plus d'informations"
+    cleanup
+    exit 1
+fi
 
 # Sauvegarde de l'état après installation de K3s (optionnelle)
 backup_state "post-k3s" "true"
 
-deployer_infrastructure_base
+# Déploiement de l'infrastructure de base
+if ! deployer_infrastructure_base; then
+    log "ERROR" "Échec du déploiement de l'infrastructure de base"
+    log "INFO" "Vérifiez les logs pour plus d'informations"
+    cleanup
+    exit 1
+fi
 
 # Sauvegarde de l'état après déploiement de l'infrastructure (optionnelle)
 backup_state "post-infrastructure" "true"
 
-deployer_monitoring
+# Déploiement du monitoring
+if ! deployer_monitoring; then
+    log "ERROR" "Échec du déploiement du monitoring"
+    log "WARNING" "Le monitoring n'est pas essentiel, l'installation peut continuer"
+fi
 
 # Sauvegarde de l'état après déploiement du monitoring (optionnelle)
 backup_state "post-monitoring" "true"
@@ -3635,9 +3738,20 @@ else
     if [[ "${os_name}" == *"MINGW"* || "${os_name}" == *"MSYS"* || "${os_name}" == *"CYGWIN"* || "${os_name}" == *"Windows"* ]]; then
         # Windows: convertir les chemins Unix en chemins Windows
         log "DEBUG" "Système Windows détecté, conversion des chemins"
-        # Remplacer les slashes par des backslashes et échapper les backslashes pour bash
-        playbook_path=$(echo "${playbook_path}" | sed 's/\//\\/g')
-        log "DEBUG" "Chemin de playbook converti: ${playbook_path}"
+
+        # Vérifier si le chemin contient déjà des backslashes
+        if [[ "${playbook_path}" != *"\\"* ]]; then
+            # Remplacer les slashes par des backslashes pour Windows
+            playbook_path=$(echo "${playbook_path}" | tr '/' '\\')
+            log "DEBUG" "Chemin de playbook converti: ${playbook_path}"
+        fi
+
+        # Vérifier si le chemin existe après conversion
+        if [[ ! -f "${playbook_path}" ]]; then
+            log "WARNING" "Le chemin de playbook converti n'existe pas: ${playbook_path}"
+            log "DEBUG" "Tentative d'utilisation du chemin original"
+            playbook_path="${ANSIBLE_DIR}/playbooks/deploy-infrastructure-services.yml"
+        fi
     fi
 
     ansible_cmd="ansible-playbook \"${playbook_path}\" --extra-vars \"environment=${environment}\" --ask-become-pass"
@@ -3662,7 +3776,12 @@ fi
 # Sauvegarde de l'état après déploiement des services (optionnelle)
 backup_state "post-services" "true"
 
-verifier_installation
+# Vérification finale de l'installation
+if ! verifier_installation; then
+    log "WARNING" "La vérification finale de l'installation a échoué"
+    log "WARNING" "Certains composants peuvent ne pas fonctionner correctement"
+    log "INFO" "Consultez les logs pour plus d'informations et effectuez les corrections nécessaires"
+fi
 
 # Affichage du résumé
 echo -e "\n${COLOR_GREEN}${COLOR_BOLD}===========================================================${COLOR_RESET}"
