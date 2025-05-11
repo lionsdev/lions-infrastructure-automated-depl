@@ -48,7 +48,8 @@ set -euo pipefail
 function log() {
     local level="$1"
     local message="$2"
-    local timestamp="$(date +"%Y-%m-%d %H:%M:%S")"
+    local timestamp
+    timestamp="$(date +"%Y-%m-%d %H:%M:%S")"
     local caller_info=""
     local log_color="${COLOR_RESET}"
     local log_prefix=""
@@ -118,9 +119,12 @@ function run_with_timeout_fallback() {
         cmd_pid=$(cat "${pid_file}")
 
         # Attendre que la commande se termine ou que le timeout soit atteint
-        local start_time=$(date +%s)
-        local end_time=$((start_time + timeout_seconds))
-        local current_time=$(date +%s)
+        local start_time
+        start_time=$(date +%s)
+        local end_time
+        end_time=$((start_time + timeout_seconds))
+        local current_time
+        current_time=$(date +%s)
 
         while [[ ${current_time} -lt ${end_time} ]]; do
             # Vérifier si le processus est toujours en cours d'exécution
@@ -160,7 +164,8 @@ function collect_logs() {
         log "INFO" "Collecte des logs du VPS..."
 
         # Création d'un script temporaire pour collecter les logs sur le VPS
-        local tmp_script=$(mktemp)
+        local tmp_script
+        tmp_script=$(mktemp)
         cat > "${tmp_script}" << 'EOF'
 #!/bin/bash
 # Script de collecte de logs sur le VPS
@@ -247,7 +252,8 @@ EOF
 
     # Compression des logs
     log "INFO" "Compression des logs..."
-    local archive_file="${LOG_DIR}/diagnostic-$(date +%Y%m%d-%H%M%S).tar.gz"
+    local archive_file
+    archive_file="${LOG_DIR}/diagnostic-$(date +%Y%m%d-%H%M%S).tar.gz"
     tar -czf "${archive_file}" -C "$(dirname "${output_dir}")" "$(basename "${output_dir}")" &>/dev/null
     rm -rf "${output_dir}"
 
@@ -1625,9 +1631,12 @@ function restore_state() {
 
     # Lecture des métadonnées
     if [[ -f "${metadata_file}" ]]; then
-        local backup_date=$(jq -r '.backup_date' "${metadata_file}")
-        local backup_step=$(jq -r '.installation_step' "${metadata_file}")
-        local backup_env=$(jq -r '.environment' "${metadata_file}")
+        local backup_date
+        backup_date=$(jq -r '.backup_date' "${metadata_file}")
+        local backup_step
+        backup_step=$(jq -r '.installation_step' "${metadata_file}")
+        local backup_env
+        backup_env=$(jq -r '.environment' "${metadata_file}")
 
         log "INFO" "Sauvegarde du ${backup_date}, étape: ${backup_step}, environnement: ${backup_env}"
 
@@ -1703,13 +1712,16 @@ function restore_state() {
     # Attente que K3s soit prêt
     log "INFO" "Attente que K3s soit prêt..."
     local k3s_timeout=120  # Augmentation du timeout à 2 minutes
-    local start_time=$(date +%s)
+    local start_time
+    start_time=$(date +%s)
     local k3s_ready=false
     local check_count=0
 
     while [[ "${k3s_ready}" == "false" ]]; do
-        local current_time=$(date +%s)
-        local elapsed_time=$((current_time - start_time))
+        local current_time
+        current_time=$(date +%s)
+        local elapsed_time
+        elapsed_time=$((current_time - start_time))
 
         if [[ ${elapsed_time} -gt ${k3s_timeout} ]]; then
             log "WARNING" "Timeout atteint en attendant que K3s soit prêt"
@@ -1741,7 +1753,8 @@ function restore_state() {
 
     # Mise à jour de l'état actuel
     if [[ -f "${metadata_file}" ]]; then
-        local backup_step=$(jq -r '.installation_step' "${metadata_file}")
+        local backup_step
+        backup_step=$(jq -r '.installation_step' "${metadata_file}")
         INSTALLATION_STEP="${backup_step}"
         echo "${INSTALLATION_STEP}" > "${STATE_FILE}"
         log "INFO" "État actuel mis à jour: ${INSTALLATION_STEP}"
@@ -2248,9 +2261,12 @@ function verifier_prerequis() {
 
     # Vérification des ressources du VPS
     log "INFO" "Vérification des ressources du VPS..."
-    local vps_cpu_cores=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "nproc --all" 2>/dev/null || echo "0")
-    local vps_memory_total=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "free -m | awk '/^Mem:/ {print \$2}'" 2>/dev/null || echo "0")
-    local vps_disk_free=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "df -m / | awk 'NR==2 {print \$4}'" 2>/dev/null || echo "0")
+    local vps_cpu_cores
+    vps_cpu_cores=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "nproc --all" 2>/dev/null || echo "0")
+    local vps_memory_total
+    vps_memory_total=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "free -m | awk '/^Mem:/ {print \$2}'" 2>/dev/null || echo "0")
+    local vps_disk_free
+    vps_disk_free=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "df -m / | awk 'NR==2 {print \$4}'" 2>/dev/null || echo "0")
 
     log "INFO" "Ressources du VPS: ${vps_cpu_cores} cœurs CPU, ${vps_memory_total}MB RAM, ${vps_disk_free}MB espace disque libre"
 
@@ -2270,7 +2286,8 @@ function verifier_prerequis() {
 
     # Vérification de l'état précédent
     if [[ -f "${STATE_FILE}" ]]; then
-        local previous_step=$(cat "${STATE_FILE}")
+        local previous_step
+        previous_step=$(cat "${STATE_FILE}")
         log "INFO" "État précédent détecté: ${previous_step}"
         log "INFO" "Voulez-vous reprendre à partir de cette étape? (o/N)"
 
@@ -2935,12 +2952,15 @@ EOF
     # Attente que les pods soient prêts
     log "INFO" "Attente que les pods de monitoring soient prêts..."
     local timeout=300  # 5 minutes
-    local start_time=$(date +%s)
+    local start_time
+    start_time=$(date +%s)
     local all_pods_ready=false
 
     while [[ "${all_pods_ready}" == "false" ]]; do
-        local current_time=$(date +%s)
-        local elapsed_time=$((current_time - start_time))
+        local current_time
+        current_time=$(date +%s)
+        local elapsed_time
+        elapsed_time=$((current_time - start_time))
 
         if [[ ${elapsed_time} -gt ${timeout} ]]; then
             log "WARNING" "Timeout atteint en attendant que les pods de monitoring soient prêts"
@@ -2989,7 +3009,8 @@ function verifier_installation() {
     log "INFO" "Vérification des nœuds Kubernetes..."
     LAST_COMMAND="kubectl get nodes -o wide"
 
-    local nodes_output=$(kubectl get nodes -o wide 2>&1)
+    local nodes_output
+    nodes_output=$(kubectl get nodes -o wide 2>&1)
     echo "${nodes_output}"
 
     # Vérification de l'état des nœuds
@@ -3004,7 +3025,8 @@ function verifier_installation() {
     log "INFO" "Vérification des namespaces..."
     LAST_COMMAND="kubectl get namespaces"
 
-    local namespaces_output=$(kubectl get namespaces 2>&1)
+    local namespaces_output
+    namespaces_output=$(kubectl get namespaces 2>&1)
     echo "${namespaces_output}"
 
     # Vérification des namespaces requis
@@ -3027,7 +3049,8 @@ function verifier_installation() {
     log "INFO" "Vérification des pods système..."
     LAST_COMMAND="kubectl get pods -n kube-system"
 
-    local system_pods_output=$(kubectl get pods -n kube-system 2>&1)
+    local system_pods_output
+    system_pods_output=$(kubectl get pods -n kube-system 2>&1)
     echo "${system_pods_output}"
 
     # Vérification des pods système essentiels
@@ -3050,14 +3073,16 @@ function verifier_installation() {
     log "INFO" "Vérification des pods d'infrastructure..."
     LAST_COMMAND="kubectl get pods -n lions-infrastructure"
 
-    local infra_pods_output=$(kubectl get pods -n lions-infrastructure 2>&1)
+    local infra_pods_output
+    infra_pods_output=$(kubectl get pods -n lions-infrastructure 2>&1)
     echo "${infra_pods_output}"
 
     # Vérification des pods de monitoring
     log "INFO" "Vérification des pods de monitoring..."
     LAST_COMMAND="kubectl get pods -n monitoring"
 
-    local monitoring_pods_output=$(kubectl get pods -n monitoring 2>&1)
+    local monitoring_pods_output
+    monitoring_pods_output=$(kubectl get pods -n monitoring 2>&1)
     echo "${monitoring_pods_output}"
 
     # Vérification des pods de monitoring essentiels
@@ -3080,14 +3105,16 @@ function verifier_installation() {
     log "INFO" "Vérification des pods du Kubernetes Dashboard..."
     LAST_COMMAND="kubectl get pods -n kubernetes-dashboard"
 
-    local dashboard_pods_output=$(kubectl get pods -n kubernetes-dashboard 2>&1)
+    local dashboard_pods_output
+    dashboard_pods_output=$(kubectl get pods -n kubernetes-dashboard 2>&1)
     echo "${dashboard_pods_output}"
 
     # Vérification des services
     log "INFO" "Vérification des services exposés..."
 
     # Vérification de Grafana
-    local grafana_service=$(kubectl get service -n monitoring prometheus-grafana -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null)
+    local grafana_service
+    grafana_service=$(kubectl get service -n monitoring prometheus-grafana -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null)
     if [[ -n "${grafana_service}" ]]; then
         log "INFO" "Grafana est exposé sur le port ${grafana_service}"
 

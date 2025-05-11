@@ -49,15 +49,21 @@ mkdir -p "${LOG_HISTORY_DIR}"
 
 # Fonction d'affichage du logo
 function afficher_logo() {
-    echo -e "${COLOR_CYAN}${COLOR_BOLD}"
-    echo -e "  _     ___ ___  _   _ ___    ___ _   _ _____ ___    _    "
-    echo -e " | |   |_ _/ _ \| \ | / __|  |_ _| \ | |  ___/ _ \  / \   "
-    echo -e " | |    | | | | |  \| \__ \   | ||  \| | |_ | | | |/ _ \  "
-    echo -e " | |___ | | |_| | |\  |__) |  | || |\  |  _|| |_| / ___ \ "
-    echo -e " |_____|___\___/|_| \_|____/  |___|_| \_|_|   \___/_/   \_\\"
-    echo -e "${COLOR_RESET}"
-    echo -e "${COLOR_YELLOW}${COLOR_BOLD}  Infrastructure de Déploiement Automatisé - v2.0.0${COLOR_RESET}"
-    echo -e "${COLOR_CYAN}  ------------------------------------------------${COLOR_RESET}\n"
+    # Définir des couleurs pour un effet gradient
+    local GRADIENT1="\033[38;5;45m"  # Bleu clair
+    local GRADIENT2="\033[38;5;39m"  # Bleu moyen
+    local GRADIENT3="\033[38;5;33m"  # Bleu foncé
+
+    echo -e "${COLOR_BOLD}"
+    echo -e "${GRADIENT1}    ╔═════════════════════════════════════════════════════════╗"
+    echo -e "${GRADIENT1}    ║ ${GRADIENT2}█     █ ████ ████ █   █ ████   ███ █   █ ████ ████${GRADIENT1}   ║"
+    echo -e "${GRADIENT2}    ║ ${GRADIENT2}█     █ █  █ █  █ ██  █ █       █  ██  █ █    █  █${GRADIENT1}   ║"
+    echo -e "${GRADIENT2}    ║ ${GRADIENT3}█     █ █  █ █  █ █ █ █ ████    █  █ █ █ ████ █  █${GRADIENT2}   ║"
+    echo -e "${GRADIENT3}    ║ ${GRADIENT3}█     █ █  █ █  █ █  ██    █    █  █  ██ █    █  █${GRADIENT2}   ║"
+    echo -e "${GRADIENT3}    ║ ${GRADIENT3}█████ █ ████ ████ █   █ ████   ███ █   █ █    ████${GRADIENT1}   ║"
+    echo -e "${GRADIENT1}    ╚═════════════════════════════════════════════════════════╝${COLOR_RESET}"
+    echo -e "${COLOR_YELLOW}${COLOR_BOLD}        Infrastructure de Déploiement Automatisé v2.0.0${COLOR_RESET}"
+    echo -e "${GRADIENT2}       ─────────────────────────────────────────────────${COLOR_RESET}\n"
 }
 
 # Fonction de logging améliorée
