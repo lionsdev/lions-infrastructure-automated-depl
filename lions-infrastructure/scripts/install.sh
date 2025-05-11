@@ -1815,10 +1815,10 @@ function run_with_timeout() {
         local command_output=""
 
         if [[ "${interactive}" == "true" ]]; then
-            # Pour les commandes interactives, exécuter directement sans timeout pour permettre l'entrée utilisateur
+            # Pour les commandes interactives, exécuter avec un timeout mais permettre l'entrée utilisateur
             log "INFO" "Exécution de la commande interactive, veuillez répondre aux invites si nécessaire..."
-            # Utiliser eval pour exécuter la commande directement, sans timeout qui peut interférer avec l'interactivité
-            eval "${cmd}"
+            # Utiliser run_with_timeout_fallback pour exécuter la commande avec un timeout
+            run_with_timeout_fallback ${timeout} bash -c "${cmd}"
             exit_code=$?
         else
             # Pour les commandes non interactives, capturer la sortie
