@@ -1451,7 +1451,7 @@ EOF
     # Vérification de l'existence des répertoires avant la sauvegarde
     local existing_dirs=()
     for dir in "${backup_dirs[@]}"; do
-        if ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "[ -d \"${dir}\" ]" &>/dev/null; then
+        if ssh -t -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo [ -d \"${dir}\" ]" &>/dev/null; then
             existing_dirs+=("${dir}")
             log "DEBUG" "Répertoire trouvé pour sauvegarde: ${dir}"
         else
@@ -1481,11 +1481,11 @@ EOF
     backup_cmd="${backup_cmd} 2>/dev/null || true"
 
     # Exécution de la commande de sauvegarde
-    if ssh -o BatchMode=yes -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "${backup_cmd}"; then
+    if ssh -t -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "${backup_cmd}"; then
         # Récupération du fichier de sauvegarde
         if scp -P "${ansible_port}" "${ansible_user}@${ansible_host}:/tmp/${backup_name}.tar.gz" "${backup_file}" &>/dev/null; then
             # Nettoyage du fichier temporaire sur le VPS
-            ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "rm -f /tmp/${backup_name}.tar.gz"
+            ssh -t -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo rm -f /tmp/${backup_name}.tar.gz"
 
             # Vérification de la taille du fichier de sauvegarde
             local backup_size=$(du -h "${backup_file}" | awk '{print $1}')
@@ -1588,25 +1588,25 @@ function restore_state() {
 
     # Arrêt des services avant restauration
     log "INFO" "Arrêt des services avant restauration..."
-    ssh -o BatchMode=yes -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl stop k3s || true" &>/dev/null
+    ssh -t -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl stop k3s || true" &>/dev/null
 
     # Restauration des fichiers
     log "INFO" "Restauration des fichiers..."
-    if ! ssh -o BatchMode=yes -o ConnectTimeout=30 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo tar -xzf /tmp/${backup_name}.tar.gz -C / 2>/dev/null"; then
+    if ! ssh -t -o ConnectTimeout=30 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo tar -xzf /tmp/${backup_name}.tar.gz -C / 2>/dev/null"; then
         log "ERROR" "Échec de la restauration des fichiers"
 
         # Redémarrage des services en cas d'échec
-        ssh -o BatchMode=yes -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl start k3s || true" &>/dev/null
+        ssh -t -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl start k3s || true" &>/dev/null
 
         return 1
     fi
 
     # Nettoyage du fichier temporaire
-    ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "rm -f /tmp/${backup_name}.tar.gz" &>/dev/null
+    ssh -t -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo rm -f /tmp/${backup_name}.tar.gz" &>/dev/null
 
     # Redémarrage des services
     log "INFO" "Redémarrage des services..."
-    if ! ssh -o BatchMode=yes -o ConnectTimeout=30 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl daemon-reload && sudo systemctl start k3s"; then
+    if ! ssh -t -o ConnectTimeout=30 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl daemon-reload && sudo systemctl start k3s"; then
         log "WARNING" "Échec du redémarrage des services"
         log "WARNING" "Vous devrez peut-être redémarrer manuellement le VPS"
         return 1
@@ -1627,7 +1627,7 @@ function restore_state() {
             break
         fi
 
-        if ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "kubectl get nodes" &>/dev/null; then
+        if ssh -t -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo kubectl get nodes" &>/dev/null; then
             k3s_ready=true
             log "SUCCESS" "K3s est prêt"
         else
@@ -2273,7 +2273,7 @@ function initialiser_vps() {
         log "SUCCESS" "Initialisation du VPS terminée avec succès"
 
         # Vérification de l'état du VPS après initialisation
-        if ! ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "systemctl is-active --quiet sshd && systemctl is-active --quiet fail2ban && systemctl is-active --quiet ufw" &>/dev/null; then
+        if ! ssh -t -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl is-active --quiet sshd && sudo systemctl is-active --quiet fail2ban && sudo systemctl is-active --quiet ufw" &>/dev/null; then
             log "WARNING" "Certains services essentiels ne sont pas actifs après l'initialisation"
             log "WARNING" "Vérifiez manuellement l'état des services sur le VPS"
         else
@@ -2283,22 +2283,22 @@ function initialiser_vps() {
         log "ERROR" "Échec de l'initialisation du VPS"
 
         # Vérification des erreurs courantes
-        if ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "grep -i 'failed=' /var/log/ansible.log 2>/dev/null | tail -10" &>/dev/null; then
+        if ssh -t -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo grep -i 'failed=' /var/log/ansible.log 2>/dev/null | tail -10" &>/dev/null; then
             log "INFO" "Dernières erreurs Ansible sur le VPS:"
-            ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "grep -i 'failed=' /var/log/ansible.log 2>/dev/null | tail -10" 2>/dev/null || true
+            ssh -t -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo grep -i 'failed=' /var/log/ansible.log 2>/dev/null | tail -10" 2>/dev/null || true
         fi
 
         # Tentative de diagnostic
         log "INFO" "Tentative de diagnostic des problèmes..."
 
         # Vérification des droits sudo
-        if ! ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo -n true" &>/dev/null; then
+        if ! ssh -t -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo -n true" &>/dev/null; then
             log "ERROR" "L'utilisateur ${ansible_user} n'a pas les droits sudo sans mot de passe"
             log "ERROR" "Assurez-vous que l'utilisateur est configuré correctement dans le fichier sudoers"
         fi
 
         # Vérification de l'espace disque sur le VPS
-        local disk_info=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "df -h /" 2>/dev/null || echo "Impossible de vérifier l'espace disque")
+        local disk_info=$(ssh -t -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo df -h /" 2>/dev/null || echo "Impossible de vérifier l'espace disque")
         log "INFO" "Espace disque sur le VPS:"
         echo "${disk_info}"
 
@@ -2333,14 +2333,14 @@ function installer_k3s() {
         log "SUCCESS" "Installation de K3s terminée avec succès"
 
         # Vérification de l'installation de K3s
-        if ! ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "systemctl is-active --quiet k3s" &>/dev/null; then
+        if ! ssh -t -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl is-active --quiet k3s" &>/dev/null; then
             log "WARNING" "Le service K3s ne semble pas être actif après l'installation"
             log "WARNING" "Vérifiez manuellement l'état du service sur le VPS"
         else
             log "INFO" "Service K3s actif et fonctionnel"
 
             # Vérification des pods système
-            local pods_status=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "kubectl get pods -n kube-system -o wide" 2>/dev/null || echo "Impossible de vérifier les pods")
+            local pods_status=$(ssh -t -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo kubectl get pods -n kube-system -o wide" 2>/dev/null || echo "Impossible de vérifier les pods")
             log "INFO" "État des pods système:"
             echo "${pods_status}"
 
@@ -2367,13 +2367,13 @@ function installer_k3s() {
         log "ERROR" "Échec de l'installation de K3s"
 
         # Vérification des erreurs courantes
-        if ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "grep -i 'failed=' /var/log/ansible.log 2>/dev/null | tail -10" &>/dev/null; then
+        if ssh -t -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo grep -i 'failed=' /var/log/ansible.log 2>/dev/null | tail -10" &>/dev/null; then
             log "INFO" "Dernières erreurs Ansible sur le VPS:"
-            ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "grep -i 'failed=' /var/log/ansible.log 2>/dev/null | tail -10" 2>/dev/null || true
+            ssh -t -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo grep -i 'failed=' /var/log/ansible.log 2>/dev/null | tail -10" 2>/dev/null || true
         fi
 
         # Vérification des logs de K3s
-        local k3s_logs=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "journalctl -u k3s --no-pager -n 50" 2>/dev/null || echo "Impossible de récupérer les logs de K3s")
+        local k3s_logs=$(ssh -t -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo journalctl -u k3s --no-pager -n 50" 2>/dev/null || echo "Impossible de récupérer les logs de K3s")
         log "INFO" "Derniers logs de K3s:"
         echo "${k3s_logs}"
 
@@ -3432,7 +3432,7 @@ INSTALLATION_STEP="deploy_services"
 echo "${INSTALLATION_STEP}" > "${STATE_FILE}"
 
 # Construction de la commande Ansible
-ansible_cmd="ansible-playbook ${ANSIBLE_DIR}/playbooks/deploy-infrastructure-services.yml --extra-vars \"environment=${environment}\""
+ansible_cmd="ansible-playbook ${ANSIBLE_DIR}/playbooks/deploy-infrastructure-services.yml --extra-vars \"environment=${environment}\" --ask-become-pass"
 
 if [[ "${debug_mode}" == "true" ]]; then
     ansible_cmd="${ansible_cmd} -vvv"
@@ -3447,7 +3447,7 @@ if run_with_timeout "${ansible_cmd}" 1800 "ansible_playbook"; then
 else
     log "WARNING" "Échec du déploiement des services d'infrastructure"
     log "WARNING" "Vous pouvez les déployer manuellement plus tard avec la commande:"
-    log "WARNING" "ansible-playbook ${ANSIBLE_DIR}/playbooks/deploy-infrastructure-services.yml --extra-vars \"environment=${environment}\""
+    log "WARNING" "ansible-playbook ${ANSIBLE_DIR}/playbooks/deploy-infrastructure-services.yml --extra-vars \"environment=${environment}\" --ask-become-pass"
 fi
 
 # Sauvegarde de l'état après déploiement des services (optionnelle)

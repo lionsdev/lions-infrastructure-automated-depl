@@ -204,7 +204,7 @@
         - name: Configuration de sudo sans mot de passe pour les commandes de sauvegarde
           lineinfile:
             path: /etc/sudoers.d/lions-backup
-            line: "{{ ansible_user }} ALL=(ALL) NOPASSWD: /bin/tar, /bin/rm"
+            line: "{{ ansible_user }} ALL=(ALL) NOPASSWD: /bin/tar, /bin/rm, /bin/chmod, /bin/chown, /bin/mkdir, /bin/touch"
             state: present
             create: yes
             mode: 0440
