@@ -25,9 +25,12 @@ patches:
 namespace: development
 
 # Labels communs à ajouter à toutes les ressources
-commonLabels:
-  environment: development
-  managed-by: kustomize
+labels:
+  - pairs:
+      environment: development
+      managed-by: kustomize
+    includeSelectors: true
+    includeTemplates: true
 
 # Annotations communes à ajouter à toutes les ressources
 commonAnnotations:

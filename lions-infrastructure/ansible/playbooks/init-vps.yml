@@ -8,27 +8,27 @@
 - name: Initialisation du VPS Contabo
   hosts: vps
   become: yes
-  
+
   vars:
     swap_size: 4G
     timezone: "Europe/Paris"
-    
+
   tasks:
     - name: Mise à jour du cache APT
       apt:
         update_cache: yes
         cache_valid_time: 3600
-    
+
     - name: Mise à jour du système
       apt:
         upgrade: dist
       register: system_updated
-    
+
     - name: Redémarrage si nécessaire après mise à jour
       reboot:
         reboot_timeout: 600
       when: system_updated.changed
-    
+
     - name: Installation des paquets essentiels
       apt:
         name:
@@ -50,11 +50,11 @@
           - lsb-release
           - apt-transport-https
         state: present
-    
+
     - name: Configuration du fuseau horaire
       timezone:
         name: "{{ timezone }}"
-    
+
     - name: Configuration de Fail2ban pour SSH
       copy:
         dest: /etc/fail2ban/jail.local
@@ -67,84 +67,102 @@
           maxretry = 3
           bantime = 3600
       notify: restart fail2ban
-    
+
     - name: Configuration du pare-feu UFW - SSH
       ufw:
         rule: allow
         port: "{{ ansible_port }}"
         proto: tcp
-    
+
     - name: Configuration du pare-feu UFW - HTTP
       ufw:
         rule: allow
         port: 80
         proto: tcp
-    
+
     - name: Configuration du pare-feu UFW - HTTPS
       ufw:
         rule: allow
         port: 443
         proto: tcp
-    
+
     - name: Configuration du pare-feu UFW - K3s API
       ufw:
         rule: allow
         port: 6443
         proto: tcp
-    
+
+    - name: Configuration du pare-feu UFW - SSH standard
+      ufw:
+        rule: allow
+        port: 22
+        proto: tcp
+
+    - name: Configuration du pare-feu UFW - Kubernetes Dashboard
+      ufw:
+        rule: allow
+        port: 30001
+        proto: tcp
+
+    - name: Configuration du pare-feu UFW - NodePort 30000
+      ufw:
+        rule: allow
+        port: 30000
+        proto: tcp
+
     - name: Activation du pare-feu UFW
       ufw:
         state: enabled
         policy: deny
-    
+
     - name: Vérification de l'existence du fichier swap
       stat:
         path: /swapfile
       register: swap_file_check
-    
+
     - name: Configuration du swap
       block:
         - name: Création du fichier swap
           command: fallocate -l {{ swap_size }} /swapfile
           args:
             creates: /swapfile
-        
+
         - name: Attribution des permissions au fichier swap
           file:
             path: /swapfile
             mode: 0600
-        
+
         - name: Formatage du fichier swap
           command: mkswap /swapfile
           args:
             creates: /proc/swaps
           register: swap_created
-        
+
         - name: Activation du swap
           command: swapon /swapfile
           when: swap_created.changed
-        
+
         - name: Configuration permanente du swap dans fstab
           lineinfile:
             path: /etc/fstab
             line: '/swapfile none swap sw 0 0'
             state: present
       when: not swap_file_check.stat.exists
-    
+
     - name: Optimisation de la mémoire - swappiness
       sysctl:
         name: vm.swappiness
         value: '10'
         state: present
         reload: yes
-    
+
     - name: Optimisation de la mémoire - cache pressure
       sysctl:
         name: vm.vfs_cache_pressure
         value: '50'
         state: present
         reload: yes
-    
+
     - name: Création du répertoire pour les logs LIONS
       file:
         path: /var/log/lions
@@ -152,7 +170,7 @@
         mode: 0755
         owner: root
         group: root
-    
+
     - name: Création des sous-répertoires pour les logs
       file:
         path: "/var/log/lions/{{ item }}"
@@ -166,11 +184,36 @@
         - applications
         - infrastructure
         - security
-    
+
+    - name: Configuration des permissions pour les répertoires de sauvegarde
+      block:
+        - name: Création du répertoire .kube s'il n'existe pas
+          file:
+            path: "/home/{{ ansible_user }}/.kube"
+            state: directory
+            mode: 0755
+            owner: "{{ ansible_user }}"
+            group: "{{ ansible_user }}"
+
+        - name: Ajout de l'utilisateur au groupe sudo
+          user:
+            name: "{{ ansible_user }}"
+            groups: sudo
+            append: yes
+
+        - name: Configuration de sudo sans mot de passe pour les commandes de sauvegarde
+          lineinfile:
+            path: /etc/sudoers.d/lions-backup
+            line: "{{ ansible_user }} ALL=(ALL) NOPASSWD: /bin/tar, /bin/rm"
+            state: present
+            create: yes
+            mode: 0440
+            validate: 'visudo -cf %s'
+
     - name: Vérification de l'état du système après initialisation
       debug:
         msg: "Le VPS a été initialisé avec succès et est prêt pour l'installation de K3s."
-  
+
   handlers:
     - name: restart fail2ban
       service:

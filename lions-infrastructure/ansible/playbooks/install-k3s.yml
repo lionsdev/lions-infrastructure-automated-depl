@@ -200,7 +200,6 @@
             wait: true
             set_values:
               - value: installCRDs=true
-      when: k3s_installed.changed
 
     # Traefik est maintenant utilisé comme contrôleur d'ingress par défaut
     # Le bloc d'installation de Nginx Ingress Controller a été supprimé
