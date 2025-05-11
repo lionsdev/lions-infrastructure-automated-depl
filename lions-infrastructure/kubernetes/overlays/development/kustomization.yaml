@@ -14,6 +14,7 @@ resources:
   - ../../base/network-policies
   - ../../base/rbac
   - ../../base/resource-quotas
+  - ../../base/cert-manager
 
 # Patches spécifiques à l'environnement de développement
 patches:

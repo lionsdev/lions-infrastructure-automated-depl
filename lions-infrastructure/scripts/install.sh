@@ -434,7 +434,7 @@ function generate_diagnostic_report() {
             echo "Nœuds: $(kubectl get nodes -o wide 2>/dev/null)"
             echo "Pods par namespace: $(kubectl get pods --all-namespaces -o wide 2>/dev/null)"
             echo "Services: $(kubectl get services --all-namespaces 2>/dev/null)"
-            echo "Événements récents: $(kubectl get events --all-namespaces --sort-by='.lastTimestamp' | tail -20 2>/dev/null)"
+            echo "Événements récents: $(kubectl get events --all-namespaces --sort-by='.lastTimestamp' | tail -n 20 2>/dev/null)"
         else
             echo "Kubernetes n'est pas accessible ou n'est pas installé"
         fi
@@ -3047,7 +3047,7 @@ function verifier_installation() {
     # Vérification des événements récents
     log "INFO" "Événements récents (dernières 5 minutes):"
     # Using a more compatible approach without --since flag
-    kubectl get events --all-namespaces --sort-by='.lastTimestamp' --field-selector type=Warning | head -20
+    kubectl get events --all-namespaces --sort-by='.lastTimestamp' --field-selector type=Warning | head -n 20
 
     # Vérification de la connectivité externe
     log "INFO" "Vérification de la connectivité externe..."
@@ -3117,7 +3117,7 @@ function verifier_installation() {
         echo ""
 
         echo "=== ÉVÉNEMENTS RÉCENTS ==="
-        kubectl get events --all-namespaces --sort-by='.lastTimestamp' | tail -20
+        kubectl get events --all-namespaces --sort-by='.lastTimestamp' | tail -n 20
         echo ""
 
         echo "=== UTILISATION DES RESSOURCES ==="
@@ -3423,6 +3423,35 @@ deployer_monitoring
 
 # Sauvegarde de l'état après déploiement du monitoring (optionnelle)
 backup_state "post-monitoring" "true"
+
+# Déploiement des services d'infrastructure (PostgreSQL, PgAdmin, Gitea, Keycloak)
+log "INFO" "Déploiement des services d'infrastructure..."
+INSTALLATION_STEP="deploy_services"
+
+# Sauvegarde de l'état actuel
+echo "${INSTALLATION_STEP}" > "${STATE_FILE}"
+
+# Construction de la commande Ansible
+local ansible_cmd="ansible-playbook ${ANSIBLE_DIR}/playbooks/deploy-infrastructure-services.yml --extra-vars \"environment=${environment}\""
+
+if [[ "${debug_mode}" == "true" ]]; then
+    ansible_cmd="${ansible_cmd} -vvv"
+fi
+
+log "INFO" "Exécution de la commande: ${ansible_cmd}"
+LAST_COMMAND="${ansible_cmd}"
+
+# Exécution de la commande avec timeout
+if run_with_timeout "${ansible_cmd}" 1800 "ansible_playbook"; then
+    log "SUCCESS" "Déploiement des services d'infrastructure terminé avec succès"
+else
+    log "WARNING" "Échec du déploiement des services d'infrastructure"
+    log "WARNING" "Vous pouvez les déployer manuellement plus tard avec la commande:"
+    log "WARNING" "ansible-playbook ${ANSIBLE_DIR}/playbooks/deploy-infrastructure-services.yml --extra-vars \"environment=${environment}\""
+fi
+
+# Sauvegarde de l'état après déploiement des services (optionnelle)
+backup_state "post-services" "true"
 
 verifier_installation
 

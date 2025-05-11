@@ -1,0 +1,78 @@
+---
+# Titre: Playbook de Déploiement des Services d'Infrastructure
+# Description: Déploie les services d'infrastructure (PostgreSQL, PgAdmin, Gitea, Keycloak)
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-10
+# Version: 1.0.0
+
+- name: Déploiement des Services d'Infrastructure
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  vars:
+    environment: "{{ environment | default('development') }}"
+    
+  tasks:
+    - name: Affichage des informations de déploiement
+      debug:
+        msg: 
+          - "Environnement: {{ environment }}"
+          - "Services à déployer: PostgreSQL, PgAdmin, Gitea, Keycloak"
+    
+    # PostgreSQL
+    - name: Déploiement de PostgreSQL
+      include_role:
+        name: postgres
+      vars:
+        app_name: postgres
+        app_namespace: "postgres-{{ environment }}"
+        app_environment: "{{ environment }}"
+        app_domain: "postgres.{{ environment }}.lions.dev"
+        app_version: "latest"
+        app_replicas: 1
+    
+    # PgAdmin
+    - name: Déploiement de PgAdmin
+      include_role:
+        name: pgadmin
+      vars:
+        app_name: pgadmin
+        app_namespace: "pgadmin-{{ environment }}"
+        app_environment: "{{ environment }}"
+        app_domain: "pgadmin.{{ environment }}.lions.dev"
+        app_version: "latest"
+        app_replicas: 1
+        postgres_host: "postgres.postgres-{{ environment }}.svc.cluster.local"
+        postgres_port: 5432
+    
+    # Gitea
+    - name: Déploiement de Gitea
+      include_role:
+        name: gitea
+      vars:
+        app_name: gitea
+        app_namespace: "gitea-{{ environment }}"
+        app_environment: "{{ environment }}"
+        app_domain: "gitea.{{ environment }}.lions.dev"
+        app_version: "latest"
+        app_replicas: 1
+        postgres_host: "postgres.postgres-{{ environment }}.svc.cluster.local"
+        postgres_port: 5432
+    
+    # Keycloak
+    - name: Déploiement de Keycloak
+      include_role:
+        name: keycloak
+      vars:
+        app_name: keycloak
+        app_namespace: "keycloak-{{ environment }}"
+        app_environment: "{{ environment }}"
+        app_domain: "keycloak.{{ environment }}.lions.dev"
+        app_version: "latest"
+        app_replicas: 1
+        postgres_host: "postgres.postgres-{{ environment }}.svc.cluster.local"
+        postgres_port: 5432
+    
+    - name: Vérification du déploiement des services
+      debug:
+        msg: "Tous les services d'infrastructure ont été déployés avec succès"

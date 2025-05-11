@@ -275,11 +275,12 @@
                 name: kubernetes-dashboard-prod
                 namespace: kubernetes-dashboard
                 annotations:
-                  kubernetes.io/ingress.class: nginx
                   cert-manager.io/cluster-issuer: letsencrypt-prod
-                  nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
-                  nginx.ingress.kubernetes.io/ssl-passthrough: "true"
+                  traefik.ingress.kubernetes.io/router.entrypoints: "websecure"
+                  traefik.ingress.kubernetes.io/router.tls: "true"
+                  traefik.ingress.kubernetes.io/router.middlewares: "kubernetes-dashboard-strip-prefix@kubernetescrd"
               spec:
+                ingressClassName: traefik
                 tls:
                   - hosts:
                       - "k3s.lions.dev"
@@ -306,11 +307,12 @@
                 name: kubernetes-dashboard-dev
                 namespace: kubernetes-dashboard
                 annotations:
-                  kubernetes.io/ingress.class: nginx
-                  cert-manager.io/cluster-issuer: letsencrypt-prod
-                  nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
-                  nginx.ingress.kubernetes.io/ssl-passthrough: "true"
+                  cert-manager.io/cluster-issuer: letsencrypt-staging
+                  traefik.ingress.kubernetes.io/router.entrypoints: "websecure"
+                  traefik.ingress.kubernetes.io/router.tls: "true"
+                  traefik.ingress.kubernetes.io/router.middlewares: "kubernetes-dashboard-strip-prefix@kubernetescrd"
               spec:
+                ingressClassName: traefik
                 tls:
                   - hosts:
                       - "k3s.dev.lions.dev"
@@ -326,6 +328,20 @@
                               name: kubernetes-dashboard
                               port:
                                 number: 443
+
+        - name: Création du middleware pour le Dashboard
+          k8s:
+            state: present
+            definition:
+              apiVersion: traefik.containo.us/v1alpha1
+              kind: Middleware
+              metadata:
+                name: kubernetes-dashboard-strip-prefix
+                namespace: kubernetes-dashboard
+              spec:
+                stripPrefix:
+                  prefixes:
+                    - "/dashboard"
 
         - name: Génération d'un token pour l'accès au Dashboard
           command: k3s kubectl create token dashboard-admin -n kubernetes-dashboard
