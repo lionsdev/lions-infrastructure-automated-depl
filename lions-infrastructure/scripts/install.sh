@@ -2562,6 +2562,39 @@ function deployer_infrastructure_base() {
     # Sauvegarde de l'état actuel
     echo "${INSTALLATION_STEP}" > "${STATE_FILE}"
 
+    # Attente que les CRDs de cert-manager soient prêts
+    log "INFO" "Vérification que les CRDs de cert-manager sont prêts..."
+    local max_attempts=30
+    local attempt=0
+    local crds_ready=false
+
+    while [[ "${crds_ready}" == "false" && ${attempt} -lt ${max_attempts} ]]; do
+        attempt=$((attempt + 1))
+        log "INFO" "Tentative ${attempt}/${max_attempts} de vérification des CRDs de cert-manager..."
+
+        if kubectl get crd | grep -q "clusterissuers.cert-manager.io"; then
+            log "SUCCESS" "Les CRDs de cert-manager sont prêts"
+            crds_ready=true
+        else
+            log "INFO" "Les CRDs de cert-manager ne sont pas encore prêts, attente de 10 secondes..."
+            sleep 10
+        fi
+    done
+
+    if [[ "${crds_ready}" == "false" ]]; then
+        log "WARNING" "Les CRDs de cert-manager ne semblent pas être installés après ${max_attempts} tentatives"
+        log "WARNING" "Le déploiement des ClusterIssuers pourrait échouer"
+        log "INFO" "Tentative d'installation manuelle des CRDs de cert-manager..."
+
+        # Tentative d'installation manuelle des CRDs
+        if run_with_timeout "kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.11.0/cert-manager.crds.yaml" 300; then
+            log "SUCCESS" "Installation manuelle des CRDs de cert-manager réussie"
+        else
+            log "WARNING" "Échec de l'installation manuelle des CRDs de cert-manager"
+            log "WARNING" "Le déploiement des ClusterIssuers pourrait échouer"
+        fi
+    fi
+
     # Vérification de l'accès au cluster Kubernetes
     if ! kubectl cluster-info &>/dev/null; then
         log "ERROR" "Impossible d'accéder au cluster Kubernetes"
