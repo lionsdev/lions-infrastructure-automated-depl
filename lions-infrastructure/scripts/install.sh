@@ -4305,8 +4305,12 @@ report_file="${LOG_DIR}/installation-report-$(date +%Y%m%d-%H%M%S).txt"
     echo ""
 
     echo "=== INFORMATIONS D'ACCÈS ==="
-    echo "Grafana: http://${ansible_host}:30000 (admin/admin)"
-    echo "Kubernetes Dashboard: https://${ansible_host}:30001 (token requis)"
+    local access_host="${ansible_host}"
+    if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+        access_host="localhost"
+    fi
+    echo "Grafana: http://${access_host}:30000 (admin/admin)"
+    echo "Kubernetes Dashboard: https://${access_host}:30001 (token requis)"
     echo ""
 
     echo "=== PROCHAINES ÉTAPES ==="
