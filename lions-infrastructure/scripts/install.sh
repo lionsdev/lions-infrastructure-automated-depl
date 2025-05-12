@@ -3548,10 +3548,14 @@ function verifier_installation() {
 
         # Tentative de connexion à Grafana
         if command_exists "curl"; then
-            if curl -s -o /dev/null -w "%{http_code}" "http://${ansible_host}:${grafana_service}" | grep -q "200\|302"; then
-                log "SUCCESS" "Grafana est accessible à l'adresse: http://${ansible_host}:${grafana_service}"
+            local host_to_check="${ansible_host}"
+            if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+                host_to_check="localhost"
+            fi
+            if curl -s -o /dev/null -w "%{http_code}" "http://${host_to_check}:${grafana_service}" | grep -q "200\|302"; then
+                log "SUCCESS" "Grafana est accessible à l'adresse: http://${host_to_check}:${grafana_service}"
             else
-                log "WARNING" "Grafana n'est pas accessible à l'adresse: http://${ansible_host}:${grafana_service}"
+                log "WARNING" "Grafana n'est pas accessible à l'adresse: http://${host_to_check}:${grafana_service}"
                 log "WARNING" "Vérifiez les règles de pare-feu et l'état du service"
             fi
         fi
@@ -3566,10 +3570,14 @@ function verifier_installation() {
 
         # Tentative de connexion au Dashboard
         if command_exists "curl"; then
-            if curl -s -k -o /dev/null -w "%{http_code}" "https://${ansible_host}:${dashboard_service}" | grep -q "200\|302\|401"; then
-                log "SUCCESS" "Kubernetes Dashboard est accessible à l'adresse: https://${ansible_host}:${dashboard_service}"
+            local host_to_check="${ansible_host}"
+            if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+                host_to_check="localhost"
+            fi
+            if curl -s -k -o /dev/null -w "%{http_code}" "https://${host_to_check}:${dashboard_service}" | grep -q "200\|302\|401"; then
+                log "SUCCESS" "Kubernetes Dashboard est accessible à l'adresse: https://${host_to_check}:${dashboard_service}"
             else
-                log "WARNING" "Kubernetes Dashboard n'est pas accessible à l'adresse: https://${ansible_host}:${dashboard_service}"
+                log "WARNING" "Kubernetes Dashboard n'est pas accessible à l'adresse: https://${host_to_check}:${dashboard_service}"
                 log "WARNING" "Vérifiez les règles de pare-feu et l'état du service"
             fi
         fi
