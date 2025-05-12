@@ -114,11 +114,11 @@ spec:
         - name: postgres-config
           configMap:
             name: {{ app_name }}-config
-  {% if not postgres_persistent_storage | bool %}
+{% if not postgres_persistent_storage | bool %}
         - name: postgres-data
           emptyDir: {}
-  {% endif %}
-  {% if postgres_persistent_storage | bool %}
+{% endif %}
+{% if postgres_persistent_storage | bool %}
   volumeClaimTemplates:
     - metadata:
         name: postgres-data
@@ -128,4 +128,4 @@ spec:
         resources:
           requests:
             storage: {{ postgres_storage_size }}
-  {% endif %}
+{% endif %}
