@@ -36,7 +36,12 @@
     - "servicemonitor.yml"
     - "persistentvolumeclaim.yml"
   register: files_check
-  failed_when: not item.stat.exists
+
+- name: Vérification que tous les fichiers existent
+  assert:
+    that: "item.stat.exists"
+    fail_msg: "Le fichier {{ item.invocation.module_args.path }} n'existe pas"
+  loop: "{{ files_check.results }}"
 
 - name: Création du compte de service
   k8s:
