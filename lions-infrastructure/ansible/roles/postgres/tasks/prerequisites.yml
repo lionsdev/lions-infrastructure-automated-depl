@@ -12,6 +12,8 @@
     name: "{{ app_namespace }}"
   register: namespace_info
   failed_when: namespace_info.resources | length == 0
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
 - name: Vérification des droits d'accès au namespace
   k8s:
@@ -26,6 +28,8 @@
         check: "true"
   register: access_check
   ignore_errors: yes
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
 - name: Suppression du ConfigMap de vérification
   k8s:
@@ -35,6 +39,8 @@
     name: "access-check"
     namespace: "{{ app_namespace }}"
   when: access_check is succeeded
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
 - name: Échec si les droits d'accès sont insuffisants
   fail:
@@ -49,6 +55,8 @@
     namespace: registry
   register: registry_info
   failed_when: registry_info.resources | length == 0
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
 - name: Vérification de l'existence de l'ingress controller
   k8s_info:
@@ -58,6 +66,8 @@
     namespace: ingress-nginx
   register: ingress_info
   ignore_errors: yes
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
 - name: Avertissement si l'ingress controller n'est pas trouvé
   debug:
@@ -71,6 +81,8 @@
     name: "{{ postgres_storage_class }}"
   register: storage_class_info
   ignore_errors: yes
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
 - name: Avertissement si la classe de stockage n'est pas trouvée
   debug:
@@ -82,6 +94,8 @@
   register: node_resources
   changed_when: false
   ignore_errors: yes
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
 - name: Avertissement si les ressources sont limitées
   debug:

@@ -43,12 +43,16 @@
     state: present
     src: "{{ temp_dir.path }}/serviceaccount.yml"
   register: serviceaccount_result
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
 - name: Création du ConfigMap pour la configuration de PostgreSQL
   k8s:
     state: present
     src: "{{ temp_dir.path }}/configmap.yml"
   register: configmap_result
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
 - name: Vérification de l'existence du secret pour l'administrateur PostgreSQL
   k8s_info:
@@ -58,6 +62,8 @@
     name: "{{ postgres_admin_password_secret }}"
   register: admin_secret_info
   ignore_errors: yes
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
 - name: Avertissement si le secret administrateur n'existe pas
   debug:
@@ -84,6 +90,8 @@
   register: temp_admin_secret_result
   when: admin_secret_info is failed or admin_secret_info.resources | length == 0
   ignore_errors: yes
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
 - name: Avertissement pour le mot de passe temporaire
   debug:
@@ -99,6 +107,8 @@
   register: replication_secret_info
   ignore_errors: yes
   when: postgres_ha_enabled | bool
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
 - name: Avertissement si le secret de réplication n'existe pas
   debug:
@@ -125,6 +135,8 @@
   register: temp_replication_secret_result
   when: postgres_ha_enabled | bool and (replication_secret_info is failed or replication_secret_info.resources | length == 0)
   ignore_errors: yes
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
 - name: Avertissement pour le mot de passe de réplication temporaire
   debug:

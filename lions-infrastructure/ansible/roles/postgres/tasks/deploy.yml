@@ -10,12 +10,16 @@
     state: present
     src: "{{ temp_dir.path }}/statefulset.yml"
   register: statefulset_result
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
 - name: Création du service pour PostgreSQL
   k8s:
     state: present
     src: "{{ temp_dir.path }}/service.yml"
   register: service_result
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
 - name: Attente du déploiement
   k8s_info:
@@ -28,6 +32,8 @@
   retries: 30
   delay: 10
   ignore_errors: yes
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
 - name: Vérification du statut du déploiement
   fail:
@@ -42,6 +48,8 @@
     label_selectors:
       - "app={{ app_name }}"
   register: pods_info
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
 - name: Affichage des informations sur les pods
   debug:
@@ -63,6 +71,8 @@
     label_selectors:
       - "app={{ app_name }}"
   register: pods_info_after_init
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
 - name: Affichage des informations sur les pods après initialisation
   debug:
@@ -79,6 +89,8 @@
   changed_when: false
   loop_control:
     label: "{{ item.metadata.name }}"
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
 - name: Affichage des erreurs dans les logs (si présentes)
   debug:
@@ -96,6 +108,8 @@
   delay: 10
   until: pg_ready_check.rc == 0
   changed_when: false
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
 - name: Avertissement si PostgreSQL n'est pas disponible
   debug:
@@ -108,6 +122,8 @@
   ignore_errors: yes
   when: postgres_ha_enabled | bool and pods_info_after_init.resources | length > 1
   changed_when: false
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
 - name: Affichage du statut de la réplication
   debug:
@@ -128,6 +144,8 @@
   ignore_errors: yes
   changed_when: false
   when: pg_ready_check is succeeded
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
 - name: Affichage du résultat de la création des bases de données
   debug:

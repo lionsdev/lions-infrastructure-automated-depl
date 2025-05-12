@@ -12,6 +12,8 @@
     name: servicemonitors.monitoring.coreos.com
   register: prometheus_operator_check
   ignore_errors: yes
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
 - name: Création du ServiceMonitor pour Prometheus
   k8s:
@@ -22,6 +24,8 @@
     - prometheus_operator_check is succeeded
     - prometheus_operator_check.resources | length > 0
     - postgres_prometheus_scrape | bool
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
 - name: Avertissement si Prometheus Operator n'est pas installé
   debug:
@@ -115,6 +119,8 @@
     - prometheus_operator_check is succeeded
     - prometheus_operator_check.resources | length > 0
     - postgres_prometheus_scrape | bool
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
 - name: Configuration de Grafana Dashboard pour PostgreSQL
   k8s:
@@ -515,3 +521,5 @@
     - prometheus_operator_check.resources | length > 0
     - postgres_prometheus_scrape | bool
   ignore_errors: yes
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config

@@ -6,9 +6,9 @@
 # Version: 1.0.0
 
 - name: Déploiement des Services d'Infrastructure
-  hosts: localhost
-  connection: local
-  gather_facts: no
+  hosts: vps
+  become: yes
+  gather_facts: yes
   vars:
     environment: "{{ environment | default('development') }}"
     roles_path: "{{ playbook_dir }}/../roles"

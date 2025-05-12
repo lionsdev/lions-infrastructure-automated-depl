@@ -10,12 +10,16 @@
     state: present
     src: "{{ temp_dir.path }}/deployment.yml"
   register: deployment_result
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
 - name: Création du service pour pgAdmin
   k8s:
     state: present
     src: "{{ temp_dir.path }}/service.yml"
   register: service_result
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
 - name: Création de l'ingress pour pgAdmin
   k8s:
@@ -23,6 +27,8 @@
     src: "{{ temp_dir.path }}/ingress.yml"
   register: ingress_result
   failed_when: false
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
 - name: Vérification du déploiement
   k8s_info:
@@ -35,6 +41,8 @@
   retries: 30
   delay: 10
   failed_when: false
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
 - name: Échec si le déploiement n'est pas réussi
   fail:
@@ -49,6 +57,8 @@
     label_selectors:
       - app={{ app_name }}
   register: pods_info
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
 - name: Affichage des informations sur les pods
   debug:

@@ -30,6 +30,8 @@
     state: present
     src: "{{ temp_dir.path }}/configmap.yml"
   register: configmap_result
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
 - name: Vérification de l'existence du secret pour l'administrateur pgAdmin
   k8s_info:
@@ -39,6 +41,8 @@
     name: "{{ pgadmin_admin_password_secret }}"
   register: admin_secret_info
   failed_when: false
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
 - name: Avertissement si le secret pour l'administrateur pgAdmin n'existe pas
   debug:
@@ -65,6 +69,8 @@
         PGADMIN_DEFAULT_PASSWORD: "{{ pgadmin_admin_password | default('changeme') }}"
   when: admin_secret_info is failed or admin_secret_info.resources | length == 0
   register: secret_created
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
 - name: Avertissement sur le mot de passe temporaire
   debug:
@@ -76,3 +82,5 @@
     state: present
     src: "{{ temp_dir.path }}/serviceaccount.yml"
   register: serviceaccount_result
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config

@@ -13,6 +13,8 @@
     name: prometheus-kube-prometheus-prometheus
   register: prometheus_info
   failed_when: false
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
 - name: Avertissement si Prometheus n'est pas trouvé
   debug:
@@ -27,6 +29,8 @@
   when:
     - prometheus_info.resources | length > 0
     - pgadmin_prometheus_scrape | default(true) | bool
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
 - name: Configuration des règles d'alerte pour pgAdmin
   k8s:
@@ -58,6 +62,8 @@
   when:
     - prometheus_info.resources | length > 0
     - pgadmin_prometheus_scrape | default(true) | bool
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
 - name: Affichage des informations sur le monitoring
   debug:
