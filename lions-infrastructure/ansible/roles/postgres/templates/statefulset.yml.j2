@@ -44,7 +44,7 @@ spec:
               value: /var/lib/postgresql/data/pgdata
             - name: POSTGRES_DB
               value: postgres
-          {% if postgres_ha_enabled | bool %}
+{% if postgres_ha_enabled | bool %}
             - name: POSTGRES_REPLICATION_USER
               value: "{{ postgres_ha_replication_user }}"
             - name: POSTGRES_REPLICATION_PASSWORD
@@ -52,7 +52,7 @@ spec:
                 secretKeyRef:
                   name: {{ postgres_ha_replication_password_secret }}
                   key: password
-          {% endif %}
+{% endif %}
           volumeMounts:
             - name: postgres-data
               mountPath: /var/lib/postgresql/data
