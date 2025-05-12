@@ -10,7 +10,7 @@
   become: yes
   gather_facts: yes
   vars:
-    deploy_environment: "{{ environment | default('development') }}"
+    deploy_environment: "{{ target_env | default('development') }}"
     roles_path: "{{ playbook_dir }}/../roles"
 
   pre_tasks:

@@ -4406,7 +4406,7 @@ else
         fi
     fi
 
-    ansible_cmd="ansible-playbook \"${playbook_path}\" --extra-vars \"environment=${environment}\" --ask-become-pass"
+    ansible_cmd="ansible-playbook \"${playbook_path}\" --extra-vars \"target_env=${environment}\" --ask-become-pass"
 
     if [[ "${debug_mode}" == "true" ]]; then
         ansible_cmd="${ansible_cmd} -vvv"
@@ -4421,7 +4421,7 @@ else
     else
         log "WARNING" "Échec du déploiement des services d'infrastructure"
         log "WARNING" "Vous pouvez les déployer manuellement plus tard avec la commande:"
-        log "WARNING" "ansible-playbook ${ANSIBLE_DIR}/playbooks/deploy-infrastructure-services.yml --extra-vars \"environment=${environment}\" --ask-become-pass"
+        log "WARNING" "ansible-playbook ${ANSIBLE_DIR}/playbooks/deploy-infrastructure-services.yml --extra-vars \"target_env=${environment}\" --ask-become-pass"
     fi
 fi
 
