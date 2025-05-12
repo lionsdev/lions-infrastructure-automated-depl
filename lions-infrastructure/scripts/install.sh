@@ -950,6 +950,38 @@ function check_disk_space() {
     return $?
 }
 
+# Fonction pour détecter si le script est exécuté sur le VPS cible
+function is_local_execution() {
+    local target_host="$1"
+
+    # Si l'hôte cible est localhost ou 127.0.0.1, c'est une exécution locale
+    if [[ "${target_host}" == "localhost" || "${target_host}" == "127.0.0.1" ]]; then
+        return 0
+    fi
+
+    # Récupération des adresses IP locales
+    local local_ips=$(ip -o -4 addr show | awk '{print $4}' | cut -d/ -f1 | tr '\n' ' ' 2>/dev/null || echo "")
+
+    # Si l'hôte cible est une des adresses IP locales, c'est une exécution locale
+    for ip in ${local_ips}; do
+        if [[ "${target_host}" == "${ip}" ]]; then
+            return 0
+        fi
+    done
+
+    # Vérification du nom d'hôte
+    local hostname=$(hostname -f 2>/dev/null || hostname 2>/dev/null || echo "")
+    if [[ -n "${hostname}" && "${target_host}" == "${hostname}" ]]; then
+        return 0
+    fi
+
+    # Ce n'est pas une exécution locale
+    return 1
+}
+
+# Variable globale pour indiquer si le script est exécuté sur le VPS cible
+IS_LOCAL_EXECUTION=false
+
 # Fonction pour extraire les informations d'inventaire
 function extraire_informations_inventaire() {
     log "INFO" "Extraction des informations d'inventaire depuis ${inventory_file}..."
@@ -1143,6 +1175,16 @@ EOF
     log "INFO" "- Port: ${ansible_port}"
     log "INFO" "- Utilisateur: ${ansible_user}"
 
+    # Vérification si le script est exécuté sur le VPS cible
+    if is_local_execution "${ansible_host}"; then
+        IS_LOCAL_EXECUTION=true
+        log "INFO" "Détection d'exécution locale: le script est exécuté directement sur le VPS cible"
+        log "INFO" "Les commandes SSH seront remplacées par des commandes locales"
+    else
+        IS_LOCAL_EXECUTION=false
+        log "INFO" "Détection d'exécution distante: le script est exécuté depuis une machine différente du VPS cible"
+    fi
+
     return 0
 }
 
@@ -1162,38 +1204,65 @@ function open_required_ports() {
         return 0
     fi
 
-    # Vérification de la connexion SSH
-    if ! ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p "${target_port}" "${ansible_user}@${target_host}" "echo 'Test de connexion'" &>/dev/null; then
-        log "ERROR" "Impossible de se connecter au VPS via SSH pour ouvrir les ports"
-        return 1
-    fi
+    # Vérification si exécution locale ou distante
+    if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+        log "INFO" "Exécution locale détectée, utilisation de commandes locales pour ouvrir les ports"
 
-    # Vérification que UFW est installé et actif
-    if ! ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p "${target_port}" "${ansible_user}@${target_host}" "command -v ufw &>/dev/null && systemctl is-active --quiet ufw" &>/dev/null; then
-        log "WARNING" "UFW n'est pas installé ou n'est pas actif sur le VPS"
-        log "INFO" "Tentative d'installation et d'activation de UFW..."
+        # Vérification que UFW est installé et actif
+        if ! command -v ufw &>/dev/null || ! systemctl is-active --quiet ufw; then
+            log "WARNING" "UFW n'est pas installé ou n'est pas actif sur le VPS"
+            log "INFO" "Tentative d'installation et d'activation de UFW..."
 
-        # Installation de UFW si nécessaire
-        log "INFO" "Installation de UFW sur le VPS (commande interactive, veuillez entrer votre mot de passe si demandé)..."
-        local ssh_cmd="ssh -t -o StrictHostKeyChecking=no -o ConnectTimeout=${timeout} -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo apt-get update && sudo apt-get install -y ufw\""
-        log "DEBUG" "Exécution de la commande avec eval: ${ssh_cmd}"
-        eval "${ssh_cmd}"
-        if [ $? -ne 0 ]; then
-            log "ERROR" "Impossible d'installer UFW sur le VPS"
+            # Installation de UFW si nécessaire
+            log "INFO" "Installation de UFW (commande interactive, veuillez entrer votre mot de passe si demandé)..."
+            if ! sudo apt-get update && sudo apt-get install -y ufw; then
+                log "ERROR" "Impossible d'installer UFW"
+                return 1
+            fi
+
+            # Activation de UFW
+            log "INFO" "Activation de UFW (commande interactive, veuillez entrer votre mot de passe si demandé)..."
+            if ! sudo ufw --force enable; then
+                log "ERROR" "Impossible d'activer UFW"
+                return 1
+            fi
+
+            log "SUCCESS" "UFW installé et activé avec succès"
+        fi
+    else
+        # Vérification de la connexion SSH
+        if ! ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p "${target_port}" "${ansible_user}@${target_host}" "echo 'Test de connexion'" &>/dev/null; then
+            log "ERROR" "Impossible de se connecter au VPS via SSH pour ouvrir les ports"
             return 1
         fi
 
-        # Activation de UFW
-        log "INFO" "Activation de UFW sur le VPS (commande interactive, veuillez entrer votre mot de passe si demandé)..."
-        local ssh_cmd="ssh -t -o StrictHostKeyChecking=no -o ConnectTimeout=${timeout} -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw --force enable\""
-        log "DEBUG" "Exécution de la commande avec eval: ${ssh_cmd}"
-        eval "${ssh_cmd}"
-        if [ $? -ne 0 ]; then
-            log "ERROR" "Impossible d'activer UFW sur le VPS"
-            return 1
-        fi
+        # Vérification que UFW est installé et actif
+        if ! ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p "${target_port}" "${ansible_user}@${target_host}" "command -v ufw &>/dev/null && systemctl is-active --quiet ufw" &>/dev/null; then
+            log "WARNING" "UFW n'est pas installé ou n'est pas actif sur le VPS"
+            log "INFO" "Tentative d'installation et d'activation de UFW..."
 
-        log "SUCCESS" "UFW installé et activé avec succès"
+            # Installation de UFW si nécessaire
+            log "INFO" "Installation de UFW sur le VPS (commande interactive, veuillez entrer votre mot de passe si demandé)..."
+            local ssh_cmd="ssh -t -o StrictHostKeyChecking=no -o ConnectTimeout=${timeout} -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo apt-get update && sudo apt-get install -y ufw\""
+            log "DEBUG" "Exécution de la commande avec eval: ${ssh_cmd}"
+            eval "${ssh_cmd}"
+            if [ $? -ne 0 ]; then
+                log "ERROR" "Impossible d'installer UFW sur le VPS"
+                return 1
+            fi
+
+            # Activation de UFW
+            log "INFO" "Activation de UFW sur le VPS (commande interactive, veuillez entrer votre mot de passe si demandé)..."
+            local ssh_cmd="ssh -t -o StrictHostKeyChecking=no -o ConnectTimeout=${timeout} -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw --force enable\""
+            log "DEBUG" "Exécution de la commande avec eval: ${ssh_cmd}"
+            eval "${ssh_cmd}"
+            if [ $? -ne 0 ]; then
+                log "ERROR" "Impossible d'activer UFW sur le VPS"
+                return 1
+            fi
+
+            log "SUCCESS" "UFW installé et activé avec succès"
+        fi
     fi
 
     # Ouverture des ports
@@ -1202,48 +1271,86 @@ function open_required_ports() {
     for port in "${ports_to_open[@]}"; do
         log "INFO" "Ouverture du port ${port}..."
 
-        # Vérification si le port est déjà ouvert
-        log "INFO" "Vérification si le port ${port} est déjà ouvert (commande interactive, veuillez entrer votre mot de passe si demandé)..."
-        local ssh_cmd="ssh -tt -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw status | grep -E \\\"^${port}/(tcp|udp)\\\"\""
-        log "DEBUG" "Exécution de la commande avec eval: ${ssh_cmd}"
-        eval "${ssh_cmd}"
-        if [ $? -eq 0 ]; then
-            log "INFO" "Le port ${port} est déjà ouvert dans UFW"
-            continue
-        fi
+        if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+            # Exécution locale
 
-        # Ouverture du port TCP
-        log "INFO" "Ouverture du port ${port}/tcp sur le VPS (commande interactive, veuillez entrer votre mot de passe si demandé)..."
-        local ssh_cmd="ssh -tt -o StrictHostKeyChecking=no -o ConnectTimeout=${timeout} -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw allow ${port}/tcp\""
-        log "DEBUG" "Exécution de la commande avec eval: ${ssh_cmd}"
-        eval "${ssh_cmd}"
-        if [ $? -ne 0 ]; then
-            log "ERROR" "Impossible d'ouvrir le port ${port}/tcp sur le VPS"
-            success=false
-            continue
-        fi
+            # Vérification si le port est déjà ouvert
+            log "INFO" "Vérification si le port ${port} est déjà ouvert (commande interactive, veuillez entrer votre mot de passe si demandé)..."
+            if sudo ufw status | grep -E "^${port}/(tcp|udp)" &>/dev/null; then
+                log "INFO" "Le port ${port} est déjà ouvert dans UFW"
+                continue
+            fi
 
-        # Ouverture du port UDP
-        log "INFO" "Ouverture du port ${port}/udp sur le VPS (commande interactive, veuillez entrer votre mot de passe si demandé)..."
-        local ssh_cmd="ssh -tt -o StrictHostKeyChecking=no -o ConnectTimeout=${timeout} -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw allow ${port}/udp\""
-        log "DEBUG" "Exécution de la commande avec eval: ${ssh_cmd}"
-        eval "${ssh_cmd}"
-        if [ $? -ne 0 ]; then
-            log "WARNING" "Impossible d'ouvrir le port ${port}/udp sur le VPS"
-            # Ne pas échouer pour UDP, car certains services n'utilisent que TCP
+            # Ouverture du port TCP
+            log "INFO" "Ouverture du port ${port}/tcp (commande interactive, veuillez entrer votre mot de passe si demandé)..."
+            if ! sudo ufw allow ${port}/tcp; then
+                log "ERROR" "Impossible d'ouvrir le port ${port}/tcp"
+                success=false
+                continue
+            fi
+
+            # Ouverture du port UDP
+            log "INFO" "Ouverture du port ${port}/udp (commande interactive, veuillez entrer votre mot de passe si demandé)..."
+            if ! sudo ufw allow ${port}/udp; then
+                log "WARNING" "Impossible d'ouvrir le port ${port}/udp"
+                # Ne pas échouer pour UDP, car certains services n'utilisent que TCP
+            fi
+        else
+            # Exécution distante
+
+            # Vérification si le port est déjà ouvert
+            log "INFO" "Vérification si le port ${port} est déjà ouvert (commande interactive, veuillez entrer votre mot de passe si demandé)..."
+            local ssh_cmd="ssh -tt -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw status | grep -E \\\"^${port}/(tcp|udp)\\\"\""
+            log "DEBUG" "Exécution de la commande avec eval: ${ssh_cmd}"
+            eval "${ssh_cmd}"
+            if [ $? -eq 0 ]; then
+                log "INFO" "Le port ${port} est déjà ouvert dans UFW"
+                continue
+            fi
+
+            # Ouverture du port TCP
+            log "INFO" "Ouverture du port ${port}/tcp sur le VPS (commande interactive, veuillez entrer votre mot de passe si demandé)..."
+            local ssh_cmd="ssh -tt -o StrictHostKeyChecking=no -o ConnectTimeout=${timeout} -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw allow ${port}/tcp\""
+            log "DEBUG" "Exécution de la commande avec eval: ${ssh_cmd}"
+            eval "${ssh_cmd}"
+            if [ $? -ne 0 ]; then
+                log "ERROR" "Impossible d'ouvrir le port ${port}/tcp sur le VPS"
+                success=false
+                continue
+            fi
+
+            # Ouverture du port UDP
+            log "INFO" "Ouverture du port ${port}/udp sur le VPS (commande interactive, veuillez entrer votre mot de passe si demandé)..."
+            local ssh_cmd="ssh -tt -o StrictHostKeyChecking=no -o ConnectTimeout=${timeout} -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw allow ${port}/udp\""
+            log "DEBUG" "Exécution de la commande avec eval: ${ssh_cmd}"
+            eval "${ssh_cmd}"
+            if [ $? -ne 0 ]; then
+                log "WARNING" "Impossible d'ouvrir le port ${port}/udp sur le VPS"
+                # Ne pas échouer pour UDP, car certains services n'utilisent que TCP
+            fi
         fi
 
         log "SUCCESS" "Port ${port} ouvert avec succès"
     done
 
     # Rechargement des règles UFW
-    log "INFO" "Rechargement des règles UFW sur le VPS (commande interactive, veuillez entrer votre mot de passe si demandé)..."
-    local ssh_cmd="ssh -tt -o StrictHostKeyChecking=no -o ConnectTimeout=${timeout} -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw reload\""
-    log "DEBUG" "Exécution de la commande avec eval: ${ssh_cmd}"
-    eval "${ssh_cmd}"
-    if [ $? -ne 0 ]; then
-        log "WARNING" "Impossible de recharger les règles UFW"
-        # Ne pas échouer pour le rechargement, car les règles sont déjà appliquées
+    log "INFO" "Rechargement des règles UFW (commande interactive, veuillez entrer votre mot de passe si demandé)..."
+
+    if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+        # Exécution locale
+        if ! sudo ufw reload; then
+            log "WARNING" "Impossible de recharger les règles UFW"
+            # Ne pas échouer pour le rechargement, car les règles sont déjà appliquées
+        fi
+    else
+        # Exécution distante
+        local ssh_cmd="ssh -tt -o StrictHostKeyChecking=no -o ConnectTimeout=${timeout} -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw reload\""
+        log "DEBUG" "Exécution de la commande avec eval: ${ssh_cmd}"
+        eval "${ssh_cmd}"
+        if [ $? -ne 0 ]; then
+            log "WARNING" "Impossible de recharger les règles UFW"
+            # Ne pas échouer pour le rechargement, car les règles sont déjà appliquées
+        fi
     fi
 
     # Vérification que les ports sont bien ouverts
@@ -1252,13 +1359,24 @@ function open_required_ports() {
 
     for port in "${ports_to_open[@]}"; do
         log "INFO" "Vérification que le port ${port} est bien ouvert (commande interactive, veuillez entrer votre mot de passe si demandé)..."
-        local ssh_cmd="ssh -tt -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw status | grep -E \\\"^${port}/(tcp|udp)\\\"\""
-        log "DEBUG" "Exécution de la commande avec eval: ${ssh_cmd}"
-        eval "${ssh_cmd}"
-        if [ $? -ne 0 ]; then
-            log "WARNING" "Le port ${port} ne semble pas être correctement ouvert dans UFW"
-            failed_ports+=("${port}")
-            success=false
+
+        if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+            # Exécution locale
+            if ! sudo ufw status | grep -E "^${port}/(tcp|udp)" &>/dev/null; then
+                log "WARNING" "Le port ${port} ne semble pas être correctement ouvert dans UFW"
+                failed_ports+=("${port}")
+                success=false
+            fi
+        else
+            # Exécution distante
+            local ssh_cmd="ssh -tt -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw status | grep -E \\\"^${port}/(tcp|udp)\\\"\""
+            log "DEBUG" "Exécution de la commande avec eval: ${ssh_cmd}"
+            eval "${ssh_cmd}"
+            if [ $? -ne 0 ]; then
+                log "WARNING" "Le port ${port} ne semble pas être correctement ouvert dans UFW"
+                failed_ports+=("${port}")
+                success=false
+            fi
         fi
     done
 
@@ -1268,9 +1386,18 @@ function open_required_ports() {
 
     # Affichage du statut UFW
     log "INFO" "Récupération du statut UFW (commande interactive, veuillez entrer votre mot de passe si demandé)..."
-    local ssh_cmd="ssh -tt -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw status\""
-    log "DEBUG" "Exécution de la commande avec eval: ${ssh_cmd}"
-    local ufw_status=$(eval "${ssh_cmd}" || echo "Impossible de récupérer le statut UFW")
+    local ufw_status=""
+
+    if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+        # Exécution locale
+        ufw_status=$(sudo ufw status || echo "Impossible de récupérer le statut UFW")
+    else
+        # Exécution distante
+        local ssh_cmd="ssh -tt -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw status\""
+        log "DEBUG" "Exécution de la commande avec eval: ${ssh_cmd}"
+        ufw_status=$(eval "${ssh_cmd}" || echo "Impossible de récupérer le statut UFW")
+    fi
+
     log "INFO" "Statut UFW actuel:"
     echo "${ufw_status}"
 
@@ -1290,6 +1417,12 @@ function check_network() {
     local retry_count=3
     local timeout=5
     local success=false
+
+    # Si le script est exécuté sur le VPS cible, pas besoin de vérifier la connectivité réseau
+    if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+        log "INFO" "Exécution locale détectée, vérification de la connectivité réseau ignorée"
+        return 0
+    fi
 
     log "INFO" "Vérification approfondie de la connectivité réseau vers ${target_host}..."
 
@@ -1557,12 +1690,24 @@ EOF
     local existing_dirs=()
     for dir in "${backup_dirs[@]}"; do
         log "DEBUG" "Vérification de l'existence du répertoire: ${dir}"
-        # Utilisation de run_with_timeout_fallback pour éviter que la commande ne se bloque indéfiniment
-        if run_with_timeout_fallback 10 ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo test -d ${dir}" 2>/dev/null; then
-            existing_dirs+=("${dir}")
-            log "DEBUG" "Répertoire trouvé pour sauvegarde: ${dir}"
+
+        if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+            # Exécution locale
+            if sudo test -d "${dir}" 2>/dev/null; then
+                existing_dirs+=("${dir}")
+                log "DEBUG" "Répertoire trouvé pour sauvegarde: ${dir}"
+            else
+                log "DEBUG" "Répertoire non trouvé ou erreur d'accès, ignoré pour la sauvegarde: ${dir}"
+            fi
         else
-            log "DEBUG" "Répertoire non trouvé ou erreur d'accès, ignoré pour la sauvegarde: ${dir}"
+            # Exécution distante
+            # Utilisation de run_with_timeout_fallback pour éviter que la commande ne se bloque indéfiniment
+            if run_with_timeout_fallback 10 ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo test -d ${dir}" 2>/dev/null; then
+                existing_dirs+=("${dir}")
+                log "DEBUG" "Répertoire trouvé pour sauvegarde: ${dir}"
+            else
+                log "DEBUG" "Répertoire non trouvé ou erreur d'accès, ignoré pour la sauvegarde: ${dir}"
+            fi
         fi
     done
 
@@ -1588,39 +1733,78 @@ EOF
     backup_cmd="${backup_cmd} 2>/dev/null || true"
 
     # Exécution de la commande de sauvegarde
-    log "DEBUG" "Exécution de la commande de sauvegarde: ${backup_cmd}"
-    if run_with_timeout_fallback 60 ssh -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "${backup_cmd}"; then
-        log "DEBUG" "Commande de sauvegarde exécutée avec succès, récupération du fichier..."
-        # Récupération du fichier de sauvegarde avec timeout
-        if run_with_timeout_fallback 60 scp -o ConnectTimeout=10 -P "${ansible_port}" "${ansible_user}@${ansible_host}:/tmp/${backup_name}.tar.gz" "${backup_file}" 2>/dev/null; then
-            log "DEBUG" "Fichier de sauvegarde récupéré avec succès, nettoyage du fichier temporaire..."
-            # Nettoyage du fichier temporaire sur le VPS
-            run_with_timeout_fallback 10 ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo rm -f /tmp/${backup_name}.tar.gz" 2>/dev/null || log "WARNING" "Impossible de supprimer le fichier temporaire sur le VPS"
+    if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+        # Exécution locale
+        log "DEBUG" "Exécution locale de la commande de sauvegarde: ${backup_cmd}"
 
-            # Vérification de la taille du fichier de sauvegarde
-            local backup_size=$(du -h "${backup_file}" | awk '{print $1}')
+        # Création du répertoire temporaire si nécessaire
+        mkdir -p /tmp
 
-            # Ajout de la taille du fichier aux métadonnées
-            local tmp_file=$(mktemp)
-            jq ".backup_size = \"${backup_size}\"" "${metadata_file}" > "${tmp_file}" && mv "${tmp_file}" "${metadata_file}"
+        # Exécution de la commande de sauvegarde
+        if eval "${backup_cmd}"; then
+            log "DEBUG" "Commande de sauvegarde exécutée avec succès, copie du fichier..."
 
-            log "SUCCESS" "Sauvegarde de l'état créée: ${backup_file} (${backup_size})"
-
-            # Nettoyage des anciennes sauvegardes (garder les 5 plus récentes)
-            local old_backups=($(ls -t "${BACKUP_DIR}"/*.tar.gz 2>/dev/null | tail -n +6))
-            if [[ ${#old_backups[@]} -gt 0 ]]; then
-                log "INFO" "Nettoyage des anciennes sauvegardes..."
-                for old_backup in "${old_backups[@]}"; do
-                    local old_name=$(basename "${old_backup}" .tar.gz)
-                    rm -f "${old_backup}" "${BACKUP_DIR}/${old_name}.json"
-                    log "INFO" "Sauvegarde supprimée: ${old_backup}"
-                done
+            # Copie du fichier de sauvegarde
+            if cp "/tmp/${backup_name}.tar.gz" "${backup_file}" 2>/dev/null; then
+                log "DEBUG" "Fichier de sauvegarde copié avec succès, nettoyage du fichier temporaire..."
+                # Nettoyage du fichier temporaire
+                sudo rm -f "/tmp/${backup_name}.tar.gz" 2>/dev/null || log "WARNING" "Impossible de supprimer le fichier temporaire"
+            else
+                log "ERROR" "Impossible de copier le fichier de sauvegarde"
+                rm -f "${metadata_file}"
+                return 1
             fi
+        else
+            log "ERROR" "Échec de la commande de sauvegarde"
+            rm -f "${metadata_file}"
+            return 1
+        fi
+    else
+        # Exécution distante
+        log "DEBUG" "Exécution de la commande de sauvegarde: ${backup_cmd}"
+        if run_with_timeout_fallback 60 ssh -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "${backup_cmd}"; then
+            log "DEBUG" "Commande de sauvegarde exécutée avec succès, récupération du fichier..."
+            # Récupération du fichier de sauvegarde avec timeout
+            if run_with_timeout_fallback 60 scp -o ConnectTimeout=10 -P "${ansible_port}" "${ansible_user}@${ansible_host}:/tmp/${backup_name}.tar.gz" "${backup_file}" 2>/dev/null; then
+                log "DEBUG" "Fichier de sauvegarde récupéré avec succès, nettoyage du fichier temporaire..."
+                # Nettoyage du fichier temporaire sur le VPS
+                run_with_timeout_fallback 10 ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo rm -f /tmp/${backup_name}.tar.gz" 2>/dev/null || log "WARNING" "Impossible de supprimer le fichier temporaire sur le VPS"
+            else
+                log "ERROR" "Impossible de récupérer le fichier de sauvegarde"
+                rm -f "${metadata_file}"
+                return 1
+            fi
+        else
+            log "ERROR" "Échec de la commande de sauvegarde"
+            rm -f "${metadata_file}"
+            return 1
+        fi
+    fi
 
-            # Enregistrement du nom de la dernière sauvegarde
-            echo "${backup_name}" > "${BACKUP_DIR}/.last_backup"
+    # Vérification de la taille du fichier de sauvegarde
+    local backup_size=$(du -h "${backup_file}" | awk '{print $1}')
 
-            return 0
+    # Ajout de la taille du fichier aux métadonnées
+    local tmp_file=$(mktemp)
+    jq ".backup_size = \"${backup_size}\"" "${metadata_file}" > "${tmp_file}" && mv "${tmp_file}" "${metadata_file}"
+
+    log "SUCCESS" "Sauvegarde de l'état créée: ${backup_file} (${backup_size})"
+
+    # Nettoyage des anciennes sauvegardes (garder les 5 plus récentes)
+    local old_backups=($(ls -t "${BACKUP_DIR}"/*.tar.gz 2>/dev/null | tail -n +6))
+    if [[ ${#old_backups[@]} -gt 0 ]]; then
+        log "INFO" "Nettoyage des anciennes sauvegardes..."
+        for old_backup in "${old_backups[@]}"; do
+            local old_name=$(basename "${old_backup}" .tar.gz)
+            rm -f "${old_backup}" "${BACKUP_DIR}/${old_name}.json"
+            log "INFO" "Sauvegarde supprimée: ${old_backup}"
+        done
+    fi
+
+    # Enregistrement du nom de la dernière sauvegarde
+    echo "${backup_name}" > "${BACKUP_DIR}/.last_backup"
+
+    return 0
         else
             log "WARNING" "Impossible de récupérer le fichier de sauvegarde depuis le VPS"
             log "DEBUG" "Vérification de l'existence du fichier temporaire sur le VPS..."
@@ -2302,36 +2486,49 @@ function verifier_prerequis() {
         exit 1
     fi
 
-    # Vérification de la connexion SSH
-    log "INFO" "Vérification de la connexion SSH..."
-    if ! ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "echo 'Connexion SSH réussie'" &>/dev/null; then
-        log "ERROR" "Impossible de se connecter au VPS via SSH (${ansible_user}@${ansible_host}:${ansible_port})"
-        log "ERROR" "Vérifiez vos clés SSH et les paramètres de connexion"
+    # Vérification de la connexion SSH (uniquement si exécution distante)
+    if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+        log "INFO" "Exécution locale détectée, vérification de la connexion SSH ignorée"
+    else
+        log "INFO" "Vérification de la connexion SSH..."
+        if ! ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "echo 'Connexion SSH réussie'" &>/dev/null; then
+            log "ERROR" "Impossible de se connecter au VPS via SSH (${ansible_user}@${ansible_host}:${ansible_port})"
+            log "ERROR" "Vérifiez vos clés SSH et les paramètres de connexion"
 
-        # Vérification des clés SSH
-        if [[ ! -f ~/.ssh/id_rsa && ! -f ~/.ssh/id_ed25519 ]]; then
-            log "ERROR" "Aucune clé SSH trouvée dans ~/.ssh/"
-            log "ERROR" "Générez une paire de clés avec: ssh-keygen -t ed25519"
+            # Vérification des clés SSH
+            if [[ ! -f ~/.ssh/id_rsa && ! -f ~/.ssh/id_ed25519 ]]; then
+                log "ERROR" "Aucune clé SSH trouvée dans ~/.ssh/"
+                log "ERROR" "Générez une paire de clés avec: ssh-keygen -t ed25519"
+            fi
+
+            # Vérification du fichier known_hosts
+            if ! grep -q "${ansible_host}" ~/.ssh/known_hosts 2>/dev/null; then
+                log "WARNING" "L'hôte ${ansible_host} n'est pas dans le fichier known_hosts"
+                log "WARNING" "Essayez d'abord de vous connecter manuellement: ssh -p ${ansible_port} ${ansible_user}@${ansible_host}"
+            fi
+
+            cleanup
+            exit 1
         fi
-
-        # Vérification du fichier known_hosts
-        if ! grep -q "${ansible_host}" ~/.ssh/known_hosts 2>/dev/null; then
-            log "WARNING" "L'hôte ${ansible_host} n'est pas dans le fichier known_hosts"
-            log "WARNING" "Essayez d'abord de vous connecter manuellement: ssh -p ${ansible_port} ${ansible_user}@${ansible_host}"
-        fi
-
-        cleanup
-        exit 1
     fi
 
     # Vérification des ressources du VPS
     log "INFO" "Vérification des ressources du VPS..."
     local vps_cpu_cores
-    vps_cpu_cores=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "nproc --all" 2>/dev/null || echo "0")
     local vps_memory_total
-    vps_memory_total=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "free -m | awk '/^Mem:/ {print \$2}'" 2>/dev/null || echo "0")
     local vps_disk_free
-    vps_disk_free=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "df -m / | awk 'NR==2 {print \$4}'" 2>/dev/null || echo "0")
+
+    if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+        # Utilisation de commandes locales pour obtenir les ressources
+        vps_cpu_cores=$(nproc --all 2>/dev/null || echo "0")
+        vps_memory_total=$(free -m | awk '/^Mem:/ {print $2}' 2>/dev/null || echo "0")
+        vps_disk_free=$(df -m / | awk 'NR==2 {print $4}' 2>/dev/null || echo "0")
+    else
+        # Utilisation de SSH pour obtenir les ressources
+        vps_cpu_cores=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "nproc --all" 2>/dev/null || echo "0")
+        vps_memory_total=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "free -m | awk '/^Mem:/ {print \$2}'" 2>/dev/null || echo "0")
+        vps_disk_free=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "df -m / | awk 'NR==2 {print \$4}'" 2>/dev/null || echo "0")
+    fi
 
     log "INFO" "Ressources du VPS: ${vps_cpu_cores} cœurs CPU, ${vps_memory_total}MB RAM, ${vps_disk_free}MB espace disque libre"
 
