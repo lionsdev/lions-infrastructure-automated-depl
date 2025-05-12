@@ -3599,10 +3599,14 @@ function verifier_installation() {
 
             # Tentative de connexion à Traefik
             if command_exists "curl"; then
-                if curl -s -o /dev/null -w "%{http_code}" "http://${ansible_host}:${traefik_service}" | grep -q "200\|302\|404"; then
-                    log "SUCCESS" "Traefik est accessible à l'adresse: http://${ansible_host}:${traefik_service}"
+                local host_to_check="${ansible_host}"
+                if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+                    host_to_check="localhost"
+                fi
+                if curl -s -o /dev/null -w "%{http_code}" "http://${host_to_check}:${traefik_service}" | grep -q "200\|302\|404"; then
+                    log "SUCCESS" "Traefik est accessible à l'adresse: http://${host_to_check}:${traefik_service}"
                 else
-                    log "WARNING" "Traefik n'est pas accessible à l'adresse: http://${ansible_host}:${traefik_service}"
+                    log "WARNING" "Traefik n'est pas accessible à l'adresse: http://${host_to_check}:${traefik_service}"
                     log "WARNING" "Vérifiez les règles de pare-feu et l'état du service"
                 fi
             fi
@@ -3757,11 +3761,16 @@ function verifier_installation() {
     log "INFO" "Vérification de la connectivité externe..."
 
     # Vérification de l'accès aux services exposés
+    local host_to_check="${ansible_host}"
+    if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+        host_to_check="localhost"
+    fi
+
     local services_to_check=(
-        "http://${ansible_host}:30000|Grafana"
-        "https://${ansible_host}:30001|Kubernetes Dashboard"
-        "http://${ansible_host}:80|Traefik HTTP"
-        "https://${ansible_host}:443|Traefik HTTPS"
+        "http://${host_to_check}:30000|Grafana"
+        "https://${host_to_check}:30001|Kubernetes Dashboard"
+        "http://${host_to_check}:80|Traefik HTTP"
+        "https://${host_to_check}:443|Traefik HTTPS"
     )
 
     for service_info in "${services_to_check[@]}"; do
