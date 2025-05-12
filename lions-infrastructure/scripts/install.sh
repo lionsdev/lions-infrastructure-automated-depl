@@ -478,14 +478,24 @@ function generate_diagnostic_report() {
         echo ""
 
         echo "=== INFORMATIONS SUR LE VPS ==="
-        if ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "uname -a" &>/dev/null; then
-            echo "Système d'exploitation: $(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "uname -a" 2>/dev/null)"
-            echo "Espace disque disponible: $(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "df -h / | awk 'NR==2 {print \$4}'" 2>/dev/null)"
-            echo "Mémoire disponible: $(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "free -h | awk '/^Mem:/ {print \$7}'" 2>/dev/null)"
-            echo "Charge système: $(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "uptime" 2>/dev/null)"
-            echo "Services actifs: $(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "systemctl list-units --state=running --type=service --no-pager | grep -v systemd | head -10" 2>/dev/null)"
+        if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+            # Exécution locale
+            echo "Système d'exploitation: $(uname -a 2>/dev/null)"
+            echo "Espace disque disponible: $(df -h / | awk 'NR==2 {print $4}' 2>/dev/null)"
+            echo "Mémoire disponible: $(free -h | awk '/^Mem:/ {print $7}' 2>/dev/null)"
+            echo "Charge système: $(uptime 2>/dev/null)"
+            echo "Services actifs: $(systemctl list-units --state=running --type=service --no-pager | grep -v systemd | head -10 2>/dev/null)"
         else
-            echo "Impossible de se connecter au VPS pour récupérer les informations"
+            # Exécution distante
+            if ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "uname -a" &>/dev/null; then
+                echo "Système d'exploitation: $(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "uname -a" 2>/dev/null)"
+                echo "Espace disque disponible: $(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "df -h / | awk 'NR==2 {print \$4}'" 2>/dev/null)"
+                echo "Mémoire disponible: $(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "free -h | awk '/^Mem:/ {print \$7}'" 2>/dev/null)"
+                echo "Charge système: $(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "uptime" 2>/dev/null)"
+                echo "Services actifs: $(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "systemctl list-units --state=running --type=service --no-pager | grep -v systemd | head -10" 2>/dev/null)"
+            else
+                echo "Impossible de se connecter au VPS pour récupérer les informations"
+            fi
         fi
         echo ""
 
@@ -507,15 +517,29 @@ function generate_diagnostic_report() {
         echo ""
 
         echo "=== VÉRIFICATIONS RÉSEAU ==="
-        echo "Ping vers le VPS: $(ping -c 3 "${ansible_host}" 2>&1)"
-        echo "Ports ouverts sur le VPS:"
-        for port in "${REQUIRED_PORTS[@]}"; do
-            if nc -z -w 5 "${ansible_host}" "${port}" &>/dev/null; then
-                echo "  - Port ${port}: OUVERT"
-            else
-                echo "  - Port ${port}: FERMÉ"
-            fi
-        done
+        if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+            # Exécution locale
+            echo "Exécution locale détectée, vérification de la connectivité réseau ignorée"
+            echo "Ports ouverts sur le VPS (vérification locale):"
+            for port in "${REQUIRED_PORTS[@]}"; do
+                if ss -tuln | grep -q ":${port} "; then
+                    echo "  - Port ${port}: OUVERT"
+                else
+                    echo "  - Port ${port}: FERMÉ"
+                fi
+            done
+        else
+            # Exécution distante
+            echo "Ping vers le VPS: $(ping -c 3 "${ansible_host}" 2>&1)"
+            echo "Ports ouverts sur le VPS:"
+            for port in "${REQUIRED_PORTS[@]}"; do
+                if nc -z -w 5 "${ansible_host}" "${port}" &>/dev/null; then
+                    echo "  - Port ${port}: OUVERT"
+                else
+                    echo "  - Port ${port}: FERMÉ"
+                fi
+            done
+        fi
         echo ""
 
         echo "=== RECOMMANDATIONS ==="
@@ -870,17 +894,43 @@ function check_vps_resources() {
     fi
 
     # Vérification de la mémoire
-    local vps_memory_total=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "free -m | awk '/^Mem:/ {print \$2}'" 2>/dev/null || echo "0")
-    local vps_memory_used=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "free -m | awk '/^Mem:/ {print \$3}'" 2>/dev/null || echo "0")
-    local vps_memory_free=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "free -m | awk '/^Mem:/ {print \$4}'" 2>/dev/null || echo "0")
-    local vps_memory_available=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "free -m | awk '/^Mem:/ {print \$7}'" 2>/dev/null || echo "0")
+    local vps_memory_total
+    local vps_memory_used
+    local vps_memory_free
+    local vps_memory_available
+
+    if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+        # Exécution locale
+        vps_memory_total=$(free -m | awk '/^Mem:/ {print $2}' 2>/dev/null || echo "0")
+        vps_memory_used=$(free -m | awk '/^Mem:/ {print $3}' 2>/dev/null || echo "0")
+        vps_memory_free=$(free -m | awk '/^Mem:/ {print $4}' 2>/dev/null || echo "0")
+        vps_memory_available=$(free -m | awk '/^Mem:/ {print $7}' 2>/dev/null || echo "0")
+    else
+        # Exécution distante
+        vps_memory_total=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "free -m | awk '/^Mem:/ {print \$2}'" 2>/dev/null || echo "0")
+        vps_memory_used=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "free -m | awk '/^Mem:/ {print \$3}'" 2>/dev/null || echo "0")
+        vps_memory_free=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "free -m | awk '/^Mem:/ {print \$4}'" 2>/dev/null || echo "0")
+        vps_memory_available=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "free -m | awk '/^Mem:/ {print \$7}'" 2>/dev/null || echo "0")
+    fi
 
     log "INFO" "Mémoire du VPS: ${vps_memory_available}MB disponible sur ${vps_memory_total}MB total"
 
     # Vérification du swap
-    local vps_swap_total=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "free -m | awk '/^Swap:/ {print \$2}'" 2>/dev/null || echo "0")
-    local vps_swap_used=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "free -m | awk '/^Swap:/ {print \$3}'" 2>/dev/null || echo "0")
-    local vps_swap_free=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "free -m | awk '/^Swap:/ {print \$4}'" 2>/dev/null || echo "0")
+    local vps_swap_total
+    local vps_swap_used
+    local vps_swap_free
+
+    if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+        # Exécution locale
+        vps_swap_total=$(free -m | awk '/^Swap:/ {print $2}' 2>/dev/null || echo "0")
+        vps_swap_used=$(free -m | awk '/^Swap:/ {print $3}' 2>/dev/null || echo "0")
+        vps_swap_free=$(free -m | awk '/^Swap:/ {print $4}' 2>/dev/null || echo "0")
+    else
+        # Exécution distante
+        vps_swap_total=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "free -m | awk '/^Swap:/ {print \$2}'" 2>/dev/null || echo "0")
+        vps_swap_used=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "free -m | awk '/^Swap:/ {print \$3}'" 2>/dev/null || echo "0")
+        vps_swap_free=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "free -m | awk '/^Swap:/ {print \$4}'" 2>/dev/null || echo "0")
+    fi
 
     log "INFO" "Swap du VPS: ${vps_swap_free}MB libre sur ${vps_swap_total}MB total"
 
@@ -908,8 +958,18 @@ function check_vps_resources() {
     fi
 
     # Vérification du nombre de processeurs
-    local vps_cpu_cores=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "nproc --all" 2>/dev/null || echo "0")
-    local vps_cpu_load=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "cat /proc/loadavg | awk '{print \$1}'" 2>/dev/null || echo "0")
+    local vps_cpu_cores
+    local vps_cpu_load
+
+    if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+        # Exécution locale
+        vps_cpu_cores=$(nproc --all 2>/dev/null || echo "0")
+        vps_cpu_load=$(cat /proc/loadavg | awk '{print $1}' 2>/dev/null || echo "0")
+    else
+        # Exécution distante
+        vps_cpu_cores=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "nproc --all" 2>/dev/null || echo "0")
+        vps_cpu_load=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "cat /proc/loadavg | awk '{print \$1}'" 2>/dev/null || echo "0")
+    fi
 
     log "INFO" "CPU du VPS: ${vps_cpu_cores} cœurs, charge actuelle: ${vps_cpu_load}"
 
@@ -925,7 +985,15 @@ function check_vps_resources() {
 
         # Vérification des processus consommant le plus de CPU
         log "INFO" "Processus consommant le plus de CPU sur le VPS:"
-        local top_cpu_processes=$(ssh -o BatchMode=yes -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "ps aux --sort=-%cpu | head -6" 2>/dev/null || echo "Impossible de déterminer les processus")
+        local top_cpu_processes
+
+        if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+            # Exécution locale
+            top_cpu_processes=$(ps aux --sort=-%cpu | head -6 2>/dev/null || echo "Impossible de déterminer les processus")
+        else
+            # Exécution distante
+            top_cpu_processes=$(ssh -o BatchMode=yes -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "ps aux --sort=-%cpu | head -6" 2>/dev/null || echo "Impossible de déterminer les processus")
+        fi
         echo "${top_cpu_processes}"
     fi
 
@@ -933,21 +1001,45 @@ function check_vps_resources() {
     if [[ ${vps_memory_available} -lt 1024 ]]; then
         log "WARNING" "Mémoire disponible du VPS faible: ${vps_memory_available}MB"
         log "INFO" "Processus consommant le plus de mémoire sur le VPS:"
-        local top_mem_processes=$(ssh -o BatchMode=yes -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "ps aux --sort=-%mem | head -6" 2>/dev/null || echo "Impossible de déterminer les processus")
+        local top_mem_processes
+
+        if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+            # Exécution locale
+            top_mem_processes=$(ps aux --sort=-%mem | head -6 2>/dev/null || echo "Impossible de déterminer les processus")
+        else
+            # Exécution distante
+            top_mem_processes=$(ssh -o BatchMode=yes -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "ps aux --sort=-%mem | head -6" 2>/dev/null || echo "Impossible de déterminer les processus")
+        fi
         echo "${top_mem_processes}"
     fi
 
     # Vérification des services en cours d'exécution
     log "INFO" "Vérification des services en cours d'exécution sur le VPS..."
     local running_services
-    running_services=$(ssh -o BatchMode=yes -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "systemctl list-units --type=service --state=running | grep -v systemd | head -10" 2>/dev/null || echo "Impossible de déterminer les services")
+
+    if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+        # Exécution locale
+        running_services=$(systemctl list-units --type=service --state=running | grep -v systemd | head -10 2>/dev/null || echo "Impossible de déterminer les services")
+    else
+        # Exécution distante
+        running_services=$(ssh -o BatchMode=yes -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "systemctl list-units --type=service --state=running | grep -v systemd | head -10" 2>/dev/null || echo "Impossible de déterminer les services")
+    fi
+
     log "INFO" "Services en cours d'exécution sur le VPS (top 10):"
     echo "${running_services}" | grep -v "UNIT\|LOAD\|ACTIVE\|SUB\|DESCRIPTION\|^$\|loaded units listed"
 
     # Vérification des ports ouverts
     log "INFO" "Vérification des ports ouverts sur le VPS..."
     local open_ports
-    open_ports=$(ssh -o BatchMode=yes -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "ss -tuln | grep LISTEN" 2>/dev/null || echo "Impossible de déterminer les ports ouverts")
+
+    if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+        # Exécution locale
+        open_ports=$(ss -tuln | grep LISTEN 2>/dev/null || echo "Impossible de déterminer les ports ouverts")
+    else
+        # Exécution distante
+        open_ports=$(ssh -o BatchMode=yes -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "ss -tuln | grep LISTEN" 2>/dev/null || echo "Impossible de déterminer les ports ouverts")
+    fi
+
     log "INFO" "Ports ouverts sur le VPS:"
     echo "${open_ports}"
 
