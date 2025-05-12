@@ -789,6 +789,7 @@ function check_ansible_collections() {
     # Liste des collections requises
     local required_collections=(
         "community.kubernetes"
+        "kubernetes.core"
         "community.general"
         "ansible.posix"
         "community.docker"
