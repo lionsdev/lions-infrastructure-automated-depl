@@ -24,5 +24,4 @@ build/
 .DS_Store
 Thumbs.db
 
-
-guidelines.txt
+*.txt
