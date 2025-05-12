@@ -1163,19 +1163,19 @@ function open_required_ports() {
     fi
 
     # Vérification de la connexion SSH
-    if ! ssh -o ConnectTimeout=5 -p "${target_port}" "${ansible_user}@${target_host}" "echo 'Test de connexion'" &>/dev/null; then
+    if ! ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p "${target_port}" "${ansible_user}@${target_host}" "echo 'Test de connexion'" &>/dev/null; then
         log "ERROR" "Impossible de se connecter au VPS via SSH pour ouvrir les ports"
         return 1
     fi
 
     # Vérification que UFW est installé et actif
-    if ! ssh -o ConnectTimeout=5 -p "${target_port}" "${ansible_user}@${target_host}" "command -v ufw &>/dev/null && systemctl is-active --quiet ufw" &>/dev/null; then
+    if ! ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p "${target_port}" "${ansible_user}@${target_host}" "command -v ufw &>/dev/null && systemctl is-active --quiet ufw" &>/dev/null; then
         log "WARNING" "UFW n'est pas installé ou n'est pas actif sur le VPS"
         log "INFO" "Tentative d'installation et d'activation de UFW..."
 
         # Installation de UFW si nécessaire
         log "INFO" "Installation de UFW sur le VPS (commande interactive, veuillez entrer votre mot de passe si demandé)..."
-        local ssh_cmd="ssh -t -o ConnectTimeout=${timeout} -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo apt-get update && sudo apt-get install -y ufw\""
+        local ssh_cmd="ssh -t -o StrictHostKeyChecking=no -o ConnectTimeout=${timeout} -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo apt-get update && sudo apt-get install -y ufw\""
         log "DEBUG" "Exécution de la commande avec eval: ${ssh_cmd}"
         eval "${ssh_cmd}"
         if [ $? -ne 0 ]; then
@@ -1185,7 +1185,7 @@ function open_required_ports() {
 
         # Activation de UFW
         log "INFO" "Activation de UFW sur le VPS (commande interactive, veuillez entrer votre mot de passe si demandé)..."
-        local ssh_cmd="ssh -t -o ConnectTimeout=${timeout} -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw --force enable\""
+        local ssh_cmd="ssh -t -o StrictHostKeyChecking=no -o ConnectTimeout=${timeout} -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw --force enable\""
         log "DEBUG" "Exécution de la commande avec eval: ${ssh_cmd}"
         eval "${ssh_cmd}"
         if [ $? -ne 0 ]; then
@@ -1204,7 +1204,7 @@ function open_required_ports() {
 
         # Vérification si le port est déjà ouvert
         log "INFO" "Vérification si le port ${port} est déjà ouvert (commande interactive, veuillez entrer votre mot de passe si demandé)..."
-        local ssh_cmd="ssh -tt -o ConnectTimeout=5 -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw status | grep -E \\\"^${port}/(tcp|udp)\\\"\""
+        local ssh_cmd="ssh -tt -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw status | grep -E \\\"^${port}/(tcp|udp)\\\"\""
         log "DEBUG" "Exécution de la commande avec eval: ${ssh_cmd}"
         eval "${ssh_cmd}"
         if [ $? -eq 0 ]; then
@@ -1214,7 +1214,7 @@ function open_required_ports() {
 
         # Ouverture du port TCP
         log "INFO" "Ouverture du port ${port}/tcp sur le VPS (commande interactive, veuillez entrer votre mot de passe si demandé)..."
-        local ssh_cmd="ssh -tt -o ConnectTimeout=${timeout} -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw allow ${port}/tcp\""
+        local ssh_cmd="ssh -tt -o StrictHostKeyChecking=no -o ConnectTimeout=${timeout} -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw allow ${port}/tcp\""
         log "DEBUG" "Exécution de la commande avec eval: ${ssh_cmd}"
         eval "${ssh_cmd}"
         if [ $? -ne 0 ]; then
@@ -1225,7 +1225,7 @@ function open_required_ports() {
 
         # Ouverture du port UDP
         log "INFO" "Ouverture du port ${port}/udp sur le VPS (commande interactive, veuillez entrer votre mot de passe si demandé)..."
-        local ssh_cmd="ssh -tt -o ConnectTimeout=${timeout} -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw allow ${port}/udp\""
+        local ssh_cmd="ssh -tt -o StrictHostKeyChecking=no -o ConnectTimeout=${timeout} -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw allow ${port}/udp\""
         log "DEBUG" "Exécution de la commande avec eval: ${ssh_cmd}"
         eval "${ssh_cmd}"
         if [ $? -ne 0 ]; then
@@ -1238,7 +1238,7 @@ function open_required_ports() {
 
     # Rechargement des règles UFW
     log "INFO" "Rechargement des règles UFW sur le VPS (commande interactive, veuillez entrer votre mot de passe si demandé)..."
-    local ssh_cmd="ssh -tt -o ConnectTimeout=${timeout} -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw reload\""
+    local ssh_cmd="ssh -tt -o StrictHostKeyChecking=no -o ConnectTimeout=${timeout} -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw reload\""
     log "DEBUG" "Exécution de la commande avec eval: ${ssh_cmd}"
     eval "${ssh_cmd}"
     if [ $? -ne 0 ]; then
@@ -1252,7 +1252,7 @@ function open_required_ports() {
 
     for port in "${ports_to_open[@]}"; do
         log "INFO" "Vérification que le port ${port} est bien ouvert (commande interactive, veuillez entrer votre mot de passe si demandé)..."
-        local ssh_cmd="ssh -tt -o ConnectTimeout=5 -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw status | grep -E \\\"^${port}/(tcp|udp)\\\"\""
+        local ssh_cmd="ssh -tt -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw status | grep -E \\\"^${port}/(tcp|udp)\\\"\""
         log "DEBUG" "Exécution de la commande avec eval: ${ssh_cmd}"
         eval "${ssh_cmd}"
         if [ $? -ne 0 ]; then
@@ -1268,7 +1268,7 @@ function open_required_ports() {
 
     # Affichage du statut UFW
     log "INFO" "Récupération du statut UFW (commande interactive, veuillez entrer votre mot de passe si demandé)..."
-    local ssh_cmd="ssh -tt -o ConnectTimeout=5 -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw status\""
+    local ssh_cmd="ssh -tt -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw status\""
     log "DEBUG" "Exécution de la commande avec eval: ${ssh_cmd}"
     local ufw_status=$(eval "${ssh_cmd}" || echo "Impossible de récupérer le statut UFW")
     log "INFO" "Statut UFW actuel:"
