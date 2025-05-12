@@ -51,6 +51,13 @@
           - apt-transport-https
         state: present
 
+    - name: Configuration de UFW pour utiliser l'option -w avec iptables
+      lineinfile:
+        path: /etc/default/ufw
+        regexp: '^IPT_SYSCTL='
+        line: 'IPT_SYSCTL="/etc/ufw/sysctl.conf -w"'
+        state: present
+
     - name: Configuration du fuseau horaire
       timezone:
         name: "{{ timezone }}"
