@@ -177,11 +177,13 @@
     - name: Installation de MetalLB pour le LoadBalancer
       block:
         - name: Création du namespace metallb-system
-          k8s:
+          kubernetes.core.k8s:
             name: metallb-system
             api_version: v1
             kind: Namespace
             state: present
+            host: "https://{{ ansible_host }}:6443"
+            validate_certs: false
           environment:
             KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
@@ -196,7 +198,7 @@
             KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
         - name: Configuration de l'IPAddressPool pour MetalLB
-          k8s:
+          kubernetes.core.k8s:
             state: present
             definition:
               apiVersion: metallb.io/v1beta1
@@ -207,11 +209,13 @@
               spec:
                 addresses:
                   - "{{ ansible_host }}/32"  # Utilise l'adresse IP du VPS
+            host: "https://{{ ansible_host }}:6443"
+            validate_certs: false
           environment:
             KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
         - name: Configuration de L2Advertisement pour MetalLB
-          k8s:
+          kubernetes.core.k8s:
             state: present
             definition:
               apiVersion: metallb.io/v1beta1
@@ -222,6 +226,8 @@
               spec:
                 ipAddressPools:
                   - first-pool
+            host: "https://{{ ansible_host }}:6443"
+            validate_certs: false
           environment:
             KUBECONFIG: /home/{{ ansible_user }}/.kube/config
       when: k3s_installed.changed
@@ -254,23 +260,27 @@
     - name: Installation du Kubernetes Dashboard
       block:
         - name: Création du namespace kubernetes-dashboard
-          k8s:
+          kubernetes.core.k8s:
             name: kubernetes-dashboard
             api_version: v1
             kind: Namespace
             state: present
+            host: "https://{{ ansible_host }}:6443"
+            validate_certs: false
           environment:
             KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
         - name: Déploiement du Kubernetes Dashboard
-          k8s:
+          kubernetes.core.k8s:
             state: present
             src: https://raw.githubusercontent.com/kubernetes/dashboard/v2.7.0/aio/deploy/recommended.yaml
+            host: "https://{{ ansible_host }}:6443"
+            validate_certs: false
           environment:
             KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
         - name: Création du Service NodePort pour exposer le Dashboard
-          k8s:
+          kubernetes.core.k8s:
             state: present
             definition:
               apiVersion: v1
@@ -286,11 +296,13 @@
                 selector:
                   k8s-app: kubernetes-dashboard
                 type: NodePort
+            host: "https://{{ ansible_host }}:6443"
+            validate_certs: false
           environment:
             KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
         - name: Création d'un compte de service avec droits d'administration
-          k8s:
+          kubernetes.core.k8s:
             state: present
             definition:
               apiVersion: v1
@@ -298,11 +310,13 @@
               metadata:
                 name: dashboard-admin
                 namespace: kubernetes-dashboard
+            host: "https://{{ ansible_host }}:6443"
+            validate_certs: false
           environment:
             KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
         - name: Création d'un ClusterRoleBinding pour le compte admin
-          k8s:
+          kubernetes.core.k8s:
             state: present
             definition:
               apiVersion: rbac.authorization.k8s.io/v1
@@ -317,11 +331,13 @@
               - kind: ServiceAccount
                 name: dashboard-admin
                 namespace: kubernetes-dashboard
+            host: "https://{{ ansible_host }}:6443"
+            validate_certs: false
           environment:
             KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
         - name: Création de l'Ingress pour le Kubernetes Dashboard (Production)
-          k8s:
+          kubernetes.core.k8s:
             state: present
             definition:
               apiVersion: networking.k8s.io/v1
@@ -351,11 +367,13 @@
                               name: kubernetes-dashboard
                               port:
                                 number: 443
+            host: "https://{{ ansible_host }}:6443"
+            validate_certs: false
           environment:
             KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
         - name: Création de l'Ingress pour le Kubernetes Dashboard (Développement)
-          k8s:
+          kubernetes.core.k8s:
             state: present
             definition:
               apiVersion: networking.k8s.io/v1
@@ -385,11 +403,13 @@
                               name: kubernetes-dashboard
                               port:
                                 number: 443
+            host: "https://{{ ansible_host }}:6443"
+            validate_certs: false
           environment:
             KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
         - name: Création du middleware pour le Dashboard
-          k8s:
+          kubernetes.core.k8s:
             state: present
             definition:
               apiVersion: traefik.containo.us/v1alpha1
@@ -401,6 +421,8 @@
                 stripPrefix:
                   prefixes:
                     - "/dashboard"
+            host: "https://{{ ansible_host }}:6443"
+            validate_certs: false
           environment:
             KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
