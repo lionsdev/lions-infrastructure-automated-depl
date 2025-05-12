@@ -408,11 +408,20 @@
           environment:
             KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
+        - name: Installation des CRDs Traefik
+          kubernetes.core.k8s:
+            state: present
+            src: https://raw.githubusercontent.com/traefik/traefik/v2.10/docs/content/reference/dynamic-configuration/kubernetes-crd-definition-v1.yml
+            host: "https://{{ ansible_host }}:6443"
+            validate_certs: false
+          environment:
+            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+
         - name: Création du middleware pour le Dashboard
           kubernetes.core.k8s:
             state: present
             definition:
-              apiVersion: traefik.containo.us/v1alpha1
+              apiVersion: traefik.io/v1alpha1
               kind: Middleware
               metadata:
                 name: kubernetes-dashboard-strip-prefix
