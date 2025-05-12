@@ -838,6 +838,96 @@ function check_ansible_collections() {
     return 0
 }
 
+# Fonction pour vérifier et installer les dépendances Python requises
+function check_python_dependencies() {
+    log "INFO" "Vérification des dépendances Python requises..."
+
+    # Liste des modules Python requis
+    local required_modules=(
+        "kubernetes"
+        "openshift"
+    )
+
+    local missing_modules=()
+
+    # Vérification de l'installation de pip
+    if ! command_exists pip || ! command_exists pip3; then
+        log "WARNING" "La commande pip/pip3 n'est pas disponible"
+        log "INFO" "Tentative d'installation de pip..."
+
+        # Détection du gestionnaire de paquets
+        if command_exists apt-get; then
+            secure_sudo apt-get update &>/dev/null
+            secure_sudo apt-get install -y python3-pip &>/dev/null
+        elif command_exists dnf; then
+            secure_sudo dnf install -y python3-pip &>/dev/null
+        elif command_exists yum; then
+            secure_sudo yum install -y python3-pip &>/dev/null
+        elif command_exists pacman; then
+            secure_sudo pacman -S --noconfirm python-pip &>/dev/null
+        elif command_exists zypper; then
+            secure_sudo zypper install -y python3-pip &>/dev/null
+        else
+            log "ERROR" "Impossible d'installer pip automatiquement"
+            log "ERROR" "Veuillez installer pip manuellement et réessayer"
+            return 1
+        fi
+
+        if ! command_exists pip && ! command_exists pip3; then
+            log "ERROR" "L'installation de pip a échoué"
+            return 1
+        else
+            log "SUCCESS" "Installation de pip réussie"
+        fi
+    fi
+
+    # Déterminer la commande pip à utiliser
+    local pip_cmd="pip"
+    if ! command_exists pip && command_exists pip3; then
+        pip_cmd="pip3"
+    fi
+
+    # Vérification des modules installés
+    for module in "${required_modules[@]}"; do
+        log "INFO" "Vérification du module Python: ${module}"
+
+        # Utilisation de pip pour vérifier si le module est installé
+        if ! ${pip_cmd} show "${module}" &>/dev/null; then
+            log "WARNING" "Module Python manquant: ${module}"
+            missing_modules+=("${module}")
+        else
+            log "SUCCESS" "Module Python trouvé: ${module}"
+        fi
+    done
+
+    # Installation des modules manquants
+    if [[ ${#missing_modules[@]} -gt 0 ]]; then
+        log "INFO" "Installation des modules Python manquants: ${missing_modules[*]}"
+
+        for module in "${missing_modules[@]}"; do
+            log "INFO" "Installation du module: ${module}"
+
+            if ! ${pip_cmd} install "${module}" &>/dev/null; then
+                log "ERROR" "Échec de l'installation du module: ${module}"
+                log "INFO" "Tentative d'installation avec sudo..."
+
+                if ! secure_sudo ${pip_cmd} install "${module}" &>/dev/null; then
+                    log "ERROR" "Échec de l'installation du module avec sudo: ${module}"
+                    return 1
+                else
+                    log "SUCCESS" "Installation du module réussie avec sudo: ${module}"
+                fi
+            else
+                log "SUCCESS" "Installation du module réussie: ${module}"
+            fi
+        done
+    else
+        log "INFO" "Tous les modules Python requis sont déjà installés"
+    fi
+
+    return 0
+}
+
 # Fonction pour vérifier les ressources système locales
 function check_local_resources() {
     log "INFO" "Vérification des ressources système locales..."
@@ -2646,6 +2736,15 @@ function verifier_prerequis() {
         log "ERROR" "Échec de la vérification ou de l'installation des collections Ansible requises"
         log "ERROR" "Assurez-vous que les collections nécessaires sont installées avant de continuer"
         log "INFO" "Vous pouvez les installer manuellement avec: ansible-galaxy collection install community.kubernetes"
+        cleanup
+        exit 1
+    fi
+
+    # Vérification et installation des dépendances Python requises
+    if ! check_python_dependencies; then
+        log "ERROR" "Échec de la vérification ou de l'installation des dépendances Python requises"
+        log "ERROR" "Assurez-vous que les modules Python nécessaires sont installés avant de continuer"
+        log "INFO" "Vous pouvez les installer manuellement avec: pip install kubernetes openshift"
         cleanup
         exit 1
     fi
