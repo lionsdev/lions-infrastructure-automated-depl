@@ -783,61 +783,6 @@ function install_missing_commands() {
 }
 
 # Fonction pour vérifier les ressources système locales
-# Fonction pour vérifier et installer les collections Ansible requises
-function check_ansible_collections() {
-    log "INFO" "Vérification des collections Ansible requises..."
-
-    # Liste des collections requises
-    local required_collections=(
-        "community.kubernetes"
-        "community.general"
-        "ansible.posix"
-        "community.docker"
-    )
-
-    local missing_collections=()
-
-    # Vérification de l'installation d'Ansible
-    if ! command_exists ansible-galaxy; then
-        log "ERROR" "La commande ansible-galaxy n'est pas disponible"
-        log "ERROR" "Assurez-vous qu'Ansible est correctement installé"
-        return 1
-    fi
-
-    # Vérification des collections installées
-    for collection in "${required_collections[@]}"; do
-        log "INFO" "Vérification de la collection: ${collection}"
-
-        # Utilisation de ansible-galaxy pour vérifier si la collection est installée
-        if ! ansible-galaxy collection list "${collection}" &>/dev/null; then
-            log "WARNING" "Collection Ansible manquante: ${collection}"
-            missing_collections+=("${collection}")
-        else
-            log "SUCCESS" "Collection Ansible trouvée: ${collection}"
-        fi
-    done
-
-    # Installation des collections manquantes
-    if [[ ${#missing_collections[@]} -gt 0 ]]; then
-        log "INFO" "Installation des collections Ansible manquantes: ${missing_collections[*]}"
-
-        for collection in "${missing_collections[@]}"; do
-            log "INFO" "Installation de la collection: ${collection}"
-
-            if ! ansible-galaxy collection install "${collection}" &>/dev/null; then
-                log "ERROR" "Échec de l'installation de la collection: ${collection}"
-                return 1
-            else
-                log "SUCCESS" "Installation de la collection réussie: ${collection}"
-            fi
-        done
-    else
-        log "INFO" "Toutes les collections Ansible requises sont déjà installées"
-    fi
-
-    return 0
-}
-
 function check_local_resources() {
     log "INFO" "Vérification des ressources système locales..."
 
@@ -2638,15 +2583,6 @@ function verifier_prerequis() {
             cleanup
             exit 1
         fi
-    fi
-
-    # Vérification et installation des collections Ansible requises
-    if ! check_ansible_collections; then
-        log "ERROR" "Échec de la vérification ou de l'installation des collections Ansible requises"
-        log "ERROR" "Assurez-vous que les collections nécessaires sont installées avant de continuer"
-        log "INFO" "Vous pouvez les installer manuellement avec: ansible-galaxy collection install community.kubernetes"
-        cleanup
-        exit 1
     fi
 
     # Vérification des fichiers Ansible
