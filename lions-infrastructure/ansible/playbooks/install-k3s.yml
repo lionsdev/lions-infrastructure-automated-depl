@@ -166,6 +166,14 @@
       debug:
         var: k3s_system_pods.stdout_lines
 
+    - name: Installation des dépendances Python pour Kubernetes
+      pip:
+        name:
+          - kubernetes
+          - openshift
+        state: present
+      become: yes
+
     - name: Installation de MetalLB pour le LoadBalancer
       block:
         - name: Création du namespace metallb-system
