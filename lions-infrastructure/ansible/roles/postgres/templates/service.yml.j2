@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ app_name }}
+  namespace: {{ app_namespace }}
+  labels:
+    app: {{ app_name }}
+    environment: {{ app_environment }}
+  annotations:
+    prometheus.io/scrape: "{{ postgres_prometheus_scrape | string }}"
+    prometheus.io/port: "{{ postgres_prometheus_port }}"
+    prometheus.io/path: "{{ postgres_prometheus_path }}"
+spec:
+  selector:
+    app: {{ app_name }}
+  ports:
+    - port: {{ postgres_default_port }}
+      targetPort: postgres
+      name: postgres
+    - port: {{ postgres_prometheus_port }}
+      targetPort: metrics
+      name: metrics
+  type: ClusterIP
