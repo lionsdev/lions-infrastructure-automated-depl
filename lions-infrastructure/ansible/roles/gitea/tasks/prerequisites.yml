@@ -11,7 +11,19 @@
     kind: Namespace
     name: "{{ app_namespace }}"
   register: namespace_info
-  failed_when: namespace_info.resources | length == 0
+
+- name: Création du namespace si nécessaire
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ app_namespace }}"
+        labels:
+          app: "{{ app_name }}"
+          environment: "{{ app_environment }}"
+  when: namespace_info.resources | length == 0
 
 - name: Vérification des droits d'accès au namespace
   k8s:
