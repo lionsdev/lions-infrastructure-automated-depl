@@ -68,9 +68,14 @@
     name: registry
     namespace: registry
   register: registry_info
-  failed_when: registry_info.resources | length == 0
+  ignore_errors: yes
   environment:
     KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+
+- name: Avertissement si le registre Docker n'est pas trouvé
+  debug:
+    msg: "AVERTISSEMENT: Le registre Docker n'a pas été trouvé. Certaines fonctionnalités de déploiement d'images pourraient ne pas fonctionner correctement."
+  when: registry_info is failed or registry_info.resources | length == 0
 
 - name: Vérification de l'existence de l'ingress controller
   k8s_info:
