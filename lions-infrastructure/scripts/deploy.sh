@@ -370,6 +370,13 @@ EOF
     # Affichage de la progression
     afficher_progression 2 5 "Exécution du playbook Ansible"
 
+    # Détection de WSL pour résoudre le problème de mot de passe invisible
+    local os_name=$(uname -s)
+    if [[ "${os_name}" == *"MINGW"* || "${os_name}" == *"MSYS"* || "${os_name}" == *"CYGWIN"* || "${os_name}" == *"Windows"* || "${os_name}" == *"Linux"*"microsoft"* ]]; then
+        log "INFO" "Système Windows/WSL détecté, définition de la variable d'environnement ANSIBLE_BECOME_ASK_PASS"
+        export ANSIBLE_BECOME_ASK_PASS=True
+    fi
+
     # Commande Ansible avec les options appropriées
     local ansible_cmd="ansible-playbook ${ANSIBLE_PLAYBOOK} --extra-vars @${vars_file} --ask-become-pass"
 

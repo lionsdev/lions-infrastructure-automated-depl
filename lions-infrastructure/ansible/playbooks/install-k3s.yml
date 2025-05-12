@@ -120,12 +120,36 @@
           command: /tmp/get-helm-3.sh
           args:
             creates: /usr/local/bin/helm
-      when: not k3s_binary.stat.exists
+
+        - name: Configuration de Helm pour utiliser le bon kubeconfig
+          lineinfile:
+            path: /home/{{ ansible_user }}/.bashrc
+            line: 'export KUBECONFIG=/home/{{ ansible_user }}/.kube/config'
+            state: present
+
+        # Pas besoin de recharger l'environnement, on va utiliser le paramètre environment pour les tâches Helm
+
+        - name: Vérification que le répertoire /root/.kube existe
+          file:
+            path: /root/.kube
+            state: directory
+            mode: '0755'
+          become: yes
+
+        - name: Création d'un lien symbolique pour le kubeconfig dans /root/.kube
+          file:
+            src: /home/{{ ansible_user }}/.kube/config
+            dest: /root/.kube/config
+            state: link
+            force: yes
+          become: yes
 
     - name: Vérification de l'installation de K3s
       command: k3s kubectl get nodes
       register: k3s_nodes
       changed_when: false
+      environment:
+        KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
     - name: Affichage des nœuds K3s
       debug:
@@ -135,6 +159,8 @@
       command: k3s kubectl get pods -n kube-system
       register: k3s_system_pods
       changed_when: false
+      environment:
+        KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
     - name: Affichage des pods système
       debug:
@@ -148,6 +174,8 @@
             api_version: v1
             kind: Namespace
             state: present
+          environment:
+            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
         - name: Déploiement de MetalLB via Helm
           kubernetes.core.helm:
@@ -156,6 +184,8 @@
             release_namespace: metallb-system
             create_namespace: true
             wait: true
+          environment:
+            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
         - name: Configuration de l'IPAddressPool pour MetalLB
           k8s:
@@ -169,6 +199,8 @@
               spec:
                 addresses:
                   - "{{ ansible_host }}/32"  # Utilise l'adresse IP du VPS
+          environment:
+            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
         - name: Configuration de L2Advertisement pour MetalLB
           k8s:
@@ -182,6 +214,8 @@
               spec:
                 ipAddressPools:
                   - first-pool
+          environment:
+            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
       when: k3s_installed.changed
 
     - name: Installation de cert-manager pour les certificats TLS
@@ -190,6 +224,8 @@
           kubernetes.core.helm_repository:
             name: jetstack
             repo_url: https://charts.jetstack.io
+          environment:
+            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
         - name: Déploiement de cert-manager via Helm
           kubernetes.core.helm:
@@ -200,6 +236,8 @@
             wait: true
             set_values:
               - value: installCRDs=true
+          environment:
+            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
     # Traefik est maintenant utilisé comme contrôleur d'ingress par défaut
     # Le bloc d'installation de Nginx Ingress Controller a été supprimé
@@ -213,11 +251,15 @@
             api_version: v1
             kind: Namespace
             state: present
+          environment:
+            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
         - name: Déploiement du Kubernetes Dashboard
           k8s:
             state: present
             src: https://raw.githubusercontent.com/kubernetes/dashboard/v2.7.0/aio/deploy/recommended.yaml
+          environment:
+            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
         - name: Création du Service NodePort pour exposer le Dashboard
           k8s:
@@ -236,6 +278,8 @@
                 selector:
                   k8s-app: kubernetes-dashboard
                 type: NodePort
+          environment:
+            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
         - name: Création d'un compte de service avec droits d'administration
           k8s:
@@ -246,6 +290,8 @@
               metadata:
                 name: dashboard-admin
                 namespace: kubernetes-dashboard
+          environment:
+            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
         - name: Création d'un ClusterRoleBinding pour le compte admin
           k8s:
@@ -263,6 +309,8 @@
               - kind: ServiceAccount
                 name: dashboard-admin
                 namespace: kubernetes-dashboard
+          environment:
+            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
         - name: Création de l'Ingress pour le Kubernetes Dashboard (Production)
           k8s:
@@ -295,6 +343,8 @@
                               name: kubernetes-dashboard
                               port:
                                 number: 443
+          environment:
+            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
         - name: Création de l'Ingress pour le Kubernetes Dashboard (Développement)
           k8s:
@@ -327,6 +377,8 @@
                               name: kubernetes-dashboard
                               port:
                                 number: 443
+          environment:
+            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
         - name: Création du middleware pour le Dashboard
           k8s:
@@ -341,16 +393,19 @@
                 stripPrefix:
                   prefixes:
                     - "/dashboard"
+          environment:
+            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
         - name: Génération d'un token pour l'accès au Dashboard
           command: k3s kubectl create token dashboard-admin -n kubernetes-dashboard
           register: dashboard_token
           changed_when: false
+          environment:
+            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
         - name: Affichage du token pour l'accès au Dashboard
           debug:
             msg: "Token pour l'accès au Kubernetes Dashboard: {{ dashboard_token.stdout }}"
-      when: k3s_installed.changed
 
     - name: Vérification finale de l'installation
       debug:

@@ -17,7 +17,7 @@ readonly STATE_FILE="${LOG_DIR}/.installation_state"
 readonly LOCK_FILE="/tmp/lions_install.lock"
 readonly REQUIRED_SPACE_MB=5000  # 5 Go d'espace disque requis
 readonly TIMEOUT_SECONDS=1800    # 30 minutes de timeout pour les commandes longues
-readonly REQUIRED_PORTS=(22 22225 80 443 6443 30000 30001)
+readonly REQUIRED_PORTS=(22 22225 80 443 6443 8080 30000 30001)
 readonly SUDO_ALWAYS_ASK=true    # Toujours demander le mot de passe pour sudo
 
 # Couleurs pour l'affichage
@@ -1163,24 +1163,32 @@ function open_required_ports() {
     fi
 
     # Vérification de la connexion SSH
-    if ! ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${target_port}" "${ansible_user}@${target_host}" "echo 'Test de connexion'" &>/dev/null; then
+    if ! ssh -o ConnectTimeout=5 -p "${target_port}" "${ansible_user}@${target_host}" "echo 'Test de connexion'" &>/dev/null; then
         log "ERROR" "Impossible de se connecter au VPS via SSH pour ouvrir les ports"
         return 1
     fi
 
     # Vérification que UFW est installé et actif
-    if ! ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${target_port}" "${ansible_user}@${target_host}" "command -v ufw &>/dev/null && systemctl is-active --quiet ufw" &>/dev/null; then
+    if ! ssh -o ConnectTimeout=5 -p "${target_port}" "${ansible_user}@${target_host}" "command -v ufw &>/dev/null && systemctl is-active --quiet ufw" &>/dev/null; then
         log "WARNING" "UFW n'est pas installé ou n'est pas actif sur le VPS"
         log "INFO" "Tentative d'installation et d'activation de UFW..."
 
         # Installation de UFW si nécessaire
-        if ! ssh -o BatchMode=yes -o ConnectTimeout=${timeout} -p "${target_port}" "${ansible_user}@${target_host}" "sudo apt-get update && sudo apt-get install -y ufw" &>/dev/null; then
+        log "INFO" "Installation de UFW sur le VPS (commande interactive, veuillez entrer votre mot de passe si demandé)..."
+        local ssh_cmd="ssh -t -o ConnectTimeout=${timeout} -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo apt-get update && sudo apt-get install -y ufw\""
+        log "DEBUG" "Exécution de la commande avec eval: ${ssh_cmd}"
+        eval "${ssh_cmd}"
+        if [ $? -ne 0 ]; then
             log "ERROR" "Impossible d'installer UFW sur le VPS"
             return 1
         fi
 
         # Activation de UFW
-        if ! ssh -o BatchMode=yes -o ConnectTimeout=${timeout} -p "${target_port}" "${ansible_user}@${target_host}" "sudo ufw --force enable" &>/dev/null; then
+        log "INFO" "Activation de UFW sur le VPS (commande interactive, veuillez entrer votre mot de passe si demandé)..."
+        local ssh_cmd="ssh -t -o ConnectTimeout=${timeout} -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw --force enable\""
+        log "DEBUG" "Exécution de la commande avec eval: ${ssh_cmd}"
+        eval "${ssh_cmd}"
+        if [ $? -ne 0 ]; then
             log "ERROR" "Impossible d'activer UFW sur le VPS"
             return 1
         fi
@@ -1195,20 +1203,32 @@ function open_required_ports() {
         log "INFO" "Ouverture du port ${port}..."
 
         # Vérification si le port est déjà ouvert
-        if ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${target_port}" "${ansible_user}@${target_host}" "sudo ufw status | grep -E \"^${port}/(tcp|udp)\"" &>/dev/null; then
+        log "INFO" "Vérification si le port ${port} est déjà ouvert (commande interactive, veuillez entrer votre mot de passe si demandé)..."
+        local ssh_cmd="ssh -tt -o ConnectTimeout=5 -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw status | grep -E \\\"^${port}/(tcp|udp)\\\"\""
+        log "DEBUG" "Exécution de la commande avec eval: ${ssh_cmd}"
+        eval "${ssh_cmd}"
+        if [ $? -eq 0 ]; then
             log "INFO" "Le port ${port} est déjà ouvert dans UFW"
             continue
         fi
 
         # Ouverture du port TCP
-        if ! ssh -o BatchMode=yes -o ConnectTimeout=${timeout} -p "${target_port}" "${ansible_user}@${target_host}" "sudo ufw allow ${port}/tcp" &>/dev/null; then
+        log "INFO" "Ouverture du port ${port}/tcp sur le VPS (commande interactive, veuillez entrer votre mot de passe si demandé)..."
+        local ssh_cmd="ssh -tt -o ConnectTimeout=${timeout} -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw allow ${port}/tcp\""
+        log "DEBUG" "Exécution de la commande avec eval: ${ssh_cmd}"
+        eval "${ssh_cmd}"
+        if [ $? -ne 0 ]; then
             log "ERROR" "Impossible d'ouvrir le port ${port}/tcp sur le VPS"
             success=false
             continue
         fi
 
         # Ouverture du port UDP
-        if ! ssh -o BatchMode=yes -o ConnectTimeout=${timeout} -p "${target_port}" "${ansible_user}@${target_host}" "sudo ufw allow ${port}/udp" &>/dev/null; then
+        log "INFO" "Ouverture du port ${port}/udp sur le VPS (commande interactive, veuillez entrer votre mot de passe si demandé)..."
+        local ssh_cmd="ssh -tt -o ConnectTimeout=${timeout} -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw allow ${port}/udp\""
+        log "DEBUG" "Exécution de la commande avec eval: ${ssh_cmd}"
+        eval "${ssh_cmd}"
+        if [ $? -ne 0 ]; then
             log "WARNING" "Impossible d'ouvrir le port ${port}/udp sur le VPS"
             # Ne pas échouer pour UDP, car certains services n'utilisent que TCP
         fi
@@ -1217,7 +1237,11 @@ function open_required_ports() {
     done
 
     # Rechargement des règles UFW
-    if ! ssh -o BatchMode=yes -o ConnectTimeout=${timeout} -p "${target_port}" "${ansible_user}@${target_host}" "sudo ufw reload" &>/dev/null; then
+    log "INFO" "Rechargement des règles UFW sur le VPS (commande interactive, veuillez entrer votre mot de passe si demandé)..."
+    local ssh_cmd="ssh -tt -o ConnectTimeout=${timeout} -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw reload\""
+    log "DEBUG" "Exécution de la commande avec eval: ${ssh_cmd}"
+    eval "${ssh_cmd}"
+    if [ $? -ne 0 ]; then
         log "WARNING" "Impossible de recharger les règles UFW"
         # Ne pas échouer pour le rechargement, car les règles sont déjà appliquées
     fi
@@ -1227,7 +1251,11 @@ function open_required_ports() {
     local failed_ports=()
 
     for port in "${ports_to_open[@]}"; do
-        if ! ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${target_port}" "${ansible_user}@${target_host}" "sudo ufw status | grep -E \"^${port}/(tcp|udp)\"" &>/dev/null; then
+        log "INFO" "Vérification que le port ${port} est bien ouvert (commande interactive, veuillez entrer votre mot de passe si demandé)..."
+        local ssh_cmd="ssh -tt -o ConnectTimeout=5 -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw status | grep -E \\\"^${port}/(tcp|udp)\\\"\""
+        log "DEBUG" "Exécution de la commande avec eval: ${ssh_cmd}"
+        eval "${ssh_cmd}"
+        if [ $? -ne 0 ]; then
             log "WARNING" "Le port ${port} ne semble pas être correctement ouvert dans UFW"
             failed_ports+=("${port}")
             success=false
@@ -1239,7 +1267,10 @@ function open_required_ports() {
     fi
 
     # Affichage du statut UFW
-    local ufw_status=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${target_port}" "${ansible_user}@${target_host}" "sudo ufw status" 2>/dev/null || echo "Impossible de récupérer le statut UFW")
+    log "INFO" "Récupération du statut UFW (commande interactive, veuillez entrer votre mot de passe si demandé)..."
+    local ssh_cmd="ssh -tt -o ConnectTimeout=5 -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw status\""
+    log "DEBUG" "Exécution de la commande avec eval: ${ssh_cmd}"
+    local ufw_status=$(eval "${ssh_cmd}" || echo "Impossible de récupérer le statut UFW")
     log "INFO" "Statut UFW actuel:"
     echo "${ufw_status}"
 
@@ -1402,9 +1433,11 @@ function check_network() {
         log "INFO" "Ports ouverts: ${open_ports[*]}"
         log "WARNING" "Ports fermés: ${closed_ports[*]}"
 
-        # Demande à l'utilisateur s'il souhaite ouvrir les ports automatiquement
-        log "INFO" "Des ports requis sont fermés. Souhaitez-vous les ouvrir automatiquement? (o/N)"
-        read -r answer
+        # Ouverture automatique des ports requis sans demander à l'utilisateur
+        log "INFO" "Des ports requis sont fermés. Ouverture automatique des ports..."
+
+        # Définir answer comme "o" pour toujours ouvrir les ports automatiquement
+        answer="o"
 
         if [[ "${answer}" =~ ^[Oo]$ ]]; then
             # Tentative d'ouverture des ports fermés
@@ -1844,73 +1877,24 @@ function run_with_timeout() {
         local exit_code=0
         local command_output=""
 
+        # Détection du système d'exploitation pour adapter la commande
+        local os_name=""
+        os_name=$(uname -s)
+
+        # Traitement spécial pour Windows/WSL pour toutes les commandes interactives
+        if [[ "${os_name}" == *"MINGW"* || "${os_name}" == *"MSYS"* || "${os_name}" == *"CYGWIN"* || "${os_name}" == *"Windows"* || "${os_name}" == *"Linux"*"microsoft"* ]]; then
+            log "INFO" "Système Windows/WSL détecté, définition de la variable d'environnement ANSIBLE_BECOME_ASK_PASS"
+            export ANSIBLE_BECOME_ASK_PASS=True
+        fi
+
         if [[ "${interactive}" == "true" ]]; then
             # Pour les commandes interactives, exécuter avec un timeout mais permettre l'entrée utilisateur
             log "INFO" "Exécution de la commande interactive, veuillez répondre aux invites si nécessaire..."
 
-            # Détection du système d'exploitation pour adapter la commande
-            local os_name=""
-            os_name=$(uname -s)
-
-            # Traitement spécial pour Windows/WSL
-            if [[ "${os_name}" == *"MINGW"* || "${os_name}" == *"MSYS"* || "${os_name}" == *"CYGWIN"* || "${os_name}" == *"Windows"* || "${os_name}" == *"Linux"*"microsoft"* ]]; then
-                log "DEBUG" "Système Windows/WSL détecté, adaptation de la commande interactive..."
-
-                # Vérification si la commande contient ansible-playbook
-                if [[ "${cmd_str}" == *"ansible-playbook"* ]]; then
-                    log "DEBUG" "Commande ansible-playbook détectée, traitement spécial..."
-
-                    # Extraction des parties de la commande
-                    local ansible_cmd="ansible-playbook"
-                    local inventory=""
-                    local playbook=""
-                    local extra_args=""
-
-                    # Extraction de l'inventaire
-                    if [[ "${cmd_str}" =~ -i[[:space:]]*\"([^\"]+)\" ]]; then
-                        inventory="${BASH_REMATCH[1]}"
-                        log "DEBUG" "Inventaire extrait: ${inventory}"
-                    fi
-
-                    # Extraction du playbook
-                    if [[ "${cmd_str}" =~ ansible-playbook[[:space:]]+.*\"([^\"]+\.yml)\" ]]; then
-                        playbook="${BASH_REMATCH[1]}"
-                        log "DEBUG" "Playbook extrait: ${playbook}"
-                    fi
-
-                    # Extraction des arguments supplémentaires
-                    if [[ "${cmd_str}" =~ ansible-playbook[[:space:]]+.*\.yml\"[[:space:]]+(.+)$ ]]; then
-                        extra_args="${BASH_REMATCH[1]}"
-                        log "DEBUG" "Arguments supplémentaires extraits: ${extra_args}"
-                    fi
-
-                    # Vérification que les chemins existent
-                    if [[ ! -f "${inventory}" ]]; then
-                        log "ERROR" "Fichier d'inventaire non trouvé: ${inventory}"
-                        return 1
-                    fi
-
-                    if [[ ! -f "${playbook}" ]]; then
-                        log "ERROR" "Fichier de playbook non trouvé: ${playbook}"
-                        return 1
-                    fi
-
-                    # Exécution de la commande avec les arguments séparés
-                    log "DEBUG" "Exécution de la commande ansible-playbook avec arguments séparés"
-                    run_with_timeout_fallback "${timeout}" ${ansible_cmd} -i "${inventory}" "${playbook}" ${extra_args}
-                    exit_code=$?
-                else
-                    # Pour les autres commandes interactives
-                    log "DEBUG" "Exécution de la commande interactive standard"
-                    run_with_timeout_fallback "${timeout}" bash -c "${cmd_str}"
-                    exit_code=$?
-                fi
-            else
-                # Pour les systèmes Unix standard
-                log "DEBUG" "Système Unix standard détecté"
-                run_with_timeout_fallback "${timeout}" bash -c "${cmd_str}"
-                exit_code=$?
-            fi
+            # Exécution directe de la commande avec eval comme dans deploy.sh
+            log "DEBUG" "Exécution de la commande avec eval"
+            eval "${cmd_str}"
+            exit_code=$?
         else
             # Pour les commandes non interactives, capturer la sortie
             local output_file
@@ -1998,7 +1982,7 @@ function run_with_timeout() {
                 log "INFO" "La commande interactive a échoué. Vérifiez les erreurs affichées ci-dessus."
 
                 # Suggestions spécifiques pour les commandes interactives
-                if [[ "${cmd}" == *"ansible-playbook"* && "${cmd}" == *"--ask-become-pass"* ]]; then
+                if [[ "${LAST_COMMAND}" == *"ansible-playbook"* && "${LAST_COMMAND}" == *"--ask-become-pass"* ]]; then
                     log "INFO" "Suggestions pour les erreurs Ansible avec --ask-become-pass:"
                     log "INFO" "1. Vérifiez que vous avez entré le bon mot de passe sudo"
                     log "INFO" "2. Vérifiez que l'utilisateur a les droits sudo sur le VPS"
@@ -3887,8 +3871,8 @@ else
     log "INFO" "Exécution de la commande: ${ansible_cmd}"
     LAST_COMMAND="${ansible_cmd}"
 
-    # Exécution de la commande avec timeout
-    if run_with_timeout "${ansible_cmd}" 1800 "ansible_playbook"; then
+    # Exécution directe de la commande avec eval
+    if eval "${ansible_cmd}"; then
         log "SUCCESS" "Déploiement des services d'infrastructure terminé avec succès"
     else
         log "WARNING" "Échec du déploiement des services d'infrastructure"
