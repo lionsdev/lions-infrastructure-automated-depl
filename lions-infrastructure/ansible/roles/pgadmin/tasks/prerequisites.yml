@@ -21,8 +21,8 @@
       metadata:
         name: "{{ app_namespace }}"
         labels:
-          app: "{{ app_name }}"
-          environment: "{{ app_environment }}"
+          app: "{{ app_name | string }}"
+          env: "{{ app_environment | string }}"
   when: namespace_info.resources | length == 0
 
 - name: Vérification des droits d'accès
