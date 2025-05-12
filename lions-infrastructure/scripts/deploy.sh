@@ -3,7 +3,7 @@
 # Description: Permet aux développeurs de déployer des applications en une seule commande
 # Auteur: Équipe LIONS Infrastructure
 # Date: 2025-05-07
-# Version: 2.0.0
+# Version: 2.1.0
 
 # Activation du mode strict
 set -euo pipefail
@@ -16,6 +16,7 @@ readonly LOG_FILE="${LOG_DIR}/deploy-$(date +%Y%m%d-%H%M%S).log"
 readonly ANSIBLE_PLAYBOOK="${SCRIPT_DIR}/../ansible/playbooks/deploy-application.yml"
 readonly APPLICATIONS_CATALOG="${SCRIPT_DIR}/../applications/catalog"
 readonly LOG_HISTORY_DIR="${LOG_DIR}/history"
+readonly BACKUP_DIR="${LOG_DIR}/backups"
 
 # Environnements disponibles
 readonly ENVIRONMENTS=("production" "staging" "development")
@@ -43,9 +44,10 @@ readonly COLOR_BG_MAGENTA="\033[45m"
 readonly COLOR_BG_CYAN="\033[46m"
 readonly COLOR_BG_WHITE="\033[47m"
 
-# Création des répertoires de logs
+# Création des répertoires de logs et de backups
 mkdir -p "${LOG_DIR}"
 mkdir -p "${LOG_HISTORY_DIR}"
+mkdir -p "${BACKUP_DIR}"
 
 # Fonction d'affichage du logo
 function afficher_logo() {
@@ -55,13 +57,13 @@ function afficher_logo() {
     local GRADIENT3="\033[38;5;33m"  # Bleu foncé
 
     echo -e "${COLOR_BOLD}"
-    echo -e "${GRADIENT1}    ╔═════════════════════════════════════════════════════════╗"
-    echo -e "${GRADIENT1}    ║ ${GRADIENT2}█     █ ████ ████ █   █ ████   ███ █   █ ████ ████${GRADIENT1}   ║"
-    echo -e "${GRADIENT2}    ║ ${GRADIENT2}█     █ █  █ █  █ ██  █ █       █  ██  █ █    █  █${GRADIENT1}   ║"
-    echo -e "${GRADIENT2}    ║ ${GRADIENT3}█     █ █  █ █  █ █ █ █ ████    █  █ █ █ ████ █  █${GRADIENT2}   ║"
-    echo -e "${GRADIENT3}    ║ ${GRADIENT3}█     █ █  █ █  █ █  ██    █    █  █  ██ █    █  █${GRADIENT2}   ║"
-    echo -e "${GRADIENT3}    ║ ${GRADIENT3}█████ █ ████ ████ █   █ ████   ███ █   █ █    ████${GRADIENT1}   ║"
-    echo -e "${GRADIENT1}    ╚═════════════════════════════════════════════════════════╝${COLOR_RESET}"
+    echo -e "${GRADIENT1}    ╔══════════════════════════════════════════════════════════════════╗"
+    echo -e "${GRADIENT1}    ║    ${GRADIENT2}█     █ ████ ████ █   █ ████   ███ █   █ ████ ████${GRADIENT1}   ║"
+    echo -e "${GRADIENT2}    ║    ${GRADIENT2}█     █ █  █ █  █ ██  █ █       █  ██  █ █    █  █${GRADIENT1}   ║"
+    echo -e "${GRADIENT2}    ║    ${GRADIENT3}█     █ █  █ █  █ █ █ █ ████    █  █ █ █ ████ █  █${GRADIENT2}   ║"
+    echo -e "${GRADIENT3}    ║    ${GRADIENT3}█     █ █  █ █  █ █  ██    █    █  █  ██ █    █  █${GRADIENT2}   ║"
+    echo -e "${GRADIENT3}    ║    ${GRADIENT3}█████ █ ████ ████ █   █ ████   ███ █   █ █    ████${GRADIENT1}   ║"
+    echo -e "${GRADIENT1}    ╚══════════════════════════════════════════════════════════════════╝${COLOR_RESET}"
     echo -e "${COLOR_YELLOW}${COLOR_BOLD}        Infrastructure de Déploiement Automatisé v2.0.0${COLOR_RESET}"
     echo -e "${GRADIENT2}       ─────────────────────────────────────────────────${COLOR_RESET}\n"
 }
@@ -145,6 +147,51 @@ ${COLOR_YELLOW}${COLOR_BOLD}Exemples:${COLOR_RESET}
     $0 -e production -v 1.2.3 mon-application-frontend
 
 EOF
+}
+
+# Fonction pour créer une sauvegarde avant déploiement
+function creer_sauvegarde() {
+    local app_name="$1"
+    local environment="$2"
+    local namespace="${app_name}-${environment}"
+    local backup_timestamp=$(date +%Y%m%d-%H%M%S)
+    local backup_file="${BACKUP_DIR}/${app_name}-${environment}-${backup_timestamp}.tar.gz"
+
+    log "STEP" "Création d'une sauvegarde avant déploiement"
+
+    # Vérification si l'application existe déjà
+    if kubectl get namespace "${namespace}" &>/dev/null; then
+        log "INFO" "Sauvegarde des ressources Kubernetes pour ${app_name} dans l'environnement ${environment}"
+
+        # Création d'un répertoire temporaire pour la sauvegarde
+        local temp_dir=$(mktemp -d)
+
+        # Sauvegarde des différentes ressources Kubernetes
+        kubectl get all -n "${namespace}" -o yaml > "${temp_dir}/all-resources.yaml" 2>/dev/null || true
+        kubectl get configmap -n "${namespace}" -o yaml > "${temp_dir}/configmaps.yaml" 2>/dev/null || true
+        kubectl get secret -n "${namespace}" -o yaml > "${temp_dir}/secrets.yaml" 2>/dev/null || true
+        kubectl get ingress -n "${namespace}" -o yaml > "${temp_dir}/ingress.yaml" 2>/dev/null || true
+        kubectl get pvc -n "${namespace}" -o yaml > "${temp_dir}/pvcs.yaml" 2>/dev/null || true
+
+        # Sauvegarde des logs des pods
+        mkdir -p "${temp_dir}/logs"
+        for pod in $(kubectl get pods -n "${namespace}" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+            kubectl logs -n "${namespace}" "${pod}" > "${temp_dir}/logs/${pod}.log" 2>/dev/null || true
+        done
+
+        # Compression de la sauvegarde
+        tar -czf "${backup_file}" -C "${temp_dir}" . &>/dev/null
+
+        # Nettoyage
+        rm -rf "${temp_dir}"
+
+        log "SUCCESS" "Sauvegarde créée avec succès: ${backup_file}"
+
+        # Enregistrement du chemin de la sauvegarde pour référence future
+        echo "${backup_file}" > "${BACKUP_DIR}/${app_name}-${environment}-latest.txt"
+    else
+        log "INFO" "Aucune sauvegarde nécessaire - l'application n'existe pas encore dans cet environnement"
+    fi
 }
 
 # Fonction de vérification des prérequis
@@ -303,6 +350,9 @@ function deployer_application() {
     log "INFO" "Technologie: ${technology}"
     log "INFO" "Version: ${version}"
 
+    # Création d'une sauvegarde avant déploiement
+    creer_sauvegarde "${app_name}" "${environment}"
+
     # Création d'un fichier de variables temporaire pour Ansible
     local vars_file=$(mktemp)
     cat > "${vars_file}" << EOF
@@ -321,7 +371,7 @@ EOF
     afficher_progression 2 5 "Exécution du playbook Ansible"
 
     # Commande Ansible avec les options appropriées
-    local ansible_cmd="ansible-playbook ${ANSIBLE_PLAYBOOK} --extra-vars @${vars_file}"
+    local ansible_cmd="ansible-playbook ${ANSIBLE_PLAYBOOK} --extra-vars @${vars_file} --ask-become-pass"
 
     # Activation du mode verbeux si debug est activé
     if [[ "${debug_mode}" == "true" ]]; then

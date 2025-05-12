@@ -3,7 +3,7 @@
 # Description: Orchestre l'installation complète de l'infrastructure LIONS sur un VPS
 # Auteur: Équipe LIONS Infrastructure
 # Date: 2023-05-15
-# Version: 1.0.0
+# Version: 1.1.0
 
 # Configuration
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -18,6 +18,7 @@ readonly LOCK_FILE="/tmp/lions_install.lock"
 readonly REQUIRED_SPACE_MB=5000  # 5 Go d'espace disque requis
 readonly TIMEOUT_SECONDS=1800    # 30 minutes de timeout pour les commandes longues
 readonly REQUIRED_PORTS=(22 22225 80 443 6443 30000 30001)
+readonly SUDO_ALWAYS_ASK=true    # Toujours demander le mot de passe pour sudo
 
 # Couleurs pour l'affichage
 readonly COLOR_RESET="\033[0m"
@@ -151,7 +152,8 @@ function run_with_timeout_fallback() {
 
 # Fonction pour collecter et analyser les logs
 function collect_logs() {
-    local output_dir="${LOG_DIR}/diagnostic-$(date +%Y%m%d-%H%M%S)"
+    local output_dir
+    output_dir="${LOG_DIR}/diagnostic-$(date +%Y%m%d-%H%M%S)"
     mkdir -p "${output_dir}"
 
     log "INFO" "Collecte des logs pour diagnostic dans ${output_dir}..."
@@ -451,7 +453,8 @@ function handle_error() {
 
 # Fonction de génération de rapport de diagnostic
 function generate_diagnostic_report() {
-    local report_file="${BACKUP_DIR}/diagnostic-$(date +%Y%m%d-%H%M%S).txt"
+    local report_file
+    report_file="${BACKUP_DIR}/diagnostic-$(date +%Y%m%d-%H%M%S).txt"
 
     log "INFO" "Génération d'un rapport de diagnostic complet..."
 
@@ -540,8 +543,8 @@ function cleanup() {
         # Tentative de suppression sans sudo d'abord
         if ! rm -f "${LOCK_FILE}" 2>/dev/null; then
             log "WARNING" "Impossible de supprimer le fichier de verrouillage sans sudo, tentative avec sudo..."
-            # Si ça échoue, essayer avec sudo
-            if sudo rm -f "${LOCK_FILE}"; then
+            # Si ça échoue, essayer avec secure_sudo
+            if secure_sudo rm -f "${LOCK_FILE}"; then
                 log "SUCCESS" "Fichier de verrouillage supprimé avec succès (sudo)"
             else
                 log "WARNING" "Impossible de supprimer le fichier de verrouillage, même avec sudo"
@@ -563,7 +566,16 @@ function cleanup() {
 trap 'handle_error ${LINENO} "${COMMAND_NAME:-unknown}"' ERR
 
 # Configuration du gestionnaire de sortie pour s'assurer que le fichier de verrouillage est toujours supprimé
-trap 'if [[ -f "${LOCK_FILE}" ]]; then if ! rm -f "${LOCK_FILE}" 2>/dev/null; then sudo rm -f "${LOCK_FILE}" 2>/dev/null || true; fi; fi' EXIT
+trap 'if [[ -f "${LOCK_FILE}" ]]; then if ! rm -f "${LOCK_FILE}" 2>/dev/null; then secure_sudo rm -f "${LOCK_FILE}" 2>/dev/null || true; fi; fi' EXIT
+
+# Fonction pour exécuter des commandes sudo avec demande de mot de passe
+function secure_sudo() {
+    if [[ "${SUDO_ALWAYS_ASK}" == "true" ]]; then
+        sudo -k "$@"  # -k force à demander le mot de passe
+    else
+        sudo "$@"
+    fi
+}
 
 # Fonction pour vérifier si une commande existe
 function command_exists() {
@@ -623,12 +635,12 @@ function install_missing_commands() {
     # Mise à jour des dépôts si nécessaire
     if [[ "${pkg_manager}" == "apt" ]]; then
         log "INFO" "Mise à jour des dépôts apt..."
-        if ! sudo apt-get update &>/dev/null; then
+        if ! secure_sudo apt-get update &>/dev/null; then
             log "WARNING" "Impossible de mettre à jour les dépôts apt"
         fi
     elif [[ "${pkg_manager}" == "dnf" || "${pkg_manager}" == "yum" ]]; then
         log "INFO" "Mise à jour des dépôts ${pkg_manager}..."
-        if ! sudo ${pkg_manager} check-update &>/dev/null; then
+        if ! secure_sudo ${pkg_manager} check-update &>/dev/null; then
             log "WARNING" "Impossible de mettre à jour les dépôts ${pkg_manager}"
         fi
     fi
@@ -657,11 +669,11 @@ function install_missing_commands() {
                     # Pour Debian/Ubuntu, kubectl nécessite un dépôt spécial
                     log "INFO" "Configuration du dépôt Kubernetes pour apt..."
                     if ! command_exists curl; then
-                        sudo apt-get install -y curl &>/dev/null
+                        secure_sudo apt-get install -y curl &>/dev/null
                     fi
-                    curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add - &>/dev/null
-                    echo "deb https://apt.kubernetes.io/ kubernetes-xenial main" | sudo tee /etc/apt/sources.list.d/kubernetes.list &>/dev/null
-                    sudo apt-get update &>/dev/null
+                    curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | secure_sudo apt-key add - &>/dev/null
+                    echo "deb https://apt.kubernetes.io/ kubernetes-xenial main" | secure_sudo tee /etc/apt/sources.list.d/kubernetes.list &>/dev/null
+                    secure_sudo apt-get update &>/dev/null
                     pkg_name="kubectl"
                 elif [[ "${pkg_manager}" == "brew" ]]; then
                     pkg_name="kubernetes-cli"
@@ -674,11 +686,11 @@ function install_missing_commands() {
                     # Pour Debian/Ubuntu, helm nécessite un dépôt spécial
                     log "INFO" "Configuration du dépôt Helm pour apt..."
                     if ! command_exists curl; then
-                        sudo apt-get install -y curl &>/dev/null
+                        secure_sudo apt-get install -y curl &>/dev/null
                     fi
-                    curl https://baltocdn.com/helm/signing.asc | sudo apt-key add - &>/dev/null
-                    echo "deb https://baltocdn.com/helm/stable/debian/ all main" | sudo tee /etc/apt/sources.list.d/helm-stable-debian.list &>/dev/null
-                    sudo apt-get update &>/dev/null
+                    curl https://baltocdn.com/helm/signing.asc | secure_sudo apt-key add - &>/dev/null
+                    echo "deb https://baltocdn.com/helm/stable/debian/ all main" | secure_sudo tee /etc/apt/sources.list.d/helm-stable-debian.list &>/dev/null
+                    secure_sudo apt-get update &>/dev/null
                     pkg_name="helm"
                 elif [[ "${pkg_manager}" == "brew" ]]; then
                     pkg_name="helm"
@@ -730,7 +742,7 @@ function install_missing_commands() {
 
         # Installation du paquet
         log "INFO" "Installation du paquet: ${pkg_name}"
-        if ! sudo ${install_cmd} ${pkg_name} &>/dev/null; then
+        if ! secure_sudo ${install_cmd} ${pkg_name} &>/dev/null; then
             log "ERROR" "Échec de l'installation de ${pkg_name}"
             success=false
         else
@@ -909,13 +921,15 @@ function check_vps_resources() {
 
     # Vérification des services en cours d'exécution
     log "INFO" "Vérification des services en cours d'exécution sur le VPS..."
-    local running_services=$(ssh -o BatchMode=yes -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "systemctl list-units --type=service --state=running | grep -v systemd | head -10" 2>/dev/null || echo "Impossible de déterminer les services")
+    local running_services
+    running_services=$(ssh -o BatchMode=yes -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "systemctl list-units --type=service --state=running | grep -v systemd | head -10" 2>/dev/null || echo "Impossible de déterminer les services")
     log "INFO" "Services en cours d'exécution sur le VPS (top 10):"
     echo "${running_services}" | grep -v "UNIT\|LOAD\|ACTIVE\|SUB\|DESCRIPTION\|^$\|loaded units listed"
 
     # Vérification des ports ouverts
     log "INFO" "Vérification des ports ouverts sur le VPS..."
-    local open_ports=$(ssh -o BatchMode=yes -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "ss -tuln | grep LISTEN" 2>/dev/null || echo "Impossible de déterminer les ports ouverts")
+    local open_ports
+    open_ports=$(ssh -o BatchMode=yes -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "ss -tuln | grep LISTEN" 2>/dev/null || echo "Impossible de déterminer les ports ouverts")
     log "INFO" "Ports ouverts sur le VPS:"
     echo "${open_ports}"
 
@@ -1068,7 +1082,7 @@ EOF
                     pip_cmd="pip"
                 fi
 
-                if sudo ${pip_cmd} install pyyaml &>/dev/null; then
+                if secure_sudo ${pip_cmd} install pyyaml &>/dev/null; then
                     log "SUCCESS" "Module yaml installé avec succès"
                     # Réessayer l'extraction après l'installation
                     inventory_info=$(timeout 10 python3 -c "${python_script}" "${ANSIBLE_DIR}/${inventory_file}" 2>&1)
@@ -1833,9 +1847,70 @@ function run_with_timeout() {
         if [[ "${interactive}" == "true" ]]; then
             # Pour les commandes interactives, exécuter avec un timeout mais permettre l'entrée utilisateur
             log "INFO" "Exécution de la commande interactive, veuillez répondre aux invites si nécessaire..."
-            # Utiliser run_with_timeout_fallback pour exécuter la commande avec un timeout
-            run_with_timeout_fallback "${timeout}" bash -c "${cmd_str}"
-            exit_code=$?
+
+            # Détection du système d'exploitation pour adapter la commande
+            local os_name=""
+            os_name=$(uname -s)
+
+            # Traitement spécial pour Windows/WSL
+            if [[ "${os_name}" == *"MINGW"* || "${os_name}" == *"MSYS"* || "${os_name}" == *"CYGWIN"* || "${os_name}" == *"Windows"* || "${os_name}" == *"Linux"*"microsoft"* ]]; then
+                log "DEBUG" "Système Windows/WSL détecté, adaptation de la commande interactive..."
+
+                # Vérification si la commande contient ansible-playbook
+                if [[ "${cmd_str}" == *"ansible-playbook"* ]]; then
+                    log "DEBUG" "Commande ansible-playbook détectée, traitement spécial..."
+
+                    # Extraction des parties de la commande
+                    local ansible_cmd="ansible-playbook"
+                    local inventory=""
+                    local playbook=""
+                    local extra_args=""
+
+                    # Extraction de l'inventaire
+                    if [[ "${cmd_str}" =~ -i[[:space:]]*\"([^\"]+)\" ]]; then
+                        inventory="${BASH_REMATCH[1]}"
+                        log "DEBUG" "Inventaire extrait: ${inventory}"
+                    fi
+
+                    # Extraction du playbook
+                    if [[ "${cmd_str}" =~ ansible-playbook[[:space:]]+.*\"([^\"]+\.yml)\" ]]; then
+                        playbook="${BASH_REMATCH[1]}"
+                        log "DEBUG" "Playbook extrait: ${playbook}"
+                    fi
+
+                    # Extraction des arguments supplémentaires
+                    if [[ "${cmd_str}" =~ ansible-playbook[[:space:]]+.*\.yml\"[[:space:]]+(.+)$ ]]; then
+                        extra_args="${BASH_REMATCH[1]}"
+                        log "DEBUG" "Arguments supplémentaires extraits: ${extra_args}"
+                    fi
+
+                    # Vérification que les chemins existent
+                    if [[ ! -f "${inventory}" ]]; then
+                        log "ERROR" "Fichier d'inventaire non trouvé: ${inventory}"
+                        return 1
+                    fi
+
+                    if [[ ! -f "${playbook}" ]]; then
+                        log "ERROR" "Fichier de playbook non trouvé: ${playbook}"
+                        return 1
+                    fi
+
+                    # Exécution de la commande avec les arguments séparés
+                    log "DEBUG" "Exécution de la commande ansible-playbook avec arguments séparés"
+                    run_with_timeout_fallback "${timeout}" ${ansible_cmd} -i "${inventory}" "${playbook}" ${extra_args}
+                    exit_code=$?
+                else
+                    # Pour les autres commandes interactives
+                    log "DEBUG" "Exécution de la commande interactive standard"
+                    run_with_timeout_fallback "${timeout}" bash -c "${cmd_str}"
+                    exit_code=$?
+                fi
+            else
+                # Pour les systèmes Unix standard
+                log "DEBUG" "Système Unix standard détecté"
+                run_with_timeout_fallback "${timeout}" bash -c "${cmd_str}"
+                exit_code=$?
+            fi
         else
             # Pour les commandes non interactives, capturer la sortie
             local output_file
@@ -1986,14 +2061,18 @@ function verifier_prerequis() {
         log "WARNING" "Une autre instance du script semble être en cours d'exécution"
 
         # Vérification de l'âge du fichier de verrouillage
-        local lock_file_age=$(( $(date +%s) - $(stat -c %Y "${LOCK_FILE}" 2>/dev/null || echo $(date +%s)) ))
+        local lock_file_age
+        lock_file_age=$(( $(date +%s) - $(stat -c %Y "${LOCK_FILE}" 2>/dev/null || echo $(date +%s)) ))
 
         # Vérification de l'uptime du système
-        local uptime_seconds=$(cat /proc/uptime 2>/dev/null | awk '{print int($1)}' || echo 999999)
+        local uptime_seconds
+        uptime_seconds=$(cat /proc/uptime 2>/dev/null | awk '{print int($1)}' || echo 999999)
 
         # Vérification des processus en cours d'exécution
-        local script_name=$(basename "$0")
-        local script_count=$(ps aux | grep -v grep | grep -c "${script_name}" || echo 1)
+        local script_name
+        script_name=$(basename "$0")
+        local script_count
+        script_count=$(ps aux | grep -v grep | grep -c "${script_name}" || echo 1)
 
         # Si le système a redémarré après la création du fichier de verrouillage
         # ou si le fichier de verrouillage existe depuis plus d'une heure
@@ -2004,8 +2083,8 @@ function verifier_prerequis() {
             # Tentative de suppression sans sudo d'abord
             if ! rm -f "${LOCK_FILE}" 2>/dev/null; then
                 log "WARNING" "Impossible de supprimer le fichier de verrouillage sans sudo, tentative avec sudo..."
-                # Si ça échoue, essayer avec sudo
-                if sudo rm -f "${LOCK_FILE}"; then
+                # Si ça échoue, essayer avec secure_sudo
+                if secure_sudo rm -f "${LOCK_FILE}"; then
                     log "SUCCESS" "Fichier de verrouillage obsolète supprimé avec succès (sudo)"
                 else
                     log "WARNING" "Impossible de supprimer le fichier de verrouillage obsolète, même avec sudo"
@@ -2014,8 +2093,8 @@ function verifier_prerequis() {
         else
             log "WARNING" "Si ce n'est pas le cas, tentative de suppression du fichier de verrouillage avec sudo"
             log "INFO" "Exécution de la commande: sudo rm -f ${LOCK_FILE}"
-            # Utilisation de sudo pour supprimer le fichier, ce qui demandera le mot de passe si nécessaire
-            if sudo rm -f "${LOCK_FILE}"; then
+            # Utilisation de secure_sudo pour supprimer le fichier, ce qui demandera le mot de passe
+            if secure_sudo rm -f "${LOCK_FILE}"; then
                 log "SUCCESS" "Fichier de verrouillage supprimé avec succès"
             else
                 log "ERROR" "Impossible de supprimer le fichier de verrouillage, même avec sudo"
@@ -2030,8 +2109,10 @@ function verifier_prerequis() {
 
     # Vérification de la version du système d'exploitation
     log "INFO" "Vérification du système d'exploitation..."
-    local os_name=$(uname -s)
-    local os_version=$(uname -r)
+    local os_name
+    os_name=$(uname -s)
+    local os_version
+    os_version=$(uname -r)
 
     if [[ "${os_name}" != "Linux" && "${os_name}" != "Darwin" ]]; then
         log "WARNING" "Système d'exploitation non testé: ${os_name} ${os_version}"
@@ -3356,7 +3437,8 @@ function verifier_installation() {
     log "SUCCESS" "Vérification de l'installation terminée avec succès"
 
     # Génération d'un rapport de vérification
-    local report_file="${LOG_DIR}/verification-report-$(date +%Y%m%d-%H%M%S).txt"
+    local report_file
+    report_file="${LOG_DIR}/verification-report-$(date +%Y%m%d-%H%M%S).txt"
 
     {
         echo "=== RAPPORT DE VÉRIFICATION DE L'INFRASTRUCTURE LIONS ==="
@@ -3487,7 +3569,8 @@ function test_robustesse() {
     log "INFO" "Test 4: Test du mécanisme de retry pour les erreurs réseau..."
 
     # Création d'un script temporaire qui échoue les premières fois puis réussit
-    local temp_script=$(mktemp)
+    local temp_script
+    temp_script=$(mktemp)
     cat > "${temp_script}" << 'EOF'
 #!/bin/bash
 COUNTER_FILE="/tmp/retry_test_counter"
@@ -3523,7 +3606,8 @@ EOF
     # Exécuter la commande avec le mécanisme de retry
     if run_with_timeout "${temp_script}" 10 "network_test"; then
         # Vérifier que le compteur est à 3 (2 échecs + 1 succès)
-        local final_counter=$(cat "/tmp/retry_test_counter")
+        local final_counter
+        final_counter=$(cat "/tmp/retry_test_counter")
         if [[ "${final_counter}" -eq 3 ]]; then
             log "SUCCESS" "Test 4 réussi: Le mécanisme de retry a fonctionné correctement (${final_counter} tentatives)"
         else
@@ -3608,6 +3692,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Détection du système d'exploitation pour le formatage des chemins
+os_name=""
 os_name=$(uname -s)
 if [[ "${os_name}" == *"MINGW"* || "${os_name}" == *"MSYS"* || "${os_name}" == *"CYGWIN"* || "${os_name}" == *"Windows"* ]]; then
     log "DEBUG" "Système Windows détecté, adaptation des chemins..."
@@ -3630,14 +3715,25 @@ fi
 
 # Affichage du titre
 echo -e "${COLOR_CYAN}${COLOR_BOLD}"
-echo -e "  _     ___ ___  _   _ ___    ___ _   _ _____ ___    _    "
-echo -e " | |   |_ _/ _ \| \ | / __|  |_ _| \ | |  ___/ _ \  / \   "
-echo -e " | |    | | | | |  \| \__ \   | ||  \| | |_ | | | |/ _ \  "
-echo -e " | |___ | | |_| | |\  |__) |  | || |\  |  _|| |_| / ___ \ "
-echo -e " |_____|___\___/|_| \_|____/  |___|_| \_|_|   \___/_/   \_\\"
-echo -e "${COLOR_RESET}"
-echo -e "${COLOR_YELLOW}${COLOR_BOLD}  Installation de l'Infrastructure sur VPS - v1.0.0${COLOR_RESET}"
-echo -e "${COLOR_CYAN}  ------------------------------------------------${COLOR_RESET}\n"
+    echo -e "╔═══════════════════════════════════════════════════════════════════╗"
+    echo -e "║                                                                   ║"
+    echo -e "║      ██╗     ██╗ ██████╗ ███╗   ██╗███████╗    ██╗███╗   ██╗      ║"
+    echo -e "║      ██║     ██║██╔═══██╗████╗  ██║██╔════╝    ██║████╗  ██║      ║"
+    echo -e "║      ██║     ██║██║   ██║██╔██╗ ██║███████╗    ██║██╔██╗ ██║      ║"
+    echo -e "║      ██║     ██║██║   ██║██║╚██╗██║╚════██║    ██║██║╚██╗██║      ║"
+    echo -e "║      ███████╗██║╚██████╔╝██║ ╚████║███████║    ██║██║ ╚████║      ║"
+    echo -e "║      ╚══════╝╚═╝ ╚═════╝ ╚═╝  ╚═══╝╚══════╝    ╚═╝╚═╝  ╚═══╝      ║"
+    echo -e "║                                                                   ║"
+    echo -e "║     ███████╗ ██████╗    █████╗ ██╗   ██╗████████╗ ██████╗         ║"
+    echo -e "║     ██╔════╝██╔═══██╗  ██╔══██╗██║   ██║╚══██╔══╝██╔═══██╗        ║"
+    echo -e "║     █████╗  ██║   ██║  ███████║██║   ██║   ██║   ██║   ██║        ║"
+    echo -e "║     ██╔══╝  ██║   ██║  ██╔══██║██║   ██║   ██║   ██║   ██║        ║"
+    echo -e "║     ██║     ╚██████╔╝  ██║  ██║╚██████╔╝   ██║   ╚██████╔╝        ║"
+    echo -e "║     ╚═╝      ╚═════╝   ╚═╝  ╚═╝ ╚═════╝    ╚═╝    ╚═════╝         ║"
+    echo -e "║                                                                   ║"
+    echo -e "╚═══════════════════════════════════════════════════════════════════╝${COLOR_RESET}"
+    echo -e "${COLOR_YELLOW}${COLOR_BOLD}     Infrastructure de Déploiement Automatisé - v2.0.0${COLOR_RESET}"
+    echo -e "${COLOR_CYAN}  ════════════════════════════════════════════════════════${COLOR_RESET}\n"
 
 # Affichage des paramètres
 log "INFO" "Environnement: ${environment}"
@@ -3761,6 +3857,7 @@ if [[ ! -f "${playbook_path}" ]]; then
     log "WARNING" "Déploiement des services d'infrastructure ignoré"
 else
     # Détection du système d'exploitation pour le formatage des chemins
+    os_name=""
     os_name=$(uname -s)
     if [[ "${os_name}" == *"MINGW"* || "${os_name}" == *"MSYS"* || "${os_name}" == *"CYGWIN"* || "${os_name}" == *"Windows"* ]]; then
         # Windows: convertir les chemins Unix en chemins Windows
@@ -3826,6 +3923,7 @@ log "INFO" "Vous pouvez également générer un nouveau token avec: kubectl crea
 log "INFO" "Pour déployer des applications, utilisez le script deploy.sh"
 
 # Génération d'un rapport final
+report_file=""
 report_file="${LOG_DIR}/installation-report-$(date +%Y%m%d-%H%M%S).txt"
 
 {
