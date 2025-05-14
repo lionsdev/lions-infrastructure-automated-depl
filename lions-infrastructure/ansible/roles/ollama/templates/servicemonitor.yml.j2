@@ -1,0 +1,30 @@
+---
+# Titre: Template de ServiceMonitor pour Ollama
+# Description: Configure Prometheus pour monitorer Ollama
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-14
+# Version: 1.0.0
+
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: "{{ app_name }}"
+  namespace: "{{ app_namespace }}"
+  labels:
+    app: "{{ app_name }}"
+    version: "{{ app_version }}"
+    environment: "{{ app_environment }}"
+    technology: "ollama"
+    release: prometheus
+  annotations:
+    description: "ServiceMonitor pour Ollama {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+spec:
+  selector:
+    matchLabels:
+      app: "{{ app_name }}"
+  endpoints:
+    - port: http
+      path: "{{ ollama_prometheus_path }}"
+      interval: 30s
+      scrapeTimeout: 10s
+      honorLabels: true

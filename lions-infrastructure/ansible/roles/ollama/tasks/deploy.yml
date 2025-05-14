@@ -51,12 +51,12 @@
 - name: "[Ollama] Pré-télécharger les modèles"
   kubernetes.core.k8s_exec:
     namespace: "{{ app_namespace }}"
-    pod: "{{ item }}"
+    pod: "{{ item.metadata.name }}"
     command: "ollama pull {{ model }}"
   loop: "{{ ollama_models }}"
   loop_control:
     loop_var: model
-  with_items: "{{ pods.resources | map(attribute='metadata.name') | list }}"
+  with_items: "{{ pods.resources }}"
   vars:
     pods: "{{ lookup('kubernetes.core.k8s', api_version='v1', kind='Pod', namespace=app_namespace, label_selector='app=' + app_name) }}"
   when: ollama_models is defined and ollama_models | length > 0

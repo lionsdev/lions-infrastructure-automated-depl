@@ -1,0 +1,89 @@
+---
+# Titre: Configuration de l'application Ollama
+# Description: Paramètres de déploiement pour Ollama
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-14
+# Version: 1.0.0
+
+name: ollama
+type: infrastructure
+technology: ollama
+description: "Service d'IA générative LIONS basé sur Ollama"
+repository: https://github.com/lionsdev/ollama-deployment
+
+# Configuration des environnements
+environments:
+  production:
+    domain: ollama.lions.dev
+    replicas: 1
+    resources:
+      requests:
+        cpu: "4"
+        memory: "8Gi"
+      limits:
+        cpu: "4"
+        memory: "10Gi"
+    storage:
+      size: "100Gi"
+      class: "standard"
+  staging:
+    domain: ollama.staging.lions.dev
+    replicas: 1
+    resources:
+      requests:
+        cpu: "3"
+        memory: "6Gi"
+      limits:
+        cpu: "4"
+        memory: "8Gi"
+    storage:
+      size: "50Gi"
+      class: "standard"
+  development:
+    domain: ollama.dev.lions.dev
+    replicas: 1
+    resources:
+      requests:
+        cpu: "2"
+        memory: "4Gi"
+      limits:
+        cpu: "4"
+        memory: "6Gi"
+    storage:
+      size: "30Gi"
+      class: "standard"
+
+# Dépendances
+dependencies: []
+
+# Configuration spécifique
+config:
+  models:
+    - phi3
+    - llama3:7b
+    - mistral
+    - neural-chat
+  monitoring:
+    enabled: true
+    prometheus: true
+    grafana: true
+  security:
+    cors_enabled: true
+    authentication: false
+  features:
+    api_access: true
+    web_ui: true
+
+# Maintenance
+maintenance:
+  backup: true
+  retention: 7d
+  monitoring: true
+
+# Métadonnées
+metadata:
+  team: devops
+  owner: infrastructure
+  contact: infrastructure@lions.dev
+  sla: 99.9
+  category: ai-services

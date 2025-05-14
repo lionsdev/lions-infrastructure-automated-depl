@@ -1,0 +1,24 @@
+---
+# Titre: Tâches de prérequis pour Ollama
+# Description: Vérifie les prérequis avant le déploiement
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-14
+# Version: 1.0.0
+
+- name: "[Ollama] Vérifier la connectivité du cluster"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Node
+  register: nodes_info
+  failed_when: nodes_info.resources | length == 0
+
+- name: "[Ollama] Vérifier l'espace disque disponible"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Node
+  register: node_status
+
+- name: "[Ollama] Vérifier les ressources disponibles"
+  debug:
+    msg: "Node {{ item.metadata.name }} - CPU: {{ item.status.capacity.cpu }}, Memory: {{ item.status.capacity.memory }}"
+  loop: "{{ node_status.resources }}"

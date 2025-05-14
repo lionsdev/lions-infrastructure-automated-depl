@@ -1,0 +1,26 @@
+---
+# Titre: Tâches principales pour Ollama
+# Description: Orchestration du déploiement Ollama
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-14
+# Version: 1.0.0
+
+- name: "[Ollama] Inclure les tâches de préparation"
+  include_tasks: prepare.yml
+  when: app_prepare | default(true) | bool
+
+- name: "[Ollama] Inclure les tâches de prérequis"
+  include_tasks: prerequisites.yml
+  when: app_prerequisites | default(true) | bool
+
+- name: "[Ollama] Inclure les tâches de déploiement"
+  include_tasks: deploy.yml
+  when: app_deploy | default(true) | bool
+
+- name: "[Ollama] Inclure les tâches de monitoring"
+  include_tasks: monitoring.yml
+  when: app_monitoring | default(true) | bool
+
+- name: "[Ollama] Inclure les tâches de validation"
+  include_tasks: validate.yml
+  when: app_validate | default(true) | bool

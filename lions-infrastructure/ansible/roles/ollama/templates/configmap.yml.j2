@@ -22,13 +22,13 @@ data:
   OLLAMA_API_URL: "{{ ollama_root_url }}"
   OLLAMA_ENV: "{{ app_environment }}"
   OLLAMA_LOG_LEVEL: "info"
-  
+
   # Configuration des modèles
   OLLAMA_DEFAULT_MODELS: |
     {% for model in ollama_models %}
     - {{ model }}
     {% endfor %}
-  
+
   # Configuration système
   OLLAMA_MAX_LOADED_MODELS: "2"
   OLLAMA_NUM_THREADS: "4"

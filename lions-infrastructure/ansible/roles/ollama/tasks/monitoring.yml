@@ -1,0 +1,48 @@
+---
+# Titre: Tâches de monitoring pour Ollama
+# Description: Configure le monitoring pour Ollama
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-14
+# Version: 1.0.0
+
+- name: "[Ollama] Déployer ServiceMonitor pour Prometheus"
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'servicemonitor.yml.j2') | from_yaml }}"
+  when: ollama_prometheus_scrape | bool
+
+- name: "[Ollama] Créer les alertes personnalisées"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: monitoring.coreos.com/v1
+      kind: PrometheusRule
+      metadata:
+        name: "{{ app_name }}-alerts"
+        namespace: "{{ app_namespace }}"
+        labels:
+          app: "{{ app_name }}"
+          prometheus: kube-prometheus
+      spec:
+        groups:
+          - name: ollama.rules
+            interval: 30s
+            rules:
+              - alert: OllamaDown
+                expr: up{job="{{ app_name }}"} == 0
+                for: 2m
+                labels:
+                  severity: critical
+                  technology: ollama
+                annotations:
+                  summary: "Ollama {{ app_name }} est down"
+                  description: "Ollama {{ app_name }} dans {{ app_namespace }} est inaccessible"
+              - alert: OllamaHighMemoryUsage
+                expr: container_memory_usage_bytes{pod=~"{{ app_name }}.*"} / container_spec_memory_limit_bytes{pod=~"{{ app_name }}.*"} > 0.9
+                for: 5m
+                labels:
+                  severity: warning
+                  technology: ollama
+                annotations:
+                  summary: "Utilisation mémoire élevée pour Ollama"
+                  description: "Ollama {{ app_name }} utilise plus de 90% de sa mémoire limite"
