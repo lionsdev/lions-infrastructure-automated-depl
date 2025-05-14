@@ -1,0 +1,60 @@
+---
+# Titre: Tâches de validation pour Ollama
+# Description: Validation du déploiement Ollama
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-14
+# Version: 1.0.0
+
+- name: "[Ollama] Vérifier le statut du pod"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: "{{ app_namespace }}"
+    label_selectors:
+      - "app={{ app_name }}"
+  register: pod_status
+
+- name: "[Ollama] Afficher le statut des pods"
+  debug:
+    msg: "Pod {{ item.metadata.name }} - Status: {{ item.status.phase }}"
+  loop: "{{ pod_status.resources }}"
+
+- name: "[Ollama] Tester l'endpoint de santé"
+  uri:
+    url: "http://{{ app_name }}.{{ app_namespace }}.svc.cluster.local{{ ollama_health_path }}"
+    method: GET
+    validate_certs: no
+  register: health_check
+  until: health_check.status == 200
+  retries: 10
+  delay: 5
+
+- name: "[Ollama] Tester l'Ingress"
+  uri:
+    url: "https://{{ app_domain }}{{ ollama_health_path }}"
+    method: GET
+    validate_certs: yes
+  register: ingress_check
+  until: ingress_check.status == 200
+  retries: 10
+  delay: 5
+
+- name: "[Ollama] Vérifier les modèles disponibles"
+  kubernetes.core.k8s_exec:
+    namespace: "{{ app_namespace }}"
+    pod: "{{ pod_status.resources[0].metadata.name }}"
+    command: "ollama list"
+  register: models_list
+
+- name: "[Ollama] Afficher les modèles disponibles"
+  debug:
+    msg: "{{ models_list.stdout_lines }}"
+
+- name: "[Ollama] Résumé du déploiement"
+  debug:
+    msg:
+      - "✅ Ollama déployé avec succès"
+      - "URL: https://{{ app_domain }}"
+      - "Namespace: {{ app_namespace }}"
+      - "Pods actifs: {{ pod_status.resources | length }}"
+      - "Santé: {{ health_check.status }}"
