@@ -1,0 +1,26 @@
+---
+# Titre: Template de PersistentVolumeClaim pour Ollama
+# Description: Définit le stockage persistant pour Ollama
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-14
+# Version: 1.0.0
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: "{{ app_name }}-pvc"
+  namespace: "{{ app_namespace }}"
+  labels:
+    app: "{{ app_name }}"
+    version: "{{ app_version }}"
+    environment: "{{ app_environment }}"
+    technology: "ollama"
+  annotations:
+    description: "PVC pour Ollama {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: "{{ ollama_storage_class }}"
+  resources:
+    requests:
+      storage: "{{ ollama_storage_size }}"

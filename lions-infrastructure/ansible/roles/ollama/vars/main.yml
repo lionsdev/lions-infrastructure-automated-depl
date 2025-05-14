@@ -1,0 +1,101 @@
+---
+# Titre: Variables pour le déploiement d'Ollama
+# Description: Variables spécifiques à Ollama
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-14
+# Version: 1.0.0
+
+# Configuration par défaut pour Ollama
+ollama_default_port: 11434
+ollama_health_path: "/api/tags"
+ollama_metrics_path: "/metrics"
+ollama_api_key_secret: "ollama-api-key"
+
+# Configuration des modèles à précharger
+ollama_models:
+  - "phi3"           # 3B - léger et rapide
+  - "llama3:7b"     # 7B - bon équilibre
+  - "mistral"       # 7B - performant
+  - "neural-chat"   # 7B - optimisé pour le chat
+
+# Configuration des sondes de santé
+ollama_readiness_probe:
+  httpGet:
+    path: "{{ ollama_health_path }}"
+    port: http
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 15
+  failureThreshold: 3
+
+ollama_liveness_probe:
+  httpGet:
+    path: "{{ ollama_health_path }}"
+    port: http
+  initialDelaySeconds: 60
+  periodSeconds: 30
+  timeoutSeconds: 15
+  failureThreshold: 3
+
+# Configuration du monitoring
+ollama_prometheus_port: 11434
+ollama_prometheus_path: "/metrics"
+ollama_prometheus_scrape: true
+ollama_init_delay: 60
+
+# Configuration des ressources par environnement
+# Adapté pour votre VPS avec 11GB RAM et CPU AMD EPYC
+ollama_resources:
+  development:
+    requests:
+      cpu: "2"
+      memory: "4Gi"
+    limits:
+      cpu: "4"
+      memory: "6Gi"
+  staging:
+    requests:
+      cpu: "3"
+      memory: "6Gi"
+    limits:
+      cpu: "4"
+      memory: "8Gi"
+  production:
+    requests:
+      cpu: "4"
+      memory: "8Gi"
+    limits:
+      cpu: "4"
+      memory: "10Gi"
+
+# Configuration des réplicas par environnement
+ollama_replicas:
+  development: 1
+  staging: 1
+  production: 1
+
+# Configuration de l'ingress
+ollama_ingress_annotations:
+  cert-manager.io/cluster-issuer: "letsencrypt-prod"
+  traefik.ingress.kubernetes.io/router.entrypoints: "websecure"
+  traefik.ingress.kubernetes.io/router.tls: "true"
+  traefik.ingress.kubernetes.io/ssl-redirect: "true"
+  traefik.ingress.kubernetes.io/ssl-permanent-redirect: "true"
+  traefik.ingress.kubernetes.io/request-timeout: "600"
+  traefik.ingress.kubernetes.io/compress: "true"
+  traefik.ingress.kubernetes.io/headers-customrequestheaders: "X-Forwarded-Proto:https||X-Forwarded-Port:443"
+  traefik.ingress.kubernetes.io/headers-customresponseheaders: "X-Content-Type-Options:nosniff||X-Frame-Options:SAMEORIGIN||X-XSS-Protection:1; mode=block"
+  traefik.ingress.kubernetes.io/proxy-body-size: "500m"
+  traefik.ingress.kubernetes.io/proxy-read-timeout: "600"
+  traefik.ingress.kubernetes.io/proxy-send-timeout: "600"
+
+# Configuration de la persistance
+ollama_persistent_storage: true
+ollama_storage_size: "100Gi"
+ollama_storage_class: "standard"
+
+# Configuration d'Ollama
+ollama_app_name: "LIONS AI Service"
+ollama_root_url: "https://{{ app_domain }}"
+ollama_gpu_enabled: false
+ollama_cors_allowed_origins: "*"

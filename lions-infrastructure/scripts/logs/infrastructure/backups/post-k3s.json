@@ -1,0 +1,12 @@
+{
+  "backup_name": "post-k3s",
+  "backup_date": "2025-05-12T22:53:24+02:00",
+  "environment": "development",
+  "installation_step": "install_k3s",
+  "ansible_host": "176.57.150.2",
+  "ansible_port": "22225",
+  "ansible_user": "lionsdevadmin",
+  "script_version": "1.0.0",
+  "description": "Sauvegarde automatique avant l'étape install_k3s",
+  "backup_size": "24K"
+}

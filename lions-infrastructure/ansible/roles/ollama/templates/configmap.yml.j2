@@ -1,0 +1,35 @@
+---
+# Titre: Template de ConfigMap pour Ollama
+# Description: Configuration pour Ollama
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-14
+# Version: 1.0.0
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: "{{ app_name }}-config"
+  namespace: "{{ app_namespace }}"
+  labels:
+    app: "{{ app_name }}"
+    version: "{{ app_version }}"
+    environment: "{{ app_environment }}"
+    technology: "ollama"
+  annotations:
+    description: "ConfigMap pour Ollama {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+data:
+  # Configuration API
+  OLLAMA_API_URL: "{{ ollama_root_url }}"
+  OLLAMA_ENV: "{{ app_environment }}"
+  OLLAMA_LOG_LEVEL: "info"
+  
+  # Configuration des modèles
+  OLLAMA_DEFAULT_MODELS: |
+    {% for model in ollama_models %}
+    - {{ model }}
+    {% endfor %}
+  
+  # Configuration système
+  OLLAMA_MAX_LOADED_MODELS: "2"
+  OLLAMA_NUM_THREADS: "4"
+  OLLAMA_GPU_ENABLED: "{{ ollama_gpu_enabled | string | lower }}"
