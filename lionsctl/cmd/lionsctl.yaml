@@ -1,0 +1,20 @@
+DOCKER:
+   REGISTRY_URL: "registry.lions.dev"
+GIT:
+   CFG_USERNAME: lionsctl
+   CFG_EMAIL: lionsctl@lions.dev
+   CFG_PASSWORD: LionsCtl2025!
+   CFG_DEFAULT_BRNCH: main
+   DOMAIN: "github.com"
+   BASE_URL: "https://github.com"
+   ENV_URL: https://github.com/lionsdev/
+   USER_API_ENDPOINT: "/api/v3/user/repos"
+   REPO_API_ENDPOINT: "/api/v3/repos"
+   ACCESS_TOKENS: "your-github-access-token"
+HELM:
+   CONFIG_REPO_URL: https://github.com/lionsdev/config
+   CONFIG_REPO_TOKEN: "your-github-access-token"
+NOTIFICATION:
+   FROM_URL: notifications@lions.dev
+   SMTP_URL: "smtp://smtp.lions.dev:587"
+   SERVER_TOKEN: "your-smtp-server-token"

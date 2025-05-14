@@ -28,7 +28,21 @@
       debug:
         msg: 
           - "Environnement: {{ deploy_environment }}"
-          - "Services à déployer: PostgreSQL, PgAdmin, Gitea, Keycloak"
+          - "Services à déployer: Registry, PostgreSQL, PgAdmin, Gitea, Keycloak"
+
+    # Registry
+    - name: Déploiement de la Registry Docker
+      include_role:
+        name: "{{ roles_path }}/registry"
+      vars:
+        app_name: registry
+        app_namespace: "registry"
+        app_environment: "{{ deploy_environment }}"
+        app_domain: "registry.{{ deploy_environment }}.lions.dev"
+        app_version: "latest"
+        app_replicas: "{{ registry_replicas[deploy_environment] | default(1) }}"
+        registry_persistent_storage: true
+        registry_storage_size: "{{ registry_storage_size | default('10Gi') }}"
 
     # PostgreSQL
     - name: Déploiement de PostgreSQL
