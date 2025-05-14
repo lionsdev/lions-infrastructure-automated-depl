@@ -1,0 +1,22 @@
+container:
+  registryUri: registry.lions.dev
+  tag: "v1.0.0"
+  memory: "1Gi"
+  storage: "1Gi"
+hostAlias:
+  ip: 176.57.150.2
+  hostname: api.lions.dev
+
+image:
+  repository: registry.lions.dev/app-name
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  port: 8080
+
+replicaCount: 1
+
+namespace: default
+name: app-name
+environment: development
