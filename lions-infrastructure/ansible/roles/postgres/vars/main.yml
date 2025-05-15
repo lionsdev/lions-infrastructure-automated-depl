@@ -75,7 +75,7 @@ postgres_replicas:
 # Configuration de la persistance
 postgres_persistent_storage: true
 postgres_storage_size: "20Gi"
-postgres_storage_class: "local-path"
+postgres_storage_class: "standard"
 
 # Configuration de PostgreSQL
 postgres_max_connections: 100

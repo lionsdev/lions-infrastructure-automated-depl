@@ -92,7 +92,7 @@ ollama_ingress_annotations:
 # Configuration de la persistance
 ollama_persistent_storage: true
 ollama_storage_size: "100Gi"
-ollama_storage_class: "local-path"
+ollama_storage_class: "standard"
 
 # Configuration d'Ollama
 ollama_app_name: "LIONS AI Service"

@@ -3388,6 +3388,63 @@ function deployer_infrastructure_base() {
         log "INFO" "Politiques réseau créées avec succès dans le namespace ${environment}"
     fi
 
+    # Vérification et attente des StorageClasses
+    log "INFO" "Vérification des StorageClasses..."
+    local max_sc_attempts=30
+    local sc_attempt=0
+    local sc_ready=false
+
+    while [[ "${sc_ready}" == "false" && ${sc_attempt} -lt ${max_sc_attempts} ]]; do
+        sc_attempt=$((sc_attempt + 1))
+        log "INFO" "Tentative ${sc_attempt}/${max_sc_attempts} de vérification des StorageClasses..."
+
+        if kubectl get storageclass standard &>/dev/null; then
+            log "SUCCESS" "StorageClass 'standard' est prête"
+            sc_ready=true
+        else
+            log "INFO" "StorageClass 'standard' n'est pas encore prête, attente de 10 secondes..."
+            sleep 10
+        fi
+    done
+
+    if [[ "${sc_ready}" == "false" ]]; then
+        log "WARNING" "StorageClass 'standard' n'est pas disponible après ${max_sc_attempts} tentatives"
+        log "WARNING" "Les déploiements qui dépendent de cette StorageClass pourraient échouer"
+    fi
+
+    # Vérification et attente de Traefik
+    log "INFO" "Vérification de Traefik..."
+    local max_traefik_attempts=30
+    local traefik_attempt=0
+    local traefik_ready=false
+
+    while [[ "${traefik_ready}" == "false" && ${traefik_attempt} -lt ${max_traefik_attempts} ]]; do
+        traefik_attempt=$((traefik_attempt + 1))
+        log "INFO" "Tentative ${traefik_attempt}/${max_traefik_attempts} de vérification de Traefik..."
+
+        if kubectl get pods -n kube-system -l app=traefik -o jsonpath='{.items[*].status.phase}' 2>/dev/null | grep -q "Running"; then
+            log "SUCCESS" "Traefik est en cours d'exécution"
+
+            # Vérification que Traefik est prêt
+            if kubectl get pods -n kube-system -l app=traefik -o jsonpath='{.items[*].status.containerStatuses[0].ready}' 2>/dev/null | grep -q "true"; then
+                log "SUCCESS" "Traefik est prêt"
+                traefik_ready=true
+            else
+                log "INFO" "Traefik est en cours d'exécution mais n'est pas encore prêt, attente de 10 secondes..."
+                sleep 10
+            fi
+        else
+            log "INFO" "Traefik n'est pas encore en cours d'exécution, attente de 10 secondes..."
+            sleep 10
+        fi
+    done
+
+    if [[ "${traefik_ready}" == "false" ]]; then
+        log "WARNING" "Traefik n'est pas prêt après ${max_traefik_attempts} tentatives"
+        log "WARNING" "Les services qui dépendent de Traefik pourraient ne pas être accessibles"
+        log "WARNING" "Vérifiez l'installation de K3s et les logs"
+    fi
+
     log "SUCCESS" "Déploiement de l'infrastructure de base terminé avec succès"
 }
 
@@ -4452,7 +4509,6 @@ log "INFO" "Ce token est permanent et ne nécessite pas d'être régénéré à 
 log "INFO" "Pour déployer des applications, utilisez le script deploy.sh"
 
 # Génération d'un rapport final
-report_file=""
 report_file="${LOG_DIR}/installation-report-$(date +%Y%m%d-%H%M%S).txt"
 
 {
@@ -4470,7 +4526,7 @@ report_file="${LOG_DIR}/installation-report-$(date +%Y%m%d-%H%M%S).txt"
     echo ""
 
     echo "=== INFORMATIONS D'ACCÈS ==="
-    local access_host="${ansible_host}"
+    access_host="${ansible_host}"
     if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
         access_host="localhost"
     fi

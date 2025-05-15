@@ -118,7 +118,7 @@ metadata:
 spec:
   accessModes:
     - ReadWriteOnce
-  storageClassName: local-path
+  storageClassName: standard
   resources:
     requests:
       storage: ${STORAGE_SIZE}
