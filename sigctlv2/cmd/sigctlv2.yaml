@@ -1,0 +1,22 @@
+DOCKER:
+   REGISTRY_URL: "dcr.dgbf.ci"
+GIT:
+   CFG_USERNAME: sigctl
+   CFG_EMAIL: sigctl@gmail.com
+   CFG_PASSWORD: Sigctl4!
+   CFG_DEFAULT_BRNCH: dev
+   DOMAIN: "git.dgbf.ci"
+   BASE_URL: "https://git.dgbf.ci"
+   ENV_URL: https://git.dgbf.ci/sigctl/
+   USER_API_ENDPOINT: "/api/v1/user/repos"
+   REPO_API_ENDPOINT: "/api/v1/repos"
+   ACCESS_TOKENS: "64d1317e76473ee741a92ca6982cafd6e070c04c"
+HELM:
+   CONFIG_REPO_URL: https://git.dgbf.ci/sigctl/config
+   CONFIG_REPO_TOKEN: "651cac3dd4bef569c286e211e0ea77495b7a4c8c"
+NOTIFICATION:
+   FROM_URL: info@dgbf.ci
+   SMTP_URL: https://api.postmarkapp.com/email
+   SERVER_TOKEN: 73dfc5db-477d-4710-85bd-4b2258afeb3c
+
+  

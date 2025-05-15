@@ -86,11 +86,12 @@ Pour déployer l'infrastructure LIONS sur votre VPS Contabo, suivez ces étapes:
    - Via NodePort: https://176.57.150.2:30001
    - Via domaine (production): https://k3s.lions.dev
    - Via domaine (développement): https://k3s.dev.lions.dev
-   - Authentification: Utiliser le token affiché dans les logs d'installation
-   - Pour générer un nouveau token:
+   - Authentification: Utiliser le token permanent affiché dans les logs d'installation
+   - Pour récupérer le token permanent:
      ```bash
-     kubectl create token dashboard-admin -n kubernetes-dashboard
+     kubectl get secret dashboard-admin-token -n kubernetes-dashboard -o jsonpath='{.data.token}' | base64 --decode
      ```
+   - Ce token est permanent et ne nécessite pas d'être régénéré à chaque connexion
 
    > **Note**: L'accès via les domaines nécessite que vos enregistrements DNS soient correctement configurés pour pointer vers l'adresse IP du VPS (176.57.150.2).
 

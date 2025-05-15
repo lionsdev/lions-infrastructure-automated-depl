@@ -1,7 +1,5 @@
 package cmd
 
-import "github.com/spf13/cobra"
-
 var (
 	url         string
 	branch      string

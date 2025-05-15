@@ -30,9 +30,10 @@ func Build(ctx context.Context, client *dagger.Client, opts *BuildOptions) error
 	imageTag := strings.Join([]string{imageName, opts.Tag}, ":")
 	log.Printf("--- IMAGE TAG: %s", imageTag)
 
+	password := client.SetSecret("docker-password", viper.GetString("GIT.CFG_PASSWORD"))
 	_, err := client.Container().
 		Build(opts.DockerContext).
-		WithRegistryAuth(registryUrl, viper.GetString("GIT.CFG_USERNAME"), viper.GetString("GIT.CFG_PASSWORD")).
+		WithRegistryAuth(registryUrl, viper.GetString("GIT.CFG_USERNAME"), password).
 		Publish(ctx, imageTag)
 	if err != nil {
 		return err

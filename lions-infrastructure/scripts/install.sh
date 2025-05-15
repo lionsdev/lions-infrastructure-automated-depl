@@ -4445,8 +4445,9 @@ log "INFO" "Identifiant: admin"
 log "INFO" "Mot de passe: admin"
 
 log "INFO" "Pour accéder au Kubernetes Dashboard, utilisez l'URL: https://${ansible_host}:30001"
-log "INFO" "Utilisez le token affiché dans les logs d'installation pour vous connecter"
-log "INFO" "Vous pouvez également générer un nouveau token avec: kubectl create token dashboard-admin -n kubernetes-dashboard"
+log "INFO" "Utilisez le token permanent affiché dans les logs d'installation pour vous connecter"
+log "INFO" "Vous pouvez également récupérer le token permanent avec: kubectl get secret dashboard-admin-token -n kubernetes-dashboard -o jsonpath='{.data.token}' | base64 --decode"
+log "INFO" "Ce token est permanent et ne nécessite pas d'être régénéré à chaque connexion"
 
 log "INFO" "Pour déployer des applications, utilisez le script deploy.sh"
 

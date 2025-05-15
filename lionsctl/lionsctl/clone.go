@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path"
+	_ "path"
 	"strings"
 
 	"dagger.io/dagger"

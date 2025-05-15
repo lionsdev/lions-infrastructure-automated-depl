@@ -2,12 +2,10 @@ package lionsctl
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
-	"path"
 	"strings"
 
 	"github.com/spf13/viper"

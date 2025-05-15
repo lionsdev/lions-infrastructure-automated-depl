@@ -147,11 +147,12 @@ Une fois le déploiement terminé, vous pouvez accéder aux interfaces suivantes
   - Via NodePort : `https://<ip_vps>:30001`
   - Via domaine (production) : `https://k3s.lions.dev`
   - Via domaine (développement) : `https://k3s.dev.lions.dev`
-  - Pour vous connecter, utilisez le token affiché dans les logs d'installation
-  - Vous pouvez également générer un nouveau token avec la commande :
+  - Pour vous connecter, utilisez le token permanent affiché dans les logs d'installation
+  - Vous pouvez également récupérer le token permanent avec la commande :
     ```bash
-    kubectl create token dashboard-admin -n kubernetes-dashboard
+    kubectl get secret dashboard-admin-token -n kubernetes-dashboard -o jsonpath='{.data.token}' | base64 --decode
     ```
+  - Ce token est permanent et ne nécessite pas d'être régénéré à chaque connexion
 
   > **Note** : L'accès via les domaines nécessite que vos enregistrements DNS soient correctement configurés pour pointer vers l'adresse IP de votre VPS.
 

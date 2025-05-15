@@ -435,16 +435,38 @@
           environment:
             KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
-        - name: Génération d'un token pour l'accès au Dashboard
-          command: k3s kubectl create token dashboard-admin -n kubernetes-dashboard
+        - name: Création d'un Secret pour le token permanent du Dashboard
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: Secret
+              metadata:
+                name: dashboard-admin-token
+                namespace: kubernetes-dashboard
+                annotations:
+                  kubernetes.io/service-account.name: dashboard-admin
+              type: kubernetes.io/service-account-token
+            host: "https://{{ ansible_host }}:6443"
+            validate_certs: false
+          environment:
+            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+          register: dashboard_secret
+
+        - name: Attente que le token soit généré
+          pause:
+            seconds: 5
+
+        - name: Récupération du token permanent
+          command: k3s kubectl get secret dashboard-admin-token -n kubernetes-dashboard -o jsonpath='{.data.token}' | base64 --decode
           register: dashboard_token
           changed_when: false
           environment:
             KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
-        - name: Affichage du token pour l'accès au Dashboard
+        - name: Affichage du token permanent pour l'accès au Dashboard
           debug:
-            msg: "Token pour l'accès au Kubernetes Dashboard: {{ dashboard_token.stdout }}"
+            msg: "Token permanent pour l'accès au Kubernetes Dashboard: {{ dashboard_token.stdout }}"
 
     - name: Vérification finale de l'installation
       debug:

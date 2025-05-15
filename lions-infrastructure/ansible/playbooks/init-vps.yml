@@ -24,10 +24,15 @@
         upgrade: dist
       register: system_updated
 
-    - name: Redémarrage si nécessaire après mise à jour
+    - name: Redémarrage si nécessaire après mise à jour (connexion distante)
       reboot:
         reboot_timeout: 600
-      when: system_updated.changed
+      when: system_updated.changed and ansible_connection != 'local'
+
+    - name: Notification de redémarrage manuel nécessaire (connexion locale)
+      debug:
+        msg: "Des mises à jour système ont été appliquées. Un redémarrage manuel du serveur est recommandé après la fin de l'installation."
+      when: system_updated.changed and ansible_connection == 'local'
 
     - name: Installation des paquets essentiels
       apt:

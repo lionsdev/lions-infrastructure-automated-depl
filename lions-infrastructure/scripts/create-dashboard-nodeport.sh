@@ -69,7 +69,7 @@ if kubectl get service kubernetes-dashboard-nodeport -n kubernetes-dashboard &> 
     log "INFO" "Le service kubernetes-dashboard-nodeport existe déjà"
 else
     log "INFO" "Création du service kubernetes-dashboard-nodeport..."
-    
+
     # Création du fichier de définition du service
     cat > /tmp/dashboard-nodeport.yaml << EOF
 apiVersion: v1
@@ -86,36 +86,63 @@ spec:
     k8s-app: kubernetes-dashboard
   type: NodePort
 EOF
-    
+
     # Application du fichier de définition
     kubectl apply -f /tmp/dashboard-nodeport.yaml
-    
+
     # Nettoyage
     rm -f /tmp/dashboard-nodeport.yaml
-    
+
     log "SUCCESS" "Service kubernetes-dashboard-nodeport créé avec succès"
 fi
 
 # Vérification de l'existence du compte de service dashboard-admin
 if ! kubectl get serviceaccount dashboard-admin -n kubernetes-dashboard &> /dev/null; then
     log "INFO" "Création du compte de service dashboard-admin..."
-    
+
     # Création du compte de service
     kubectl create serviceaccount dashboard-admin -n kubernetes-dashboard
-    
+
     # Création du ClusterRoleBinding
     kubectl create clusterrolebinding dashboard-admin \
       --clusterrole=cluster-admin \
       --serviceaccount=kubernetes-dashboard:dashboard-admin
-    
+
     log "SUCCESS" "Compte de service dashboard-admin créé avec succès"
 fi
 
-# Génération d'un token pour l'accès au Dashboard
-log "INFO" "Génération d'un token pour l'accès au Dashboard..."
-token=$(kubectl create token dashboard-admin -n kubernetes-dashboard)
+# Création d'un Secret pour le token permanent du Dashboard
+log "INFO" "Création d'un token permanent pour l'accès au Dashboard..."
 
-log "SUCCESS" "Token généré avec succès"
+# Vérification de l'existence du secret dashboard-admin-token
+if ! kubectl get secret dashboard-admin-token -n kubernetes-dashboard &> /dev/null; then
+    # Création du secret pour le token permanent
+    cat > /tmp/dashboard-token-secret.yaml << EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dashboard-admin-token
+  namespace: kubernetes-dashboard
+  annotations:
+    kubernetes.io/service-account.name: dashboard-admin
+type: kubernetes.io/service-account-token
+EOF
+
+    # Application du fichier de définition
+    kubectl apply -f /tmp/dashboard-token-secret.yaml
+
+    # Nettoyage
+    rm -f /tmp/dashboard-token-secret.yaml
+
+    # Attente que le token soit généré
+    log "INFO" "Attente de la génération du token..."
+    sleep 5
+fi
+
+# Récupération du token permanent
+token=$(kubectl get secret dashboard-admin-token -n kubernetes-dashboard -o jsonpath='{.data.token}' | base64 --decode)
+
+log "SUCCESS" "Token permanent généré avec succès"
 log "INFO" "Utilisez ce token pour vous connecter au Dashboard: https://<IP_VPS>:30001"
 echo
 echo "Token: ${token}"
