@@ -458,7 +458,7 @@
             seconds: 5
 
         - name: Récupération du token permanent
-          command: k3s kubectl get secret dashboard-admin-token -n kubernetes-dashboard -o jsonpath='{.data.token}' | base64 --decode
+          shell: k3s kubectl get secret dashboard-admin-token -n kubernetes-dashboard -o jsonpath='{.data.token}' | base64 --decode
           register: dashboard_token
           changed_when: false
           environment:
