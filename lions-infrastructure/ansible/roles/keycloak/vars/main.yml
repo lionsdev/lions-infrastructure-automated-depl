@@ -87,7 +87,7 @@ keycloak_ingress_annotations:
 # Configuration de la persistance
 keycloak_persistent_storage: true
 keycloak_storage_size: "1Gi"
-keycloak_storage_class: "standard"
+keycloak_storage_class: "local-path"
 
 # Configuration de Keycloak
 keycloak_realm: "lions"

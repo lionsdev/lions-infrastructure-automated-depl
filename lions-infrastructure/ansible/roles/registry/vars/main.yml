@@ -75,4 +75,4 @@ registry_replicas:
 # Configuration du stockage
 registry_persistent_storage: true
 registry_storage_size: "10Gi"
-registry_storage_class: "standard"
+registry_storage_class: "local-path"

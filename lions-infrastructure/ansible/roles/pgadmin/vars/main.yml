@@ -78,4 +78,4 @@ pgadmin_replicas:
 # Configuration du stockage
 pgadmin_persistent_storage: true
 pgadmin_storage_size: "5Gi"
-pgadmin_storage_class: "standard"
+pgadmin_storage_class: "local-path"

@@ -75,7 +75,7 @@ redis_replicas:
 # Configuration de la persistance
 redis_persistent_storage: true
 redis_storage_size: "10Gi"
-redis_storage_class: "standard"
+redis_storage_class: "local-path"
 
 # Configuration de Redis
 redis_maxmemory: "512mb"

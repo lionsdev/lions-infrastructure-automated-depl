@@ -71,7 +71,7 @@ notification_replicas:
 # Configuration de la persistance
 notification_persistent_storage: false
 notification_storage_size: "1Gi"
-notification_storage_class: "standard"
+notification_storage_class: "local-path"
 
 # Configuration des canaux de notification
 notification_channels:

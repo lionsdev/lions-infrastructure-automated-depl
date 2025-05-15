@@ -15,6 +15,7 @@ resources:
   - ../../base/rbac
   - ../../base/resource-quotas
   - ../../base/cert-manager
+  - ../../base/storage-classes
 
 # Patches spécifiques à l'environnement de staging
 patches:

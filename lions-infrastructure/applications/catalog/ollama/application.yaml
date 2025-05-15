@@ -25,7 +25,7 @@ environments:
         memory: "10Gi"
     storage:
       size: "100Gi"
-      class: "standard"
+      class: "local-path"
   staging:
     domain: ollama.staging.lions.dev
     replicas: 1
@@ -38,7 +38,7 @@ environments:
         memory: "8Gi"
     storage:
       size: "50Gi"
-      class: "standard"
+      class: "local-path"
   development:
     domain: ollama.dev.lions.dev
     replicas: 1

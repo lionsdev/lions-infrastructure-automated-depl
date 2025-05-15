@@ -15,6 +15,7 @@ resources:
   - ../../base/rbac
   - ../../base/resource-quotas
   - ../../base/cert-manager
+  - ../../base/storage-classes
   - patches/high-availability-patch.yaml
 
 # Patches spécifiques à l'environnement de production

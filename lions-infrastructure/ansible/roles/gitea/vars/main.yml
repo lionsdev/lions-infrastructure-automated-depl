@@ -88,7 +88,7 @@ gitea_ingress_annotations:
 # Configuration de la persistance
 gitea_persistent_storage: true
 gitea_storage_size: "10Gi"
-gitea_storage_class: "standard"
+gitea_storage_class: "local-path"
 
 # Configuration de Gitea
 gitea_app_name: "LIONS Git Service"

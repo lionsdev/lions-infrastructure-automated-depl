@@ -84,7 +84,7 @@ primefaces_database_user: "{{ app_name }}"
 
 # Configuration du stockage persistant
 primefaces_storage_size: "10Gi"
-primefaces_storage_class: "standard"
+primefaces_storage_class: "local-path"
 
 # Configuration JVM
 primefaces_java_opts: "-Xms512m -Xmx1024m -XX:+UseG1GC -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0"
