@@ -783,6 +783,108 @@ function install_missing_commands() {
 }
 
 # Fonction pour vérifier et installer les collections Ansible requises
+function update_ansible() {
+    log "INFO" "Mise à jour d'Ansible..."
+
+    # Détection du système d'exploitation
+    local os_name
+    os_name=$(uname -s)
+
+    # Détection du gestionnaire de paquets et mise à jour d'Ansible
+    if [[ "${os_name}" == "Linux" ]]; then
+        # Détection de la distribution Linux
+        if command_exists apt-get; then
+            log "INFO" "Système Debian/Ubuntu détecté, utilisation de apt-get"
+            if ! secure_sudo apt-get update &>/dev/null; then
+                log "ERROR" "Échec de la mise à jour des dépôts"
+                return 1
+            fi
+            if ! secure_sudo apt-get install -y ansible &>/dev/null; then
+                log "ERROR" "Échec de la mise à jour d'Ansible"
+                return 1
+            fi
+        elif command_exists dnf; then
+            log "INFO" "Système Fedora détecté, utilisation de dnf"
+            if ! secure_sudo dnf update -y ansible &>/dev/null; then
+                log "ERROR" "Échec de la mise à jour d'Ansible"
+                return 1
+            fi
+        elif command_exists yum; then
+            log "INFO" "Système CentOS/RHEL détecté, utilisation de yum"
+            if ! secure_sudo yum update -y ansible &>/dev/null; then
+                log "ERROR" "Échec de la mise à jour d'Ansible"
+                return 1
+            fi
+        elif command_exists pacman; then
+            log "INFO" "Système Arch Linux détecté, utilisation de pacman"
+            if ! secure_sudo pacman -Syu --noconfirm ansible &>/dev/null; then
+                log "ERROR" "Échec de la mise à jour d'Ansible"
+                return 1
+            fi
+        elif command_exists zypper; then
+            log "INFO" "Système openSUSE détecté, utilisation de zypper"
+            if ! secure_sudo zypper update -y ansible &>/dev/null; then
+                log "ERROR" "Échec de la mise à jour d'Ansible"
+                return 1
+            fi
+        else
+            log "ERROR" "Gestionnaire de paquets non supporté sur ce système Linux"
+            log "INFO" "Veuillez mettre à jour Ansible manuellement"
+            return 1
+        fi
+    elif [[ "${os_name}" == "Darwin" ]]; then
+        # macOS
+        if command_exists brew; then
+            log "INFO" "Système macOS détecté, utilisation de Homebrew"
+            if ! brew update &>/dev/null; then
+                log "ERROR" "Échec de la mise à jour des dépôts Homebrew"
+                return 1
+            fi
+            if ! brew upgrade ansible &>/dev/null; then
+                log "ERROR" "Échec de la mise à jour d'Ansible"
+                return 1
+            fi
+        else
+            log "ERROR" "Homebrew n'est pas installé sur ce système macOS"
+            log "INFO" "Installez Homebrew avec: /bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""
+            return 1
+        fi
+    elif [[ "${os_name}" == *"MINGW"* || "${os_name}" == *"MSYS"* || "${os_name}" == *"CYGWIN"* ]]; then
+        # Windows (Git Bash, MSYS2, Cygwin)
+        log "ERROR" "Mise à jour automatique d'Ansible non supportée sur Windows"
+        log "INFO" "Veuillez mettre à jour Ansible manuellement"
+        return 1
+    else
+        log "ERROR" "Système d'exploitation non supporté pour la mise à jour automatique: ${os_name}"
+        log "INFO" "Veuillez mettre à jour Ansible manuellement"
+        return 1
+    fi
+
+    # Vérification de la mise à jour
+    local new_ansible_version
+    local new_ansible_version_raw
+    new_ansible_version_raw=$(ansible --version | head -n1)
+    # Extraction du numéro de version, qu'il soit au format "2.13.13" ou "[core 2.15.0]"
+    if [[ "${new_ansible_version_raw}" =~ \[core[[:space:]]+([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+        # Nouveau format: [core X.Y.Z]
+        new_ansible_version="${BASH_REMATCH[1]}"
+    else
+        # Ancien format: juste le numéro de version
+        new_ansible_version=$(echo "${new_ansible_version_raw}" | awk '{print $2}')
+    fi
+
+    log "INFO" "Nouvelle version d'Ansible: ${new_ansible_version}"
+
+    if version_greater_equal "${new_ansible_version}" "2.14.0"; then
+        log "SUCCESS" "Ansible a été mis à jour avec succès vers une version compatible: ${new_ansible_version}"
+        return 0
+    else
+        log "WARNING" "La version d'Ansible après mise à jour est toujours potentiellement incompatible: ${new_ansible_version}"
+        log "WARNING" "Vous pouvez installer des versions spécifiques des collections ou mettre à jour Ansible manuellement"
+        return 1
+    fi
+}
+
 function check_ansible_version() {
     log "INFO" "Vérification de la version d'Ansible..."
 
@@ -815,7 +917,7 @@ function check_ansible_version() {
         log "WARNING" "Version d'Ansible potentiellement incompatible: ${ansible_version}"
         log "WARNING" "Certaines collections peuvent nécessiter des versions spécifiques"
 
-        # Demander à l'utilisateur s'il souhaite continuer ou installer des versions spécifiques
+        # Demander à l'utilisateur s'il souhaite installer des versions spécifiques ou mettre à jour Ansible
         local response
         read -p "Souhaitez-vous installer des versions spécifiques des collections compatibles avec Ansible ${ansible_version}? (o/N): " response
 
@@ -823,8 +925,15 @@ function check_ansible_version() {
             log "INFO" "Installation de versions spécifiques des collections..."
             return 2  # Code spécial pour indiquer l'installation de versions spécifiques
         else
-            log "INFO" "Continuation avec les versions par défaut des collections"
-            return 0
+            log "INFO" "Tentative de mise à jour d'Ansible..."
+            if update_ansible; then
+                log "SUCCESS" "Ansible a été mis à jour avec succès"
+                return 0
+            else
+                log "WARNING" "Impossible de mettre à jour Ansible automatiquement"
+                log "INFO" "Continuation avec les versions par défaut des collections"
+                return 0
+            fi
         fi
     fi
 }
