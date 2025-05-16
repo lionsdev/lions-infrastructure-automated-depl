@@ -4522,7 +4522,7 @@ else
         fi
     fi
 
-    ansible_cmd="ansible-playbook \"${playbook_path}\" --extra-vars \"target_env=${environment}\" --ask-become-pass"
+    ansible_cmd="ansible-playbook -i \"${ANSIBLE_DIR}/${inventory_file}\" \"${playbook_path}\" --extra-vars \"target_env=${environment}\" --ask-become-pass"
 
     if [[ "${debug_mode}" == "true" ]]; then
         ansible_cmd="${ansible_cmd} -vvv"
@@ -4539,7 +4539,7 @@ else
         log "INFO" "Vérification de l'état des pods après déploiement..."
 
         # Liste des namespaces à vérifier
-        local namespaces_to_check=(
+        namespaces_to_check=(
             "postgres-${environment}"
             "pgadmin-${environment}"
             "gitea-${environment}"
