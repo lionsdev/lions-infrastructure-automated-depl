@@ -271,12 +271,7 @@
             KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
         - name: Déploiement du Kubernetes Dashboard
-          kubernetes.core.k8s:
-            state: present
-            src: https://raw.githubusercontent.com/kubernetes/dashboard/v2.7.0/aio/deploy/recommended.yaml
-            remote_src: true
-            host: "https://{{ ansible_host }}:6443"
-            validate_certs: false
+          shell: kubectl apply -f https://raw.githubusercontent.com/kubernetes/dashboard/v2.7.0/aio/deploy/recommended.yaml
           environment:
             KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
