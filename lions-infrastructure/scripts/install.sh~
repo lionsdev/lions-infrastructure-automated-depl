@@ -795,16 +795,7 @@ function check_ansible_version() {
 
     # Récupération de la version d'Ansible
     local ansible_version
-    local ansible_version_raw
-    ansible_version_raw=$(ansible --version | head -n1)
-    # Extraction du numéro de version, qu'il soit au format "2.13.13" ou "[core 2.15.0]"
-    if [[ "${ansible_version_raw}" =~ \[core[[:space:]]+([0-9]+\.[0-9]+\.[0-9]+) ]]; then
-        # Nouveau format: [core X.Y.Z]
-        ansible_version="${BASH_REMATCH[1]}"
-    else
-        # Ancien format: juste le numéro de version
-        ansible_version=$(echo "${ansible_version_raw}" | awk '{print $2}')
-    fi
+    ansible_version=$(ansible --version | head -n1 | awk '{print $2}')
     log "INFO" "Version d'Ansible détectée: ${ansible_version}"
 
     # Vérification de la compatibilité
