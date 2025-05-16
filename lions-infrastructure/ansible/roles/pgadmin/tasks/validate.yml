@@ -6,7 +6,7 @@
 # Version: 1.0.0
 
 - name: Récupération des informations sur les pods après initialisation
-  k8s_info:
+  kubernetes.core.k8s_info:
     api_version: v1
     kind: Pod
     namespace: "{{ app_namespace }}"
@@ -47,7 +47,7 @@
       - "pgAdmin {{ app_name }} est accessible à l'adresse externe: https://{{ ingress_url }} (si l'ingress est configuré)"
 
 - name: Vérification de la connexion à Postgres
-  k8s_exec:
+  kubernetes.core.k8s_exec:
     namespace: "{{ app_namespace }}"
     pod: "{{ pods_info_after_init.resources[0].metadata.name }}"
     command: >
@@ -62,7 +62,7 @@
   when: pods_info_after_init.resources | length > 0
 
 - name: Récupération des logs de pgAdmin
-  k8s_log:
+  kubernetes.core.k8s_log:
     namespace: "{{ app_namespace }}"
     name: "{{ pods_info_after_init.resources[0].metadata.name }}"
     container: "{{ app_name }}"
