@@ -405,12 +405,7 @@
             KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
         - name: Installation des CRDs Traefik
-          kubernetes.core.k8s:
-            state: present
-            src: https://raw.githubusercontent.com/traefik/traefik/v2.10/docs/content/reference/dynamic-configuration/kubernetes-crd-definition-v1.yml
-            remote_src: true
-            host: "https://{{ ansible_host }}:6443"
-            validate_certs: false
+          shell: kubectl apply -f https://raw.githubusercontent.com/traefik/traefik/v2.10/docs/content/reference/dynamic-configuration/kubernetes-crd-definition-v1.yml
           environment:
             KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
