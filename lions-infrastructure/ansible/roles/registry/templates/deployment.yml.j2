@@ -83,15 +83,13 @@ spec:
             cpu: "{{ registry_resources[app_environment | default('development')].limits.cpu | default('500m') }}"
             memory: "{{ registry_resources[app_environment | default('development')].limits.memory | default('512Mi') }}"
         readinessProbe:
-          httpGet:
-            path: /v2/
+          tcpSocket:
             port: http
           initialDelaySeconds: 10
           timeoutSeconds: 5
           periodSeconds: 10
         livenessProbe:
-          httpGet:
-            path: /v2/
+          tcpSocket:
             port: http
           initialDelaySeconds: 20
           timeoutSeconds: 5

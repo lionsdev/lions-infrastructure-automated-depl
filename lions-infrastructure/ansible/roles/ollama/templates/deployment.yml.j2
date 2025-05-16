@@ -59,6 +59,8 @@ spec:
               value: "{{ ollama_cors_allowed_origins }}"
             - name: OLLAMA_MODELS
               value: "/var/lib/ollama/models"
+            - name: OLLAMA_HOME
+              value: "/var/lib/ollama"
             - name: KUBERNETES_NAMESPACE
               valueFrom:
                 fieldRef:
