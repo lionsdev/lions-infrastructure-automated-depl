@@ -274,6 +274,7 @@
           kubernetes.core.k8s:
             state: present
             src: https://raw.githubusercontent.com/kubernetes/dashboard/v2.7.0/aio/deploy/recommended.yaml
+            remote_src: true
             host: "https://{{ ansible_host }}:6443"
             validate_certs: false
           environment:
@@ -412,6 +413,7 @@
           kubernetes.core.k8s:
             state: present
             src: https://raw.githubusercontent.com/traefik/traefik/v2.10/docs/content/reference/dynamic-configuration/kubernetes-crd-definition-v1.yml
+            remote_src: true
             host: "https://{{ ansible_host }}:6443"
             validate_certs: false
           environment:
