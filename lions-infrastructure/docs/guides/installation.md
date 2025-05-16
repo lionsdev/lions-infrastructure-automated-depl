@@ -125,10 +125,15 @@ Pour un environnement de production :
 ```
 
 Ce script va :
+- Vérifier et installer les collections Ansible requises
+- Vérifier et installer les plugins Helm nécessaires (comme helm-diff)
+- Initialiser le VPS et configurer les services essentiels
+- Installer et configurer K3s (avec diagnostic et réparation automatique si nécessaire)
 - Créer les namespaces nécessaires
 - Déployer les composants de base (ingress, cert-manager, etc.)
 - Configurer le stockage persistant
 - Déployer le système de surveillance (Prometheus, Grafana, etc.)
+- Déployer les services d'infrastructure (PostgreSQL, PgAdmin, Gitea, Keycloak, Ollama, etc.)
 - Configurer les politiques de sécurité
 
 ### 5. Vérification de l'installation
@@ -167,7 +172,40 @@ users:
     environments: ["development", "staging", "production"]
 ```
 
-### 7. Installation des applications de base (optionnel)
+### 7. Étapes post-installation
+
+#### 7.1 Configuration du Kubernetes Dashboard NodePort
+
+Pour accéder facilement au Kubernetes Dashboard depuis l'extérieur du cluster, vous pouvez créer un service NodePort :
+
+```bash
+./scripts/create-dashboard-nodeport.sh
+```
+
+Ce script va :
+- Vérifier l'existence du namespace kubernetes-dashboard
+- Créer un service NodePort pour le Kubernetes Dashboard sur le port 30001
+- Créer un compte de service avec les droits d'administration
+- Générer un token permanent pour l'accès au Dashboard
+
+#### 7.2 Configuration DNS
+
+Pour configurer les enregistrements DNS pour tous les services LIONS :
+
+```bash
+# Pour Cloudflare
+export CLOUDFLARE_API_TOKEN="votre_token"
+export CLOUDFLARE_ZONE_ID="votre_zone_id"
+./scripts/configure-dns.sh development cloudflare
+
+# Pour AWS Route53
+export AWS_ACCESS_KEY_ID="votre_access_key"
+export AWS_SECRET_ACCESS_KEY="votre_secret_key"
+export AWS_HOSTED_ZONE_ID="votre_zone_id"
+./scripts/configure-dns.sh development route53
+```
+
+#### 7.3 Installation des applications de base (optionnel)
 
 Déployez les applications de base (registre Docker, CI/CD, etc.) :
 

@@ -6,7 +6,7 @@
 # Version: 1.0.0
 
 - name: Vérification de l'existence du namespace
-  k8s_info:
+  kubernetes.core.k8s_info:
     api_version: v1
     kind: Namespace
     name: "{{ app_namespace | default('registry') }}"
@@ -14,7 +14,7 @@
   failed_when: namespace_info.resources | length == 0
 
 - name: Vérification des droits d'accès
-  k8s_info:
+  kubernetes.core.k8s_info:
     api_version: rbac.authorization.k8s.io/v1
     kind: Role
     name: "{{ app_name }}-role"
@@ -28,7 +28,7 @@
   when: role_info.resources | length == 0
 
 - name: Vérification de l'existence du contrôleur d'ingress (Traefik)
-  k8s_info:
+  kubernetes.core.k8s_info:
     api_version: v1
     kind: Pod
     namespace: kube-system
@@ -43,7 +43,7 @@
   when: ingress_info.resources | length == 0
 
 - name: Vérification de la classe de stockage
-  k8s_info:
+  kubernetes.core.k8s_info:
     api_version: storage.k8s.io/v1
     kind: StorageClass
     name: "{{ registry_storage_class | default('standard') }}"
@@ -56,7 +56,7 @@
   when: storage_class_info.resources | length == 0
 
 - name: Vérification des ressources disponibles sur les nœuds
-  k8s_info:
+  kubernetes.core.k8s_info:
     api_version: v1
     kind: Node
   register: nodes_info

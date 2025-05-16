@@ -783,21 +783,94 @@ function install_missing_commands() {
 }
 
 # Fonction pour vérifier et installer les collections Ansible requises
+function check_ansible_version() {
+    log "INFO" "Vérification de la version d'Ansible..."
+
+    # Vérification de l'installation d'Ansible
+    if ! command_exists ansible; then
+        log "ERROR" "La commande ansible n'est pas disponible"
+        log "ERROR" "Assurez-vous qu'Ansible est correctement installé"
+        return 1
+    fi
+
+    # Récupération de la version d'Ansible
+    local ansible_version
+    ansible_version=$(ansible --version | head -n1 | awk '{print $2}')
+    log "INFO" "Version d'Ansible détectée: ${ansible_version}"
+
+    # Vérification de la compatibilité
+    if version_greater_equal "${ansible_version}" "2.14.0"; then
+        log "SUCCESS" "Version d'Ansible compatible: ${ansible_version}"
+        return 0
+    else
+        log "WARNING" "Version d'Ansible potentiellement incompatible: ${ansible_version}"
+        log "WARNING" "Certaines collections peuvent nécessiter des versions spécifiques"
+
+        # Demander à l'utilisateur s'il souhaite continuer ou installer des versions spécifiques
+        local response
+        read -p "Souhaitez-vous installer des versions spécifiques des collections compatibles avec Ansible ${ansible_version}? (o/N): " response
+
+        if [[ "${response}" =~ ^[oO]$ ]]; then
+            log "INFO" "Installation de versions spécifiques des collections..."
+            return 2  # Code spécial pour indiquer l'installation de versions spécifiques
+        else
+            log "INFO" "Continuation avec les versions par défaut des collections"
+            return 0
+        fi
+    fi
+}
+
 function check_ansible_collections() {
     log "INFO" "Vérification des collections Ansible requises..."
 
-    # Liste des collections requises
-    local required_collections=(
-        "community.kubernetes"
-        "kubernetes.core"
-        "community.general"
-        "ansible.posix"
-        "community.docker"
-    )
+    # Vérification de la version d'Ansible
+    local ansible_version_check
+    check_ansible_version
+    ansible_version_check=$?
+
+    # Liste des collections requises avec leurs versions spécifiques pour Ansible 2.13.x
+    local required_collections=()
+    local required_versions=()
+
+    if [[ ${ansible_version_check} -eq 2 ]]; then
+        # Versions spécifiques pour Ansible 2.13.x
+        required_collections=(
+            "community.kubernetes"
+            "kubernetes.core"
+            "community.general"
+            "ansible.posix"
+            "community.docker"
+        )
+        required_versions=(
+            "2.0.1"
+            "2.3.2"
+            "5.8.0"
+            "1.4.0"
+            "latest"
+        )
+        log "INFO" "Utilisation de versions spécifiques des collections compatibles avec Ansible 2.13.x"
+    else
+        # Versions par défaut
+        required_collections=(
+            "community.kubernetes"
+            "kubernetes.core"
+            "community.general"
+            "ansible.posix"
+            "community.docker"
+        )
+        required_versions=(
+            "latest"
+            "latest"
+            "latest"
+            "latest"
+            "latest"
+        )
+    fi
 
     local missing_collections=()
+    local missing_indices=()
 
-    # Vérification de l'installation d'Ansible
+    # Vérification de l'installation d'Ansible Galaxy
     if ! command_exists ansible-galaxy; then
         log "ERROR" "La commande ansible-galaxy n'est pas disponible"
         log "ERROR" "Assurez-vous qu'Ansible est correctement installé"
@@ -805,35 +878,93 @@ function check_ansible_collections() {
     fi
 
     # Vérification des collections installées
-    for collection in "${required_collections[@]}"; do
+    for i in "${!required_collections[@]}"; do
+        local collection="${required_collections[$i]}"
         log "INFO" "Vérification de la collection: ${collection}"
 
         # Utilisation de ansible-galaxy pour vérifier si la collection est installée
         if ! ansible-galaxy collection list "${collection}" &>/dev/null; then
             log "WARNING" "Collection Ansible manquante: ${collection}"
             missing_collections+=("${collection}")
+            missing_indices+=("$i")
         else
             log "SUCCESS" "Collection Ansible trouvée: ${collection}"
+
+            # Si on utilise des versions spécifiques, vérifier si la version installée est correcte
+            if [[ ${ansible_version_check} -eq 2 && "${required_versions[$i]}" != "latest" ]]; then
+                local installed_version
+                installed_version=$(ansible-galaxy collection list "${collection}" | grep "${collection}" | awk '{print $2}')
+
+                if [[ "${installed_version}" != "${required_versions[$i]}" ]]; then
+                    log "WARNING" "Version incorrecte de la collection ${collection}: ${installed_version} (attendue: ${required_versions[$i]})"
+                    missing_collections+=("${collection}")
+                    missing_indices+=("$i")
+                fi
+            fi
         fi
     done
 
     # Installation des collections manquantes
     if [[ ${#missing_collections[@]} -gt 0 ]]; then
-        log "INFO" "Installation des collections Ansible manquantes: ${missing_collections[*]}"
+        log "INFO" "Installation des collections Ansible manquantes ou à mettre à jour: ${missing_collections[*]}"
 
-        for collection in "${missing_collections[@]}"; do
+        for i in "${!missing_collections[@]}"; do
+            local collection="${missing_collections[$i]}"
+            local index="${missing_indices[$i]}"
+            local version="${required_versions[$index]}"
+
             log "INFO" "Installation de la collection: ${collection}"
 
-            if ! ansible-galaxy collection install "${collection}" &>/dev/null; then
-                log "ERROR" "Échec de l'installation de la collection: ${collection}"
-                return 1
+            if [[ "${version}" != "latest" ]]; then
+                log "INFO" "Version spécifique: ${version}"
+                if ! ansible-galaxy collection install "${collection}:${version}" --force &>/dev/null; then
+                    log "ERROR" "Échec de l'installation de la collection: ${collection}:${version}"
+                    return 1
+                else
+                    log "SUCCESS" "Installation de la collection réussie: ${collection}:${version}"
+                fi
             else
-                log "SUCCESS" "Installation de la collection réussie: ${collection}"
+                if ! ansible-galaxy collection install "${collection}" &>/dev/null; then
+                    log "ERROR" "Échec de l'installation de la collection: ${collection}"
+                    return 1
+                else
+                    log "SUCCESS" "Installation de la collection réussie: ${collection}"
+                fi
             fi
         done
     else
-        log "INFO" "Toutes les collections Ansible requises sont déjà installées"
+        log "INFO" "Toutes les collections Ansible requises sont déjà installées avec les versions correctes"
     fi
+
+    # Configuration d'Ansible pour ignorer les avertissements de version
+    log "INFO" "Configuration d'Ansible pour ignorer les avertissements de version..."
+
+    # Vérifier si le fichier ansible.cfg existe
+    local ansible_cfg=""
+    if [ -f /etc/ansible/ansible.cfg ]; then
+        ansible_cfg="/etc/ansible/ansible.cfg"
+    elif [ -f ~/.ansible.cfg ]; then
+        ansible_cfg="~/.ansible.cfg"
+    elif [ -f ./ansible.cfg ]; then
+        ansible_cfg="./ansible.cfg"
+    else
+        log "INFO" "Aucun fichier ansible.cfg trouvé, création d'un nouveau fichier..."
+        ansible_cfg="./ansible.cfg"
+        echo "[defaults]" > "${ansible_cfg}"
+    fi
+
+    # Ajouter ou mettre à jour l'option collections_on_ansible_version_mismatch
+    if grep -q "collections_on_ansible_version_mismatch" "${ansible_cfg}"; then
+        sed -i 's/collections_on_ansible_version_mismatch.*/collections_on_ansible_version_mismatch = ignore/' "${ansible_cfg}"
+    else
+        # Trouver la section [defaults] et ajouter l'option après
+        if ! grep -q "\[defaults\]" "${ansible_cfg}"; then
+            echo "[defaults]" >> "${ansible_cfg}"
+        fi
+        sed -i '/\[defaults\]/a collections_on_ansible_version_mismatch = ignore' "${ansible_cfg}"
+    fi
+
+    log "SUCCESS" "Configuration d'Ansible mise à jour dans ${ansible_cfg}"
 
     return 0
 }
@@ -923,6 +1054,59 @@ function check_python_dependencies() {
         done
     else
         log "INFO" "Tous les modules Python requis sont déjà installés"
+    fi
+
+    return 0
+}
+
+# Fonction pour vérifier et installer les plugins Helm requis
+function check_helm_plugins() {
+    log "INFO" "Vérification des plugins Helm requis..."
+
+    # Vérification de l'installation de Helm
+    if ! command_exists helm; then
+        log "ERROR" "La commande helm n'est pas disponible"
+        log "ERROR" "Assurez-vous que Helm est correctement installé"
+        return 1
+    fi
+
+    # Vérification du plugin helm-diff
+    if ! helm plugin list | grep -q "diff"; then
+        log "WARNING" "Plugin Helm manquant: diff"
+        log "INFO" "Installation du plugin helm-diff version 3.4.1..."
+
+        if ! helm plugin install https://github.com/databus23/helm-diff --version v3.4.1 &>/dev/null; then
+            log "ERROR" "Échec de l'installation du plugin helm-diff"
+            return 1
+        else
+            log "SUCCESS" "Installation du plugin helm-diff réussie"
+        fi
+    else
+        # Vérifier la version du plugin
+        local diff_version=$(helm plugin list | grep diff | awk '{print $2}')
+        log "INFO" "Plugin helm-diff trouvé, version: ${diff_version}"
+
+        # Extraire le numéro de version sans le 'v' initial
+        diff_version=${diff_version#v}
+
+        # Vérifier si la version est inférieure à 3.4.1
+        if ! version_greater_equal "${diff_version}" "3.4.1"; then
+            log "WARNING" "Version du plugin helm-diff trop ancienne: ${diff_version} (requise: 3.4.1 ou supérieure)"
+            log "INFO" "Mise à jour du plugin helm-diff..."
+
+            # Supprimer l'ancienne version
+            helm plugin uninstall diff &>/dev/null
+
+            # Installer la nouvelle version
+            if ! helm plugin install https://github.com/databus23/helm-diff --version v3.4.1 &>/dev/null; then
+                log "ERROR" "Échec de la mise à jour du plugin helm-diff"
+                return 1
+            else
+                log "SUCCESS" "Mise à jour du plugin helm-diff réussie"
+            fi
+        else
+            log "SUCCESS" "Plugin helm-diff trouvé avec une version compatible: ${diff_version}"
+        fi
     fi
 
     return 0
@@ -2639,7 +2823,7 @@ function verifier_prerequis() {
     # Vérification des commandes requises avec versions minimales
     log "INFO" "Vérification des commandes requises..."
     local required_commands=(
-        "ansible-playbook:2.9.0"
+        "ansible-playbook:2.13.13"
         "ssh:7.0"
         "scp:7.0"
         "kubectl:1.20.0"
@@ -2745,6 +2929,15 @@ function verifier_prerequis() {
         log "ERROR" "Échec de la vérification ou de l'installation des dépendances Python requises"
         log "ERROR" "Assurez-vous que les modules Python nécessaires sont installés avant de continuer"
         log "INFO" "Vous pouvez les installer manuellement avec: pip install kubernetes openshift"
+        cleanup
+        exit 1
+    fi
+
+    # Vérification et installation des plugins Helm requis
+    if ! check_helm_plugins; then
+        log "ERROR" "Échec de la vérification ou de l'installation des plugins Helm requis"
+        log "ERROR" "Assurez-vous que le plugin helm-diff est installé avant de continuer"
+        log "INFO" "Vous pouvez l'installer manuellement avec: helm plugin install https://github.com/databus23/helm-diff --version v3.4.1"
         cleanup
         exit 1
     fi
@@ -3071,6 +3264,301 @@ function initialiser_vps() {
 }
 
 # Fonction d'installation de K3s
+function check_k3s_logs() {
+    log "INFO" "Vérification des journaux du service K3s..."
+
+    # Vérifier si on peut accéder au VPS
+    if ! ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "echo 'Connexion réussie'" &>/dev/null; then
+        log "ERROR" "Impossible de se connecter au VPS pour vérifier les journaux K3s"
+        return 1
+    fi
+
+    # Afficher les 20 dernières lignes des journaux K3s
+    local k3s_logs
+    k3s_logs=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo journalctl -u k3s -n 20 --no-pager" 2>/dev/null || echo "Impossible de récupérer les journaux")
+    log "INFO" "Dernières lignes des journaux K3s:"
+    echo "${k3s_logs}"
+
+    # Rechercher des erreurs spécifiques
+    local error_logs
+    error_logs=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo journalctl -u k3s -n 100 | grep -i 'error\|failed\|fatal'" 2>/dev/null || echo "")
+
+    if [[ -n "${error_logs}" ]]; then
+        log "WARNING" "Des erreurs ont été détectées dans les journaux K3s"
+        log "WARNING" "Voici les erreurs détectées:"
+        echo "${error_logs}"
+        return 1
+    else
+        log "SUCCESS" "Aucune erreur majeure détectée dans les journaux K3s"
+        return 0
+    fi
+}
+
+function check_k3s_system_resources() {
+    log "INFO" "Vérification des ressources système pour K3s..."
+
+    # Vérifier si on peut accéder au VPS
+    if ! ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "echo 'Connexion réussie'" &>/dev/null; then
+        log "ERROR" "Impossible de se connecter au VPS pour vérifier les ressources système"
+        return 1
+    fi
+
+    # Vérifier l'espace disque
+    local disk_usage
+    disk_usage=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "df -h / | awk 'NR==2 {print \$5}' | sed 's/%//'" 2>/dev/null || echo "Erreur")
+
+    if [[ "${disk_usage}" == "Erreur" ]]; then
+        log "ERROR" "Impossible de vérifier l'espace disque"
+    elif [[ "${disk_usage}" -gt 90 ]]; then
+        log "ERROR" "Espace disque critique: ${disk_usage}%"
+    elif [[ "${disk_usage}" -gt 80 ]]; then
+        log "WARNING" "Espace disque faible: ${disk_usage}%"
+    else
+        log "SUCCESS" "Espace disque suffisant: ${disk_usage}%"
+    fi
+
+    # Vérifier la mémoire
+    local free_mem
+    free_mem=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "free -m | awk 'NR==2 {print \$4}'" 2>/dev/null || echo "Erreur")
+
+    if [[ "${free_mem}" == "Erreur" ]]; then
+        log "ERROR" "Impossible de vérifier la mémoire disponible"
+    elif [[ "${free_mem}" -lt 512 ]]; then
+        log "ERROR" "Mémoire disponible critique: ${free_mem} MB"
+    elif [[ "${free_mem}" -lt 1024 ]]; then
+        log "WARNING" "Mémoire disponible faible: ${free_mem} MB"
+    else
+        log "SUCCESS" "Mémoire disponible suffisante: ${free_mem} MB"
+    fi
+
+    # Vérifier la charge CPU
+    local load_avg
+    load_avg=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "cat /proc/loadavg | awk '{print \$1}'" 2>/dev/null || echo "Erreur")
+
+    if [[ "${load_avg}" == "Erreur" ]]; then
+        log "ERROR" "Impossible de vérifier la charge CPU"
+    elif (( $(echo "${load_avg} > 2.0" | bc -l) )); then
+        log "WARNING" "Charge CPU élevée: ${load_avg}"
+    else
+        log "SUCCESS" "Charge CPU normale: ${load_avg}"
+    fi
+
+    return 0
+}
+
+function restart_k3s_service() {
+    log "INFO" "Redémarrage du service K3s..."
+
+    # Vérifier si on peut accéder au VPS
+    if ! ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "echo 'Connexion réussie'" &>/dev/null; then
+        log "ERROR" "Impossible de se connecter au VPS pour redémarrer K3s"
+        return 1
+    fi
+
+    # Redémarrer le service K3s
+    if ! ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl restart k3s" &>/dev/null; then
+        log "ERROR" "Échec du redémarrage du service K3s"
+        return 1
+    fi
+
+    # Attendre que le service démarre
+    log "INFO" "Attente du démarrage du service K3s..."
+    sleep 10
+
+    # Vérifier si le service est actif après le redémarrage
+    if ! ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl is-active --quiet k3s" &>/dev/null; then
+        log "ERROR" "Le service K3s n'est pas actif après le redémarrage"
+        return 1
+    else
+        log "SUCCESS" "Le service K3s a été redémarré avec succès"
+        return 0
+    fi
+}
+
+function repair_k3s() {
+    log "INFO" "Tentative de réparation de l'installation K3s..."
+
+    # Vérifier si on peut accéder au VPS
+    if ! ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "echo 'Connexion réussie'" &>/dev/null; then
+        log "ERROR" "Impossible de se connecter au VPS pour réparer K3s"
+        return 1
+    fi
+
+    # Vérifier les fichiers de configuration
+    local config_exists
+    config_exists=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "test -f /etc/rancher/k3s/k3s.yaml && echo 'true' || echo 'false'" 2>/dev/null)
+
+    if [[ "${config_exists}" == "false" ]]; then
+        log "ERROR" "Fichier de configuration K3s manquant"
+    fi
+
+    # Vérifier les permissions des répertoires
+    log "INFO" "Vérification et correction des permissions des répertoires K3s..."
+    ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo chmod 755 /var/lib/rancher/k3s 2>/dev/null || true" &>/dev/null
+    ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo chmod 600 /etc/rancher/k3s/k3s.yaml 2>/dev/null || true" &>/dev/null
+
+    # Vérifier et corriger les problèmes de réseau
+    log "INFO" "Vérification de la configuration réseau..."
+    local cni_exists
+    cni_exists=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "ip addr show | grep -q 'cni0' && echo 'true' || echo 'false'" 2>/dev/null)
+
+    if [[ "${cni_exists}" == "false" ]]; then
+        log "WARNING" "Interface CNI non détectée"
+    fi
+
+    # Redémarrer le service après les réparations
+    restart_k3s_service
+    return $?
+}
+
+function reinstall_k3s() {
+    log "WARNING" "La réinstallation de K3s est une opération destructive"
+    log "WARNING" "Toutes les données Kubernetes seront perdues"
+    log "WARNING" "Assurez-vous d'avoir des sauvegardes avant de continuer"
+
+    # Demander confirmation
+    local confirm
+    read -p "Êtes-vous sûr de vouloir réinstaller K3s? (oui/NON): " confirm
+    if [[ "${confirm}" != "oui" ]]; then
+        log "INFO" "Réinstallation annulée"
+        return 1
+    fi
+
+    # Vérifier si on peut accéder au VPS
+    if ! ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "echo 'Connexion réussie'" &>/dev/null; then
+        log "ERROR" "Impossible de se connecter au VPS pour réinstaller K3s"
+        return 1
+    fi
+
+    log "INFO" "Désinstallation de K3s..."
+    if ! ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo /usr/local/bin/k3s-uninstall.sh" &>/dev/null; then
+        log "ERROR" "Échec de la désinstallation de K3s"
+        return 1
+    fi
+
+    log "INFO" "Réinstallation de K3s..."
+    # Utiliser le playbook Ansible pour réinstaller K3s
+    local inventory_path="${ANSIBLE_DIR}/${inventory_file}"
+    local playbook_path="${ANSIBLE_DIR}/playbooks/install-k3s.yml"
+
+    # Vérification que les fichiers existent
+    if [[ ! -f "${inventory_path}" ]]; then
+        log "ERROR" "Fichier d'inventaire non trouvé: ${inventory_path}"
+        return 1
+    fi
+
+    if [[ ! -f "${playbook_path}" ]]; then
+        log "ERROR" "Fichier de playbook non trouvé: ${playbook_path}"
+        return 1
+    fi
+
+    local ansible_cmd="ansible-playbook -i \"${inventory_path}\" \"${playbook_path}\" --ask-become-pass"
+
+    if [[ "${debug_mode}" == "true" ]]; then
+        ansible_cmd="${ansible_cmd} -vvv"
+    fi
+
+    log "INFO" "Exécution de la commande: ${ansible_cmd}"
+    LAST_COMMAND="${ansible_cmd}"
+
+    # Exécution de la commande avec timeout
+    if ! run_with_timeout "${ansible_cmd}" 3600 "ansible_playbook"; then
+        log "ERROR" "Échec de la réinstallation de K3s"
+        return 1
+    fi
+
+    # Vérifier si le service est actif après la réinstallation
+    if ! ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl is-active --quiet k3s" &>/dev/null; then
+        log "ERROR" "Le service K3s n'est pas actif après la réinstallation"
+        return 1
+    else
+        log "SUCCESS" "K3s a été réinstallé avec succès"
+
+        # Configuration de kubectl pour l'utilisateur courant
+        log "INFO" "Configuration de kubectl pour l'utilisateur courant..."
+        mkdir -p "${HOME}/.kube"
+
+        if ! scp -P "${ansible_port}" "${ansible_user}@${ansible_host}:/etc/rancher/k3s/k3s.yaml" "${HOME}/.kube/config" &>/dev/null; then
+            log "WARNING" "Impossible de récupérer le fichier kubeconfig"
+            log "WARNING" "Vous devrez configurer kubectl manuellement"
+        else
+            # Remplacer localhost par l'adresse IP du VPS
+            sed -i "s/127.0.0.1/${ansible_host}/g" "${HOME}/.kube/config"
+            log "SUCCESS" "kubectl configuré avec succès"
+        fi
+
+        return 0
+    fi
+}
+
+function check_fix_k3s() {
+    log "INFO" "Vérification et réparation du service K3s..."
+
+    # Vérifier si on peut accéder au VPS
+    if ! ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "echo 'Connexion réussie'" &>/dev/null; then
+        log "ERROR" "Impossible de se connecter au VPS pour vérifier K3s"
+        return 1
+    fi
+
+    # Vérifier l'état du service K3s
+    local k3s_active
+    k3s_active=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl is-active k3s" 2>/dev/null || echo "unknown")
+
+    if [[ "${k3s_active}" == "active" ]]; then
+        log "SUCCESS" "Le service K3s est actif et en cours d'exécution"
+        return 0
+    else
+        log "WARNING" "Le service K3s n'est pas actif (état: ${k3s_active})"
+
+        # Vérifier les journaux et les ressources
+        check_k3s_logs
+        check_k3s_system_resources
+
+        # Demander à l'utilisateur quelle action entreprendre
+        log "INFO" "Que souhaitez-vous faire?"
+        echo "1. Redémarrer le service K3s"
+        echo "2. Tenter de réparer l'installation K3s"
+        echo "3. Réinstaller K3s (destructif)"
+        echo "4. Quitter sans action"
+
+        local choice
+        read -p "Votre choix (1-4): " choice
+
+        case $choice in
+            1)
+                restart_k3s_service
+                ;;
+            2)
+                repair_k3s
+                ;;
+            3)
+                reinstall_k3s
+                ;;
+            4)
+                log "INFO" "Aucune action entreprise"
+                return 1
+                ;;
+            *)
+                log "ERROR" "Choix invalide"
+                return 1
+                ;;
+        esac
+
+        # Vérification finale
+        k3s_active=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl is-active k3s" 2>/dev/null || echo "unknown")
+
+        if [[ "${k3s_active}" == "active" ]]; then
+            log "SUCCESS" "Le service K3s est maintenant actif et en cours d'exécution"
+            return 0
+        else
+            log "ERROR" "Le service K3s présente toujours des problèmes (état: ${k3s_active})"
+            log "WARNING" "Consultez les journaux système pour plus d'informations"
+            log "WARNING" "Vous pouvez également essayer une réinstallation complète"
+            return 1
+        fi
+    fi
+}
+
 function installer_k3s() {
     log "INFO" "Installation de K3s..."
     INSTALLATION_STEP="install_k3s"
@@ -3480,9 +3968,12 @@ function deployer_infrastructure_base() {
                 --namespace kube-system \
                 --set ports.web.port=80 \
                 --set ports.websecure.port=443 \
-                --set service.type=NodePort \
-                --set ports.web.nodePort=30080 \
-                --set ports.websecure.nodePort=30443
+                --set service.type=LoadBalancer \
+                --set ports.web.expose=true \
+                --set ports.websecure.expose=true \
+                --set hostNetwork=true \
+                --set ingressClass.enabled=true \
+                --set ingressClass.isDefaultClass=true
         fi
 
         # Attente que Traefik soit prêt après l'installation manuelle
@@ -4513,9 +5004,27 @@ fi
 # Installation de K3s
 if ! installer_k3s; then
     log "ERROR" "Échec de l'installation de K3s"
-    log "INFO" "Vérifiez les logs pour plus d'informations"
-    cleanup
-    exit 1
+    log "INFO" "Tentative de diagnostic et réparation automatique..."
+
+    # Demander à l'utilisateur s'il souhaite tenter une réparation automatique
+    local repair_response
+    read -p "Souhaitez-vous tenter une réparation automatique de K3s? (o/N): " repair_response
+
+    if [[ "${repair_response}" =~ ^[oO]$ ]]; then
+        if check_fix_k3s; then
+            log "SUCCESS" "K3s a été réparé avec succès"
+        else
+            log "ERROR" "Impossible de réparer K3s automatiquement"
+            log "INFO" "Vérifiez les logs pour plus d'informations"
+            cleanup
+            exit 1
+        fi
+    else
+        log "INFO" "Réparation automatique ignorée"
+        log "INFO" "Vérifiez les logs pour plus d'informations"
+        cleanup
+        exit 1
+    fi
 fi
 
 # Sauvegarde de l'état après installation de K3s (optionnelle)

@@ -28,7 +28,7 @@
       debug:
         msg: 
           - "Environnement: {{ deploy_environment }}"
-          - "Services à déployer: Registry, PostgreSQL, PgAdmin, Gitea, Keycloak"
+          - "Services à déployer: Registry, PostgreSQL, PgAdmin, Gitea, Keycloak, Ollama"
 
     # Registry
     - name: Déploiement de la Registry Docker
@@ -97,6 +97,18 @@
         app_replicas: 1
         postgres_host: "postgres.postgres-{{ deploy_environment }}.svc.cluster.local"
         postgres_port: 5432
+
+    # Ollama
+    - name: Déploiement d'Ollama
+      include_role:
+        name: "{{ roles_path }}/ollama"
+      vars:
+        app_name: ollama
+        app_namespace: "ollama-{{ deploy_environment }}"
+        app_environment: "{{ deploy_environment }}"
+        app_domain: "ollama.{{ deploy_environment }}.lions.dev"
+        app_version: "latest"
+        app_replicas: 1
 
     - name: Vérification du déploiement des services
       debug:

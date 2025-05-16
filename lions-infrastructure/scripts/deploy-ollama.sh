@@ -182,6 +182,7 @@ spec:
       serviceAccountName: ollama
       securityContext:
         runAsNonRoot: false
+        runAsUser: 0
         fsGroup: 1000
       containers:
         - name: ollama
@@ -230,7 +231,10 @@ spec:
             timeoutSeconds: 15
           volumeMounts:
             - name: data-volume
-              mountPath: /root/.ollama
+              mountPath: /var/lib/ollama
+          env:
+            - name: OLLAMA_MODELS
+              value: "/var/lib/ollama/models"
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
