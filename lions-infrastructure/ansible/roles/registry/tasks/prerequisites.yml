@@ -12,6 +12,7 @@
     name: "{{ app_namespace | default('registry') }}"
   register: namespace_info
   failed_when: false
+  ignore_errors: true
 
 - name: Création du namespace si nécessaire
   kubernetes.core.k8s:

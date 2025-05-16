@@ -113,13 +113,13 @@ spec:
         secret:
           secretName: "{{ registry_auth_secret | default('registry-auth') }}"
           items:
-          - key: htpasswd
-            path: htpasswd
-      {% if registry_persistent_storage | default(true) | bool %}
+            - key: htpasswd
+              path: htpasswd
+{% if registry_persistent_storage | default(true) | bool %}
       - name: registry-data
         persistentVolumeClaim:
           claimName: "{{ app_name | default('registry') }}-data"
-      {% else %}
+{% else %}
       - name: registry-data
         emptyDir: {}
-      {% endif %}
+{% endif %}

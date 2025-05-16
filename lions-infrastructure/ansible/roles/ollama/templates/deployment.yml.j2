@@ -58,7 +58,7 @@ spec:
             - name: OLLAMA_ORIGINS
               value: "{{ ollama_cors_allowed_origins }}"
             - name: OLLAMA_MODELS
-              value: "/root/.ollama/models"
+              value: "/var/lib/ollama/models"
             - name: KUBERNETES_NAMESPACE
               valueFrom:
                 fieldRef:
@@ -89,7 +89,7 @@ spec:
               readOnly: true
             {% if ollama_persistent_storage | bool %}
             - name: data-volume
-              mountPath: /root/.ollama
+              mountPath: /var/lib/ollama
             {% endif %}
           securityContext:
             allowPrivilegeEscalation: false
