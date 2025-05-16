@@ -248,8 +248,8 @@
             release_namespace: cert-manager
             create_namespace: true
             wait: true
-            set_values:
-              - value: installCRDs=true
+            values:
+              installCRDs: true
           environment:
             KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
