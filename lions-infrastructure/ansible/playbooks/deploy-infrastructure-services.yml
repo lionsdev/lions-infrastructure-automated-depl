@@ -42,7 +42,7 @@
         app_version: "latest"
         app_replicas: "{{ registry_replicas[deploy_environment] | default(1) }}"
         registry_persistent_storage: true
-        registry_storage_size: "{{ registry_storage_size | default('10Gi') }}"
+        registry_storage_size: "10Gi"
 
     # PostgreSQL
     - name: Déploiement de PostgreSQL
