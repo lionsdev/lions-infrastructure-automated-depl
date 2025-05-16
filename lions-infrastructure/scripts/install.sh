@@ -3413,6 +3413,8 @@ function deployer_infrastructure_base() {
     fi
 
     # Vérification et attente de Traefik
+    # Note: Traefik peut être déployé de différentes manières (K3s, Helm, etc.) avec différentes étiquettes
+    # Cette vérification prend en charge plusieurs méthodes de détection
     log "INFO" "Vérification de Traefik..."
     local max_traefik_attempts=30
     local traefik_attempt=0
@@ -3422,11 +3424,27 @@ function deployer_infrastructure_base() {
         traefik_attempt=$((traefik_attempt + 1))
         log "INFO" "Tentative ${traefik_attempt}/${max_traefik_attempts} de vérification de Traefik..."
 
+        # Vérification avec le label app=traefik (méthode standard)
         if kubectl get pods -n kube-system -l app=traefik -o jsonpath='{.items[*].status.phase}' 2>/dev/null | grep -q "Running"; then
-            log "SUCCESS" "Traefik est en cours d'exécution"
+            log "SUCCESS" "Traefik est en cours d'exécution (label app=traefik)"
 
             # Vérification que Traefik est prêt
             if kubectl get pods -n kube-system -l app=traefik -o jsonpath='{.items[*].status.containerStatuses[0].ready}' 2>/dev/null | grep -q "true"; then
+                log "SUCCESS" "Traefik est prêt"
+                traefik_ready=true
+            else
+                log "INFO" "Traefik est en cours d'exécution mais n'est pas encore prêt, attente de 10 secondes..."
+                sleep 10
+            fi
+        # Vérification alternative avec le nom du pod commençant par "traefik-"
+        elif kubectl get pods -n kube-system -o name 2>/dev/null | grep -q "pod/traefik-"; then
+            log "SUCCESS" "Traefik est en cours d'exécution (pod commençant par traefik-)"
+
+            # Récupération du nom du pod Traefik
+            local traefik_pod_name=$(kubectl get pods -n kube-system -o name 2>/dev/null | grep "pod/traefik-" | head -n 1 | sed 's|pod/||')
+
+            # Vérification que Traefik est prêt
+            if kubectl get pod -n kube-system "${traefik_pod_name}" -o jsonpath='{.status.containerStatuses[0].ready}' 2>/dev/null | grep -q "true"; then
                 log "SUCCESS" "Traefik est prêt"
                 traefik_ready=true
             else
@@ -3468,6 +3486,8 @@ function deployer_infrastructure_base() {
         fi
 
         # Attente que Traefik soit prêt après l'installation manuelle
+        # Note: Traefik peut être déployé de différentes manières (K3s, Helm, etc.) avec différentes étiquettes
+        # Cette vérification prend en charge plusieurs méthodes de détection
         log "INFO" "Attente que Traefik soit prêt après l'installation manuelle..."
         local manual_max_attempts=15
         local manual_attempt=0
@@ -3477,11 +3497,27 @@ function deployer_infrastructure_base() {
             manual_attempt=$((manual_attempt + 1))
             log "INFO" "Tentative ${manual_attempt}/${manual_max_attempts} de vérification de Traefik après installation manuelle..."
 
+            # Vérification avec le label app=traefik (méthode standard)
             if kubectl get pods -n kube-system -l app=traefik -o jsonpath='{.items[*].status.phase}' 2>/dev/null | grep -q "Running"; then
-                log "SUCCESS" "Traefik est en cours d'exécution après installation manuelle"
+                log "SUCCESS" "Traefik est en cours d'exécution après installation manuelle (label app=traefik)"
 
                 # Vérification que Traefik est prêt
                 if kubectl get pods -n kube-system -l app=traefik -o jsonpath='{.items[*].status.containerStatuses[0].ready}' 2>/dev/null | grep -q "true"; then
+                    log "SUCCESS" "Traefik est prêt après installation manuelle"
+                    manual_traefik_ready=true
+                else
+                    log "INFO" "Traefik est en cours d'exécution mais n'est pas encore prêt, attente de 10 secondes..."
+                    sleep 10
+                fi
+            # Vérification alternative avec le nom du pod commençant par "traefik-"
+            elif kubectl get pods -n kube-system -o name 2>/dev/null | grep -q "pod/traefik-"; then
+                log "SUCCESS" "Traefik est en cours d'exécution après installation manuelle (pod commençant par traefik-)"
+
+                # Récupération du nom du pod Traefik
+                local traefik_pod_name=$(kubectl get pods -n kube-system -o name 2>/dev/null | grep "pod/traefik-" | head -n 1 | sed 's|pod/||')
+
+                # Vérification que Traefik est prêt
+                if kubectl get pod -n kube-system "${traefik_pod_name}" -o jsonpath='{.status.containerStatuses[0].ready}' 2>/dev/null | grep -q "true"; then
                     log "SUCCESS" "Traefik est prêt après installation manuelle"
                     manual_traefik_ready=true
                 else
@@ -3866,14 +3902,36 @@ function verifier_installation() {
     fi
 
     # Vérification de Traefik
+    # Note: Traefik peut être déployé de différentes manières (K3s, Helm, etc.) avec différentes étiquettes
+    # Cette vérification prend en charge plusieurs méthodes de détection
     log "INFO" "Vérification de Traefik..."
-    local traefik_pods=$(kubectl get pods -n kube-system -l app=traefik -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)
+    local traefik_pods=""
+
+    # Vérification avec le label app=traefik (méthode standard)
+    traefik_pods=$(kubectl get pods -n kube-system -l app=traefik -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)
+
+    # Si aucun pod n'est trouvé avec le label app=traefik, essayer de trouver des pods commençant par "traefik-"
+    if [[ -z "${traefik_pods}" ]]; then
+        traefik_pods=$(kubectl get pods -n kube-system -o name 2>/dev/null | grep "pod/traefik-" | sed 's|pod/||')
+    fi
 
     if [[ -n "${traefik_pods}" ]]; then
         log "SUCCESS" "Traefik est installé et en cours d'exécution"
 
         # Vérification des services Traefik
-        local traefik_service=$(kubectl get service -n kube-system traefik -o jsonpath='{.spec.ports[?(@.name=="web")].nodePort}' 2>/dev/null)
+        local traefik_service=""
+
+        # Essayer d'abord avec le service nommé "traefik"
+        traefik_service=$(kubectl get service -n kube-system traefik -o jsonpath='{.spec.ports[?(@.name=="web")].nodePort}' 2>/dev/null)
+
+        # Si aucun service n'est trouvé, essayer de trouver un service contenant "traefik" dans son nom
+        if [[ -z "${traefik_service}" ]]; then
+            local traefik_service_name=$(kubectl get services -n kube-system -o name 2>/dev/null | grep "service/traefik" | head -n 1 | sed 's|service/||')
+            if [[ -n "${traefik_service_name}" ]]; then
+                traefik_service=$(kubectl get service -n kube-system "${traefik_service_name}" -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null)
+            fi
+        fi
+
         if [[ -n "${traefik_service}" ]]; then
             log "INFO" "Traefik est exposé sur le port ${traefik_service}"
 
