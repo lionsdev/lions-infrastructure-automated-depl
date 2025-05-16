@@ -19,7 +19,7 @@
   loop:
     - { src: "deployment.yml.j2", dest: "deployment.yml" }
     - { src: "service.yml.j2", dest: "service.yml" }
-    - { src: "ingress.yml.j2", dest: "ingress.yml" }
+    - { src: "ingress-traefik.yml.j2", dest: "ingress.yml" }
     - { src: "configmap.yml.j2", dest: "configmap.yml" }
     - { src: "serviceaccount.yml.j2", dest: "serviceaccount.yml" }
     - { src: "servicemonitor.yml.j2", dest: "servicemonitor.yml" }

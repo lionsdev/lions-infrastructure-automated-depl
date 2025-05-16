@@ -1,0 +1,15 @@
+---
+# Titre: Namespace pour Flux CD
+# Description: Définit le namespace pour Flux CD
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-16
+# Version: 1.0.0
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: flux-system
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

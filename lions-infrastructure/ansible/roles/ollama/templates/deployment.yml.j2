@@ -42,8 +42,7 @@ spec:
     spec:
       serviceAccountName: "{{ app_name }}"
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
+        runAsNonRoot: false
         fsGroup: 1000
       containers:
         - name: "{{ app_name }}"

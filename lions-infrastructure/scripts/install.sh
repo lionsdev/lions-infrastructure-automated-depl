@@ -3441,8 +3441,67 @@ function deployer_infrastructure_base() {
 
     if [[ "${traefik_ready}" == "false" ]]; then
         log "WARNING" "Traefik n'est pas prêt après ${max_traefik_attempts} tentatives"
-        log "WARNING" "Les services qui dépendent de Traefik pourraient ne pas être accessibles"
-        log "WARNING" "Vérifiez l'installation de K3s et les logs"
+        log "INFO" "Tentative de déploiement manuel de Traefik..."
+
+        # Vérification si Traefik est déjà installé mais pas en cours d'exécution
+        if kubectl get deployment -n kube-system traefik &>/dev/null; then
+            log "INFO" "Traefik est déjà installé mais n'est pas en cours d'exécution"
+            log "INFO" "Tentative de redémarrage de Traefik..."
+            kubectl rollout restart deployment traefik -n kube-system
+        else
+            log "INFO" "Traefik n'est pas installé, tentative d'installation via Helm..."
+
+            # Ajout du dépôt Helm de Traefik
+            if ! helm repo list | grep -q "traefik"; then
+                helm repo add traefik https://helm.traefik.io/traefik
+                helm repo update
+            fi
+
+            # Installation de Traefik via Helm
+            helm upgrade --install traefik traefik/traefik \
+                --namespace kube-system \
+                --set ports.web.port=80 \
+                --set ports.websecure.port=443 \
+                --set service.type=NodePort \
+                --set ports.web.nodePort=30080 \
+                --set ports.websecure.nodePort=30443
+        fi
+
+        # Attente que Traefik soit prêt après l'installation manuelle
+        log "INFO" "Attente que Traefik soit prêt après l'installation manuelle..."
+        local manual_max_attempts=15
+        local manual_attempt=0
+        local manual_traefik_ready=false
+
+        while [[ "${manual_traefik_ready}" == "false" && ${manual_attempt} -lt ${manual_max_attempts} ]]; do
+            manual_attempt=$((manual_attempt + 1))
+            log "INFO" "Tentative ${manual_attempt}/${manual_max_attempts} de vérification de Traefik après installation manuelle..."
+
+            if kubectl get pods -n kube-system -l app=traefik -o jsonpath='{.items[*].status.phase}' 2>/dev/null | grep -q "Running"; then
+                log "SUCCESS" "Traefik est en cours d'exécution après installation manuelle"
+
+                # Vérification que Traefik est prêt
+                if kubectl get pods -n kube-system -l app=traefik -o jsonpath='{.items[*].status.containerStatuses[0].ready}' 2>/dev/null | grep -q "true"; then
+                    log "SUCCESS" "Traefik est prêt après installation manuelle"
+                    manual_traefik_ready=true
+                else
+                    log "INFO" "Traefik est en cours d'exécution mais n'est pas encore prêt, attente de 10 secondes..."
+                    sleep 10
+                fi
+            else
+                log "INFO" "Traefik n'est pas encore en cours d'exécution après installation manuelle, attente de 10 secondes..."
+                sleep 10
+            fi
+        done
+
+        if [[ "${manual_traefik_ready}" == "false" ]]; then
+            log "WARNING" "Traefik n'est pas prêt même après installation manuelle"
+            log "WARNING" "Les services qui dépendent de Traefik pourraient ne pas être accessibles"
+            log "WARNING" "Vérifiez l'installation de K3s et les logs"
+        else
+            log "SUCCESS" "Traefik a été installé manuellement avec succès"
+            traefik_ready=true
+        fi
     fi
 
     log "SUCCESS" "Déploiement de l'infrastructure de base terminé avec succès"
@@ -4475,6 +4534,66 @@ else
     # Exécution directe de la commande avec eval
     if eval "${ansible_cmd}"; then
         log "SUCCESS" "Déploiement des services d'infrastructure terminé avec succès"
+
+        # Attente que les pods soient prêts
+        log "INFO" "Vérification de l'état des pods après déploiement..."
+
+        # Liste des namespaces à vérifier
+        local namespaces_to_check=(
+            "postgres-${environment}"
+            "pgadmin-${environment}"
+            "gitea-${environment}"
+            "keycloak-${environment}"
+            "ollama-${environment}"
+        )
+
+        for ns in "${namespaces_to_check[@]}"; do
+            if kubectl get namespace "${ns}" &>/dev/null; then
+                log "INFO" "Attente que les pods dans le namespace ${ns} soient prêts..."
+                local timeout=300  # 5 minutes
+                local start_time
+                start_time=$(date +%s)
+                local all_pods_ready=false
+
+                while [[ "${all_pods_ready}" == "false" ]]; do
+                    local current_time
+                    current_time=$(date +%s)
+                    local elapsed_time
+                    elapsed_time=$((current_time - start_time))
+
+                    if [[ ${elapsed_time} -gt ${timeout} ]]; then
+                        log "WARNING" "Timeout atteint en attendant que les pods dans ${ns} soient prêts"
+                        break
+                    fi
+
+                    local not_ready_pods=$(kubectl get pods -n "${ns}" --field-selector status.phase!=Running,status.phase!=Succeeded -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)
+                    if [[ -z "${not_ready_pods}" ]]; then
+                        all_pods_ready=true
+                        log "SUCCESS" "Tous les pods dans ${ns} sont prêts"
+                    else
+                        log "INFO" "En attente que les pods suivants dans ${ns} soient prêts: ${not_ready_pods}"
+                        sleep 10
+                    fi
+                done
+            else
+                log "INFO" "Namespace ${ns} non trouvé, ignoré"
+            fi
+        done
+
+        # Vérification des services
+        log "INFO" "Vérification des services déployés..."
+        for ns in "${namespaces_to_check[@]}"; do
+            if kubectl get namespace "${ns}" &>/dev/null; then
+                local services=$(kubectl get services -n "${ns}" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)
+                if [[ -n "${services}" ]]; then
+                    log "INFO" "Services dans ${ns}: ${services}"
+                else
+                    log "WARNING" "Aucun service trouvé dans ${ns}"
+                fi
+            fi
+        done
+
+        log "SUCCESS" "Vérification des services terminée"
     else
         log "WARNING" "Échec du déploiement des services d'infrastructure"
         log "WARNING" "Vous pouvez les déployer manuellement plus tard avec la commande:"

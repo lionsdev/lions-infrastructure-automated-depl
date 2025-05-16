@@ -2,9 +2,12 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
+  - autoscaling
   - cert-manager
+  - logging
   - namespaces
   - network-policies
+  - pod-security
   - rbac
   - resource-quotas
   - storage-classes

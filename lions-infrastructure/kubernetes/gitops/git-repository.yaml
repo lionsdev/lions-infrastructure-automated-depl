@@ -1,0 +1,31 @@
+---
+# Titre: Configuration du dépôt Git pour Flux CD
+# Description: Définit le dépôt Git que Flux CD surveillera pour les changements
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-16
+# Version: 1.0.0
+
+apiVersion: source.toolkit.fluxcd.io/v1beta2
+kind: GitRepository
+metadata:
+  name: lions-infrastructure
+  namespace: flux-system
+spec:
+  interval: 1m
+  url: https://git.lions.dev/lions/lions-infrastructure.git
+  ref:
+    branch: main
+  secretRef:
+    name: git-credentials
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: git-credentials
+  namespace: flux-system
+type: Opaque
+stringData:
+  username: flux
+  password: ${FLUX_GIT_PASSWORD}
+  # Note: Dans un environnement de production, utilisez un secret géré par un système comme Vault
+  # ou créez le secret manuellement avec kubectl create secret

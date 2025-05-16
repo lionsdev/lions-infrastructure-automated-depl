@@ -181,8 +181,7 @@ spec:
     spec:
       serviceAccountName: ollama
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
+        runAsNonRoot: false
         fsGroup: 1000
       containers:
         - name: ollama

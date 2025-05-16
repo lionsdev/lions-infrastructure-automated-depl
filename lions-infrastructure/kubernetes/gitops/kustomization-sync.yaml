@@ -1,0 +1,54 @@
+---
+# Titre: Configuration de la synchronisation Kustomize pour Flux CD
+# Description: Définit comment Flux CD synchronisera le dépôt Git avec le cluster
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-16
+# Version: 1.0.0
+
+apiVersion: kustomize.toolkit.fluxcd.io/v1beta2
+kind: Kustomization
+metadata:
+  name: infrastructure
+  namespace: flux-system
+spec:
+  interval: 10m
+  path: ./lions-infrastructure/kubernetes/overlays/development
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: lions-infrastructure
+  validation: client
+  healthChecks:
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: prometheus-grafana
+      namespace: monitoring
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: kubernetes-dashboard
+      namespace: kubernetes-dashboard
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1beta2
+kind: Kustomization
+metadata:
+  name: applications
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: infrastructure
+  interval: 10m
+  path: ./lions-infrastructure/applications
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: lions-infrastructure
+  validation: client
+  healthChecks:
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: postgres
+      namespace: postgres-development
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: keycloak
+      namespace: keycloak-development

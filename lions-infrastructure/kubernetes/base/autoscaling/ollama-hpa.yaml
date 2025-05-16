@@ -1,0 +1,49 @@
+---
+# Titre: Configuration d'autoscaling pour Ollama
+# Description: Définit les règles d'autoscaling horizontal pour le service Ollama (ML)
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-16
+# Version: 1.0.0
+
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ollama-hpa
+  namespace: ollama-development
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ollama
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 80
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 85
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 600
+      policies:
+        - type: Percent
+          value: 10
+          periodSeconds: 120
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 30
+        - type: Pods
+          value: 1
+          periodSeconds: 30
+      selectPolicy: Max

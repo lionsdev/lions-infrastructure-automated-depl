@@ -4,3 +4,4 @@ kind: Kustomization
 resources:
   - default-network-policies.yaml
   - default-network-policy.yaml
+  - enhanced-network-policies.yaml
