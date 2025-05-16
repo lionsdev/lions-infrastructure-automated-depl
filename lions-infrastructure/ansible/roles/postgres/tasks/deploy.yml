@@ -128,12 +128,12 @@
 - name: Affichage du statut de la réplication
   debug:
     msg: "Statut de la réplication PostgreSQL: {{ replication_check.stdout }}"
-  when: replication_check is succeeded
+  when: replication_check is defined and replication_check.stdout is defined
 
 - name: Avertissement si la réplication n'est pas configurée correctement
   debug:
     msg: "AVERTISSEMENT: La réplication PostgreSQL n'est pas configurée correctement. Vérifiez les logs pour plus d'informations."
-  when: postgres_ha_enabled | bool and pods_info_after_init.resources | length > 1 and replication_check is failed
+  when: postgres_ha_enabled | bool and pods_info_after_init.resources | length > 1 and replication_check is defined and replication_check is failed
 
 - name: Création des bases de données requises pour les applications
   shell: "kubectl exec -n {{ app_namespace }} {{ pods_info_after_init.resources[0].metadata.name }} -- psql -U {{ postgres_admin_user }} -c \"SELECT 'CREATE DATABASE {{ item }}' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '{{ item }}')\\gexec\""
