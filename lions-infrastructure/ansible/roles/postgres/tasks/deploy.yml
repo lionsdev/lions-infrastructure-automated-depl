@@ -159,7 +159,7 @@
 
 - name: Affichage du résultat de la création des bases de données
   debug:
-    msg: "Création de la base de données {{ item.item.item }}: {{ 'Succès' if item.rc == 0 else 'Échec ou déjà existante' }}"
+    msg: "Création de la base de données {{ item.item.item }}: {{ 'Succès' if item.rc is defined and item.rc == 0 else 'Échec ou déjà existante' }}"
   loop: "{{ create_db_result.results }}"
   when: create_db_result is succeeded
   loop_control:

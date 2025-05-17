@@ -14,26 +14,46 @@
       - app={{ app_name | default('registry') }}
   register: pods_info_after_init
 
+- name: Vérification que les pods de la registry sont en cours d'exécution
+  debug:
+    msg: "{{ pods_info_after_init.resources | length }} pod(s) de la registry trouvé(s). État du premier pod: {{ pods_info_after_init.resources[0].status.phase | default('Inconnu') }}"
+  when: pods_info_after_init.resources | length > 0
+
+- name: Avertissement si aucun pod de la registry n'est trouvé
+  debug:
+    msg: "AVERTISSEMENT: Aucun pod de la registry n'a été trouvé. Le déploiement a peut-être échoué."
+  when: pods_info_after_init.resources | length == 0
+
 - name: Attente que la registry soit prête
   uri:
     url: "http://{{ app_name | default('registry') }}.{{ app_namespace | default('registry') }}.svc.cluster.local:{{ registry_default_port | default(5000) }}{{ registry_health_path | default('/v2/') }}"
+    method: GET
     status_code: 200
     validate_certs: no
   register: health_check
   until: health_check.status == 200
   retries: 30
   delay: 10
-  failed_when: false
+  ignore_errors: yes
+  when: pods_info_after_init.resources | length > 0
 
 - name: Vérification de l'état de santé de la registry
   debug:
     msg: "La registry {{ app_name | default('registry') }} est en bonne santé et prête à recevoir des requêtes."
-  when: health_check.status is defined and health_check.status == 200
+  when: health_check is defined and health_check is succeeded
 
 - name: Avertissement si la registry n'est pas en bonne santé
   debug:
     msg: "AVERTISSEMENT: La registry {{ app_name | default('registry') }} n'est pas en bonne santé. Vérifiez les logs pour plus d'informations."
-  when: health_check.status is not defined or health_check.status != 200
+  when: health_check is defined and health_check is failed
+
+- name: Affichage des détails de l'erreur de la registry
+  debug:
+    msg: 
+      - "Détails de l'erreur:"
+      - "Status: {{ health_check.status | default('Non disponible') }}"
+      - "Message: {{ health_check.msg | default('Non disponible') }}"
+  when: health_check is defined and health_check is failed
 
 - name: Affichage de l'URL d'accès
   set_fact:
@@ -77,4 +97,9 @@
 - name: Résumé du déploiement
   debug:
     msg: "Le déploiement de la registry {{ app_name | default('registry') }} en version {{ app_version | default('latest') }} est terminé avec succès."
-  when: health_check.status is defined and health_check.status == 200
+  when: health_check is defined and health_check is succeeded
+
+- name: Résumé du déploiement (échec)
+  debug:
+    msg: "Le déploiement de la registry {{ app_name | default('registry') }} en version {{ app_version | default('latest') }} a échoué. Veuillez vérifier les logs et la configuration."
+  when: pods_info_after_init.resources | length == 0 or (health_check is defined and health_check is failed)
