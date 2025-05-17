@@ -135,22 +135,32 @@
     msg: "AVERTISSEMENT: La réplication PostgreSQL n'est pas configurée correctement. Vérifiez les logs pour plus d'informations."
   when: postgres_ha_enabled | bool and pods_info_after_init.resources | length > 1 and replication_check is defined and replication_check is failed
 
-- name: Création des bases de données requises pour les applications
-  shell: "kubectl exec -n {{ app_namespace }} {{ pods_info_after_init.resources[0].metadata.name }} -- psql -U {{ postgres_admin_user }} -c \"SELECT 'CREATE DATABASE {{ item }}' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '{{ item }}')\\gexec\""
+- name: Vérification de l'existence des bases de données
+  shell: "kubectl exec -n {{ app_namespace }} {{ pods_info_after_init.resources[0].metadata.name }} -- psql -U {{ postgres_admin_user }} -lqt | cut -d \\| -f 1 | grep -qw {{ item }}"
   loop:
     - "keycloak"
     - "gitea"
-  register: create_db_result
+  register: db_exists_check
   ignore_errors: yes
   changed_when: false
   when: pg_ready_check is succeeded
   environment:
     KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
+- name: Création des bases de données si elles n'existent pas
+  shell: "kubectl exec -n {{ app_namespace }} {{ pods_info_after_init.resources[0].metadata.name }} -- psql -U {{ postgres_admin_user }} -c \"CREATE DATABASE {{ item.item }}\""
+  loop: "{{ db_exists_check.results }}"
+  when: pg_ready_check is succeeded and item.rc != 0
+  register: create_db_result
+  ignore_errors: yes
+  changed_when: false
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+
 - name: Affichage du résultat de la création des bases de données
   debug:
-    msg: "Création de la base de données {{ item.item }}: {{ item.stdout }}"
+    msg: "Création de la base de données {{ item.item.item }}: {{ 'Succès' if item.rc == 0 else 'Échec ou déjà existante' }}"
   loop: "{{ create_db_result.results }}"
   when: create_db_result is succeeded
   loop_control:
-    label: "{{ item.item }}"
+    label: "{{ item.item.item }}"
