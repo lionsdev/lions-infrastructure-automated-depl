@@ -13,7 +13,7 @@
     k3s_version: "v1.25.6+k3s1"  # Version stable de K3s
     k3s_server_args: "--disable-cloud-controller --kube-controller-manager-arg bind-address=0.0.0.0 --kube-scheduler-arg bind-address=0.0.0.0 --no-deploy traefik"
     kubeconfig_local_path: "~/.kube/config"
-    traefik_version: "v2.10.4"
+    traefik_version: "20.10.0"  # Version sans le préfixe 'v'
 
   tasks:
     - name: Vérification de l'installation existante de K3s
@@ -201,6 +201,11 @@
           environment:
             KUBECONFIG: /home/{{ ansible_user }}/.kube/config
 
+        - name: Mise à jour des dépôts Helm
+          command: helm repo update
+          environment:
+            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+
         - name: Création du namespace traefik
           kubernetes.core.k8s:
             name: traefik
@@ -214,7 +219,7 @@
           kubernetes.core.helm:
             name: traefik
             chart_ref: traefik/traefik
-            chart_version: "{{ traefik_version }}"
+            version: "{{ traefik_version }}"
             release_namespace: traefik
             create_namespace: true
             wait: true
