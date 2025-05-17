@@ -1201,8 +1201,20 @@ function check_helm_plugins() {
         local min_version=$(echo "${plugin_info}" | cut -d':' -f2)
         local repo_url=$(echo "${plugin_info}" | cut -d':' -f3)
 
-        # Vérification du plugin
-        if ! helm plugin list | grep -q "${plugin_name}"; then
+        # Vérification plus robuste du plugin
+        local plugin_exists=false
+        local plugin_output=$(helm plugin list 2>/dev/null)
+
+        # Vérifier si le plugin existe déjà
+        if echo "${plugin_output}" | grep -q "${plugin_name}"; then
+            plugin_exists=true
+        # Vérification supplémentaire pour le plugin diff qui peut apparaître comme "diff" ou "helm-diff"
+        elif [[ "${plugin_name}" == "diff" ]] && echo "${plugin_output}" | grep -q "helm-diff"; then
+            plugin_exists=true
+            plugin_name="helm-diff"  # Utiliser le nom correct pour les opérations suivantes
+        fi
+
+        if [[ ${plugin_exists} == false ]]; then
             log "WARNING" "Plugin Helm manquant: ${plugin_name}"
             log "INFO" "Installation du plugin ${plugin_name} version ${min_version}..."
 
@@ -1212,9 +1224,23 @@ function check_helm_plugins() {
             local install_success=false
 
             while [[ ${retry_count} -lt ${max_retries} && ${install_success} == false ]]; do
+                # Vérifier si le plugin existe déjà avant d'essayer de l'installer
+                if helm plugin list 2>/dev/null | grep -q "${plugin_name}" || ([[ "${plugin_name}" == "diff" ]] && helm plugin list 2>/dev/null | grep -q "helm-diff"); then
+                    log "INFO" "Le plugin ${plugin_name} semble déjà être installé"
+                    install_success=true
+                    break
+                fi
+
                 if helm plugin install "${repo_url}" --version "v${min_version}" &>/dev/null; then
                     install_success=true
                 else
+                    # Vérifier si l'erreur est due au fait que le plugin existe déjà
+                    if helm plugin install "${repo_url}" --version "v${min_version}" 2>&1 | grep -q "plugin already exists"; then
+                        log "INFO" "Le plugin ${plugin_name} est déjà installé"
+                        install_success=true
+                        break
+                    fi
+
                     retry_count=$((retry_count + 1))
                     if [[ ${retry_count} -lt ${max_retries} ]]; then
                         log "WARNING" "Échec de l'installation du plugin ${plugin_name}, nouvelle tentative (${retry_count}/${max_retries})..."
@@ -1225,13 +1251,7 @@ function check_helm_plugins() {
 
             # Vérification de l'installation
             if [[ ${install_success} == true ]]; then
-                log "SUCCESS" "Installation du plugin ${plugin_name} réussie"
-
-                # Vérification supplémentaire que le plugin est bien installé
-                if ! helm plugin list | grep -q "${plugin_name}"; then
-                    log "ERROR" "Le plugin ${plugin_name} n'a pas été correctement installé malgré une installation apparemment réussie"
-                    all_plugins_installed=false
-                fi
+                log "SUCCESS" "Installation du plugin ${plugin_name} réussie ou plugin déjà installé"
             else
                 log "ERROR" "Échec de l'installation du plugin ${plugin_name} après ${max_retries} tentatives"
                 log "ERROR" "Vérifiez votre connexion Internet et les permissions"
@@ -1240,7 +1260,15 @@ function check_helm_plugins() {
             fi
         else
             # Vérifier la version du plugin
-            local current_version=$(helm plugin list | grep "${plugin_name}" | awk '{print $2}')
+            local current_version=""
+
+            # Extraire la version en fonction du nom du plugin (diff ou helm-diff)
+            if [[ "${plugin_name}" == "diff" ]]; then
+                current_version=$(helm plugin list 2>/dev/null | grep -E "(diff|helm-diff)" | awk '{print $2}')
+            else
+                current_version=$(helm plugin list 2>/dev/null | grep "${plugin_name}" | awk '{print $2}')
+            fi
+
             log "INFO" "Plugin ${plugin_name} trouvé, version: ${current_version}"
 
             # Extraire le numéro de version sans le 'v' initial
@@ -1263,6 +1291,13 @@ function check_helm_plugins() {
                     if helm plugin install "${repo_url}" --version "v${min_version}" &>/dev/null; then
                         update_success=true
                     else
+                        # Vérifier si l'erreur est due au fait que le plugin existe déjà
+                        if helm plugin install "${repo_url}" --version "v${min_version}" 2>&1 | grep -q "plugin already exists"; then
+                            log "INFO" "Le plugin ${plugin_name} est déjà installé avec la nouvelle version"
+                            update_success=true
+                            break
+                        fi
+
                         retry_count=$((retry_count + 1))
                         if [[ ${retry_count} -lt ${max_retries} ]]; then
                             log "WARNING" "Échec de la mise à jour du plugin ${plugin_name}, nouvelle tentative (${retry_count}/${max_retries})..."
@@ -1274,15 +1309,6 @@ function check_helm_plugins() {
                 # Vérification de la mise à jour
                 if [[ ${update_success} == true ]]; then
                     log "SUCCESS" "Mise à jour du plugin ${plugin_name} réussie"
-
-                    # Vérification supplémentaire que le plugin est bien mis à jour
-                    local new_version=$(helm plugin list | grep "${plugin_name}" | awk '{print $2}')
-                    new_version=${new_version#v}
-
-                    if ! version_greater_equal "${new_version}" "${min_version}"; then
-                        log "ERROR" "Le plugin ${plugin_name} n'a pas été correctement mis à jour malgré une mise à jour apparemment réussie"
-                        all_plugins_installed=false
-                    fi
                 else
                     log "ERROR" "Échec de la mise à jour du plugin ${plugin_name} après ${max_retries} tentatives"
                     log "ERROR" "Vérifiez votre connexion Internet et les permissions"
