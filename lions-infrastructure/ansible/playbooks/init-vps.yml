@@ -63,6 +63,67 @@
         line: 'IPT_SYSCTL="/etc/ufw/sysctl.conf -w"'
         state: present
 
+    - name: Configuration de UFW pour utiliser l'option -w avec iptables (modules)
+      lineinfile:
+        path: /etc/default/ufw
+        regexp: '^IPT_MODULES='
+        line: 'IPT_MODULES="nf_conntrack_ftp nf_nat_ftp nf_conntrack_netbios_ns -w"'
+        state: present
+
+    - name: Configuration de UFW pour utiliser l'option -w avec iptables (commandes)
+      blockinfile:
+        path: /etc/ufw/before.rules
+        insertbefore: '^# End required lines'
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - IPTABLES WAIT OPTION"
+        block: |
+          # Add -w option to all iptables commands to wait for the xtables lock
+          *filter -w
+
+    - name: Configuration de UFW pour utiliser l'option -w avec iptables (after.rules)
+      blockinfile:
+        path: /etc/ufw/after.rules
+        insertbefore: '^# End required lines'
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - IPTABLES WAIT OPTION"
+        block: |
+          # Add -w option to all iptables commands to wait for the xtables lock
+          *filter -w
+
+    - name: Configuration de UFW pour utiliser l'option -w avec iptables (user.rules)
+      blockinfile:
+        path: /etc/ufw/user.rules
+        insertbefore: '^# End required lines'
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - IPTABLES WAIT OPTION"
+        block: |
+          # Add -w option to all iptables commands to wait for the xtables lock
+          *filter -w
+
+    - name: Configuration de UFW pour utiliser l'option -w avec iptables (user6.rules)
+      blockinfile:
+        path: /etc/ufw/user6.rules
+        insertbefore: '^# End required lines'
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - IPTABLES WAIT OPTION"
+        block: |
+          # Add -w option to all iptables commands to wait for the xtables lock
+          *filter -w
+
+    - name: Configuration de UFW pour utiliser l'option -w avec iptables (before6.rules)
+      blockinfile:
+        path: /etc/ufw/before6.rules
+        insertbefore: '^# End required lines'
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - IPTABLES WAIT OPTION"
+        block: |
+          # Add -w option to all iptables commands to wait for the xtables lock
+          *filter -w
+
+    - name: Configuration de UFW pour utiliser l'option -w avec iptables (after6.rules)
+      blockinfile:
+        path: /etc/ufw/after6.rules
+        insertbefore: '^# End required lines'
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - IPTABLES WAIT OPTION"
+        block: |
+          # Add -w option to all iptables commands to wait for the xtables lock
+          *filter -w
+
     - name: Arrêt de UFW avant réinitialisation des règles iptables
       service:
         name: ufw
@@ -71,15 +132,15 @@
 
     - name: Réinitialisation des règles iptables avant configuration UFW
       shell: |
-        iptables -F
-        iptables -X
-        iptables -t nat -F
-        iptables -t nat -X
-        iptables -t mangle -F
-        iptables -t mangle -X
-        iptables -P INPUT ACCEPT
-        iptables -P FORWARD ACCEPT
-        iptables -P OUTPUT ACCEPT
+        iptables -w -F
+        iptables -w -X
+        iptables -w -t nat -F
+        iptables -w -t nat -X
+        iptables -w -t mangle -F
+        iptables -w -t mangle -X
+        iptables -w -P INPUT ACCEPT
+        iptables -w -P FORWARD ACCEPT
+        iptables -w -P OUTPUT ACCEPT
       ignore_errors: yes
 
     - name: Configuration du fuseau horaire
