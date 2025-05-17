@@ -125,7 +125,7 @@ Utilisez les tableaux de bord Grafana suivants pour surveiller l'utilisation des
 - Utilisez des demandes modérées et des limites plus élevées
 - Configurez des règles d'autoscaling réactives
 
-### Services Stateful (PostgreSQL, MongoDB, Redis)
+### Services Stateful (PostgreSQL, Redis)
 
 - Évitez l'autoscaling horizontal (utilisez plutôt le scaling vertical)
 - Définissez des demandes proches des besoins réels

@@ -3,22 +3,29 @@
 # Description: Orchestre l'installation complète de l'infrastructure LIONS sur un VPS
 # Auteur: Équipe LIONS Infrastructure
 # Date: 2023-05-15
-# Version: 1.1.0
+# Version: 1.2.0
 
-# Configuration
+# Chargement des variables d'environnement
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# Chargement des variables d'environnement depuis le fichier .env
+if [ -f "${SCRIPT_DIR}/load-env.sh" ]; then
+    source "${SCRIPT_DIR}/load-env.sh"
+fi
+
+# Configuration
 readonly ANSIBLE_DIR="${PROJECT_ROOT}/ansible"
 readonly LOG_DIR="./logs/infrastructure"
 readonly LOG_FILE="${LOG_DIR}/install-$(date +%Y%m%d-%H%M%S).log"
-readonly DEFAULT_ENV="development"
+readonly DEFAULT_ENV="${LIONS_ENV:-development}"
 readonly BACKUP_DIR="${LOG_DIR}/backups"
 readonly STATE_FILE="${LOG_DIR}/.installation_state"
 readonly LOCK_FILE="/tmp/lions_install.lock"
-readonly REQUIRED_SPACE_MB=5000  # 5 Go d'espace disque requis
-readonly TIMEOUT_SECONDS=1800    # 30 minutes de timeout pour les commandes longues
-readonly REQUIRED_PORTS=(22 22225 80 443 6443 8080 30000 30001)
-readonly SUDO_ALWAYS_ASK=true    # Toujours demander le mot de passe pour sudo
+readonly REQUIRED_SPACE_MB="${LIONS_REQUIRED_SPACE_MB:-5000}"  # 5 Go d'espace disque requis
+readonly TIMEOUT_SECONDS="${LIONS_TIMEOUT_SECONDS:-1800}"    # 30 minutes de timeout pour les commandes longues
+readonly REQUIRED_PORTS=(22 ${LIONS_VPS_PORT:-22225} 80 443 6443 8080 30000 30001)
+readonly SUDO_ALWAYS_ASK="${LIONS_SUDO_ALWAYS_ASK:-true}"    # Toujours demander le mot de passe pour sudo
 
 # Couleurs pour l'affichage
 readonly COLOR_RESET="\033[0m"
@@ -5060,11 +5067,11 @@ EOF
 }
 
 # Parsing des arguments
-environment="${DEFAULT_ENV}"
-inventory_file="inventories/${DEFAULT_ENV}/hosts.yml"
-skip_init="false"
-debug_mode="false"
-test_mode="false"
+environment="${LIONS_ENV:-${DEFAULT_ENV}}"
+inventory_file="inventories/${environment}/hosts.yml"
+skip_init="${LIONS_SKIP_INIT:-false}"
+debug_mode="${LIONS_DEBUG_MODE:-false}"
+test_mode="${LIONS_TEST_MODE:-false}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in

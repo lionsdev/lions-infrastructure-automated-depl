@@ -219,7 +219,7 @@
           kubernetes.core.helm:
             name: traefik
             chart_ref: traefik/traefik
-            version: "{{ traefik_version }}"
+            chart_version: "{{ traefik_version }}"
             release_namespace: traefik
             create_namespace: true
             wait: true

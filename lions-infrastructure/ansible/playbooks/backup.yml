@@ -9,7 +9,7 @@
   hosts: all
   become: true
   gather_facts: true
-  
+
   vars:
     backup_timestamp: "{{ ansible_date_time.date }}_{{ ansible_date_time.hour }}{{ ansible_date_time.minute }}{{ ansible_date_time.second }}"
     backup_root_dir: "/var/backups/lions"
@@ -19,15 +19,13 @@
     backup_components:
       - name: "Bases de données PostgreSQL"
         enabled: true
-      - name: "Bases de données MongoDB"
-        enabled: true
       - name: "Volumes persistants Kubernetes"
         enabled: true
       - name: "Configurations Kubernetes"
         enabled: true
       - name: "Certificats et secrets"
         enabled: true
-  
+
   tasks:
     - name: Création des répertoires de sauvegarde et de logs
       file:
@@ -42,11 +40,11 @@
         - "{{ backup_dir }}/certificates"
         - "/var/log/lions/backups"
       ignore_errors: yes
-    
+
     - name: Affichage du début de la sauvegarde
       debug:
         msg: "Début des tâches de sauvegarde - {{ ansible_date_time.iso8601 }}"
-    
+
     - name: Enregistrement du début de la sauvegarde
       lineinfile:
         path: "{{ backup_log_file }}"
@@ -54,7 +52,7 @@
         create: yes
         mode: '0640'
       ignore_errors: yes
-    
+
     # Sauvegarde des bases de données PostgreSQL
     - name: Sauvegarde des bases de données PostgreSQL
       block:
@@ -63,24 +61,24 @@
           register: postgres_namespaces
           changed_when: false
           ignore_errors: yes
-        
+
         - name: Affichage des namespaces PostgreSQL
           debug:
             msg: "Namespaces PostgreSQL trouvés: {{ postgres_namespaces.stdout_lines }}"
           when: postgres_namespaces.stdout != ""
-        
+
         - name: Sauvegarde de chaque base de données PostgreSQL
           block:
             - name: Récupération des pods PostgreSQL dans le namespace
               shell: kubectl get pods -n {{ item }} -l technology=postgres -o jsonpath='{.items[0].metadata.name}'
               register: postgres_pod
               changed_when: false
-            
+
             - name: Récupération de la liste des bases de données
               shell: kubectl exec -n {{ item }} {{ postgres_pod.stdout }} -- psql -U postgres -t -c "SELECT datname FROM pg_database WHERE datname NOT IN ('template0', 'template1', 'postgres')"
               register: postgres_databases
               changed_when: false
-            
+
             - name: Sauvegarde de chaque base de données
               shell: |
                 kubectl exec -n {{ item }} {{ postgres_pod.stdout }} -- pg_dump -U postgres -Fc {{ db | trim }} > {{ backup_dir }}/databases/{{ item }}-{{ db | trim }}-{{ backup_timestamp }}.dump
@@ -89,7 +87,7 @@
                 loop_var: db
               register: postgres_backup_results
               ignore_errors: yes
-            
+
             - name: Enregistrement des résultats de sauvegarde PostgreSQL
               lineinfile:
                 path: "{{ backup_log_file }}"
@@ -100,7 +98,7 @@
           when: postgres_pod.stdout is defined and postgres_pod.stdout != ""
           loop: "{{ postgres_namespaces.stdout_lines }}"
           ignore_errors: yes
-        
+
         - name: Enregistrement de la sauvegarde PostgreSQL
           lineinfile:
             path: "{{ backup_log_file }}"
@@ -109,64 +107,8 @@
           ignore_errors: yes
       when: backup_components | selectattr('name', 'equalto', 'Bases de données PostgreSQL') | selectattr('enabled') | list | length > 0
       ignore_errors: yes
-    
-    # Sauvegarde des bases de données MongoDB
-    - name: Sauvegarde des bases de données MongoDB
-      block:
-        - name: Récupération de la liste des namespaces avec MongoDB
-          shell: kubectl get pods --all-namespaces -l technology=mongodb -o jsonpath='{range .items[*]}{.metadata.namespace}{"\n"}{end}' | sort | uniq
-          register: mongodb_namespaces
-          changed_when: false
-          ignore_errors: yes
-        
-        - name: Affichage des namespaces MongoDB
-          debug:
-            msg: "Namespaces MongoDB trouvés: {{ mongodb_namespaces.stdout_lines }}"
-          when: mongodb_namespaces.stdout != ""
-        
-        - name: Sauvegarde de chaque base de données MongoDB
-          block:
-            - name: Récupération des pods MongoDB dans le namespace
-              shell: kubectl get pods -n {{ item }} -l technology=mongodb -o jsonpath='{.items[0].metadata.name}'
-              register: mongodb_pod
-              changed_when: false
-            
-            - name: Récupération de la liste des bases de données
-              shell: kubectl exec -n {{ item }} {{ mongodb_pod.stdout }} -- mongosh --quiet --eval "db.adminCommand('listDatabases').databases.forEach(function(d) { if(d.name != 'admin' && d.name != 'config' && d.name != 'local') { print(d.name); } })"
-              register: mongodb_databases
-              changed_when: false
-            
-            - name: Sauvegarde de chaque base de données
-              shell: |
-                kubectl exec -n {{ item }} {{ mongodb_pod.stdout }} -- mongodump --db={{ db | trim }} --archive=/tmp/{{ db | trim }}.archive
-                kubectl cp {{ item }}/{{ mongodb_pod.stdout }}:/tmp/{{ db | trim }}.archive {{ backup_dir }}/databases/{{ item }}-{{ db | trim }}-{{ backup_timestamp }}.archive
-                kubectl exec -n {{ item }} {{ mongodb_pod.stdout }} -- rm /tmp/{{ db | trim }}.archive
-              with_items: "{{ mongodb_databases.stdout_lines }}"
-              loop_control:
-                loop_var: db
-              register: mongodb_backup_results
-              ignore_errors: yes
-            
-            - name: Enregistrement des résultats de sauvegarde MongoDB
-              lineinfile:
-                path: "{{ backup_log_file }}"
-                line: "Sauvegarde MongoDB pour {{ item.item }} - {{ 'Succès' if item.rc == 0 else 'Échec' }}"
-                create: yes
-              with_items: "{{ mongodb_backup_results.results }}"
-              ignore_errors: yes
-          when: mongodb_pod.stdout is defined and mongodb_pod.stdout != ""
-          loop: "{{ mongodb_namespaces.stdout_lines }}"
-          ignore_errors: yes
-        
-        - name: Enregistrement de la sauvegarde MongoDB
-          lineinfile:
-            path: "{{ backup_log_file }}"
-            line: "Sauvegarde des bases de données MongoDB terminée - {{ ansible_date_time.iso8601 }}"
-            create: yes
-          ignore_errors: yes
-      when: backup_components | selectattr('name', 'equalto', 'Bases de données MongoDB') | selectattr('enabled') | list | length > 0
-      ignore_errors: yes
-    
+
+
     # Sauvegarde des volumes persistants Kubernetes
     - name: Sauvegarde des volumes persistants Kubernetes
       block:
@@ -175,12 +117,12 @@
           register: kubernetes_pvcs
           changed_when: false
           ignore_errors: yes
-        
+
         - name: Affichage des PVCs
           debug:
             msg: "PVCs trouvés: {{ kubernetes_pvcs.stdout_lines }}"
           when: kubernetes_pvcs.stdout != ""
-        
+
         - name: Création d'un pod de sauvegarde pour chaque PVC
           shell: |
             NS=$(echo "{{ item }}" | cut -d'/' -f1)
@@ -214,7 +156,7 @@
           with_items: "{{ kubernetes_pvcs.stdout_lines }}"
           register: backup_pods_creation
           ignore_errors: yes
-        
+
         - name: Attente de la fin des pods de sauvegarde
           shell: |
             NS=$(echo "{{ item.item }}" | cut -d'/' -f1)
@@ -223,7 +165,7 @@
           with_items: "{{ backup_pods_creation.results }}"
           when: item is succeeded
           ignore_errors: yes
-        
+
         - name: Copie des sauvegardes des PVCs
           shell: |
             NS=$(echo "{{ item.item }}" | cut -d'/' -f1)
@@ -233,7 +175,7 @@
           when: item is succeeded
           register: pvc_backup_results
           ignore_errors: yes
-        
+
         - name: Suppression des pods de sauvegarde
           shell: |
             NS=$(echo "{{ item.item.item }}" | cut -d'/' -f1)
@@ -242,7 +184,7 @@
           with_items: "{{ pvc_backup_results.results }}"
           when: item is succeeded
           ignore_errors: yes
-        
+
         - name: Enregistrement de la sauvegarde des volumes persistants
           lineinfile:
             path: "{{ backup_log_file }}"
@@ -251,7 +193,7 @@
           ignore_errors: yes
       when: backup_components | selectattr('name', 'equalto', 'Volumes persistants Kubernetes') | selectattr('enabled') | list | length > 0
       ignore_errors: yes
-    
+
     # Sauvegarde des configurations Kubernetes
     - name: Sauvegarde des configurations Kubernetes
       block:
@@ -259,37 +201,37 @@
           shell: kubectl get namespaces -o yaml > {{ backup_dir }}/kubernetes/namespaces-{{ backup_timestamp }}.yaml
           changed_when: false
           ignore_errors: yes
-        
+
         - name: Sauvegarde des deployments
           shell: kubectl get deployments --all-namespaces -o yaml > {{ backup_dir }}/kubernetes/deployments-{{ backup_timestamp }}.yaml
           changed_when: false
           ignore_errors: yes
-        
+
         - name: Sauvegarde des statefulsets
           shell: kubectl get statefulsets --all-namespaces -o yaml > {{ backup_dir }}/kubernetes/statefulsets-{{ backup_timestamp }}.yaml
           changed_when: false
           ignore_errors: yes
-        
+
         - name: Sauvegarde des daemonsets
           shell: kubectl get daemonsets --all-namespaces -o yaml > {{ backup_dir }}/kubernetes/daemonsets-{{ backup_timestamp }}.yaml
           changed_when: false
           ignore_errors: yes
-        
+
         - name: Sauvegarde des services
           shell: kubectl get services --all-namespaces -o yaml > {{ backup_dir }}/kubernetes/services-{{ backup_timestamp }}.yaml
           changed_when: false
           ignore_errors: yes
-        
+
         - name: Sauvegarde des ingresses
           shell: kubectl get ingresses --all-namespaces -o yaml > {{ backup_dir }}/kubernetes/ingresses-{{ backup_timestamp }}.yaml
           changed_when: false
           ignore_errors: yes
-        
+
         - name: Sauvegarde des configmaps
           shell: kubectl get configmaps --all-namespaces -o yaml > {{ backup_dir }}/kubernetes/configmaps-{{ backup_timestamp }}.yaml
           changed_when: false
           ignore_errors: yes
-        
+
         - name: Enregistrement de la sauvegarde des configurations Kubernetes
           lineinfile:
             path: "{{ backup_log_file }}"
@@ -298,7 +240,7 @@
           ignore_errors: yes
       when: backup_components | selectattr('name', 'equalto', 'Configurations Kubernetes') | selectattr('enabled') | list | length > 0
       ignore_errors: yes
-    
+
     # Sauvegarde des certificats et secrets
     - name: Sauvegarde des certificats et secrets
       block:
@@ -306,13 +248,13 @@
           shell: kubectl get certificates --all-namespaces -o yaml > {{ backup_dir }}/certificates/certificates-{{ backup_timestamp }}.yaml
           changed_when: false
           ignore_errors: yes
-        
+
         - name: Sauvegarde des secrets (sans les valeurs)
           shell: |
             kubectl get secrets --all-namespaces -o json | jq '.items[] |= (del(.data) | .metadata.managedFields = [])' > {{ backup_dir }}/certificates/secrets-structure-{{ backup_timestamp }}.json
           changed_when: false
           ignore_errors: yes
-        
+
         - name: Enregistrement de la sauvegarde des certificats et secrets
           lineinfile:
             path: "{{ backup_log_file }}"
@@ -321,7 +263,7 @@
           ignore_errors: yes
       when: backup_components | selectattr('name', 'equalto', 'Certificats et secrets') | selectattr('enabled') | list | length > 0
       ignore_errors: yes
-    
+
     # Compression de la sauvegarde
     - name: Compression de la sauvegarde
       archive:
@@ -329,7 +271,7 @@
         dest: "{{ backup_root_dir }}/lions-backup-{{ backup_timestamp }}.tar.gz"
         format: gz
       ignore_errors: yes
-    
+
     # Nettoyage des anciennes sauvegardes
     - name: Nettoyage des anciennes sauvegardes
       find:
@@ -338,7 +280,7 @@
         age: "{{ backup_retention_days }}d"
         recurse: no
       register: old_backups
-    
+
     - name: Suppression des anciennes sauvegardes
       file:
         path: "{{ item.path }}"
@@ -346,17 +288,17 @@
       with_items: "{{ old_backups.files }}"
       when: old_backups.matched > 0
       ignore_errors: yes
-    
+
     - name: Nettoyage des répertoires de sauvegarde temporaires
       file:
         path: "{{ backup_dir }}"
         state: absent
       ignore_errors: yes
-    
+
     - name: Affichage de la fin de la sauvegarde
       debug:
         msg: "Fin des tâches de sauvegarde - {{ ansible_date_time.iso8601 }}"
-    
+
     - name: Enregistrement de la fin de la sauvegarde
       lineinfile:
         path: "{{ backup_log_file }}"

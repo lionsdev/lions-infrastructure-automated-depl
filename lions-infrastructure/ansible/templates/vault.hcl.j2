@@ -1,0 +1,41 @@
+# Titre: Configuration de HashiCorp Vault
+# Description: Fichier de configuration pour le serveur Vault
+# Auteur: Équipe LIONS Infrastructure
+# Date: 18/05/2025
+# Version: 1.0.0
+
+# Configuration du stockage
+storage "file" {
+  path = "{{ vault_storage_path }}"
+}
+
+# Configuration du listener
+listener "tcp" {
+  address = "0.0.0.0:{{ vault_port }}"
+  {% if vault_tls_enabled %}
+  tls_disable = false
+  tls_cert_file = "{{ vault_tls_cert_path }}"
+  tls_key_file = "{{ vault_tls_key_path }}"
+  {% else %}
+  tls_disable = true
+  {% endif %}
+}
+
+# Configuration de l'API
+api_addr = "{{ vault_api_addr }}"
+
+# Configuration du cluster
+cluster_addr = "{{ vault_cluster_addr }}"
+
+# Configuration de l'interface utilisateur
+ui = {{ vault_ui_enabled | lower }}
+
+# Configuration des logs
+log_level = "info"
+log_format = "json"
+
+# Configuration des plugins
+plugin_directory = "/usr/local/lib/vault/plugins"
+
+# Configuration des audits
+# Sera configurée après l'initialisation
