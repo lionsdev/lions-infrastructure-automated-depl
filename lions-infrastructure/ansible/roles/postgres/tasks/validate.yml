@@ -84,8 +84,8 @@
 
 - name: Affichage du statut de la réplication
   debug:
-    msg: "Statut de la réplication PostgreSQL: {{ replication_check.stdout }}"
-  when: replication_check is defined and replication_check is succeeded
+    msg: "Statut de la réplication PostgreSQL: {{ replication_check.stdout | default('Non disponible') }}"
+  when: replication_check is defined and replication_check is succeeded and replication_check.stdout is defined
 
 - name: Avertissement si la réplication n'est pas configurée correctement
   debug:
@@ -126,28 +126,28 @@
       Service URL: {{ service_url }}
       Date de déploiement: {{ ansible_date_time.iso8601 }}
       Statut: {{ 'Succès' if pg_ready_check is succeeded else 'Avertissement' }}
-      
+
       Ressources:
         Replicas: {{ postgres_replicas[app_environment] }}
         CPU Requests: {{ postgres_resources[app_environment].requests.cpu }}
         Memory Requests: {{ postgres_resources[app_environment].requests.memory }}
         CPU Limits: {{ postgres_resources[app_environment].limits.cpu }}
         Memory Limits: {{ postgres_resources[app_environment].limits.memory }}
-      
+
       Monitoring:
         Prometheus: {{ 'Activé' if postgres_prometheus_scrape | bool else 'Désactivé' }}
         Métriques: {{ 'Disponibles' if metrics_check is defined and metrics_check is succeeded else 'Non disponibles' }}
-      
+
       Haute disponibilité:
         Activée: {{ 'Oui' if postgres_ha_enabled | bool else 'Non' }}
         Réplication: {{ 'Fonctionnelle' if replication_check is defined and replication_check is succeeded else 'Non configurée ou non fonctionnelle' if postgres_ha_enabled | bool else 'N/A' }}
-      
+
       Configuration:
         Max Connections: {{ postgres_max_connections }}
         Shared Buffers: {{ postgres_shared_buffers }}
         Effective Cache Size: {{ postgres_effective_cache_size }}
         Work Mem: {{ postgres_work_mem }}
-      
+
       Notes:
       - Vérifiez les logs de PostgreSQL pour plus d'informations.
       - Pour les problèmes, contactez l'équipe d'infrastructure.

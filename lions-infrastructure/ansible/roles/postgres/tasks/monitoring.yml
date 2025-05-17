@@ -134,7 +134,7 @@
         labels:
           grafana_dashboard: "1"
       data:
-        "{{ app_name }}-dashboard.json": |
+        "{{ app_name }}-dashboard.json": >-
           {
             "annotations": {
               "list": [

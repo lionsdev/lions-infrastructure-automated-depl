@@ -11,8 +11,9 @@
 
   vars:
     k3s_version: "v1.25.6+k3s1"  # Version stable de K3s
-    k3s_server_args: "--disable-cloud-controller --kube-controller-manager-arg bind-address=0.0.0.0 --kube-scheduler-arg bind-address=0.0.0.0"
+    k3s_server_args: "--disable-cloud-controller --kube-controller-manager-arg bind-address=0.0.0.0 --kube-scheduler-arg bind-address=0.0.0.0 --no-deploy traefik"
     kubeconfig_local_path: "~/.kube/config"
+    traefik_version: "v2.10.4"
 
   tasks:
     - name: Vérification de l'installation existante de K3s
@@ -45,12 +46,29 @@
         timeout: 300
       when: k3s_installed.changed
 
+    - name: Vérification de l'état du service K3s
+      service:
+        name: k3s
+        state: started
+        enabled: yes
+      register: k3s_service_status
+
+    - name: Affichage de l'état du service K3s
+      debug:
+        msg: "État du service K3s: {{ k3s_service_status.status.ActiveState | default('inconnu') }}"
+
+    - name: Redémarrage du service K3s si nécessaire
+      service:
+        name: k3s
+        state: restarted
+      when: k3s_service_status.status.ActiveState is defined and k3s_service_status.status.ActiveState != "active"
+
     - name: Attente que le serveur API K3s soit prêt
       wait_for:
         port: 6443
         delay: 10
         timeout: 300
-      when: k3s_installed.changed
+      when: k3s_installed.changed or k3s_service_status.changed
 
     - name: Création du répertoire .kube pour l'utilisateur
       file:
@@ -173,6 +191,86 @@
           - openshift
         state: present
       become: yes
+
+    - name: Installation de Traefik via Helm
+      block:
+        - name: Ajout du dépôt Helm de Traefik
+          kubernetes.core.helm_repository:
+            name: traefik
+            repo_url: https://helm.traefik.io/traefik
+          environment:
+            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+
+        - name: Création du namespace traefik
+          kubernetes.core.k8s:
+            name: traefik
+            api_version: v1
+            kind: Namespace
+            state: present
+          environment:
+            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+
+        - name: Déploiement de Traefik via Helm
+          kubernetes.core.helm:
+            name: traefik
+            chart_ref: traefik/traefik
+            chart_version: "{{ traefik_version }}"
+            release_namespace: traefik
+            create_namespace: true
+            wait: true
+            values:
+              ports:
+                web:
+                  port: 80
+                  expose: true
+                  exposedPort: 80
+                  protocol: TCP
+                websecure:
+                  port: 443
+                  expose: true
+                  exposedPort: 443
+                  protocol: TCP
+              service:
+                type: LoadBalancer
+                externalIPs:
+                  - "{{ ansible_host }}"
+              ingressClass:
+                enabled: true
+                isDefaultClass: true
+              logs:
+                general:
+                  level: INFO
+                access:
+                  enabled: true
+          environment:
+            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+
+        - name: Attente que Traefik soit prêt
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: Pod
+            namespace: traefik
+            label_selectors:
+              - app.kubernetes.io/name=traefik
+          register: traefik_pods
+          until: traefik_pods.resources | length > 0 and (traefik_pods.resources[0].status.phase == 'Running')
+          retries: 30
+          delay: 10
+          environment:
+            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+
+        - name: Vérification de l'accès à Traefik
+          uri:
+            url: "http://{{ ansible_host }}"
+            method: GET
+            status_code: 200, 404, 503
+            validate_certs: no
+          register: traefik_access
+          ignore_errors: yes
+
+        - name: Affichage du statut d'accès à Traefik
+          debug:
+            msg: "Traefik est {{ 'accessible' if traefik_access is succeeded else 'inaccessible' }} à l'adresse http://{{ ansible_host }}"
 
     - name: Installation de MetalLB pour le LoadBalancer
       block:

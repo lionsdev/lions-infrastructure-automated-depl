@@ -24,6 +24,17 @@
     msg: "AVERTISSEMENT: Aucun pod de la registry n'a été trouvé. Le déploiement a peut-être échoué."
   when: pods_info_after_init.resources | length == 0
 
+- name: Vérification de la résolution DNS pour la registry
+  shell: "kubectl exec -n {{ app_namespace | default('registry') }} {{ pods_info_after_init.resources[0].metadata.name }} -- nslookup {{ app_name | default('registry') }}.{{ app_namespace | default('registry') }}.svc.cluster.local"
+  register: dns_check
+  failed_when: false
+  when: pods_info_after_init.resources | length > 0
+
+- name: Avertissement si la résolution DNS échoue
+  debug:
+    msg: "AVERTISSEMENT: La résolution DNS pour la registry a échoué. Vérifiez la configuration DNS du cluster."
+  when: pods_info_after_init.resources | length > 0 and (dns_check is failed or dns_check.rc != 0)
+
 - name: Attente que la registry soit prête
   uri:
     url: "http://{{ app_name | default('registry') }}.{{ app_namespace | default('registry') }}.svc.cluster.local:{{ registry_default_port | default(5000) }}{{ registry_health_path | default('/v2/') }}"
@@ -35,7 +46,7 @@
   retries: 30
   delay: 10
   ignore_errors: yes
-  when: pods_info_after_init.resources | length > 0
+  when: pods_info_after_init.resources | length > 0 and dns_check.rc == 0
 
 - name: Vérification de l'état de santé de la registry
   debug:

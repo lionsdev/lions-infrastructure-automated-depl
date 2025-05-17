@@ -49,7 +49,7 @@ postgres_resources:
       cpu: "200m"
       memory: "512Mi"
     limits:
-      cpu: "1000m"
+      cpu: "800m"
       memory: "1Gi"
   staging:
     requests:

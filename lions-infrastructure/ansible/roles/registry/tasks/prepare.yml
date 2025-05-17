@@ -24,6 +24,8 @@
     - serviceaccount
     - servicemonitor
     - persistentvolumeclaim
+    - role
+    - rolebinding
   changed_when: false
 
 - name: Création du ConfigMap pour la configuration de la registry
@@ -86,3 +88,15 @@
     src: "{{ temp_dir.path }}/persistentvolumeclaim.yml"
   register: pvc_result
   when: registry_persistent_storage | default(true) | bool
+
+- name: Création du Role pour la registry
+  k8s:
+    state: present
+    src: "{{ temp_dir.path }}/role.yml"
+  register: role_result
+
+- name: Création du RoleBinding pour la registry
+  k8s:
+    state: present
+    src: "{{ temp_dir.path }}/rolebinding.yml"
+  register: rolebinding_result

@@ -1,0 +1,29 @@
+---
+# Titre: Template de rôle RBAC pour la registry de conteneurs
+# Description: Définit le rôle RBAC pour la registry de conteneurs Docker
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-17
+# Version: 1.0.0
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: "{{ app_name | default('registry') }}-role"
+  namespace: "{{ app_namespace | default('registry') }}"
+  labels:
+    app: "{{ app_name | default('registry') }}"
+    version: "{{ app_version | default('latest') }}"
+    environment: "{{ app_environment | default('development') }}"
+    technology: "registry"
+  annotations:
+    description: "Rôle RBAC pour la registry {{ app_name | default('registry') }} ({{ app_version | default('latest') }}) en environnement {{ app_environment | default('development') }}"
+rules:
+- apiGroups: [""]
+  resources: ["pods", "services", "endpoints", "secrets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["extensions", "networking.k8s.io"]
+  resources: ["ingresses"]
+  verbs: ["get", "list", "watch"]
