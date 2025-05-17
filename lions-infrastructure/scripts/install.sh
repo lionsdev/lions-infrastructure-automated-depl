@@ -1199,7 +1199,8 @@ function check_helm_plugins() {
         # Extraction des informations du plugin
         local plugin_name=$(echo "${plugin_info}" | cut -d':' -f1)
         local min_version=$(echo "${plugin_info}" | cut -d':' -f2)
-        local repo_url=$(echo "${plugin_info}" | cut -d':' -f3)
+        # Extraction de l'URL en préservant les ':' dans l'URL
+        local repo_url=$(echo "${plugin_info}" | sed -E 's/^[^:]+:[^:]+://')
 
         # Vérification plus robuste du plugin
         local plugin_exists=false
