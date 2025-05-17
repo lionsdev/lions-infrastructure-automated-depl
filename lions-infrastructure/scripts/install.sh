@@ -1188,46 +1188,118 @@ function check_helm_plugins() {
         return 1
     fi
 
-    # Vérification du plugin helm-diff
-    if ! helm plugin list | grep -q "diff"; then
-        log "WARNING" "Plugin Helm manquant: diff"
-        log "INFO" "Installation du plugin helm-diff version 3.4.1..."
+    # Liste des plugins requis avec leurs versions minimales
+    local required_plugins=(
+        "diff:3.4.1:https://github.com/databus23/helm-diff"
+    )
 
-        if ! helm plugin install https://github.com/databus23/helm-diff --version v3.4.1 &>/dev/null; then
-            log "ERROR" "Échec de l'installation du plugin helm-diff"
-            return 1
-        else
-            log "SUCCESS" "Installation du plugin helm-diff réussie"
-        fi
-    else
-        # Vérifier la version du plugin
-        local diff_version=$(helm plugin list | grep diff | awk '{print $2}')
-        log "INFO" "Plugin helm-diff trouvé, version: ${diff_version}"
+    local all_plugins_installed=true
 
-        # Extraire le numéro de version sans le 'v' initial
-        diff_version=${diff_version#v}
+    for plugin_info in "${required_plugins[@]}"; do
+        # Extraction des informations du plugin
+        local plugin_name=$(echo "${plugin_info}" | cut -d':' -f1)
+        local min_version=$(echo "${plugin_info}" | cut -d':' -f2)
+        local repo_url=$(echo "${plugin_info}" | cut -d':' -f3)
 
-        # Vérifier si la version est inférieure à 3.4.1
-        if ! version_greater_equal "${diff_version}" "3.4.1"; then
-            log "WARNING" "Version du plugin helm-diff trop ancienne: ${diff_version} (requise: 3.4.1 ou supérieure)"
-            log "INFO" "Mise à jour du plugin helm-diff..."
+        # Vérification du plugin
+        if ! helm plugin list | grep -q "${plugin_name}"; then
+            log "WARNING" "Plugin Helm manquant: ${plugin_name}"
+            log "INFO" "Installation du plugin ${plugin_name} version ${min_version}..."
 
-            # Supprimer l'ancienne version
-            helm plugin uninstall diff &>/dev/null
+            # Tentative d'installation avec gestion des erreurs réseau
+            local max_retries=3
+            local retry_count=0
+            local install_success=false
 
-            # Installer la nouvelle version
-            if ! helm plugin install https://github.com/databus23/helm-diff --version v3.4.1 &>/dev/null; then
-                log "ERROR" "Échec de la mise à jour du plugin helm-diff"
-                return 1
+            while [[ ${retry_count} -lt ${max_retries} && ${install_success} == false ]]; do
+                if helm plugin install "${repo_url}" --version "v${min_version}" &>/dev/null; then
+                    install_success=true
+                else
+                    retry_count=$((retry_count + 1))
+                    if [[ ${retry_count} -lt ${max_retries} ]]; then
+                        log "WARNING" "Échec de l'installation du plugin ${plugin_name}, nouvelle tentative (${retry_count}/${max_retries})..."
+                        sleep 2
+                    fi
+                fi
+            done
+
+            # Vérification de l'installation
+            if [[ ${install_success} == true ]]; then
+                log "SUCCESS" "Installation du plugin ${plugin_name} réussie"
+
+                # Vérification supplémentaire que le plugin est bien installé
+                if ! helm plugin list | grep -q "${plugin_name}"; then
+                    log "ERROR" "Le plugin ${plugin_name} n'a pas été correctement installé malgré une installation apparemment réussie"
+                    all_plugins_installed=false
+                fi
             else
-                log "SUCCESS" "Mise à jour du plugin helm-diff réussie"
+                log "ERROR" "Échec de l'installation du plugin ${plugin_name} après ${max_retries} tentatives"
+                log "ERROR" "Vérifiez votre connexion Internet et les permissions"
+                log "INFO" "Vous pouvez l'installer manuellement avec: helm plugin install ${repo_url} --version v${min_version}"
+                all_plugins_installed=false
             fi
         else
-            log "SUCCESS" "Plugin helm-diff trouvé avec une version compatible: ${diff_version}"
-        fi
-    fi
+            # Vérifier la version du plugin
+            local current_version=$(helm plugin list | grep "${plugin_name}" | awk '{print $2}')
+            log "INFO" "Plugin ${plugin_name} trouvé, version: ${current_version}"
 
-    return 0
+            # Extraire le numéro de version sans le 'v' initial
+            current_version=${current_version#v}
+
+            # Vérifier si la version est inférieure à la version minimale requise
+            if ! version_greater_equal "${current_version}" "${min_version}"; then
+                log "WARNING" "Version du plugin ${plugin_name} trop ancienne: ${current_version} (requise: ${min_version} ou supérieure)"
+                log "INFO" "Mise à jour du plugin ${plugin_name}..."
+
+                # Supprimer l'ancienne version
+                helm plugin uninstall "${plugin_name}" &>/dev/null
+
+                # Installer la nouvelle version avec gestion des erreurs réseau
+                local max_retries=3
+                local retry_count=0
+                local update_success=false
+
+                while [[ ${retry_count} -lt ${max_retries} && ${update_success} == false ]]; do
+                    if helm plugin install "${repo_url}" --version "v${min_version}" &>/dev/null; then
+                        update_success=true
+                    else
+                        retry_count=$((retry_count + 1))
+                        if [[ ${retry_count} -lt ${max_retries} ]]; then
+                            log "WARNING" "Échec de la mise à jour du plugin ${plugin_name}, nouvelle tentative (${retry_count}/${max_retries})..."
+                            sleep 2
+                        fi
+                    fi
+                done
+
+                # Vérification de la mise à jour
+                if [[ ${update_success} == true ]]; then
+                    log "SUCCESS" "Mise à jour du plugin ${plugin_name} réussie"
+
+                    # Vérification supplémentaire que le plugin est bien mis à jour
+                    local new_version=$(helm plugin list | grep "${plugin_name}" | awk '{print $2}')
+                    new_version=${new_version#v}
+
+                    if ! version_greater_equal "${new_version}" "${min_version}"; then
+                        log "ERROR" "Le plugin ${plugin_name} n'a pas été correctement mis à jour malgré une mise à jour apparemment réussie"
+                        all_plugins_installed=false
+                    fi
+                else
+                    log "ERROR" "Échec de la mise à jour du plugin ${plugin_name} après ${max_retries} tentatives"
+                    log "ERROR" "Vérifiez votre connexion Internet et les permissions"
+                    log "INFO" "Vous pouvez le mettre à jour manuellement avec: helm plugin install ${repo_url} --version v${min_version}"
+                    all_plugins_installed=false
+                fi
+            else
+                log "SUCCESS" "Plugin ${plugin_name} trouvé avec une version compatible: ${current_version}"
+            fi
+        fi
+    done
+
+    if [[ ${all_plugins_installed} == true ]]; then
+        return 0
+    else
+        return 1
+    fi
 }
 
 # Fonction pour vérifier les ressources système locales
