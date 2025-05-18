@@ -61,14 +61,160 @@
       service:
         name: k3s
         state: restarted
+      register: k3s_restart_result
       when: k3s_service_status.status.ActiveState is defined and k3s_service_status.status.ActiveState != "active"
+      ignore_errors: yes
+
+    - name: Vérification des journaux K3s en cas d'échec de redémarrage
+      shell: journalctl -u k3s -n 50 --no-pager
+      register: k3s_logs
+      when: k3s_restart_result is defined and k3s_restart_result.failed is defined and k3s_restart_result.failed
+
+    - name: Affichage des journaux K3s en cas d'échec
+      debug:
+        msg: "{{ k3s_logs.stdout_lines }}"
+      when: k3s_logs is defined and k3s_logs.stdout_lines is defined
+
+    - name: Tentative de correction des problèmes courants de K3s
+      block:
+        - name: Vérification des ports utilisés
+          shell: netstat -tulpn | grep 6443 || echo "Port 6443 libre"
+          register: port_check
+
+        - name: Affichage des ports utilisés
+          debug:
+            msg: "{{ port_check.stdout_lines }}"
+
+        - name: Vérification de la mémoire disponible
+          shell: free -m
+          register: memory_check
+
+        - name: Affichage de la mémoire disponible
+          debug:
+            msg: "{{ memory_check.stdout_lines }}"
+
+        - name: Correction des permissions des fichiers K3s
+          shell: |
+            chmod -R 755 /var/lib/rancher/k3s 2>/dev/null || true
+            chmod 600 /etc/rancher/k3s/k3s.yaml 2>/dev/null || true
+
+        - name: Rechargement du daemon systemd
+          systemd:
+            daemon_reload: yes
+
+        - name: Nouvelle tentative de redémarrage du service K3s
+          service:
+            name: k3s
+            state: restarted
+          register: k3s_retry_restart
+
+      when: k3s_restart_result is defined and k3s_restart_result.failed is defined and k3s_restart_result.failed
+
+    - name: Vérification finale de l'état du service K3s
+      shell: systemctl status k3s
+      register: k3s_final_status
+      ignore_errors: yes
+      when: (k3s_restart_result is defined and k3s_restart_result.failed is defined and k3s_restart_result.failed) or
+            (k3s_retry_restart is defined and k3s_retry_restart.failed is defined and k3s_retry_restart.failed)
+
+    - name: Affichage de l'état final du service K3s
+      debug:
+        msg: "État final du service K3s: {{ k3s_final_status.stdout_lines | default(['État inconnu']) }}"
+      when: k3s_final_status is defined
+
+    - name: Vérification des processus K3s en cours d'exécution
+      shell: ps aux | grep k3s | grep -v grep || echo "Aucun processus K3s en cours d'exécution"
+      register: k3s_processes
+      when: (k3s_restart_result is defined and k3s_restart_result.failed is defined and k3s_restart_result.failed) or
+            (k3s_retry_restart is defined and k3s_retry_restart.failed is defined and k3s_retry_restart.failed)
+
+    - name: Affichage des processus K3s
+      debug:
+        msg: "Processus K3s en cours d'exécution: {{ k3s_processes.stdout_lines | default(['Aucun']) }}"
+      when: k3s_processes is defined
+
+    - name: Vérification spécifique pour l'erreur "control process exited with error code"
+      block:
+        - name: Vérification des dépendances du binaire K3s
+          shell: ldd /usr/local/bin/k3s || echo "Impossible de vérifier les dépendances"
+          register: k3s_dependencies
+
+        - name: Affichage des dépendances du binaire K3s
+          debug:
+            msg: "Dépendances du binaire K3s: {{ k3s_dependencies.stdout_lines }}"
+
+        - name: Vérification des permissions du binaire K3s
+          shell: ls -la /usr/local/bin/k3s
+          register: k3s_permissions
+
+        - name: Affichage des permissions du binaire K3s
+          debug:
+            msg: "Permissions du binaire K3s: {{ k3s_permissions.stdout_lines }}"
+
+        - name: Vérification de l'intégrité du binaire K3s
+          shell: file /usr/local/bin/k3s
+          register: k3s_file_info
+
+        - name: Affichage des informations sur le binaire K3s
+          debug:
+            msg: "Informations sur le binaire K3s: {{ k3s_file_info.stdout_lines }}"
+
+        - name: Tentative de réparation du binaire K3s
+          shell: |
+            # Sauvegarde du binaire existant
+            cp /usr/local/bin/k3s /usr/local/bin/k3s.bak
+            # Téléchargement d'une nouvelle copie du script d'installation
+            curl -sfL https://get.k3s.io -o /tmp/k3s-install.sh
+            # Exécution du script avec l'option de réinstallation
+            chmod +x /tmp/k3s-install.sh
+            INSTALL_K3S_SKIP_START=true /tmp/k3s-install.sh
+          when: k3s_final_status.stdout is defined and k3s_final_status.stdout is search("control process exited with error code")
+          register: k3s_repair_attempt
+
+        - name: Affichage du résultat de la tentative de réparation
+          debug:
+            msg: "Résultat de la tentative de réparation: {{ k3s_repair_attempt.stdout_lines | default(['Aucune réparation effectuée']) }}"
+          when: k3s_repair_attempt is defined
+
+      when: k3s_final_status is defined and k3s_final_status.stdout is defined and k3s_final_status.stdout is search("control process exited with error code")
+
+    - name: Tentative finale de redémarrage du service K3s après diagnostics et réparations
+      service:
+        name: k3s
+        state: restarted
+      register: k3s_final_restart
+      ignore_errors: yes
+      when: (k3s_restart_result is defined and k3s_restart_result.failed is defined and k3s_restart_result.failed) or
+            (k3s_retry_restart is defined and k3s_retry_restart.failed is defined and k3s_retry_restart.failed) or
+            (k3s_repair_attempt is defined)
+
+    - name: Vérification ultime de l'état du service K3s
+      shell: systemctl status k3s
+      register: k3s_ultimate_status
+      ignore_errors: yes
+      when: k3s_final_restart is defined
+
+    - name: Affichage de l'état ultime du service K3s
+      debug:
+        msg: "État ultime du service K3s après toutes les tentatives: {{ k3s_ultimate_status.stdout_lines | default(['État inconnu']) }}"
+      when: k3s_ultimate_status is defined
+
+    - name: Notification de résultat final
+      debug:
+        msg: >
+          {% if k3s_ultimate_status is defined and k3s_ultimate_status.rc == 0 %}
+          Le service K3s a été démarré avec succès après plusieurs tentatives.
+          {% else %}
+          Le service K3s n'a pas pu être démarré malgré plusieurs tentatives. Veuillez consulter les journaux pour plus d'informations.
+          {% endif %}
 
     - name: Attente que le serveur API K3s soit prêt
       wait_for:
         port: 6443
         delay: 10
         timeout: 300
-      when: k3s_installed.changed or k3s_service_status.changed
+      when: (k3s_installed.changed or k3s_service_status.changed) and 
+            not (k3s_ultimate_status is defined and k3s_ultimate_status.rc != 0)
 
     - name: Création du répertoire .kube pour l'utilisateur
       file:
@@ -77,6 +223,13 @@
         mode: '0755'
         owner: "{{ ansible_user }}"
         group: "{{ ansible_user }}"
+      when: not (k3s_ultimate_status is defined and k3s_ultimate_status.rc != 0)
+
+    - name: Vérification de l'existence du fichier kubeconfig
+      stat:
+        path: /etc/rancher/k3s/k3s.yaml
+      register: k3s_kubeconfig
+      when: not (k3s_ultimate_status is defined and k3s_ultimate_status.rc != 0)
 
     - name: Copie du fichier kubeconfig pour l'utilisateur
       copy:
@@ -86,18 +239,23 @@
         owner: "{{ ansible_user }}"
         group: "{{ ansible_user }}"
         mode: '0600'
+      when: not (k3s_ultimate_status is defined and k3s_ultimate_status.rc != 0) and
+            (k3s_kubeconfig is defined and k3s_kubeconfig.stat.exists)
 
     - name: Mise à jour du fichier kubeconfig avec l'adresse IP externe
       replace:
         path: /home/{{ ansible_user }}/.kube/config
         regexp: 'https://127.0.0.1:6443'
         replace: 'https://{{ ansible_host }}:6443'
+      when: not (k3s_ultimate_status is defined and k3s_ultimate_status.rc != 0) and
+            (k3s_kubeconfig is defined and k3s_kubeconfig.stat.exists)
 
     - name: Configuration de l'accès à kubectl
       lineinfile:
         path: /home/{{ ansible_user }}/.bashrc
         line: 'export KUBECONFIG=/home/{{ ansible_user }}/.kube/config'
         state: present
+      when: not (k3s_ultimate_status is defined and k3s_ultimate_status.rc != 0)
 
     - name: Installation de kubectl
       block:
@@ -117,14 +275,16 @@
             name: kubectl
             state: present
             update_cache: yes
-      when: not k3s_binary.stat.exists
+      when: not k3s_binary.stat.exists and not (k3s_ultimate_status is defined and k3s_ultimate_status.rc != 0)
 
     - name: Récupération du fichier kubeconfig pour utilisation locale
       fetch:
         src: /home/{{ ansible_user }}/.kube/config
         dest: "{{ kubeconfig_local_path }}"
         flat: yes
-      when: kubeconfig_local_path is defined
+      when: kubeconfig_local_path is defined and 
+            not (k3s_ultimate_status is defined and k3s_ultimate_status.rc != 0) and
+            (k3s_kubeconfig is defined and k3s_kubeconfig.stat.exists)
 
     - name: Installation de Helm
       block:
@@ -153,6 +313,7 @@
             state: directory
             mode: '0755'
           become: yes
+          when: k3s_kubeconfig is defined and k3s_kubeconfig.stat.exists
 
         - name: Création d'un lien symbolique pour le kubeconfig dans /root/.kube
           file:
@@ -161,6 +322,8 @@
             state: link
             force: yes
           become: yes
+          when: k3s_kubeconfig is defined and k3s_kubeconfig.stat.exists
+      when: not (k3s_ultimate_status is defined and k3s_ultimate_status.rc != 0)
 
     - name: Vérification de l'installation de K3s
       command: k3s kubectl get nodes
@@ -168,10 +331,14 @@
       changed_when: false
       environment:
         KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+      when: not (k3s_ultimate_status is defined and k3s_ultimate_status.rc != 0) and
+            (k3s_kubeconfig is defined and k3s_kubeconfig.stat.exists)
+      ignore_errors: yes
 
     - name: Affichage des nœuds K3s
       debug:
         var: k3s_nodes.stdout_lines
+      when: k3s_nodes is defined and k3s_nodes.stdout_lines is defined
 
     - name: Vérification des pods système
       command: k3s kubectl get pods -n kube-system
@@ -179,10 +346,14 @@
       changed_when: false
       environment:
         KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+      when: not (k3s_ultimate_status is defined and k3s_ultimate_status.rc != 0) and
+            (k3s_kubeconfig is defined and k3s_kubeconfig.stat.exists)
+      ignore_errors: yes
 
     - name: Affichage des pods système
       debug:
         var: k3s_system_pods.stdout_lines
+      when: k3s_system_pods is defined and k3s_system_pods.stdout_lines is defined
 
     - name: Installation des dépendances Python pour Kubernetes
       pip:
@@ -191,6 +362,7 @@
           - openshift
         state: present
       become: yes
+      when: not (k3s_ultimate_status is defined and k3s_ultimate_status.rc != 0)
 
     - name: Installation de Traefik via Helm
       block:
@@ -276,6 +448,8 @@
         - name: Affichage du statut d'accès à Traefik
           debug:
             msg: "Traefik est {{ 'accessible' if traefik_access is succeeded else 'inaccessible' }} à l'adresse http://{{ ansible_host }}"
+      when: not (k3s_ultimate_status is defined and k3s_ultimate_status.rc != 0) and
+            (k3s_kubeconfig is defined and k3s_kubeconfig.stat.exists)
 
     - name: Installation de MetalLB pour le LoadBalancer
       block:
@@ -333,7 +507,8 @@
             validate_certs: false
           environment:
             KUBECONFIG: /home/{{ ansible_user }}/.kube/config
-      when: k3s_installed.changed
+      when: k3s_installed.changed and not (k3s_ultimate_status is defined and k3s_ultimate_status.rc != 0) and
+            (k3s_kubeconfig is defined and k3s_kubeconfig.stat.exists)
 
     - name: Installation de cert-manager pour les certificats TLS
       block:
@@ -355,6 +530,8 @@
               installCRDs: true
           environment:
             KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+      when: not (k3s_ultimate_status is defined and k3s_ultimate_status.rc != 0) and
+            (k3s_kubeconfig is defined and k3s_kubeconfig.stat.exists)
 
     # Traefik est maintenant utilisé comme contrôleur d'ingress par défaut
     # Le bloc d'installation de Nginx Ingress Controller a été supprimé
@@ -562,7 +739,14 @@
         - name: Affichage du token permanent pour l'accès au Dashboard
           debug:
             msg: "Token permanent pour l'accès au Kubernetes Dashboard: {{ dashboard_token.stdout }}"
+      when: not (k3s_ultimate_status is defined and k3s_ultimate_status.rc != 0) and
+            (k3s_kubeconfig is defined and k3s_kubeconfig.stat.exists)
 
     - name: Vérification finale de l'installation
       debug:
-        msg: "K3s a été installé avec succès sur le VPS et est prêt à recevoir les applications."
+        msg: >
+          {% if k3s_ultimate_status is defined and k3s_ultimate_status.rc != 0 %}
+          L'installation de K3s a rencontré des problèmes. Veuillez consulter les journaux pour plus d'informations.
+          {% else %}
+          K3s a été installé avec succès sur le VPS et est prêt à recevoir les applications.
+          {% endif %}

@@ -192,7 +192,30 @@ function robust_ssh() {
 
     # Si une variable de sortie est fournie, y stocker la sortie
     if [[ -n "${output_var}" ]]; then
-        eval "${output_var}='${output}'"
+        # Pour les valeurs numériques, on veut éviter d'échapper les caractères
+        # car cela peut interférer avec la conversion en nombres
+        if [[ "$output" =~ ^[0-9]+$ ]]; then
+            # Si la sortie est un nombre entier, on peut l'assigner directement
+            eval "${output_var}=${output}"
+        else
+            # Nettoyage de la sortie pour extraire uniquement les chiffres si c'est une commande qui devrait retourner un nombre
+            if [[ "${command}" == *"nproc"* || "${command}" == *"free -m"* || "${command}" == *"df -m"* ]]; then
+                # Pour les commandes qui devraient retourner des nombres, on extrait uniquement les chiffres
+                local cleaned_output
+                cleaned_output=$(echo "$output" | tr -cd '0-9')
+                if [[ -n "$cleaned_output" ]]; then
+                    eval "${output_var}=${cleaned_output}"
+                else
+                    # Si après nettoyage on n'a pas de chiffres, on assigne 0
+                    eval "${output_var}=0"
+                fi
+            else
+                # Sinon, on utilise une méthode plus sûre pour gérer les caractères spéciaux
+                local escaped_output
+                escaped_output=$(printf '%q' "$output")
+                eval "${output_var}=${escaped_output}"
+            fi
+        fi
     fi
 
     return ${exit_code}
@@ -3868,6 +3891,7 @@ EOF
     local vps_cpu_cores
     local vps_memory_total
     local vps_disk_free
+    local cmd_output
 
     if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
         # Utilisation de commandes locales pour obtenir les ressources
@@ -3875,23 +3899,105 @@ EOF
         vps_memory_total=$(free -m | awk '/^Mem:/ {print $2}' 2>/dev/null || echo "0")
         vps_disk_free=$(df -m / | awk 'NR==2 {print $4}' 2>/dev/null || echo "0")
     else
-        # Utilisation de robust_ssh pour obtenir les ressources
-        robust_ssh "${ansible_host}" "${ansible_port}" "${ansible_user}" "nproc --all" "vps_cpu_cores" "true" || vps_cpu_cores="0"
-        robust_ssh "${ansible_host}" "${ansible_port}" "${ansible_user}" "free -m | awk '/^Mem:/ {print \$2}'" "vps_memory_total" "true" || vps_memory_total="0"
-        robust_ssh "${ansible_host}" "${ansible_port}" "${ansible_user}" "df -m / | awk 'NR==2 {print \$4}'" "vps_disk_free" "true" || vps_disk_free="0"
+        # Utilisation de commandes SSH directes avec capture complète de la sortie pour le débogage
+        log "DEBUG" "Récupération des informations CPU..."
+        cmd_output=$(ssh -o BatchMode=yes -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "cat /proc/cpuinfo | grep -c processor" 2>/dev/null || echo "Erreur")
+        log "DEBUG" "Sortie de la commande CPU: ${cmd_output}"
+        if [[ "${cmd_output}" == "Erreur" || ! "${cmd_output}" =~ ^[0-9]+$ ]]; then
+            log "DEBUG" "Tentative alternative pour CPU avec nproc..."
+            cmd_output=$(ssh -o BatchMode=yes -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "nproc --all" 2>/dev/null || echo "Erreur")
+            log "DEBUG" "Sortie de la commande nproc: ${cmd_output}"
+        fi
+        if [[ "${cmd_output}" == "Erreur" || ! "${cmd_output}" =~ ^[0-9]+$ ]]; then
+            vps_cpu_cores="0"
+        else
+            vps_cpu_cores="${cmd_output}"
+        fi
+
+        log "DEBUG" "Récupération des informations mémoire..."
+        cmd_output=$(ssh -o BatchMode=yes -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "free -m | grep Mem | awk '{print \$2}'" 2>/dev/null || echo "Erreur")
+        log "DEBUG" "Sortie de la commande mémoire: ${cmd_output}"
+        if [[ "${cmd_output}" == "Erreur" || ! "${cmd_output}" =~ ^[0-9]+$ ]]; then
+            log "DEBUG" "Tentative alternative pour la mémoire..."
+            cmd_output=$(ssh -o BatchMode=yes -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "cat /proc/meminfo | grep MemTotal | awk '{print \$2/1024}'" 2>/dev/null || echo "Erreur")
+            log "DEBUG" "Sortie de la commande meminfo: ${cmd_output}"
+        fi
+        if [[ "${cmd_output}" == "Erreur" || ! "${cmd_output}" =~ ^[0-9.]+$ ]]; then
+            vps_memory_total="0"
+        else
+            # Arrondir à l'entier le plus proche si c'est un nombre décimal
+            vps_memory_total=$(printf "%.0f" "${cmd_output}" 2>/dev/null || echo "${cmd_output}" | cut -d. -f1)
+        fi
+
+        log "DEBUG" "Récupération des informations disque..."
+        cmd_output=$(ssh -o BatchMode=yes -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "df -m / | grep -v Filesystem | head -1 | awk '{print \$4}'" 2>/dev/null || echo "Erreur")
+        log "DEBUG" "Sortie de la commande disque: ${cmd_output}"
+        if [[ "${cmd_output}" == "Erreur" || ! "${cmd_output}" =~ ^[0-9]+$ ]]; then
+            log "DEBUG" "Tentative alternative pour le disque..."
+            cmd_output=$(ssh -o BatchMode=yes -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "df -k / | grep -v Filesystem | head -1 | awk '{print \$4/1024}'" 2>/dev/null || echo "Erreur")
+            log "DEBUG" "Sortie de la commande df -k: ${cmd_output}"
+        fi
+        if [[ "${cmd_output}" == "Erreur" || ! "${cmd_output}" =~ ^[0-9.]+$ ]]; then
+            vps_disk_free="0"
+        else
+            # Arrondir à l'entier le plus proche si c'est un nombre décimal
+            vps_disk_free=$(printf "%.0f" "${cmd_output}" 2>/dev/null || echo "${cmd_output}" | cut -d. -f1)
+        fi
     fi
 
-    log "INFO" "Ressources du VPS: ${vps_cpu_cores} cœurs CPU, ${vps_memory_total}MB RAM, ${vps_disk_free}MB espace disque libre"
+    # Log des valeurs brutes pour le débogage
+    log "DEBUG" "Valeurs brutes après récupération: CPU=${vps_cpu_cores}, RAM=${vps_memory_total}, Disk=${vps_disk_free}"
 
-    if [[ ${vps_cpu_cores} -lt 2 ]]; then
+    # Nettoyage des valeurs pour s'assurer qu'elles sont des nombres entiers valides
+    if [[ ! "${vps_cpu_cores}" =~ ^[0-9]+$ ]]; then
+        log "DEBUG" "Nettoyage de la valeur CPU non numérique: ${vps_cpu_cores}"
+        vps_cpu_cores=$(echo "${vps_cpu_cores}" | tr -cd '0-9' || echo "0")
+    fi
+
+    if [[ ! "${vps_memory_total}" =~ ^[0-9]+$ ]]; then
+        log "DEBUG" "Nettoyage de la valeur RAM non numérique: ${vps_memory_total}"
+        vps_memory_total=$(echo "${vps_memory_total}" | tr -cd '0-9' || echo "0")
+    fi
+
+    if [[ ! "${vps_disk_free}" =~ ^[0-9]+$ ]]; then
+        log "DEBUG" "Nettoyage de la valeur disque non numérique: ${vps_disk_free}"
+        vps_disk_free=$(echo "${vps_disk_free}" | tr -cd '0-9' || echo "0")
+    fi
+
+    # Log des valeurs nettoyées pour le débogage
+    log "DEBUG" "Valeurs après nettoyage: CPU=${vps_cpu_cores}, RAM=${vps_memory_total}, Disk=${vps_disk_free}"
+
+    # Vérification que les valeurs sont des nombres valides et non nuls
+    if [[ -z "${vps_cpu_cores}" || "${vps_cpu_cores}" == "0" ]]; then
+        log "WARNING" "Impossible de déterminer le nombre de cœurs CPU du VPS"
+        vps_cpu_cores=0
+    fi
+
+    if [[ -z "${vps_memory_total}" || "${vps_memory_total}" == "0" ]]; then
+        log "WARNING" "Impossible de déterminer la mémoire totale du VPS"
+        vps_memory_total=0
+    fi
+
+    if [[ -z "${vps_disk_free}" || "${vps_disk_free}" == "0" ]]; then
+        log "WARNING" "Impossible de déterminer l'espace disque libre du VPS"
+        vps_disk_free=0
+    fi
+
+    # Affichage des ressources après nettoyage des valeurs
+    log "INFO" "Ressources du VPS (valeurs finales): ${vps_cpu_cores} cœurs CPU, ${vps_memory_total}MB RAM, ${vps_disk_free}MB espace disque libre"
+
+    # Log supplémentaire pour le débogage des valeurs finales
+    log "DEBUG" "Valeurs finales pour comparaison: CPU=${vps_cpu_cores}, RAM=${vps_memory_total}, Disk=${vps_disk_free}"
+
+    if [[ ${vps_cpu_cores} -lt 2 && ${vps_cpu_cores} -ne 0 ]]; then
         log "WARNING" "Le VPS a moins de 2 cœurs CPU (${vps_cpu_cores}), ce qui peut affecter les performances"
     fi
 
-    if [[ ${vps_memory_total} -lt 4096 ]]; then
+    if [[ ${vps_memory_total} -lt 4096 && ${vps_memory_total} -ne 0 ]]; then
         log "WARNING" "Le VPS a moins de 4GB de RAM (${vps_memory_total}MB), ce qui peut affecter les performances"
     fi
 
-    if [[ ${vps_disk_free} -lt 20000 ]]; then
+    if [[ ${vps_disk_free} -lt 20000 && ${vps_disk_free} -ne 0 ]]; then
         log "WARNING" "Le VPS a moins de 20GB d'espace disque libre (${vps_disk_free}MB), ce qui peut être insuffisant"
     fi
 
@@ -4183,22 +4289,88 @@ function restart_k3s_service() {
         return 1
     fi
 
-    # Redémarrer le service K3s
-    if ! ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl restart k3s" &>/dev/null; then
+    # Vérifier l'état actuel du service K3s
+    local k3s_status
+    k3s_status=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl status k3s" 2>/dev/null || echo "Impossible de récupérer l'état du service")
+    log "DEBUG" "État actuel du service K3s avant redémarrage:"
+    echo "${k3s_status}" | head -10
+
+    # Vérifier les ressources système avant le redémarrage
+    check_k3s_system_resources
+
+    # Redémarrer le service K3s avec capture des erreurs
+    local restart_output
+    restart_output=$(ssh -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl restart k3s 2>&1" || echo "Échec du redémarrage")
+
+    if [[ "${restart_output}" == *"failed"* || "${restart_output}" == *"Échec"* ]]; then
         log "ERROR" "Échec du redémarrage du service K3s"
+        log "ERROR" "Message d'erreur: ${restart_output}"
+
+        # Récupérer les journaux du service pour diagnostiquer le problème
+        local journal_output
+        journal_output=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo journalctl -u k3s -n 20 --no-pager" 2>/dev/null || echo "Impossible de récupérer les journaux")
+        log "DEBUG" "Journaux récents du service K3s:"
+        echo "${journal_output}"
+
+        # Vérifier les problèmes courants
+        if [[ "${journal_output}" == *"port is already allocated"* ]]; then
+            log "WARNING" "Un port requis par K3s est déjà utilisé"
+            log "INFO" "Tentative de libération des ports..."
+            ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo netstat -tulpn | grep 6443" 2>/dev/null
+        elif [[ "${journal_output}" == *"insufficient memory"* || "${journal_output}" == *"cannot allocate memory"* ]]; then
+            log "WARNING" "Mémoire insuffisante pour démarrer K3s"
+            log "INFO" "Vérification de la mémoire disponible..."
+            ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "free -m" 2>/dev/null
+        elif [[ "${journal_output}" == *"permission denied"* ]]; then
+            log "WARNING" "Problème de permissions détecté"
+            log "INFO" "Tentative de correction des permissions..."
+            ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo chmod -R 755 /var/lib/rancher/k3s 2>/dev/null || true" &>/dev/null
+            ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo chmod 600 /etc/rancher/k3s/k3s.yaml 2>/dev/null || true" &>/dev/null
+            # Nouvelle tentative après correction des permissions
+            log "INFO" "Nouvelle tentative de redémarrage après correction des permissions..."
+            ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl daemon-reload && sudo systemctl restart k3s" &>/dev/null
+        fi
+
         return 1
     fi
 
     # Attendre que le service démarre
     log "INFO" "Attente du démarrage du service K3s..."
-    sleep 10
+    local max_wait=30
+    local waited=0
+    local is_active=false
+
+    while [[ "${waited}" -lt "${max_wait}" && "${is_active}" == "false" ]]; do
+        if ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl is-active --quiet k3s" &>/dev/null; then
+            is_active=true
+        else
+            sleep 2
+            waited=$((waited + 2))
+            log "INFO" "En attente du démarrage de K3s... (${waited}/${max_wait}s)"
+        fi
+    done
 
     # Vérifier si le service est actif après le redémarrage
-    if ! ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl is-active --quiet k3s" &>/dev/null; then
-        log "ERROR" "Le service K3s n'est pas actif après le redémarrage"
+    if [[ "${is_active}" == "false" ]]; then
+        log "ERROR" "Le service K3s n'est pas actif après le redémarrage (timeout après ${max_wait}s)"
+
+        # Récupérer l'état actuel du service pour diagnostiquer le problème
+        local current_status
+        current_status=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl status k3s" 2>/dev/null || echo "Impossible de récupérer l'état du service")
+        log "DEBUG" "État actuel du service K3s après tentative de redémarrage:"
+        echo "${current_status}" | head -10
+
         return 1
     else
         log "SUCCESS" "Le service K3s a été redémarré avec succès"
+
+        # Vérifier que les composants essentiels sont en cours d'exécution
+        log "INFO" "Vérification des composants K3s..."
+        local pods_status
+        pods_status=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo kubectl get pods -n kube-system" 2>/dev/null || echo "Impossible de vérifier les pods")
+        log "DEBUG" "État des pods système:"
+        echo "${pods_status}" | head -10
+
         return 0
     fi
 }
