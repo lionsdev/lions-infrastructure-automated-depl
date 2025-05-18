@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base/namespaces
+  - ../../base/storage-classes
+  - ../../base/network-policies
+  - ../../base/resource-quotas
+
+namespace: default
+
+patches:
+  - path: patches/namespace-env.yaml
+    target:
+      kind: Namespace
+
+configMapGenerator:
+  - name: environment-config
+    namespace: default
+    literals:
+      - ENVIRONMENT=development
+      - DOMAIN=dev.lions.dev

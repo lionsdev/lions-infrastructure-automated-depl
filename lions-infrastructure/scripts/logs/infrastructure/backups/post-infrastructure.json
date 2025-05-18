@@ -4,7 +4,7 @@
   "environment": "development",
   "installation_step": "deploy_infra",
   "ansible_host": "176.57.150.2",
-  "ansible_port": "22225",
+  "ansible_port": "225",
   "ansible_user": "lionsdevadmin",
   "script_version": "1.0.0",
   "description": "Sauvegarde automatique avant l'étape deploy_infra",

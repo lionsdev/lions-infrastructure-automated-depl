@@ -24,7 +24,7 @@ readonly STATE_FILE="${LOG_DIR}/.installation_state"
 readonly LOCK_FILE="/tmp/lions_install.lock"
 readonly REQUIRED_SPACE_MB="${LIONS_REQUIRED_SPACE_MB:-5000}"  # 5 Go d'espace disque requis
 readonly TIMEOUT_SECONDS="${LIONS_TIMEOUT_SECONDS:-1800}"    # 30 minutes de timeout pour les commandes longues
-readonly REQUIRED_PORTS=(22 ${LIONS_VPS_PORT:-22225} 80 443 6443 8080 30000 30001)
+readonly REQUIRED_PORTS=(${LIONS_VPS_PORT:-22} 80 443 6443 8080 30000 30001)
 readonly SUDO_ALWAYS_ASK="${LIONS_SUDO_ALWAYS_ASK:-true}"    # Toujours demander le mot de passe pour sudo
 
 # Couleurs pour l'affichage
@@ -86,7 +86,8 @@ function log() {
     esac
 
     # Affichage du message avec formatage
-    echo -e "${log_color}${log_prefix}[${timestamp}] [${level}]${caller_info}${COLOR_RESET} ${message}"
+    # Ajout d'un caractère de retour à la ligne explicite pour éviter les problèmes d'affichage
+    echo -e "${log_color}${log_prefix}[${timestamp}] [${level}]${caller_info}${COLOR_RESET} ${message}\n"
 
     # Enregistrement dans le fichier de log
     echo "[${timestamp}] [${level}]${caller_info} ${message}" >> "${LOG_FILE}"
@@ -1064,32 +1065,98 @@ function check_ansible_collections() {
     # Configuration d'Ansible pour ignorer les avertissements de version
     log "INFO" "Configuration d'Ansible pour ignorer les avertissements de version..."
 
-    # Vérifier si le fichier ansible.cfg existe
+    # Vérifier si le fichier ansible.cfg existe et est accessible en écriture
     local ansible_cfg=""
-    if [ -f /etc/ansible/ansible.cfg ]; then
+    local can_write=false
+
+    # Vérifier si le fichier système est accessible en écriture
+    if [ -f /etc/ansible/ansible.cfg ] && [ -w /etc/ansible/ansible.cfg ]; then
         ansible_cfg="/etc/ansible/ansible.cfg"
+        can_write=true
+    # Vérifier si le fichier utilisateur existe
     elif [ -f ~/.ansible.cfg ]; then
         ansible_cfg="~/.ansible.cfg"
+        can_write=true
+    # Vérifier si le fichier local existe
     elif [ -f ./ansible.cfg ]; then
         ansible_cfg="./ansible.cfg"
+        can_write=true
+    # Si le fichier système existe mais n'est pas accessible en écriture, utiliser le fichier utilisateur
+    elif [ -f /etc/ansible/ansible.cfg ]; then
+        log "WARNING" "Le fichier /etc/ansible/ansible.cfg existe mais n'est pas accessible en écriture"
+        log "INFO" "Création d'un fichier de configuration utilisateur ~/.ansible.cfg"
+        ansible_cfg="$HOME/.ansible.cfg"
+        # Copier le contenu du fichier système si possible
+        if [ -r /etc/ansible/ansible.cfg ]; then
+            cp /etc/ansible/ansible.cfg "$HOME/.ansible.cfg" 2>/dev/null || echo "[defaults]" > "$HOME/.ansible.cfg"
+        else
+            echo "[defaults]" > "$HOME/.ansible.cfg"
+        fi
+        can_write=true
+    # Sinon, créer un nouveau fichier local
     else
         log "INFO" "Aucun fichier ansible.cfg trouvé, création d'un nouveau fichier..."
         ansible_cfg="./ansible.cfg"
         echo "[defaults]" > "${ansible_cfg}"
+        can_write=true
     fi
 
-    # Ajouter ou mettre à jour l'option collections_on_ansible_version_mismatch
-    if grep -q "collections_on_ansible_version_mismatch" "${ansible_cfg}"; then
-        sed -i 's/collections_on_ansible_version_mismatch.*/collections_on_ansible_version_mismatch = ignore/' "${ansible_cfg}"
-    else
-        # Trouver la section [defaults] et ajouter l'option après
-        if ! grep -q "\[defaults\]" "${ansible_cfg}"; then
-            echo "[defaults]" >> "${ansible_cfg}"
+    if [ "$can_write" = true ]; then
+        # Vérifier si le répertoire parent est accessible en écriture
+        local parent_dir=$(dirname "${ansible_cfg}")
+        if [ ! -w "${parent_dir}" ]; then
+            log "WARNING" "Le répertoire parent ${parent_dir} n'est pas accessible en écriture"
+            can_write=false
+        else
+            # Ajouter ou mettre à jour l'option collections_on_ansible_version_mismatch
+            if grep -q "collections_on_ansible_version_mismatch" "${ansible_cfg}"; then
+                if ! sed -i 's/collections_on_ansible_version_mismatch.*/collections_on_ansible_version_mismatch = ignore/' "${ansible_cfg}" 2>/dev/null; then
+                    log "WARNING" "Impossible de modifier ${ansible_cfg} avec sed, tentative avec une autre méthode"
+                    # Méthode alternative pour Windows/WSL
+                    local temp_file=$(mktemp)
+                    grep -v "collections_on_ansible_version_mismatch" "${ansible_cfg}" > "${temp_file}" && \
+                    echo "collections_on_ansible_version_mismatch = ignore" >> "${temp_file}" && \
+                    cat "${temp_file}" > "${ansible_cfg}" && \
+                    rm "${temp_file}" || {
+                        log "WARNING" "Impossible de modifier ${ansible_cfg}, utilisation de la variable d'environnement"
+                        can_write=false
+                    }
+                fi
+            else
+                # Trouver la section [defaults] et ajouter l'option après
+                if ! grep -q "\[defaults\]" "${ansible_cfg}"; then
+                    echo "[defaults]" >> "${ansible_cfg}" || {
+                        log "WARNING" "Impossible d'ajouter la section [defaults] à ${ansible_cfg}"
+                        can_write=false
+                    }
+                fi
+
+                if [ "$can_write" = true ]; then
+                    if ! sed -i '/\[defaults\]/a collections_on_ansible_version_mismatch = ignore' "${ansible_cfg}" 2>/dev/null; then
+                        log "WARNING" "Impossible de modifier ${ansible_cfg} avec sed, tentative avec une autre méthode"
+                        # Méthode alternative pour Windows/WSL
+                        echo "collections_on_ansible_version_mismatch = ignore" >> "${ansible_cfg}" || {
+                            log "WARNING" "Impossible d'ajouter l'option à ${ansible_cfg}, utilisation de la variable d'environnement"
+                            can_write=false
+                        }
+                    fi
+                fi
+            fi
+
+            if [ "$can_write" = true ]; then
+                log "SUCCESS" "Configuration d'Ansible mise à jour dans ${ansible_cfg}"
+            fi
         fi
-        sed -i '/\[defaults\]/a collections_on_ansible_version_mismatch = ignore' "${ansible_cfg}"
     fi
 
-    log "SUCCESS" "Configuration d'Ansible mise à jour dans ${ansible_cfg}"
+    if [ "$can_write" = false ]; then
+        log "WARNING" "Impossible d'écrire dans les fichiers de configuration Ansible"
+        log "INFO" "Utilisation de la variable d'environnement ANSIBLE_COLLECTIONS_ON_ANSIBLE_VERSION_MISMATCH"
+    fi
+
+    # Définir la variable d'environnement comme solution de secours
+    export ANSIBLE_COLLECTIONS_ON_ANSIBLE_VERSION_MISMATCH=ignore
+    log "SUCCESS" "Variable d'environnement ANSIBLE_COLLECTIONS_ON_ANSIBLE_VERSION_MISMATCH définie sur 'ignore'"
 
     return 0
 }
@@ -1163,13 +1230,105 @@ function check_python_dependencies() {
         for module in "${missing_modules[@]}"; do
             log "INFO" "Installation du module: ${module}"
 
-            if ! ${pip_cmd} install "${module}" &>/dev/null; then
-                log "ERROR" "Échec de l'installation du module: ${module}"
+            # Première tentative: installation standard
+            if ! ${pip_cmd} install "${module}" --no-cache-dir; then
+                log "WARNING" "Échec de l'installation standard du module: ${module}"
                 log "INFO" "Tentative d'installation avec sudo..."
 
-                if ! secure_sudo ${pip_cmd} install "${module}" &>/dev/null; then
-                    log "ERROR" "Échec de l'installation du module avec sudo: ${module}"
-                    return 1
+                # Deuxième tentative: installation avec sudo
+                if ! secure_sudo ${pip_cmd} install "${module}" --no-cache-dir; then
+                    log "WARNING" "Échec de l'installation avec sudo du module: ${module}"
+                    log "INFO" "Tentative d'installation avec --user..."
+
+                    # Troisième tentative: installation avec --user
+                    if ! ${pip_cmd} install --user "${module}" --no-cache-dir; then
+                        log "WARNING" "Échec de l'installation avec --user du module: ${module}"
+                        log "INFO" "Tentative d'installation avec pip et le module spécifique..."
+
+                        # Quatrième tentative: installation avec pip et le module spécifique
+                        if [[ "${module}" == "kubernetes" ]]; then
+                            if ! ${pip_cmd} install kubernetes==26.1.0 --no-cache-dir; then
+                                log "WARNING" "Échec de l'installation avec version spécifique du module: ${module}"
+                                log "INFO" "Tentative d'installation via le gestionnaire de paquets système..."
+
+                                # Cinquième tentative: installation via le gestionnaire de paquets système
+                                local pkg_installed=false
+                                if command_exists apt-get; then
+                                    if secure_sudo apt-get install -y python3-kubernetes; then
+                                        pkg_installed=true
+                                    fi
+                                elif command_exists dnf; then
+                                    if secure_sudo dnf install -y python3-kubernetes; then
+                                        pkg_installed=true
+                                    fi
+                                elif command_exists yum; then
+                                    if secure_sudo yum install -y python3-kubernetes; then
+                                        pkg_installed=true
+                                    fi
+                                elif command_exists pacman; then
+                                    if secure_sudo pacman -S --noconfirm python-kubernetes; then
+                                        pkg_installed=true
+                                    fi
+                                elif command_exists zypper; then
+                                    if secure_sudo zypper install -y python3-kubernetes; then
+                                        pkg_installed=true
+                                    fi
+                                fi
+
+                                if [ "$pkg_installed" = true ]; then
+                                    log "SUCCESS" "Installation du module réussie via le gestionnaire de paquets: ${module}"
+                                else
+                                    log "ERROR" "Échec de toutes les tentatives d'installation du module: ${module}"
+                                    return 1
+                                fi
+                            else
+                                log "SUCCESS" "Installation du module réussie avec version spécifique: ${module}"
+                            fi
+                        elif [[ "${module}" == "openshift" ]]; then
+                            if ! ${pip_cmd} install openshift==0.13.2 --no-cache-dir; then
+                                log "WARNING" "Échec de l'installation avec version spécifique du module: ${module}"
+                                log "INFO" "Tentative d'installation via le gestionnaire de paquets système..."
+
+                                # Cinquième tentative: installation via le gestionnaire de paquets système
+                                local pkg_installed=false
+                                if command_exists apt-get; then
+                                    if secure_sudo apt-get install -y python3-openshift; then
+                                        pkg_installed=true
+                                    fi
+                                elif command_exists dnf; then
+                                    if secure_sudo dnf install -y python3-openshift; then
+                                        pkg_installed=true
+                                    fi
+                                elif command_exists yum; then
+                                    if secure_sudo yum install -y python3-openshift; then
+                                        pkg_installed=true
+                                    fi
+                                elif command_exists pacman; then
+                                    if secure_sudo pacman -S --noconfirm python-openshift; then
+                                        pkg_installed=true
+                                    fi
+                                elif command_exists zypper; then
+                                    if secure_sudo zypper install -y python3-openshift; then
+                                        pkg_installed=true
+                                    fi
+                                fi
+
+                                if [ "$pkg_installed" = true ]; then
+                                    log "SUCCESS" "Installation du module réussie via le gestionnaire de paquets: ${module}"
+                                else
+                                    log "ERROR" "Échec de toutes les tentatives d'installation du module: ${module}"
+                                    return 1
+                                fi
+                            else
+                                log "SUCCESS" "Installation du module réussie avec version spécifique: ${module}"
+                            fi
+                        else
+                            log "ERROR" "Échec de toutes les tentatives d'installation du module: ${module}"
+                            return 1
+                        fi
+                    else
+                        log "SUCCESS" "Installation du module réussie avec --user: ${module}"
+                    fi
                 else
                     log "SUCCESS" "Installation du module réussie avec sudo: ${module}"
                 fi
@@ -1179,6 +1338,26 @@ function check_python_dependencies() {
         done
     else
         log "INFO" "Tous les modules Python requis sont déjà installés"
+    fi
+
+    # Vérification finale que tous les modules sont correctement installés
+    local verification_failed=false
+    for module in "${required_modules[@]}"; do
+        log "INFO" "Vérification finale du module Python: ${module}"
+
+        # Tentative d'importation du module pour vérifier qu'il est utilisable
+        if ! python3 -c "import ${module}" 2>/dev/null; then
+            log "WARNING" "Le module ${module} ne peut pas être importé malgré l'installation"
+            verification_failed=true
+        else
+            log "SUCCESS" "Module ${module} correctement installé et importable"
+        fi
+    done
+
+    if [ "$verification_failed" = true ]; then
+        log "WARNING" "Certains modules Python ne sont pas correctement installés"
+        log "WARNING" "L'installation pourrait rencontrer des problèmes ultérieurement"
+        # Ne pas échouer ici, car les modules pourraient être disponibles d'une autre manière
     fi
 
     return 0
@@ -1680,7 +1859,8 @@ try:
             first_host = next(iter(vps_hosts))
             host_info = vps_hosts[first_host]
             vps_host = host_info.get('ansible_host')
-            vps_port = host_info.get('ansible_port', 22)
+            default_port = os.environ.get('LIONS_VPS_PORT', '225')
+            vps_port = host_info.get('ansible_port', default_port)
             vps_user = host_info.get('ansible_user')
 
     # Recherche dans les variables globales si non trouvé
@@ -1715,7 +1895,7 @@ EOF
 
         # Utilisation de grep avec timeout pour éviter les blocages
         ansible_host=$(timeout 5 grep -A10 "hosts:" "${ANSIBLE_DIR}/${inventory_file}" | grep "ansible_host:" | head -1 | awk -F': ' '{print $2}' | tr -d ' ' 2>/dev/null || echo "")
-        ansible_port=$(timeout 5 grep -A10 "hosts:" "${ANSIBLE_DIR}/${inventory_file}" | grep "ansible_port:" | head -1 | awk -F': ' '{print $2}' | tr -d ' ' 2>/dev/null || echo "22")
+        ansible_port=$(timeout 5 grep -A10 "hosts:" "${ANSIBLE_DIR}/${inventory_file}" | grep "ansible_port:" | head -1 | awk -F': ' '{print $2}' | tr -d ' ' 2>/dev/null || echo "${LIONS_VPS_PORT:-22}")
         ansible_user=$(timeout 5 grep -A10 "hosts:" "${ANSIBLE_DIR}/${inventory_file}" | grep "ansible_user:" | head -1 | awk -F': ' '{print $2}' | tr -d ' ' 2>/dev/null || echo "")
 
         # Si toujours pas trouvé, chercher dans les variables globales
@@ -1801,7 +1981,7 @@ EOF
 
         # Utilisation de grep avec timeout pour éviter les blocages
         ansible_host=$(timeout 5 grep -A10 "hosts:" "${ANSIBLE_DIR}/${inventory_file}" | grep "ansible_host:" | head -1 | awk -F': ' '{print $2}' | tr -d ' ' 2>/dev/null || echo "")
-        ansible_port=$(timeout 5 grep -A10 "hosts:" "${ANSIBLE_DIR}/${inventory_file}" | grep "ansible_port:" | head -1 | awk -F': ' '{print $2}' | tr -d ' ' 2>/dev/null || echo "22")
+        ansible_port=$(timeout 5 grep -A10 "hosts:" "${ANSIBLE_DIR}/${inventory_file}" | grep "ansible_port:" | head -1 | awk -F': ' '{print $2}' | tr -d ' ' 2>/dev/null || echo "${LIONS_VPS_PORT:-22}")
         ansible_user=$(timeout 5 grep -A10 "hosts:" "${ANSIBLE_DIR}/${inventory_file}" | grep "ansible_user:" | head -1 | awk -F': ' '{print $2}' | tr -d ' ' 2>/dev/null || echo "")
 
         # Si toujours pas trouvé, chercher dans les variables globales
@@ -1831,7 +2011,7 @@ EOF
 
     # Valeurs par défaut si non trouvées
     ansible_host="${ansible_host:-localhost}"
-    ansible_port="${ansible_port:-22}"
+    ansible_port="${ansible_port:-${LIONS_VPS_PORT:-225}}"
     ansible_user="${ansible_user:-$(whoami)}"
 
     log "INFO" "Informations d'inventaire extraites:"
@@ -1945,9 +2125,16 @@ function open_required_ports() {
                 continue
             fi
 
+            # Validation du port
+            if ! [[ "${port}" =~ ^[0-9]+$ ]] || [ "${port}" -lt 1 ] || [ "${port}" -gt 65535 ]; then
+                log "WARNING" "Port invalide: ${port}. Les ports doivent être des nombres entre 1 et 65535."
+                success=false
+                continue
+            fi
+
             # Ouverture du port TCP
             log "INFO" "Ouverture du port ${port}/tcp (commande interactive, veuillez entrer votre mot de passe si demandé)..."
-            if ! sudo ufw allow ${port}/tcp; then
+            if ! sudo ufw allow "${port}/tcp"; then
                 log "ERROR" "Impossible d'ouvrir le port ${port}/tcp"
                 success=false
                 continue
@@ -1955,7 +2142,7 @@ function open_required_ports() {
 
             # Ouverture du port UDP
             log "INFO" "Ouverture du port ${port}/udp (commande interactive, veuillez entrer votre mot de passe si demandé)..."
-            if ! sudo ufw allow ${port}/udp; then
+            if ! sudo ufw allow "${port}/udp"; then
                 log "WARNING" "Impossible d'ouvrir le port ${port}/udp"
                 # Ne pas échouer pour UDP, car certains services n'utilisent que TCP
             fi
@@ -1972,9 +2159,16 @@ function open_required_ports() {
                 continue
             fi
 
+            # Validation du port
+            if ! [[ "${port}" =~ ^[0-9]+$ ]] || [ "${port}" -lt 1 ] || [ "${port}" -gt 65535 ]; then
+                log "WARNING" "Port invalide: ${port}. Les ports doivent être des nombres entre 1 et 65535."
+                success=false
+                continue
+            fi
+
             # Ouverture du port TCP
             log "INFO" "Ouverture du port ${port}/tcp sur le VPS (commande interactive, veuillez entrer votre mot de passe si demandé)..."
-            local ssh_cmd="ssh -tt -o StrictHostKeyChecking=no -o ConnectTimeout=${timeout} -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw allow ${port}/tcp\""
+            local ssh_cmd="ssh -tt -o StrictHostKeyChecking=no -o ConnectTimeout=${timeout} -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw allow \\\"${port}/tcp\\\"\""
             log "DEBUG" "Exécution de la commande avec eval: ${ssh_cmd}"
             eval "${ssh_cmd}"
             if [ $? -ne 0 ]; then
@@ -1985,7 +2179,7 @@ function open_required_ports() {
 
             # Ouverture du port UDP
             log "INFO" "Ouverture du port ${port}/udp sur le VPS (commande interactive, veuillez entrer votre mot de passe si demandé)..."
-            local ssh_cmd="ssh -tt -o StrictHostKeyChecking=no -o ConnectTimeout=${timeout} -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw allow ${port}/udp\""
+            local ssh_cmd="ssh -tt -o StrictHostKeyChecking=no -o ConnectTimeout=${timeout} -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw allow \\\"${port}/udp\\\"\""
             log "DEBUG" "Exécution de la commande avec eval: ${ssh_cmd}"
             eval "${ssh_cmd}"
             if [ $? -ne 0 ]; then
@@ -2220,6 +2414,8 @@ function check_network() {
             log "WARNING" "Port ${port} non accessible sur ${target_host}"
             closed_ports+=("${port}")
         fi
+        # Ajout d'un petit délai entre chaque vérification de port pour éviter les problèmes d'affichage
+        sleep 0.05
     done
 
     # Résumé des ports
@@ -2227,8 +2423,14 @@ function check_network() {
         log "SUCCESS" "Tous les ports requis sont accessibles sur ${target_host}"
     else
         log "WARNING" "Certains ports requis ne sont pas accessibles sur ${target_host}"
+        # Utilisation d'IFS pour formater les listes de ports avec des virgules
+        local IFS=","
         log "INFO" "Ports ouverts: ${open_ports[*]}"
+        # Ajout d'un délai pour s'assurer que les messages sont affichés séparément
+        sleep 0.1
         log "WARNING" "Ports fermés: ${closed_ports[*]}"
+        # Restauration de l'IFS par défaut
+        unset IFS
 
         # Ouverture automatique des ports requis sans demander à l'utilisateur
         log "INFO" "Des ports requis sont fermés. Ouverture automatique des ports..."
@@ -2259,7 +2461,13 @@ function check_network() {
                     log "WARNING" "Certains ports sont toujours inaccessibles malgré l'ouverture dans le pare-feu"
                     log "WARNING" "Cela peut être dû à un pare-feu externe ou à des services non démarrés"
                     closed_ports=("${still_closed_ports[@]}")
+                    # Utilisation d'IFS pour formater la liste des ports avec des virgules
+                    local IFS=","
                     log "INFO" "Ports toujours fermés: ${closed_ports[*]}"
+                    # Restauration de l'IFS par défaut
+                    unset IFS
+                    # Ajout d'un délai pour s'assurer que les messages suivants sont affichés séparément
+                    sleep 0.1
                 fi
             else
                 log "WARNING" "Impossible d'ouvrir automatiquement certains ports"
@@ -3168,42 +3376,370 @@ function verifier_prerequis() {
 
     # Vérification des fichiers Ansible
     log "INFO" "Vérification des fichiers Ansible..."
-    if [[ ! -d "${ANSIBLE_DIR}/inventories/${environment}" ]]; then
-        log "ERROR" "Le répertoire d'inventaire pour l'environnement ${environment} n'existe pas: ${ANSIBLE_DIR}/inventories/${environment}"
-        cleanup
-        exit 1
+
+    # Adaptation des chemins pour Windows si nécessaire
+    local inventory_dir="${ANSIBLE_DIR}/inventories/${environment}"
+    local is_windows=false
+
+    if [[ "${os_name}" == *"MINGW"* || "${os_name}" == *"MSYS"* || "${os_name}" == *"CYGWIN"* || "${os_name}" == *"Windows"* || "${os_name}" == *"WSL"* ]]; then
+        is_windows=true
+        log "DEBUG" "Environnement Windows/WSL détecté, adaptation des chemins"
+
+        # Convertir les chemins pour Windows
+        if [[ "${inventory_dir}" == *"/"* && "${inventory_dir}" != *"\\"* ]]; then
+            local inventory_dir_win=$(echo "${inventory_dir}" | tr '/' '\\')
+            log "DEBUG" "Chemin d'inventaire adapté pour Windows: ${inventory_dir_win}"
+
+            # Vérifier si le chemin converti existe
+            if [[ -d "${inventory_dir_win}" ]]; then
+                log "DEBUG" "Utilisation du chemin Windows pour le répertoire d'inventaire"
+                inventory_dir="${inventory_dir_win}"
+            else
+                log "DEBUG" "Le chemin Windows n'existe pas, vérification du chemin original"
+            fi
+        fi
     fi
 
-    if [[ ! -f "${ANSIBLE_DIR}/${inventory_file}" ]]; then
-        log "ERROR" "Le fichier d'inventaire n'existe pas: ${ANSIBLE_DIR}/${inventory_file}"
-        cleanup
-        exit 1
+    if [[ ! -d "${inventory_dir}" ]]; then
+        log "INFO" "Le répertoire d'inventaire pour l'environnement ${environment} n'existe pas: ${inventory_dir}"
+        log "INFO" "Création du répertoire d'inventaire..."
+
+        # Création du répertoire avec gestion d'erreur améliorée
+        if ! mkdir -p "${inventory_dir}" 2>/dev/null; then
+            # Tentative avec le chemin original si le chemin Windows échoue
+            if [[ "${is_windows}" == "true" && "${inventory_dir}" == *"\\"* ]]; then
+                local inventory_dir_unix=$(echo "${inventory_dir}" | tr '\\' '/')
+                log "DEBUG" "Tentative avec le chemin Unix: ${inventory_dir_unix}"
+                if ! mkdir -p "${inventory_dir_unix}" 2>/dev/null; then
+                    log "ERROR" "Impossible de créer le répertoire d'inventaire: ${inventory_dir}"
+                    cleanup
+                    exit 1
+                else
+                    inventory_dir="${inventory_dir_unix}"
+                fi
+            else
+                log "ERROR" "Impossible de créer le répertoire d'inventaire: ${inventory_dir}"
+                cleanup
+                exit 1
+            fi
+        fi
+        log "SUCCESS" "Répertoire d'inventaire créé: ${inventory_dir}"
     fi
 
-    if [[ ! -f "${ANSIBLE_DIR}/playbooks/init-vps.yml" ]]; then
-        log "ERROR" "Le playbook d'initialisation du VPS n'existe pas: ${ANSIBLE_DIR}/playbooks/init-vps.yml"
-        cleanup
-        exit 1
+    # Adaptation des chemins pour Windows si nécessaire
+    local inventory_file_path="${ANSIBLE_DIR}/${inventory_file}"
+    if [[ "${os_name}" == *"MINGW"* || "${os_name}" == *"MSYS"* || "${os_name}" == *"CYGWIN"* || "${os_name}" == *"Windows"* ]]; then
+        # Convertir les chemins pour Windows
+        if [[ "${inventory_file_path}" == *"/"* && "${inventory_file_path}" != *"\\"* ]]; then
+            local inventory_file_path_win=$(echo "${inventory_file_path}" | tr '/' '\\')
+            log "DEBUG" "Chemin du fichier d'inventaire adapté pour Windows: ${inventory_file_path_win}"
+
+            # Vérifier si le chemin converti existe
+            if [[ -f "${inventory_file_path_win}" ]]; then
+                log "DEBUG" "Utilisation du chemin Windows pour le fichier d'inventaire"
+                inventory_file_path="${inventory_file_path_win}"
+            else
+                log "DEBUG" "Le chemin Windows n'existe pas, vérification du chemin original"
+            fi
+        fi
     fi
 
-    if [[ ! -f "${ANSIBLE_DIR}/playbooks/install-k3s.yml" ]]; then
-        log "ERROR" "Le playbook d'installation de K3s n'existe pas: ${ANSIBLE_DIR}/playbooks/install-k3s.yml"
-        cleanup
-        exit 1
+    if [[ ! -f "${inventory_file_path}" ]]; then
+        log "WARNING" "Le fichier d'inventaire n'existe pas: ${inventory_file_path}"
+        log "INFO" "Création d'un fichier d'inventaire par défaut..."
+
+        # Créer le répertoire parent si nécessaire
+        mkdir -p "$(dirname "${inventory_file_path}")" || {
+            log "ERROR" "Impossible de créer le répertoire parent pour le fichier d'inventaire"
+            cleanup
+            exit 1
+        }
+
+        # Créer un fichier d'inventaire par défaut
+        cat > "${inventory_file_path}" << EOF
+---
+all:
+  children:
+    vps:
+      hosts:
+        contabo-vps:
+          ansible_host: ${LIONS_VPS_HOST:-176.57.150.2}
+          ansible_port: ${LIONS_VPS_PORT:-225}
+          ansible_user: ${LIONS_VPS_USER:-lionsdevadmin}
+          ansible_python_interpreter: /usr/bin/python3
+          ansible_connection: local
+    kubernetes:
+      hosts:
+        contabo-vps:
+          ansible_host: ${LIONS_VPS_HOST:-176.57.150.2}
+          ansible_port: ${LIONS_VPS_PORT:-225}
+          ansible_connection: local
+    databases:
+      hosts:
+        contabo-vps:
+          ansible_host: ${LIONS_VPS_HOST:-176.57.150.2}
+          ansible_port: ${LIONS_VPS_PORT:-225}
+          ansible_connection: local
+    monitoring:
+      hosts:
+        contabo-vps:
+          ansible_host: ${LIONS_VPS_HOST:-176.57.150.2}
+          ansible_port: ${LIONS_VPS_PORT:-225}
+          ansible_connection: local
+  vars:
+    ansible_user: ${LIONS_VPS_USER:-lionsdevadmin}
+    ansible_become: yes
+    environment: ${environment}
+    domain_name: ${LIONS_DOMAIN:-dev.lions.dev}
+EOF
+
+        log "SUCCESS" "Fichier d'inventaire créé: ${inventory_file_path}"
     fi
+
+    # Vérification des playbooks avec adaptation des chemins pour Windows
+    local playbooks=(
+        "init-vps.yml"
+        "install-k3s.yml"
+    )
+
+    for playbook in "${playbooks[@]}"; do
+        local playbook_path="${ANSIBLE_DIR}/playbooks/${playbook}"
+
+        # Adaptation des chemins pour Windows si nécessaire
+        if [[ "${os_name}" == *"MINGW"* || "${os_name}" == *"MSYS"* || "${os_name}" == *"CYGWIN"* || "${os_name}" == *"Windows"* ]]; then
+            # Convertir les chemins pour Windows
+            if [[ "${playbook_path}" == *"/"* && "${playbook_path}" != *"\\"* ]]; then
+                local playbook_path_win=$(echo "${playbook_path}" | tr '/' '\\')
+                log "DEBUG" "Chemin du playbook adapté pour Windows: ${playbook_path_win}"
+
+                # Vérifier si le chemin converti existe
+                if [[ -f "${playbook_path_win}" ]]; then
+                    log "DEBUG" "Utilisation du chemin Windows pour le playbook"
+                    playbook_path="${playbook_path_win}"
+                else
+                    log "DEBUG" "Le chemin Windows n'existe pas, vérification du chemin original"
+                fi
+            fi
+        fi
+
+        if [[ ! -f "${playbook_path}" ]]; then
+            log "ERROR" "Le playbook ${playbook} n'existe pas: ${playbook_path}"
+            log "ERROR" "Veuillez vérifier que tous les playbooks nécessaires sont présents dans le répertoire ${ANSIBLE_DIR}/playbooks/"
+            cleanup
+            exit 1
+        fi
+    done
 
     # Vérification des fichiers Kubernetes
     log "INFO" "Vérification des fichiers Kubernetes..."
-    if [[ ! -d "${PROJECT_ROOT}/kubernetes/overlays/${environment}" ]]; then
-        log "ERROR" "Le répertoire d'overlay Kubernetes pour l'environnement ${environment} n'existe pas: ${PROJECT_ROOT}/kubernetes/overlays/${environment}"
-        cleanup
-        exit 1
+
+    # Adaptation des chemins pour Windows si nécessaire
+    local k8s_overlay_dir="${PROJECT_ROOT}/kubernetes/overlays/${environment}"
+    local is_windows=false
+
+    if [[ "${os_name}" == *"MINGW"* || "${os_name}" == *"MSYS"* || "${os_name}" == *"CYGWIN"* || "${os_name}" == *"Windows"* || "${os_name}" == *"WSL"* ]]; then
+        is_windows=true
+        log "DEBUG" "Environnement Windows/WSL détecté, adaptation des chemins Kubernetes"
+
+        # Convertir les chemins pour Windows
+        if [[ "${k8s_overlay_dir}" == *"/"* && "${k8s_overlay_dir}" != *"\\"* ]]; then
+            local k8s_overlay_dir_win=$(echo "${k8s_overlay_dir}" | tr '/' '\\')
+            log "DEBUG" "Chemin d'overlay Kubernetes adapté pour Windows: ${k8s_overlay_dir_win}"
+
+            # Vérifier si le chemin converti existe
+            if [[ -d "${k8s_overlay_dir_win}" ]]; then
+                log "DEBUG" "Utilisation du chemin Windows pour le répertoire d'overlay Kubernetes"
+                k8s_overlay_dir="${k8s_overlay_dir_win}"
+            else
+                log "DEBUG" "Le chemin Windows n'existe pas, vérification du chemin original"
+            fi
+        fi
     fi
 
-    if [[ ! -f "${PROJECT_ROOT}/kubernetes/overlays/${environment}/kustomization.yaml" ]]; then
-        log "ERROR" "Le fichier kustomization.yaml pour l'environnement ${environment} n'existe pas: ${PROJECT_ROOT}/kubernetes/overlays/${environment}/kustomization.yaml"
-        cleanup
-        exit 1
+    if [[ ! -d "${k8s_overlay_dir}" ]]; then
+        log "INFO" "Le répertoire d'overlay Kubernetes pour l'environnement ${environment} n'existe pas: ${k8s_overlay_dir}"
+        log "INFO" "Création du répertoire d'overlay Kubernetes..."
+
+        # Création du répertoire avec gestion d'erreur améliorée
+        if ! mkdir -p "${k8s_overlay_dir}" 2>/dev/null; then
+            # Tentative avec le chemin original si le chemin Windows échoue
+            if [[ "${is_windows}" == "true" && "${k8s_overlay_dir}" == *"\\"* ]]; then
+                local k8s_overlay_dir_unix=$(echo "${k8s_overlay_dir}" | tr '\\' '/')
+                log "DEBUG" "Tentative avec le chemin Unix: ${k8s_overlay_dir_unix}"
+                if ! mkdir -p "${k8s_overlay_dir_unix}" 2>/dev/null; then
+                    log "ERROR" "Impossible de créer le répertoire d'overlay Kubernetes: ${k8s_overlay_dir}"
+                    cleanup
+                    exit 1
+                else
+                    k8s_overlay_dir="${k8s_overlay_dir_unix}"
+                fi
+            else
+                log "ERROR" "Impossible de créer le répertoire d'overlay Kubernetes: ${k8s_overlay_dir}"
+                cleanup
+                exit 1
+            fi
+        fi
+        log "SUCCESS" "Répertoire d'overlay Kubernetes créé: ${k8s_overlay_dir}"
+    fi
+
+    # Vérification du fichier kustomization.yaml
+    local kustomization_file="${k8s_overlay_dir}/kustomization.yaml"
+
+    if [[ "${is_windows}" == "true" ]]; then
+        # Convertir les chemins pour Windows
+        if [[ "${kustomization_file}" == *"/"* && "${kustomization_file}" != *"\\"* ]]; then
+            local kustomization_file_win=$(echo "${kustomization_file}" | tr '/' '\\')
+            log "DEBUG" "Chemin du fichier kustomization.yaml adapté pour Windows: ${kustomization_file_win}"
+
+            # Vérifier si le chemin converti existe
+            if [[ -f "${kustomization_file_win}" ]]; then
+                log "DEBUG" "Utilisation du chemin Windows pour le fichier kustomization.yaml"
+                kustomization_file="${kustomization_file_win}"
+            else
+                log "DEBUG" "Le chemin Windows n'existe pas, vérification du chemin original"
+            fi
+        fi
+    fi
+
+    if [[ ! -f "${kustomization_file}" ]]; then
+        log "INFO" "Le fichier kustomization.yaml pour l'environnement ${environment} n'existe pas: ${kustomization_file}"
+        log "INFO" "Création d'un fichier kustomization.yaml par défaut..."
+
+        # Tentative de création du fichier avec gestion d'erreur améliorée
+        if ! cat > "${kustomization_file}" << EOF 2>/dev/null; then
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base/namespaces
+  - ../../base/storage-classes
+  - ../../base/network-policies
+  - ../../base/resource-quotas
+
+namespace: default
+
+patches:
+  - path: patches/namespace-env.yaml
+    target:
+      kind: Namespace
+
+configMapGenerator:
+  - name: environment-config
+    namespace: default
+    literals:
+      - ENVIRONMENT=${environment}
+      - DOMAIN=${LIONS_DOMAIN:-dev.lions.dev}
+EOF
+            # Tentative avec le chemin alternatif si le chemin Windows échoue
+            if [[ "${is_windows}" == "true" && "${kustomization_file}" == *"\\"* ]]; then
+                local kustomization_file_unix=$(echo "${kustomization_file}" | tr '\\' '/')
+                log "DEBUG" "Tentative avec le chemin Unix pour kustomization.yaml: ${kustomization_file_unix}"
+                if ! cat > "${kustomization_file_unix}" << EOF 2>/dev/null; then
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base/namespaces
+  - ../../base/storage-classes
+  - ../../base/network-policies
+  - ../../base/resource-quotas
+
+namespace: default
+
+patches:
+  - path: patches/namespace-env.yaml
+    target:
+      kind: Namespace
+
+configMapGenerator:
+  - name: environment-config
+    namespace: default
+    literals:
+      - ENVIRONMENT=${environment}
+      - DOMAIN=${LIONS_DOMAIN:-dev.lions.dev}
+EOF
+                    log "ERROR" "Impossible de créer le fichier kustomization.yaml: ${kustomization_file}"
+                    cleanup
+                    exit 1
+                else
+                    kustomization_file="${kustomization_file_unix}"
+                fi
+            else
+                log "ERROR" "Impossible de créer le fichier kustomization.yaml: ${kustomization_file}"
+                cleanup
+                exit 1
+            fi
+        fi
+
+        # Créer le répertoire patches avec gestion d'erreur améliorée
+        local patches_dir="${k8s_overlay_dir}/patches"
+        if [[ "${is_windows}" == "true" && "${k8s_overlay_dir}" == *"\\"* ]]; then
+            patches_dir="${k8s_overlay_dir}\\patches"
+        fi
+
+        if ! mkdir -p "${patches_dir}" 2>/dev/null; then
+            # Tentative avec le chemin alternatif
+            if [[ "${is_windows}" == "true" ]]; then
+                local patches_dir_alt
+                if [[ "${patches_dir}" == *"\\"* ]]; then
+                    patches_dir_alt=$(echo "${patches_dir}" | tr '\\' '/')
+                else
+                    patches_dir_alt=$(echo "${patches_dir}" | tr '/' '\\')
+                fi
+                log "DEBUG" "Tentative avec le chemin alternatif pour patches: ${patches_dir_alt}"
+                if ! mkdir -p "${patches_dir_alt}" 2>/dev/null; then
+                    log "ERROR" "Impossible de créer le répertoire patches: ${patches_dir}"
+                    cleanup
+                    exit 1
+                else
+                    patches_dir="${patches_dir_alt}"
+                fi
+            else
+                log "ERROR" "Impossible de créer le répertoire patches: ${patches_dir}"
+                cleanup
+                exit 1
+            fi
+        fi
+
+        # Créer un fichier patch par défaut pour les namespaces
+        local namespace_patch="${patches_dir}/namespace-env.yaml"
+        if ! cat > "${namespace_patch}" << EOF 2>/dev/null; then
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: default
+  labels:
+    environment: ${environment}
+EOF
+            # Tentative avec le chemin alternatif
+            if [[ "${is_windows}" == "true" ]]; then
+                local namespace_patch_alt
+                if [[ "${namespace_patch}" == *"\\"* ]]; then
+                    namespace_patch_alt=$(echo "${namespace_patch}" | tr '\\' '/')
+                else
+                    namespace_patch_alt=$(echo "${namespace_patch}" | tr '/' '\\')
+                fi
+                log "DEBUG" "Tentative avec le chemin alternatif pour namespace-env.yaml: ${namespace_patch_alt}"
+                if ! cat > "${namespace_patch_alt}" << EOF 2>/dev/null; then
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: default
+  labels:
+    environment: ${environment}
+EOF
+                    log "ERROR" "Impossible de créer le fichier namespace-env.yaml: ${namespace_patch}"
+                    cleanup
+                    exit 1
+                fi
+            else
+                log "ERROR" "Impossible de créer le fichier namespace-env.yaml: ${namespace_patch}"
+                cleanup
+                exit 1
+            fi
+        fi
+
+        log "SUCCESS" "Fichier kustomization.yaml créé: ${kustomization_file}"
     fi
 
     # Extraction des informations de connexion
