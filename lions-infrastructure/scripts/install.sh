@@ -158,6 +158,46 @@ function run_with_timeout_fallback() {
     fi
 }
 
+# Fonction pour exécuter une commande SSH de manière robuste
+function robust_ssh() {
+    local timeout=10
+    local host="$1"
+    local port="$2"
+    local user="$3"
+    local command="$4"
+    local output_var="$5"  # Variable optionnelle pour stocker la sortie
+    local silent="${6:-false}"  # Option pour exécuter silencieusement
+
+    # Tentative avec BatchMode (clés SSH uniquement)
+    if [[ "${silent}" == "true" ]]; then
+        local output=$(ssh -o BatchMode=yes -o ConnectTimeout="${timeout}" -p "${port}" "${user}@${host}" "${command}" 2>/dev/null)
+        local exit_code=$?
+    else
+        local output=$(ssh -o BatchMode=yes -o ConnectTimeout="${timeout}" -p "${port}" "${user}@${host}" "${command}")
+        local exit_code=$?
+    fi
+
+    # Si la première tentative échoue, essayer avec StrictHostKeyChecking=no
+    if [[ ${exit_code} -ne 0 ]]; then
+        if [[ "${silent}" == "true" ]]; then
+            log "DEBUG" "Tentative SSH avec BatchMode a échoué, essai avec StrictHostKeyChecking=no"
+            output=$(ssh -o StrictHostKeyChecking=no -o ConnectTimeout="${timeout}" -p "${port}" "${user}@${host}" "${command}" 2>/dev/null)
+            exit_code=$?
+        else
+            log "DEBUG" "Tentative SSH avec BatchMode a échoué, essai avec StrictHostKeyChecking=no"
+            output=$(ssh -o StrictHostKeyChecking=no -o ConnectTimeout="${timeout}" -p "${port}" "${user}@${host}" "${command}")
+            exit_code=$?
+        fi
+    fi
+
+    # Si une variable de sortie est fournie, y stocker la sortie
+    if [[ -n "${output_var}" ]]; then
+        eval "${output_var}='${output}'"
+    fi
+
+    return ${exit_code}
+}
+
 # Fonction pour collecter et analyser les logs
 function collect_logs() {
     local output_dir
@@ -3774,21 +3814,49 @@ EOF
         log "INFO" "Exécution locale détectée, vérification de la connexion SSH ignorée"
     else
         log "INFO" "Vérification de la connexion SSH..."
-        if ! ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "echo 'Connexion SSH réussie'" &>/dev/null; then
+
+        # Utilisation de la fonction robust_ssh pour la vérification de connexion
+        if robust_ssh "${ansible_host}" "${ansible_port}" "${ansible_user}" "echo 'Connexion SSH réussie'" "" "true"; then
+            log "SUCCESS" "Connexion SSH réussie"
+        else
             log "ERROR" "Impossible de se connecter au VPS via SSH (${ansible_user}@${ansible_host}:${ansible_port})"
             log "ERROR" "Vérifiez vos clés SSH et les paramètres de connexion"
 
-            # Vérification des clés SSH
-            if [[ ! -f ~/.ssh/id_rsa && ! -f ~/.ssh/id_ed25519 ]]; then
+            # Vérification des clés SSH (plus complète)
+            local ssh_keys_found=false
+            local key_types=("id_rsa" "id_ed25519" "id_ecdsa" "id_dsa")
+
+            for key_type in "${key_types[@]}"; do
+                if [[ -f ~/.ssh/${key_type} ]]; then
+                    ssh_keys_found=true
+                    log "INFO" "Clé SSH trouvée: ~/.ssh/${key_type}"
+                fi
+            done
+
+            if [[ "${ssh_keys_found}" == "false" ]]; then
                 log "ERROR" "Aucune clé SSH trouvée dans ~/.ssh/"
-                log "ERROR" "Générez une paire de clés avec: ssh-keygen -t ed25519"
+
+                # Détection de WSL pour des instructions spécifiques
+                if [[ "$(uname -r)" == *"WSL"* || "$(uname -r)" == *"Microsoft"* ]]; then
+                    log "INFO" "Environnement WSL détecté. Vous pouvez:"
+                    log "INFO" "1. Générer une nouvelle clé SSH: ssh-keygen -t ed25519"
+                    log "INFO" "2. Copier vos clés Windows: cp /mnt/c/Users/$USER/.ssh/id_rsa* ~/.ssh/"
+                    log "INFO" "3. Assurez-vous que les permissions sont correctes: chmod 600 ~/.ssh/id_rsa"
+                else
+                    log "ERROR" "Générez une paire de clés avec: ssh-keygen -t ed25519"
+                fi
             fi
 
             # Vérification du fichier known_hosts
             if ! grep -q "${ansible_host}" ~/.ssh/known_hosts 2>/dev/null; then
                 log "WARNING" "L'hôte ${ansible_host} n'est pas dans le fichier known_hosts"
                 log "WARNING" "Essayez d'abord de vous connecter manuellement: ssh -p ${ansible_port} ${ansible_user}@${ansible_host}"
+                log "INFO" "Ou ajoutez l'hôte automatiquement: ssh-keyscan -p ${ansible_port} -H ${ansible_host} >> ~/.ssh/known_hosts"
             fi
+
+            # Vérification si l'utilisateur peut se connecter manuellement
+            log "INFO" "Pouvez-vous vous connecter manuellement avec: ssh -p ${ansible_port} ${ansible_user}@${ansible_host} ?"
+            log "INFO" "Si oui, vérifiez les permissions de vos clés SSH: chmod 600 ~/.ssh/id_*"
 
             cleanup
             exit 1
@@ -3807,10 +3875,10 @@ EOF
         vps_memory_total=$(free -m | awk '/^Mem:/ {print $2}' 2>/dev/null || echo "0")
         vps_disk_free=$(df -m / | awk 'NR==2 {print $4}' 2>/dev/null || echo "0")
     else
-        # Utilisation de SSH pour obtenir les ressources
-        vps_cpu_cores=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "nproc --all" 2>/dev/null || echo "0")
-        vps_memory_total=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "free -m | awk '/^Mem:/ {print \$2}'" 2>/dev/null || echo "0")
-        vps_disk_free=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "df -m / | awk 'NR==2 {print \$4}'" 2>/dev/null || echo "0")
+        # Utilisation de robust_ssh pour obtenir les ressources
+        robust_ssh "${ansible_host}" "${ansible_port}" "${ansible_user}" "nproc --all" "vps_cpu_cores" "true" || vps_cpu_cores="0"
+        robust_ssh "${ansible_host}" "${ansible_port}" "${ansible_user}" "free -m | awk '/^Mem:/ {print \$2}'" "vps_memory_total" "true" || vps_memory_total="0"
+        robust_ssh "${ansible_host}" "${ansible_port}" "${ansible_user}" "df -m / | awk 'NR==2 {print \$4}'" "vps_disk_free" "true" || vps_disk_free="0"
     fi
 
     log "INFO" "Ressources du VPS: ${vps_cpu_cores} cœurs CPU, ${vps_memory_total}MB RAM, ${vps_disk_free}MB espace disque libre"
