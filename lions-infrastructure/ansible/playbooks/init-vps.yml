@@ -59,16 +59,16 @@
     # Configuration de UFW pour utiliser les valeurs par défaut
     - name: Restauration de la configuration par défaut de UFW
       copy:
-        src: /usr/share/ufw/conf/ufw.conf.default
-        dest: /etc/ufw/ufw.conf
+        src: /etc/default/ufw
+        dest: /etc/default/ufw.backup
         remote_src: yes
         backup: yes
       ignore_errors: yes
 
     - name: Restauration de la configuration par défaut de UFW (sysctl)
       copy:
-        src: /usr/share/ufw/conf/sysctl.conf
-        dest: /etc/ufw/sysctl.conf
+        src: /etc/ufw/sysctl.conf
+        dest: /etc/ufw/sysctl.conf.backup
         remote_src: yes
         backup: yes
       ignore_errors: yes

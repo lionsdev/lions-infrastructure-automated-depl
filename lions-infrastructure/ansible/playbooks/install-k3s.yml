@@ -11,7 +11,7 @@
 
   vars:
     k3s_version: "v1.25.6+k3s1"  # Version stable de K3s
-    k3s_server_args: "--disable-cloud-controller --kube-controller-manager-arg bind-address=0.0.0.0 --kube-scheduler-arg bind-address=0.0.0.0 --no-deploy traefik"
+    k3s_server_args: "--disable-cloud-controller --kube-controller-manager-arg bind-address=0.0.0.0 --kube-scheduler-arg bind-address=0.0.0.0 --disable traefik"
     kubeconfig_local_path: "~/.kube/config"
     traefik_version: "20.10.0"  # Version sans le préfixe 'v'
 
@@ -160,14 +160,7 @@
             msg: "Informations sur le binaire K3s: {{ k3s_file_info.stdout_lines }}"
 
         - name: Tentative de réparation du binaire K3s
-          shell: |
-            # Sauvegarde du binaire existant
-            cp /usr/local/bin/k3s /usr/local/bin/k3s.bak
-            # Téléchargement d'une nouvelle copie du script d'installation
-            curl -sfL https://get.k3s.io -o /tmp/k3s-install.sh
-            # Exécution du script avec l'option de réinstallation
-            chmod +x /tmp/k3s-install.sh
-            INSTALL_K3S_SKIP_START=true /tmp/k3s-install.sh
+          shell: "cp /usr/local/bin/k3s /usr/local/bin/k3s.bak && curl -sfL https://get.k3s.io -o /tmp/k3s-install.sh && chmod +x /tmp/k3s-install.sh && INSTALL_K3S_SKIP_START=true /tmp/k3s-install.sh"
           when: k3s_final_status.stdout is defined and k3s_final_status.stdout is search("control process exited with error code")
           register: k3s_repair_attempt
 
