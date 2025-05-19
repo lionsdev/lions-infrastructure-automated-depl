@@ -102,6 +102,20 @@ func k8sConfigfile(param string) (string, error) {
 }
 
 func environment(param string) (string, error) {
+	// Support pour les environnements standards de LIONS
+	if param == "development" {
+		return "development", nil
+	}
+
+	if param == "staging" {
+		return "staging", nil
+	}
+
+	if param == "production" {
+		return "production", nil
+	}
+
+	// Support pour les environnements hérités de sigctlv2
 	if param == "default" {
 		return "default", nil
 	}

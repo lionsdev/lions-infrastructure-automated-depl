@@ -267,6 +267,19 @@
 
     - name: Configuration des permissions pour les répertoires de sauvegarde
       block:
+        - name: Vérification de l'existence de l'utilisateur
+          shell: id -u {{ ansible_user }} || echo "user_not_found"
+          register: user_check
+          changed_when: false
+          failed_when: false
+
+        - name: Création de l'utilisateur si nécessaire
+          user:
+            name: "{{ ansible_user }}"
+            shell: /bin/bash
+            createhome: yes
+          when: user_check.stdout == "user_not_found"
+
         - name: Création du répertoire .kube s'il n'existe pas
           file:
             path: "/home/{{ ansible_user }}/.kube"

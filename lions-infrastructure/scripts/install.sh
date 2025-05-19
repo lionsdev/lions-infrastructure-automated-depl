@@ -4375,6 +4375,88 @@ function restart_k3s_service() {
     fi
 }
 
+function fix_k3s_deprecated_flags() {
+    log "INFO" "Vérification et correction des drapeaux dépréciés dans la configuration K3s..."
+
+    # Vérifier si on peut accéder au VPS
+    if ! ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "echo 'Connexion réussie'" &>/dev/null; then
+        log "ERROR" "Impossible de se connecter au VPS pour corriger les drapeaux dépréciés"
+        return 1
+    fi
+
+    # Vérifier l'existence du fichier de service K3s
+    local service_exists
+    service_exists=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "test -f /etc/systemd/system/k3s.service && echo 'true' || echo 'false'" 2>/dev/null)
+
+    if [[ "${service_exists}" == "true" ]]; then
+        log "INFO" "Fichier de service K3s trouvé, vérification des drapeaux dépréciés..."
+
+        # Vérifier si le fichier contient des drapeaux dépréciés
+        local contains_deprecated
+        contains_deprecated=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "grep -q -- '--no-deploy' /etc/systemd/system/k3s.service && echo 'true' || echo 'false'" 2>/dev/null)
+
+        if [[ "${contains_deprecated}" == "true" ]]; then
+            log "WARNING" "Drapeaux dépréciés trouvés dans le fichier de service K3s"
+            log "INFO" "Remplacement des drapeaux dépréciés..."
+
+            # Remplacer les drapeaux dépréciés
+            ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo sed -i 's/--no-deploy /--disable=/g' /etc/systemd/system/k3s.service" &>/dev/null
+
+            # Recharger le daemon systemd
+            ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl daemon-reload" &>/dev/null
+
+            log "SUCCESS" "Drapeaux dépréciés remplacés avec succès"
+            return 0
+        else
+            log "INFO" "Aucun drapeau déprécié trouvé dans le fichier de service K3s"
+        fi
+    else
+        log "WARNING" "Fichier de service K3s non trouvé (/etc/systemd/system/k3s.service)"
+
+        # Vérifier s'il existe dans un autre emplacement
+        local alt_service_exists
+        alt_service_exists=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "find /etc/systemd/system -name 'k3s*.service' | wc -l" 2>/dev/null)
+
+        if [[ "${alt_service_exists}" -gt 0 ]]; then
+            log "INFO" "Fichiers de service K3s alternatifs trouvés, vérification des drapeaux dépréciés..."
+
+            # Obtenir la liste des fichiers de service K3s
+            local service_files
+            service_files=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "find /etc/systemd/system -name 'k3s*.service'" 2>/dev/null)
+
+            # Pour chaque fichier, vérifier et remplacer les drapeaux dépréciés
+            echo "${service_files}" | while read -r service_file; do
+                log "INFO" "Vérification du fichier ${service_file}..."
+
+                local file_contains_deprecated
+                file_contains_deprecated=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "grep -q -- '--no-deploy' \"${service_file}\" && echo 'true' || echo 'false'" 2>/dev/null)
+
+                if [[ "${file_contains_deprecated}" == "true" ]]; then
+                    log "WARNING" "Drapeaux dépréciés trouvés dans ${service_file}"
+                    log "INFO" "Remplacement des drapeaux dépréciés..."
+
+                    # Remplacer les drapeaux dépréciés
+                    ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo sed -i 's/--no-deploy /--disable=/g' \"${service_file}\"" &>/dev/null
+
+                    log "SUCCESS" "Drapeaux dépréciés remplacés avec succès dans ${service_file}"
+                else
+                    log "INFO" "Aucun drapeau déprécié trouvé dans ${service_file}"
+                fi
+            done
+
+            # Recharger le daemon systemd
+            ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl daemon-reload" &>/dev/null
+
+            log "SUCCESS" "Vérification et correction des drapeaux dépréciés terminées"
+            return 0
+        else
+            log "WARNING" "Aucun fichier de service K3s trouvé sur le système"
+        fi
+    fi
+
+    return 0
+}
+
 function repair_k3s() {
     log "INFO" "Tentative de réparation de l'installation K3s..."
 
@@ -4405,6 +4487,9 @@ function repair_k3s() {
     if [[ "${cni_exists}" == "false" ]]; then
         log "WARNING" "Interface CNI non détectée"
     fi
+
+    # Corriger les drapeaux dépréciés dans la configuration K3s
+    fix_k3s_deprecated_flags
 
     # Redémarrer le service après les réparations
     restart_k3s_service
@@ -4503,6 +4588,10 @@ function check_fix_k3s() {
     # Vérifier l'état du service K3s
     local k3s_active
     k3s_active=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl is-active k3s" 2>/dev/null || echo "unknown")
+
+    # Vérifier et corriger les drapeaux dépréciés, même si le service est actif
+    log "INFO" "Vérification des drapeaux dépréciés dans la configuration K3s..."
+    fix_k3s_deprecated_flags
 
     if [[ "${k3s_active}" == "active" ]]; then
         log "SUCCESS" "Le service K3s est actif et en cours d'exécution"

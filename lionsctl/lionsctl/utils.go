@@ -3,20 +3,22 @@ package lionsctl
 import (
 	"bytes"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/spf13/viper"
 )
 
-func AppName(url string) (string, error) {
-	parts := strings.Split(url, "/")
-	if len(parts) == 0 {
-		return "", fmt.Errorf("invalid url: %s", url)
+func AppName(gitUrl string) (string, error) {
+	u, err := url.Parse(gitUrl)
+	if err != nil {
+		return "", err
 	}
 
+	path := u.Path
+	parts := strings.Split(path, "/")
 	name := parts[len(parts)-1]
 	name = strings.TrimSuffix(name, ".git")
 
@@ -25,7 +27,23 @@ func AppName(url string) (string, error) {
 
 func ConfigUrl(appName, cluster string) (string, error) {
 	repoName := ConfigRepoName(appName, cluster)
-	return "https://" + viper.GetString("GIT.CFG_USERNAME") + ":" + viper.GetString("GIT.CFG_PASSWORD") + "@" + viper.GetString("GIT.DOMAIN") + "/" + viper.GetString("GIT.CFG_USERNAME") + "/" + repoName, nil
+
+	// Construire l'URL de base avec url.JoinPath
+	baseUrl, err := url.JoinPath("https://", viper.GetString("GIT.DOMAIN"), viper.GetString("GIT.CFG_USERNAME"), repoName)
+	if err != nil {
+		return "", err
+	}
+
+	// Ajouter les informations d'authentification
+	u, err := url.Parse(baseUrl)
+	if err != nil {
+		return "", err
+	}
+
+	// Définir les informations d'authentification
+	u.User = url.UserPassword(viper.GetString("GIT.CFG_USERNAME"), viper.GetString("GIT.CFG_PASSWORD"))
+
+	return u.String(), nil
 }
 
 func ConfigRepoName(name, cluster string) string {
@@ -36,16 +54,17 @@ func request(url, method string, body []byte) error {
 	log.Printf("--- REQUEST URL: %s", url)
 	log.Printf("--- REQUEST METHOD: %s", method)
 
-	req, err := http.NewRequest(method, url, bytes.NewBuffer(body))
+	bodyReader := bytes.NewReader(body)
+	req, err := http.NewRequest(method, url, bodyReader)
 	if err != nil {
 		return err
 	}
 
+	req.Header.Set("accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "token "+viper.GetString("GIT.ACCESS_TOKENS"))
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -53,12 +72,14 @@ func request(url, method string, body []byte) error {
 
 	log.Printf("--- RESPONSE STATUS: %s", resp.Status)
 
-	respBody, err := ioutil.ReadAll(resp.Body)
+	// Utiliser un buffer pour lire le corps de la réponse
+	buff := new(bytes.Buffer)
+	_, err = buff.ReadFrom(resp.Body)
 	if err != nil {
 		return err
 	}
 
-	log.Printf("--- RESPONSE BODY: %s", string(respBody))
+	log.Printf("--- RESPONSE BODY: %s", buff.String())
 
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("request failed with status: %s", resp.Status)

@@ -1,0 +1,30 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: APP_NAME # Will be replaced with the actual app name
+  namespace: APP_NAMESPACE # Will be replaced with APP_NAME-ENVIRONMENT
+  labels:
+    app: APP_NAME # Will be replaced with the actual app name
+    environment: ENVIRONMENT # Will be replaced with the actual environment
+    app.kubernetes.io/part-of: angular
+  annotations:
+    kubernetes.io/ingress.class: "traefik"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    traefik.ingress.kubernetes.io/router.entrypoints: "websecure"
+    traefik.ingress.kubernetes.io/router.tls: "true"
+spec:
+  tls:
+  - hosts:
+    - APP_NAME.ENVIRONMENT.lions.dev # Will be replaced with actual domain
+    secretName: APP_NAME-tls # Will be replaced with actual app name
+  rules:
+  - host: APP_NAME.ENVIRONMENT.lions.dev # Will be replaced with actual domain
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: APP_NAME # Will be replaced with the actual app name
+            port:
+              name: http

@@ -83,23 +83,64 @@ lionsctl pipeline -u https://github.com/lionsdev/mon-application -b main -j 17 -
 
 ## Exemples d'utilisation
 
+### Gestion des environnements
+
+LIONS Infrastructure supporte trois environnements principaux:
+
+- **development**: Environnement de développement pour les tests et le développement continu
+- **staging**: Environnement de pré-production pour les tests d'intégration et de validation
+- **production**: Environnement de production pour les applications en exploitation
+
+Vous pouvez spécifier l'environnement cible avec le paramètre `-e` ou `--environment` dans les commandes `init` et `pipeline`.
+
+### Initialiser une application pour différents environnements
+
+```bash
+# Initialiser pour l'environnement de développement (par défaut)
+lionsctl init -n mon-application -e development -i
+
+# Initialiser pour l'environnement de staging
+lionsctl init -n mon-application -e staging -i
+
+# Initialiser pour l'environnement de production
+lionsctl init -n mon-application -e production -i -v
+```
+
 ### Déployer une application Java/Quarkus
 
 ```bash
-lionsctl pipeline -u https://github.com/lionsdev/api-service -b main -j 17 -e development -m dev-team@lions.dev
+# Déployer en environnement de développement
+lionsctl pipeline -u https://github.com/lionsdev/api-service -b develop -j 17 -e development -m dev-team@lions.dev
+
+# Déployer en environnement de staging
+lionsctl pipeline -u https://github.com/lionsdev/api-service -b release -j 17 -e staging -m dev-team@lions.dev,qa@lions.dev
 ```
 
 ### Déployer une application React
 
 ```bash
+# Déployer en environnement de développement
+lionsctl pipeline -u https://github.com/lionsdev/admin-dashboard -b develop -e development -m admin@lions.dev
+
+# Déployer en environnement de production
 lionsctl pipeline -u https://github.com/lionsdev/admin-dashboard -b main -e production -m admin@lions.dev,ops@lions.dev
 ```
 
 ### Déployer avec des paramètres spécifiques
 
 ```bash
-lionsctl pipeline -u https://github.com/lionsdev/backend-service -b develop -j 17 -p dev -d "quarkus.log.level=DEBUG" -e staging
+# Déployer avec des paramètres spécifiques en environnement de staging
+lionsctl pipeline -u https://github.com/lionsdev/backend-service -b develop -j 17 -p dev -d "quarkus.log.level=DEBUG" -e staging -m dev-team@lions.dev
+
+# Déployer avec des paramètres spécifiques en environnement de production
+lionsctl pipeline -u https://github.com/lionsdev/backend-service -b main -j 17 -p prod -d "quarkus.log.level=INFO" -e production -m ops@lions.dev
 ```
+
+### Stratégies de branche recommandées par environnement
+
+- **development**: Utilisez la branche `develop` ou des branches de fonctionnalités (`feature/*`)
+- **staging**: Utilisez la branche `release` ou `staging`
+- **production**: Utilisez la branche `main` ou `master`
 
 ## Support
 

@@ -39,10 +39,11 @@ var initCmd = &cobra.Command{
 		}
 
 		iopts := lionsctl.InitRepoOptions{
-			Ingress: ingress,
-			Volume:  volume,
-			AppName: name,
-			Cluster: cluster,
+			Ingress:     ingress,
+			Volume:      volume,
+			AppName:     name,
+			Cluster:     cluster,
+			Environment: environment,
 		}
 
 		err = lionsctl.InitRepo(ctx, client, iopts)
@@ -62,6 +63,7 @@ func init() {
 	initCmd.MarkFlagRequired("name")
 	initCmd.Flags().StringVarP(&cluster, "cluster", "c", "k2", "le cluster kubernetes k1 ou k2")
 	initCmd.MarkFlagRequired("cluster")
+	initCmd.Flags().StringVarP(&environment, "environment", "e", "development", "environnement cible (development, staging, production)")
 	initCmd.Flags().BoolVarP(&ingress, "ingress", "i", false, "application avec ingress: eg -i true")
 	initCmd.Flags().BoolVarP(&volume, "volume", "v", false, "application avec volume en Gi: eg -v true")
 }

@@ -58,10 +58,11 @@ func CreateConfig(ctx context.Context, client *dagger.Client, opts *CreateGitRep
 }
 
 type InitRepoOptions struct {
-	Ingress bool
-	Volume  bool
-	AppName string
-	Cluster string
+	Ingress     bool
+	Volume      bool
+	AppName     string
+	Cluster     string
+	Environment string
 }
 
 const (

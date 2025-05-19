@@ -10,11 +10,11 @@ GIT:
    ENV_URL: https://github.com/lionsdev/
    USER_API_ENDPOINT: "/api/v3/user/repos"
    REPO_API_ENDPOINT: "/api/v3/repos"
-   ACCESS_TOKENS: "your-github-access-token"
+   ACCESS_TOKENS: "ghp_LionsInfrastructureAccessToken2025"
 HELM:
-   CONFIG_REPO_URL: https://github.com/lionsdev/config
-   CONFIG_REPO_TOKEN: "your-github-access-token"
+  CONFIG_REPO_URL: https://github.com/lionsdev/config
+  CONFIG_REPO_TOKEN: "ghp_LionsInfrastructureConfigToken2025"
 NOTIFICATION:
-   FROM_URL: notifications@lions.dev
-   SMTP_URL: "smtp://smtp.lions.dev:587"
-   SERVER_TOKEN: "your-smtp-server-token"
+  FROM_URL: notifications@lions.dev
+  SMTP_URL: "smtp://smtp.lions.dev:587"
+  SERVER_TOKEN: "smtp_LionsNotificationToken2025"

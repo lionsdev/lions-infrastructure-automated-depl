@@ -1,0 +1,155 @@
+name: Deploy Application
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - 'release/**'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'development'
+        type: choice
+        options:
+          - development
+          - staging
+          - production
+      java_version:
+        description: 'Java version'
+        required: false
+        default: '17'
+        type: choice
+        options:
+          - '11'
+          - '17'
+      profile:
+        description: 'Maven profile'
+        required: false
+        default: ''
+        type: string
+      notify:
+        description: 'Email notifications (comma-separated)'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  determine-environment:
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.set-env.outputs.environment }}
+    steps:
+      - name: Set environment based on branch or input
+        id: set-env
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "environment=${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
+          else
+            if [ "${{ github.ref }}" == "refs/heads/main" ]; then
+              echo "environment=production" >> $GITHUB_OUTPUT
+            elif [[ "${{ github.ref }}" == refs/heads/release/* ]]; then
+              echo "environment=staging" >> $GITHUB_OUTPUT
+            else
+              echo "environment=development" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+  deploy:
+    needs: determine-environment
+    runs-on: ubuntu-latest
+    environment: ${{ needs.determine-environment.outputs.environment }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Download lionsctl
+        run: |
+          curl -L -o lionsctl.tar.gz https://github.com/lionsdev/lionsctl/releases/latest/download/lionsctl-Linux-x86-64.tar.gz
+          tar -xzvf lionsctl.tar.gz
+          chmod +x lionsctl
+          sudo mv lionsctl /usr/local/bin/
+
+      - name: Configure lionsctl
+        run: |
+          mkdir -p $HOME
+          cat > $HOME/.lionsctl.yaml << EOF
+          DOCKER:
+             REGISTRY_URL: "${{ secrets.DOCKER_REGISTRY_URL }}"
+          GIT:
+             CFG_USERNAME: ${{ secrets.GIT_USERNAME }}
+             CFG_EMAIL: ${{ secrets.GIT_EMAIL }}
+             CFG_PASSWORD: ${{ secrets.GIT_PASSWORD }}
+             CFG_DEFAULT_BRNCH: main
+             DOMAIN: "github.com"
+             BASE_URL: "https://github.com"
+             ENV_URL: https://github.com/lionsdev/
+             USER_API_ENDPOINT: "/api/v3/user/repos"
+             REPO_API_ENDPOINT: "/api/v3/repos"
+             ACCESS_TOKENS: "${{ secrets.GITHUB_TOKEN }}"
+          HELM:
+            CONFIG_REPO_URL: https://github.com/lionsdev/config
+            CONFIG_REPO_TOKEN: "${{ secrets.CONFIG_REPO_TOKEN }}"
+          NOTIFICATION:
+            FROM_URL: ${{ secrets.NOTIFICATION_FROM }}
+            SMTP_URL: "${{ secrets.SMTP_URL }}"
+            SERVER_TOKEN: "${{ secrets.SMTP_TOKEN }}"
+          EOF
+
+      - name: Initialize application (if not already initialized)
+        run: |
+          # Extract app name from repository name
+          APP_NAME=$(echo ${{ github.repository }} | cut -d '/' -f 2)
+          
+          # Try to initialize the application (ignore errors if already initialized)
+          lionsctl init -n $APP_NAME -e ${{ needs.determine-environment.outputs.environment }} -i || true
+
+      - name: Deploy application
+        run: |
+          # Extract app name from repository name
+          APP_NAME=$(echo ${{ github.repository }} | cut -d '/' -f 2)
+          
+          # Determine Java version
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            JAVA_VERSION="${{ github.event.inputs.java_version }}"
+            PROFILE="${{ github.event.inputs.profile }}"
+            NOTIFY="${{ github.event.inputs.notify }}"
+          else
+            JAVA_VERSION="17"
+            PROFILE=""
+            NOTIFY=""
+          fi
+          
+          # Build command
+          CMD="lionsctl pipeline -u https://github.com/${{ github.repository }} -b ${{ github.ref_name }} -e ${{ needs.determine-environment.outputs.environment }} -j $JAVA_VERSION"
+          
+          # Add profile if specified
+          if [ ! -z "$PROFILE" ]; then
+            CMD="$CMD -p $PROFILE"
+          fi
+          
+          # Add notifications if specified
+          if [ ! -z "$NOTIFY" ]; then
+            CMD="$CMD -m $NOTIFY"
+          fi
+          
+          # Execute command
+          echo "Executing: $CMD"
+          eval $CMD
+
+      - name: Notify on success
+        if: success()
+        run: |
+          echo "Deployment to ${{ needs.determine-environment.outputs.environment }} successful!"
+          # Add additional notification logic here if needed
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "Deployment to ${{ needs.determine-environment.outputs.environment }} failed!"
+          # Add additional notification logic here if needed

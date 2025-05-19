@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: APP_NAME # Will be replaced with the actual app name
+  namespace: APP_NAMESPACE # Will be replaced with APP_NAME-ENVIRONMENT
+  labels:
+    app: APP_NAME # Will be replaced with the actual app name
+    environment: ENVIRONMENT # Will be replaced with the actual environment
+    app.kubernetes.io/part-of: angular
+spec:
+  replicas: 2 # Can be configured during deployment
+  selector:
+    matchLabels:
+      app: APP_NAME # Will be replaced with the actual app name
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: APP_NAME # Will be replaced with the actual app name
+        environment: ENVIRONMENT # Will be replaced with the actual environment
+        app.kubernetes.io/part-of: angular
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9113"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+      - name: APP_NAME # Will be replaced with the actual app name
+        image: registry.lions.dev/angular-app:latest # Will be replaced with actual values
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 80
+          name: http
+        resources:
+          limits:
+            cpu: 500m # Can be configured during deployment
+            memory: 512Mi # Can be configured during deployment
+          requests:
+            cpu: 100m # Can be configured during deployment
+            memory: 256Mi # Can be configured during deployment
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 30
+          timeoutSeconds: 5
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 5
+          timeoutSeconds: 3
+          periodSeconds: 5
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: API_URL
+          value: "https://api.ENVIRONMENT.lions.dev" # Will be replaced with actual API URL
+        - name: ENVIRONMENT
+          value: "ENVIRONMENT" # Will be replaced with actual environment
+      - name: nginx-exporter
+        image: nginx/nginx-prometheus-exporter:0.11.0
+        args:
+        - -nginx.scrape-uri=http://localhost/nginx_status
+        ports:
+        - containerPort: 9113
+          name: metrics
+        resources:
+          limits:
+            cpu: 100m
+            memory: 128Mi
+          requests:
+            cpu: 10m
+            memory: 64Mi
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        fsGroup: 101
