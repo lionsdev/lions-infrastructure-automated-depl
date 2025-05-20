@@ -764,11 +764,57 @@ function install_missing_commands() {
                     # Pour Debian/Ubuntu, kubectl nécessite un dépôt spécial
                     log "INFO" "Configuration du dépôt Kubernetes pour apt..."
                     if ! command_exists curl; then
-                        secure_sudo apt-get install -y curl &>/dev/null
+                        log "INFO" "Installation de curl..."
+                        secure_sudo apt-get install -y curl 2>&1 | tee /tmp/curl_install.log
+                        if ! command_exists curl; then
+                            log "ERROR" "Échec de l'installation de curl. Voir /tmp/curl_install.log pour plus de détails."
+                            return 1
+                        fi
                     fi
-                    curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | secure_sudo apt-key add - &>/dev/null
-                    echo "deb https://apt.kubernetes.io/ kubernetes-xenial main" | secure_sudo tee /etc/apt/sources.list.d/kubernetes.list &>/dev/null
-                    secure_sudo apt-get update &>/dev/null
+
+                    # Méthode 1: Utilisation du dépôt Kubernetes
+                    log "INFO" "Tentative d'installation via le dépôt Kubernetes..."
+                    curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | secure_sudo apt-key add - 2>/tmp/kubectl_key.log
+                    if [[ $? -ne 0 ]]; then
+                        log "WARNING" "Problème lors de l'ajout de la clé Kubernetes. Voir /tmp/kubectl_key.log pour plus de détails."
+                    fi
+
+                    echo "deb https://apt.kubernetes.io/ kubernetes-xenial main" | secure_sudo tee /etc/apt/sources.list.d/kubernetes.list >/dev/null
+
+                    log "INFO" "Mise à jour des dépôts apt..."
+                    secure_sudo apt-get update 2>/tmp/apt_update.log
+                    if [[ $? -ne 0 ]]; then
+                        log "WARNING" "Problème lors de la mise à jour des dépôts apt. Voir /tmp/apt_update.log pour plus de détails."
+                        log "INFO" "Tentative d'installation directe du binaire kubectl..."
+
+                        # Méthode 2: Téléchargement direct du binaire
+                        local kubectl_version="v1.27.1"
+                        local arch=$(uname -m)
+                        local kubectl_arch="amd64"
+
+                        if [[ "${arch}" == "aarch64" || "${arch}" == "arm64" ]]; then
+                            kubectl_arch="arm64"
+                        elif [[ "${arch}" == "armv7l" ]]; then
+                            kubectl_arch="arm"
+                        fi
+
+                        log "INFO" "Téléchargement de kubectl ${kubectl_version} pour ${kubectl_arch}..."
+                        if curl -LO "https://dl.k8s.io/release/${kubectl_version}/bin/linux/${kubectl_arch}/kubectl" 2>/tmp/kubectl_download.log; then
+                            log "SUCCESS" "Téléchargement de kubectl réussi"
+                            secure_sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+                            if [[ $? -eq 0 ]]; then
+                                log "SUCCESS" "Installation de kubectl réussie via téléchargement direct"
+                                rm -f kubectl
+                                return 0
+                            else
+                                log "ERROR" "Échec de l'installation de kubectl dans /usr/local/bin"
+                                rm -f kubectl
+                            fi
+                        else
+                            log "ERROR" "Échec du téléchargement de kubectl. Voir /tmp/kubectl_download.log pour plus de détails."
+                        fi
+                    fi
+
                     pkg_name="kubectl"
                 elif [[ "${pkg_manager}" == "brew" ]]; then
                     pkg_name="kubernetes-cli"
@@ -837,8 +883,41 @@ function install_missing_commands() {
 
         # Installation du paquet
         log "INFO" "Installation du paquet: ${pkg_name}"
-        if ! secure_sudo ${install_cmd} ${pkg_name} &>/dev/null; then
-            log "ERROR" "Échec de l'installation de ${pkg_name}"
+        local install_log="/tmp/${pkg_name}_install.log"
+        if ! secure_sudo ${install_cmd} ${pkg_name} 2>&1 | tee "${install_log}"; then
+            log "ERROR" "Échec de l'installation de ${pkg_name}. Voir ${install_log} pour plus de détails."
+
+            # Tentative alternative pour kubectl si l'installation via apt a échoué
+            if [[ "${cmd}" == "kubectl" && "${pkg_manager}" == "apt" ]]; then
+                log "INFO" "Tentative d'installation alternative de kubectl via téléchargement direct..."
+
+                local kubectl_version="v1.27.1"
+                local arch=$(uname -m)
+                local kubectl_arch="amd64"
+
+                if [[ "${arch}" == "aarch64" || "${arch}" == "arm64" ]]; then
+                    kubectl_arch="arm64"
+                elif [[ "${arch}" == "armv7l" ]]; then
+                    kubectl_arch="arm"
+                fi
+
+                log "INFO" "Téléchargement de kubectl ${kubectl_version} pour ${kubectl_arch}..."
+                if curl -LO "https://dl.k8s.io/release/${kubectl_version}/bin/linux/${kubectl_arch}/kubectl" 2>/tmp/kubectl_download.log; then
+                    log "SUCCESS" "Téléchargement de kubectl réussi"
+                    secure_sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+                    if [[ $? -eq 0 ]]; then
+                        log "SUCCESS" "Installation de kubectl réussie via téléchargement direct"
+                        rm -f kubectl
+                        continue  # Skip the success=false and continue with the next command
+                    else
+                        log "ERROR" "Échec de l'installation de kubectl dans /usr/local/bin"
+                        rm -f kubectl
+                    fi
+                else
+                    log "ERROR" "Échec du téléchargement de kubectl. Voir /tmp/kubectl_download.log pour plus de détails."
+                fi
+            fi
+
             success=false
         else
             log "SUCCESS" "Installation de ${pkg_name} réussie"
