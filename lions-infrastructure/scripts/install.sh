@@ -3499,6 +3499,30 @@ function verifier_prerequis() {
         log "INFO" "Système d'exploitation: ${os_name} ${os_version}"
     fi
 
+    # Détection de WSL2 et avertissement sur les problèmes de compatibilité avec K3s
+    if [[ "${os_version}" == *"WSL"* || "${os_version}" == *"Microsoft"* || "${os_version}" == *"microsoft"* ]]; then
+        log "WARNING" "Environnement WSL2 détecté: ${os_version}"
+        log "WARNING" "⚠️ ATTENTION: K3s peut rencontrer des problèmes de compatibilité dans WSL2 ⚠️"
+        log "WARNING" "Problèmes connus:"
+        log "WARNING" "  - Erreurs de démarrage du ContainerManager"
+        log "WARNING" "  - Problèmes avec les cgroups"
+        log "WARNING" "  - Connexions refusées à l'API Kubernetes"
+        log "WARNING" "  - Service K3s qui ne démarre jamais complètement"
+        log "INFO" "Recommandations:"
+        log "INFO" "  1. Exécutez ce script directement sur le VPS cible plutôt que via WSL2"
+        log "INFO" "  2. Connectez-vous au VPS via SSH: ssh ${ansible_user}@${ansible_host} -p ${ansible_port}"
+        log "INFO" "  3. Clonez le dépôt sur le VPS: git clone https://github.com/votre-repo/lions-infrastructure-automated-depl.git"
+        log "INFO" "  4. Exécutez le script d'installation sur le VPS: cd lions-infrastructure-automated-depl/lions-infrastructure/scripts && ./install.sh"
+        log "INFO" "Voulez-vous continuer malgré ces avertissements? (o/N)"
+        read -r answer
+        if [[ ! "${answer}" =~ ^[Oo]$ ]]; then
+            log "INFO" "Installation annulée. Exécutez le script directement sur le VPS pour de meilleurs résultats."
+            cleanup
+            exit 1
+        fi
+        log "WARNING" "Continuation de l'installation dans WSL2 malgré les risques de problèmes..."
+    fi
+
     # Vérification de l'espace disque
     if ! check_disk_space; then
         log "ERROR" "Vérification de l'espace disque échouée"

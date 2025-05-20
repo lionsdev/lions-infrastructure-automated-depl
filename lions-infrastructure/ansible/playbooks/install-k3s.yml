@@ -11,7 +11,7 @@
 
   vars:
     k3s_version: "v1.25.6+k3s1"  # Version stable de K3s
-    k3s_server_args: "server --disable traefik --disable servicelb --write-kubeconfig-mode 644 --kubelet-arg cgroup-driver=systemd"  # Arguments corrigés avec cgroups
+    k3s_server_args: "server --disable traefik --disable servicelb --disable local-storage --write-kubeconfig-mode 644 --kubelet-arg cgroup-driver=systemd --kubelet-arg feature-gates=GracefulNodeShutdown=false --kube-controller-manager-arg feature-gates=RemoveSelfLink=false"  # Arguments améliorés pour compatibilité WSL2
     kubeconfig_local_path: "~/.kube/config"
     traefik_version: "20.10.0"  # Version sans le préfixe 'v'
 
@@ -31,7 +31,7 @@
     - name: Installation sécurisée de K3s avec protection contre les flags dépréciés et problèmes système
       environment:
         INSTALL_K3S_VERSION: "{{ k3s_version }}"
-        INSTALL_K3S_EXEC: "server --disable traefik --disable servicelb --write-kubeconfig-mode 644 --kubelet-arg cgroup-driver=systemd"
+        INSTALL_K3S_EXEC: "{{ k3s_server_args }}"
         K3S_KUBECONFIG_MODE: "644"
       command: /tmp/k3s-install.sh
       args:
@@ -142,28 +142,57 @@
                 # Ensure proper cgroup configuration
                 echo 'GRUB_CMDLINE_LINUX="cgroup_enable=memory swapaccount=1"' >> /etc/default/grub || true
 
+                # Détection de WSL2
+                if uname -r | grep -q "WSL\|Microsoft"; then
+                  echo "Environnement WSL2 détecté, application de correctifs spécifiques..."
+
+                  # Correction des problèmes de cgroups pour WSL2
+                  mkdir -p /sys/fs/cgroup/systemd
+                  mount -t cgroup -o none,name=systemd cgroup /sys/fs/cgroup/systemd || true
+
+                  # Désactivation de certaines fonctionnalités problématiques dans WSL2
+                  mkdir -p /etc/systemd/system/k3s.service.d/
+                  cat > /etc/systemd/system/k3s.service.d/wsl2-fixes.conf << 'EOF'
+[Service]
+Environment="CONTAINERD_SNAPSHOTTER=native"
+Environment="CONTAINERD_STRESS_TEST=no"
+EOF
+                fi
+
                 # Fix cgroups v2 issues (for system validation errors)
                 if [ -f /sys/fs/cgroup/unified ] || [ -d /sys/fs/cgroup/unified ]; then
                   echo "Cgroups v2 detected, applying fixes for system validation errors..."
                   mkdir -p /etc/systemd/system/k3s.service.d/
                   cat > /etc/systemd/system/k3s.service.d/override.conf << 'EOF'
-                  [Service]
-                  Delegate=yes
-                  KillMode=mixed
-                  LimitNOFILE=infinity
-                  LimitNPROC=infinity
-                  LimitCORE=infinity
-                  TasksMax=infinity
-                EOF
+[Service]
+Delegate=yes
+KillMode=mixed
+LimitNOFILE=infinity
+LimitNPROC=infinity
+LimitCORE=infinity
+TasksMax=infinity
+EOF
                 fi
 
                 # Fix systemd issues
                 systemctl daemon-reload
                 systemctl reset-failed || true
 
+                # Vérification et correction des modules noyau requis
+                modprobe br_netfilter || true
+                modprobe overlay || true
+
+                # Configuration sysctl pour Kubernetes
+                cat > /etc/sysctl.d/99-kubernetes-cri.conf << 'EOF'
+net.bridge.bridge-nf-call-iptables  = 1
+net.bridge.bridge-nf-call-ip6tables = 1
+net.ipv4.ip_forward                 = 1
+EOF
+                sysctl --system || true
+
             - name: Réinstallation propre de K3s avec configuration système corrigée
               shell: |
-                curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="{{ k3s_version }}" INSTALL_K3S_EXEC="server --disable traefik --disable servicelb --disable local-storage --write-kubeconfig-mode 644 --kubelet-arg cgroup-driver=systemd --kubelet-arg feature-gates=GracefulNodeShutdown=false --kube-controller-manager-arg feature-gates=RemoveSelfLink=false" sh -
+                curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="{{ k3s_version }}" INSTALL_K3S_EXEC="{{ k3s_server_args }}" sh -
               environment:
                 K3S_KUBECONFIG_MODE: "644"
 
