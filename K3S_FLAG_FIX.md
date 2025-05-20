@@ -45,6 +45,46 @@ La fonction `repair_k3s()` a été mise à jour pour appeler la nouvelle fonctio
 
 La fonction `check_fix_k3s()` a été mise à jour pour appeler la nouvelle fonction `fix_k3s_deprecated_flags()` même si le service K3s est actif, afin de s'assurer que les drapeaux dépréciés sont corrigés dans tous les cas.
 
+### 4. Amélioration de la commande sed pour la correction des drapeaux dépréciés
+
+La commande sed utilisée pour remplacer les drapeaux dépréciés a été améliorée pour gérer différents formats possibles du drapeau `--no-deploy` :
+
+```bash
+sed -i 's/--no-deploy /--disable=/g; s/--no-deploy=/--disable=/g; s/--no-deploy\([[:space:]]\+\)\([[:alnum:]]\+\)/--disable=\2/g' /etc/systemd/system/k3s.service
+```
+
+Cette commande gère maintenant les cas suivants :
+- `--no-deploy ` (avec un espace) -> `--disable=`
+- `--no-deploy=` (avec un signe égal) -> `--disable=`
+- `--no-deploy COMPONENT` (avec un espace suivi du nom du composant) -> `--disable=COMPONENT`
+
+### 5. Ajout de ports supplémentaires dans la configuration UFW
+
+Les ports suivants ont été ajoutés à la configuration UFW dans le playbook `init-vps.yml` pour assurer le bon fonctionnement de K3s :
+
+- 10250/tcp - K3s kubelet
+- 10251/tcp - K3s kube-scheduler
+- 10252/tcp - K3s kube-controller
+- 8472/udp - K3s flannel VXLAN
+- 4789/udp - K3s flannel VXLAN (alternative)
+- 51820/udp - K3s Wireguard
+- 51821/udp - K3s Wireguard (alternative)
+
+### 6. Amélioration de la vérification de l'état de UFW
+
+Une tâche supplémentaire a été ajoutée au playbook `init-vps.yml` pour s'assurer que UFW est bien actif après son activation :
+
+```yaml
+- name: Vérification que UFW est bien actif
+  shell: |
+    ufw status | grep -q "Status: active" || (echo 'y' | ufw --force enable)
+  register: ufw_status_check
+  changed_when: false
+  failed_when: false
+```
+
+Cette tâche vérifie si UFW est actif et l'active si ce n'est pas le cas, assurant ainsi que le pare-feu est toujours correctement configuré.
+
 ## Résultat attendu
 
 Avec ces modifications, le service K3s devrait maintenant démarrer correctement sans l'erreur "no-deploy flag is deprecated". Le service désactivera correctement les composants spécifiés (traefik et servicelb le cas échéant) en utilisant le format de drapeau correct.

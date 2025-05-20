@@ -172,6 +172,48 @@
         port: 30000
         proto: tcp
 
+    - name: Configuration du pare-feu UFW - K3s kubelet
+      ufw:
+        rule: allow
+        port: 10250
+        proto: tcp
+
+    - name: Configuration du pare-feu UFW - K3s kube-scheduler
+      ufw:
+        rule: allow
+        port: 10251
+        proto: tcp
+
+    - name: Configuration du pare-feu UFW - K3s kube-controller
+      ufw:
+        rule: allow
+        port: 10252
+        proto: tcp
+
+    - name: Configuration du pare-feu UFW - K3s flannel VXLAN
+      ufw:
+        rule: allow
+        port: 8472
+        proto: udp
+
+    - name: Configuration du pare-feu UFW - K3s flannel VXLAN (alternative)
+      ufw:
+        rule: allow
+        port: 4789
+        proto: udp
+
+    - name: Configuration du pare-feu UFW - K3s Wireguard
+      ufw:
+        rule: allow
+        port: 51820
+        proto: udp
+
+    - name: Configuration du pare-feu UFW - K3s Wireguard (alternative)
+      ufw:
+        rule: allow
+        port: 51821
+        proto: udp
+
     # Désactivation de IPv6 dans UFW pour éviter les problèmes
     - name: Modification du fichier /etc/default/ufw pour désactiver l'utilisation de IPv6
       lineinfile:
@@ -185,6 +227,14 @@
       register: ufw_enable_result
       changed_when: "'Firewall is active and enabled on system startup' in ufw_enable_result.stdout"
       failed_when: false
+
+    - name: Vérification que UFW est bien actif
+      shell: |
+        ufw status | grep -q "Status: active" || (echo 'y' | ufw --force enable)
+      register: ufw_status_check
+      changed_when: false
+      failed_when: false
+
 
     - name: Vérification de l'état de UFW
       command: ufw status

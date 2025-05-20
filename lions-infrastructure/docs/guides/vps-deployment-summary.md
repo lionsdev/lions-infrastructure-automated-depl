@@ -42,7 +42,7 @@ Pour déployer l'infrastructure LIONS sur votre VPS Contabo, suivez ces étapes:
 2. **Accès SSH au VPS**:
    - Adresse IP: 176.57.150.2
    - Port SSH: 22225
-   - Utilisateur: lionsdevadmin
+   - Utilisateur: root
    - Authentification par clé SSH
 
 ### Étapes de Déploiement

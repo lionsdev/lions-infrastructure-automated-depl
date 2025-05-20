@@ -38,7 +38,7 @@ Assurez-vous que votre clé SSH est configurée pour accéder au VPS :
 ssh-keygen -t ed25519 -C "votre_email@domaine.com"
 
 # Copier la clé sur le serveur
-ssh-copy-id -p <port_ssh> lionsdevadmin@<ip_vps>
+ssh-copy-id -p <port_ssh> root@<ip_vps>
 
 # Tester la connexion
 ssh -p <port_ssh> lionsdevadmin@<ip_vps>

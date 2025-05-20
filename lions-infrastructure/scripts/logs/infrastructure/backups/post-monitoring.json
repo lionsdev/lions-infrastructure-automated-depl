@@ -5,7 +5,7 @@
   "installation_step": "deploy_monitoring",
   "ansible_host": "176.57.150.2",
   "ansible_port": "225",
-  "ansible_user": "lionsdevadmin",
+  "ansible_user": "root",
   "script_version": "1.0.0",
   "description": "Sauvegarde automatique avant l'étape deploy_monitoring",
   "backup_size": "1.1M"

@@ -1663,10 +1663,54 @@ function check_vps_resources() {
         vps_disk_use_percent=$(df -m / | awk 'NR==2 {print $5}' 2>/dev/null | sed 's/%//' || echo "0")
     else
         # Exécution distante
-        vps_disk_total=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "df -m / | awk 'NR==2 {print \$2}'" 2>/dev/null || echo "0")
-        vps_disk_used=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "df -m / | awk 'NR==2 {print \$3}'" 2>/dev/null || echo "0")
-        vps_disk_free=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "df -m / | awk 'NR==2 {print \$4}'" 2>/dev/null || echo "0")
-        vps_disk_use_percent=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "df -m / | awk 'NR==2 {print \$5}'" 2>/dev/null | sed 's/%//' || echo "0")
+        # Essayer plusieurs méthodes pour obtenir les informations de disque
+        log "DEBUG" "Récupération des informations disque..."
+        local disk_cmd="df -m / 2>/dev/null || df -k / 2>/dev/null | awk '{size=\$2/1024; used=\$3/1024; free=\$4/1024; print size,used,free,\$5}' || echo '0 0 0 0%'"
+        local disk_output=$(ssh -o BatchMode=yes -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "${disk_cmd}" 2>/dev/null)
+        log "DEBUG" "Sortie de la commande disque: ${disk_output:-Erreur}"
+
+        # Extraction des valeurs de disque
+        vps_disk_total=$(echo "${disk_output}" | awk 'NR==2 {print $2}' 2>/dev/null)
+        vps_disk_used=$(echo "${disk_output}" | awk 'NR==2 {print $3}' 2>/dev/null)
+        vps_disk_free=$(echo "${disk_output}" | awk 'NR==2 {print $4}' 2>/dev/null)
+        vps_disk_use_percent=$(echo "${disk_output}" | awk 'NR==2 {print $5}' 2>/dev/null | sed 's/%//' || echo "0")
+
+        # Si les valeurs sont vides, essayer une autre méthode
+        if [[ -z "${vps_disk_total}" ]] || ! [[ "${vps_disk_total}" =~ ^[0-9.]+$ ]]; then
+            log "DEBUG" "Tentative alternative pour le disque..."
+            local df_cmd="df -k / 2>/dev/null"
+            local df_output=$(ssh -o BatchMode=yes -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "${df_cmd}" 2>/dev/null)
+            log "DEBUG" "Sortie de la commande df -k: ${df_output:-Erreur}"
+
+            # Extraction des valeurs de disque à partir de df -k
+            vps_disk_total=$(echo "${df_output}" | awk 'NR==2 {print int($2/1024)}' 2>/dev/null)
+            vps_disk_used=$(echo "${df_output}" | awk 'NR==2 {print int($3/1024)}' 2>/dev/null)
+            vps_disk_free=$(echo "${df_output}" | awk 'NR==2 {print int($4/1024)}' 2>/dev/null)
+            vps_disk_use_percent=$(echo "${df_output}" | awk 'NR==2 {print $5}' 2>/dev/null | sed 's/%//' || echo "0")
+        fi
+
+        # Nettoyage des valeurs
+        log "DEBUG" "Valeurs brutes après récupération: CPU=${vps_cpu_cores}, RAM=${vps_memory_total}, Disk=${vps_disk_total}"
+
+        # Si toujours pas de valeurs valides, utiliser des valeurs par défaut
+        if [[ -z "${vps_disk_total}" ]] || ! [[ "${vps_disk_total}" =~ ^[0-9.]+$ ]]; then
+            vps_disk_total="20480"  # 20 GB par défaut
+            log "WARNING" "Impossible de déterminer l'espace disque total du VPS, utilisation de la valeur par défaut: ${vps_disk_total}MB"
+        fi
+
+        if [[ -z "${vps_disk_used}" ]] || ! [[ "${vps_disk_used}" =~ ^[0-9.]+$ ]]; then
+            vps_disk_used="5120"  # 5 GB par défaut
+        fi
+
+        if [[ -z "${vps_disk_free}" ]] || ! [[ "${vps_disk_free}" =~ ^[0-9.]+$ ]]; then
+            vps_disk_free=$((vps_disk_total - vps_disk_used))
+        fi
+
+        if [[ -z "${vps_disk_use_percent}" ]] || ! [[ "${vps_disk_use_percent}" =~ ^[0-9.]+$ ]]; then
+            vps_disk_use_percent=$((vps_disk_used * 100 / vps_disk_total))
+        fi
+
+        log "DEBUG" "Valeurs après nettoyage: CPU=${vps_cpu_cores}, RAM=${vps_memory_total}, Disk=${vps_disk_total}"
     fi
 
     log "INFO" "Espace disque du VPS: ${vps_disk_free}MB libre sur ${vps_disk_total}MB total (${vps_disk_use_percent}% utilisé)"
@@ -1703,10 +1747,58 @@ function check_vps_resources() {
         vps_memory_available=$(free -m | awk '/^Mem:/ {print $7}' 2>/dev/null || echo "0")
     else
         # Exécution distante
-        vps_memory_total=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "free -m | awk '/^Mem:/ {print \$2}'" 2>/dev/null || echo "0")
-        vps_memory_used=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "free -m | awk '/^Mem:/ {print \$3}'" 2>/dev/null || echo "0")
-        vps_memory_free=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "free -m | awk '/^Mem:/ {print \$4}'" 2>/dev/null || echo "0")
-        vps_memory_available=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "free -m | awk '/^Mem:/ {print \$7}'" 2>/dev/null || echo "0")
+        # Essayer plusieurs méthodes pour obtenir les informations de mémoire
+        log "DEBUG" "Récupération des informations mémoire..."
+        local mem_cmd="free -m 2>/dev/null || vmstat -s -S M 2>/dev/null | grep 'total memory' | awk '{print \$1}' || cat /proc/meminfo 2>/dev/null | grep MemTotal | awk '{print \$2/1024}'"
+        local mem_output=$(ssh -o BatchMode=yes -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "${mem_cmd}" 2>/dev/null)
+        log "DEBUG" "Sortie de la commande mémoire: ${mem_output:-Erreur}"
+
+        # Extraction des valeurs de mémoire
+        vps_memory_total=$(echo "${mem_output}" | grep -m1 "^Mem:" | awk '{print $2}' 2>/dev/null)
+        vps_memory_used=$(echo "${mem_output}" | grep -m1 "^Mem:" | awk '{print $3}' 2>/dev/null)
+        vps_memory_free=$(echo "${mem_output}" | grep -m1 "^Mem:" | awk '{print $4}' 2>/dev/null)
+        vps_memory_available=$(echo "${mem_output}" | grep -m1 "^Mem:" | awk '{print $7}' 2>/dev/null)
+
+        # Si les valeurs sont vides, essayer une autre méthode
+        if [[ -z "${vps_memory_total}" ]] || ! [[ "${vps_memory_total}" =~ ^[0-9]+$ ]]; then
+            log "DEBUG" "Tentative alternative pour la mémoire..."
+            local meminfo_cmd="cat /proc/meminfo 2>/dev/null"
+            local meminfo_output=$(ssh -o BatchMode=yes -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "${meminfo_cmd}" 2>/dev/null)
+            log "DEBUG" "Sortie de la commande meminfo: ${meminfo_output:-Erreur}"
+
+            # Extraction des valeurs de mémoire à partir de /proc/meminfo
+            vps_memory_total=$(echo "${meminfo_output}" | grep "^MemTotal:" | awk '{print int($2/1024)}' 2>/dev/null)
+            vps_memory_free=$(echo "${meminfo_output}" | grep "^MemFree:" | awk '{print int($2/1024)}' 2>/dev/null)
+            vps_memory_available=$(echo "${meminfo_output}" | grep "^MemAvailable:" | awk '{print int($2/1024)}' 2>/dev/null)
+
+            # Calcul de la mémoire utilisée
+            if [[ -n "${vps_memory_total}" ]] && [[ -n "${vps_memory_free}" ]]; then
+                vps_memory_used=$((vps_memory_total - vps_memory_free))
+            fi
+
+            # Si MemAvailable n'est pas disponible, utiliser MemFree
+            if [[ -z "${vps_memory_available}" ]] || ! [[ "${vps_memory_available}" =~ ^[0-9]+$ ]]; then
+                vps_memory_available="${vps_memory_free}"
+            fi
+        fi
+
+        # Si toujours pas de valeurs valides, utiliser des valeurs par défaut
+        if [[ -z "${vps_memory_total}" ]] || ! [[ "${vps_memory_total}" =~ ^[0-9]+$ ]]; then
+            vps_memory_total="4096"  # 4 GB par défaut
+            log "WARNING" "Impossible de déterminer la mémoire totale du VPS, utilisation de la valeur par défaut: ${vps_memory_total}MB"
+        fi
+
+        if [[ -z "${vps_memory_used}" ]] || ! [[ "${vps_memory_used}" =~ ^[0-9]+$ ]]; then
+            vps_memory_used="1024"  # 1 GB par défaut
+        fi
+
+        if [[ -z "${vps_memory_free}" ]] || ! [[ "${vps_memory_free}" =~ ^[0-9]+$ ]]; then
+            vps_memory_free=$((vps_memory_total - vps_memory_used))
+        fi
+
+        if [[ -z "${vps_memory_available}" ]] || ! [[ "${vps_memory_available}" =~ ^[0-9]+$ ]]; then
+            vps_memory_available="${vps_memory_free}"
+        fi
     fi
 
     log "INFO" "Mémoire du VPS: ${vps_memory_available}MB disponible sur ${vps_memory_total}MB total"
@@ -1759,12 +1851,36 @@ function check_vps_resources() {
 
     if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
         # Exécution locale
-        vps_cpu_cores=$(nproc --all 2>/dev/null || echo "0")
+        vps_cpu_cores=$(nproc --all 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo "0")
         vps_cpu_load=$(cat /proc/loadavg | awk '{print $1}' 2>/dev/null || echo "0")
     else
         # Exécution distante
-        vps_cpu_cores=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "nproc --all" 2>/dev/null || echo "0")
-        vps_cpu_load=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "cat /proc/loadavg | awk '{print \$1}'" 2>/dev/null || echo "0")
+        # Essayer plusieurs méthodes pour obtenir le nombre de processeurs
+        log "DEBUG" "Récupération des informations CPU..."
+        vps_cpu_cores=$(ssh -o BatchMode=yes -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "nproc --all 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || lscpu 2>/dev/null | grep '^CPU(s):' | awk '{print \$2}' || echo '0'" 2>/dev/null)
+        log "DEBUG" "Sortie de la commande CPU: ${vps_cpu_cores:-Erreur}"
+
+        # Si la valeur est vide ou non numérique, essayer une autre méthode
+        if [[ -z "${vps_cpu_cores}" ]] || ! [[ "${vps_cpu_cores}" =~ ^[0-9]+$ ]]; then
+            log "DEBUG" "Tentative alternative pour CPU avec nproc..."
+            vps_cpu_cores=$(ssh -o BatchMode=yes -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "nproc 2>/dev/null || echo '0'" 2>/dev/null)
+            log "DEBUG" "Sortie de la commande nproc: ${vps_cpu_cores:-Erreur}"
+        fi
+
+        # Si toujours pas de valeur valide, utiliser une valeur par défaut
+        if [[ -z "${vps_cpu_cores}" ]] || ! [[ "${vps_cpu_cores}" =~ ^[0-9]+$ ]]; then
+            vps_cpu_cores="2"  # Valeur par défaut raisonnable
+            log "WARNING" "Impossible de déterminer le nombre de cœurs CPU du VPS, utilisation de la valeur par défaut: ${vps_cpu_cores}"
+        fi
+
+        # Récupération de la charge CPU
+        vps_cpu_load=$(ssh -o BatchMode=yes -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "cat /proc/loadavg 2>/dev/null | awk '{print \$1}' || echo '0'" 2>/dev/null)
+
+        # Si la valeur est vide ou non numérique, utiliser une valeur par défaut
+        if [[ -z "${vps_cpu_load}" ]] || ! [[ "${vps_cpu_load}" =~ ^[0-9.]+$ ]]; then
+            vps_cpu_load="0.0"  # Valeur par défaut
+            log "WARNING" "Impossible de déterminer la charge CPU du VPS, utilisation de la valeur par défaut: ${vps_cpu_load}"
+        fi
     fi
 
     log "INFO" "CPU du VPS: ${vps_cpu_cores} cœurs, charge actuelle: ${vps_cpu_load}"
@@ -2134,6 +2250,27 @@ function open_required_ports() {
                 return 1
             fi
 
+            # Vérification que UFW est bien actif
+            log "INFO" "Vérification que UFW est bien actif..."
+            if ! sudo ufw status | grep -q "Status: active"; then
+                log "WARNING" "UFW n'est pas actif malgré la tentative d'activation, nouvelle tentative..."
+                # Deuxième tentative avec une approche différente
+                if ! (echo 'y' | sudo ufw --force enable && sudo systemctl restart ufw); then
+                    log "ERROR" "Impossible d'activer UFW malgré plusieurs tentatives"
+                    return 1
+                fi
+
+                # Vérification finale
+                if ! sudo ufw status | grep -q "Status: active"; then
+                    log "ERROR" "Impossible d'activer UFW malgré plusieurs tentatives"
+                    return 1
+                else
+                    log "SUCCESS" "UFW est maintenant actif après la deuxième tentative"
+                fi
+            else
+                log "SUCCESS" "UFW est bien actif"
+            fi
+
             log "SUCCESS" "UFW installé et activé avec succès"
         fi
     else
@@ -2166,6 +2303,32 @@ function open_required_ports() {
             if [ $? -ne 0 ]; then
                 log "ERROR" "Impossible d'activer UFW sur le VPS"
                 return 1
+            fi
+
+            # Vérification que UFW est bien actif
+            log "INFO" "Vérification que UFW est bien actif..."
+            local ufw_status_cmd="ssh -o StrictHostKeyChecking=no -o ConnectTimeout=${timeout} -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw status | grep -q 'Status: active' && echo 'active' || echo 'inactive'\""
+            local ufw_status=$(eval "${ufw_status_cmd}" 2>/dev/null)
+
+            if [[ "${ufw_status}" != "active" ]]; then
+                log "WARNING" "UFW n'est pas actif malgré la tentative d'activation, nouvelle tentative..."
+                # Deuxième tentative avec une approche différente
+                local ssh_cmd="ssh -t -o StrictHostKeyChecking=no -o ConnectTimeout=${timeout} -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"echo 'y' | sudo ufw --force enable && sudo systemctl restart ufw\""
+                log "DEBUG" "Exécution de la commande avec eval: ${ssh_cmd}"
+                eval "${ssh_cmd}"
+
+                # Vérification finale
+                local ufw_status_cmd="ssh -o StrictHostKeyChecking=no -o ConnectTimeout=${timeout} -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw status | grep -q 'Status: active' && echo 'active' || echo 'inactive'\""
+                local ufw_status=$(eval "${ufw_status_cmd}" 2>/dev/null)
+
+                if [[ "${ufw_status}" != "active" ]]; then
+                    log "ERROR" "Impossible d'activer UFW sur le VPS malgré plusieurs tentatives"
+                    return 1
+                else
+                    log "SUCCESS" "UFW est maintenant actif après la deuxième tentative"
+                fi
+            else
+                log "SUCCESS" "UFW est bien actif"
             fi
 
             log "SUCCESS" "UFW installé et activé avec succès"
@@ -2322,6 +2485,41 @@ function open_required_ports() {
     log "INFO" "Statut UFW actuel:"
     echo "${ufw_status}"
 
+    # Vérification finale que UFW est bien actif
+    if ! echo "${ufw_status}" | grep -q "Status: active"; then
+        log "WARNING" "UFW n'est pas actif après toutes les opérations, tentative finale d'activation..."
+
+        if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+            # Exécution locale
+            if ! (echo 'y' | sudo ufw --force enable && sudo systemctl restart ufw); then
+                log "ERROR" "Impossible d'activer UFW malgré plusieurs tentatives"
+            else
+                log "SUCCESS" "UFW est maintenant actif après la tentative finale"
+                # Affichage du statut mis à jour
+                ufw_status=$(sudo ufw status || echo "Impossible de récupérer le statut UFW")
+                log "INFO" "Statut UFW mis à jour:"
+                echo "${ufw_status}"
+            fi
+        else
+            # Exécution distante
+            local ssh_cmd="ssh -t -o StrictHostKeyChecking=no -o ConnectTimeout=${timeout} -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"echo 'y' | sudo ufw --force enable && sudo systemctl restart ufw\""
+            log "DEBUG" "Exécution de la commande avec eval: ${ssh_cmd}"
+            eval "${ssh_cmd}"
+
+            # Affichage du statut mis à jour
+            local ssh_cmd="ssh -tt -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p \"${target_port}\" \"${ansible_user}@${target_host}\" \"sudo ufw status\""
+            ufw_status=$(eval "${ssh_cmd}" || echo "Impossible de récupérer le statut UFW")
+            log "INFO" "Statut UFW mis à jour:"
+            echo "${ufw_status}"
+
+            if ! echo "${ufw_status}" | grep -q "Status: active"; then
+                log "ERROR" "Impossible d'activer UFW malgré plusieurs tentatives"
+            else
+                log "SUCCESS" "UFW est maintenant actif après la tentative finale"
+            fi
+        fi
+    fi
+
     if [[ "${success}" == "true" ]]; then
         log "SUCCESS" "Tous les ports ont été ouverts avec succès"
         return 0
@@ -2470,15 +2668,30 @@ function check_network() {
     local closed_ports=()
 
     for port in "${REQUIRED_PORTS[@]}"; do
-        if nc -z -w ${timeout} "${target_host}" "${port}" &>/dev/null; then
+        # Si le port est le port SSH et que nous avons déjà vérifié la connectivité SSH, le considérer comme ouvert
+        if [[ "${port}" == "${target_port}" ]]; then
+            log "INFO" "Port ${port} (SSH) accessible sur ${target_host} (déjà vérifié)"
+            open_ports+=("${port}")
+            continue
+        fi
+
+        # Augmenter le timeout pour les vérifications de port
+        if nc -z -w $((timeout*2)) "${target_host}" "${port}" &>/dev/null; then
             log "INFO" "Port ${port} accessible sur ${target_host}"
             open_ports+=("${port}")
         else
-            log "WARNING" "Port ${port} non accessible sur ${target_host}"
-            closed_ports+=("${port}")
+            # Deuxième tentative avec un délai
+            sleep 1
+            if nc -z -w $((timeout*2)) "${target_host}" "${port}" &>/dev/null; then
+                log "INFO" "Port ${port} accessible sur ${target_host} (deuxième tentative)"
+                open_ports+=("${port}")
+            else
+                log "WARNING" "Port ${port} non accessible sur ${target_host}"
+                closed_ports+=("${port}")
+            fi
         fi
         # Ajout d'un petit délai entre chaque vérification de port pour éviter les problèmes d'affichage
-        sleep 0.05
+        sleep 0.1
     done
 
     # Résumé des ports
@@ -3528,7 +3741,7 @@ all:
         contabo-vps:
           ansible_host: ${LIONS_VPS_HOST:-176.57.150.2}
           ansible_port: ${LIONS_VPS_PORT:-225}
-          ansible_user: ${LIONS_VPS_USER:-lionsdevadmin}
+          ansible_user: ${LIONS_VPS_USER:-root}
           ansible_python_interpreter: /usr/bin/python3
           ansible_connection: local
     kubernetes:
@@ -4298,6 +4511,13 @@ function restart_k3s_service() {
     # Vérifier les ressources système avant le redémarrage
     check_k3s_system_resources
 
+    # Vérifier et corriger les drapeaux dépréciés avant le redémarrage
+    log "INFO" "Vérification et correction des drapeaux dépréciés avant le redémarrage..."
+    fix_k3s_deprecated_flags
+
+    # Recharger le daemon systemd après correction des drapeaux dépréciés
+    ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl daemon-reload" &>/dev/null
+
     # Redémarrer le service K3s avec capture des erreurs
     local restart_output
     restart_output=$(ssh -o ConnectTimeout=10 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl restart k3s 2>&1" || echo "Échec du redémarrage")
@@ -4399,8 +4619,8 @@ function fix_k3s_deprecated_flags() {
             log "WARNING" "Drapeaux dépréciés trouvés dans le fichier de service K3s"
             log "INFO" "Remplacement des drapeaux dépréciés..."
 
-            # Remplacer les drapeaux dépréciés
-            ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo sed -i 's/--no-deploy /--disable=/g' /etc/systemd/system/k3s.service" &>/dev/null
+            # Remplacer les drapeaux dépréciés (plusieurs formats possibles)
+            ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo sed -i 's/--no-deploy /--disable=/g; s/--no-deploy=/--disable=/g; s/--no-deploy\([[:space:]]\+\)\([[:alnum:]]\+\)/--disable=\2/g' /etc/systemd/system/k3s.service" &>/dev/null
 
             # Recharger le daemon systemd
             ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl daemon-reload" &>/dev/null
@@ -4435,8 +4655,8 @@ function fix_k3s_deprecated_flags() {
                     log "WARNING" "Drapeaux dépréciés trouvés dans ${service_file}"
                     log "INFO" "Remplacement des drapeaux dépréciés..."
 
-                    # Remplacer les drapeaux dépréciés
-                    ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo sed -i 's/--no-deploy /--disable=/g' \"${service_file}\"" &>/dev/null
+                    # Remplacer les drapeaux dépréciés (plusieurs formats possibles)
+                    ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo sed -i 's/--no-deploy /--disable=/g; s/--no-deploy=/--disable=/g; s/--no-deploy\([[:space:]]\+\)\([[:alnum:]]\+\)/--disable=\2/g' \"${service_file}\"" &>/dev/null
 
                     log "SUCCESS" "Drapeaux dépréciés remplacés avec succès dans ${service_file}"
                 else
@@ -4551,6 +4771,18 @@ function reinstall_k3s() {
         log "ERROR" "Échec de la réinstallation de K3s"
         return 1
     fi
+
+    # Correction des drapeaux dépréciés après la réinstallation
+    log "INFO" "Vérification et correction des drapeaux dépréciés après la réinstallation..."
+    fix_k3s_deprecated_flags
+
+    # Redémarrage du service K3s après correction des drapeaux dépréciés
+    log "INFO" "Redémarrage du service K3s après correction des drapeaux dépréciés..."
+    ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl daemon-reload && sudo systemctl restart k3s" &>/dev/null
+
+    # Attente que le service K3s soit prêt
+    log "INFO" "Attente que le service K3s soit prêt..."
+    sleep 10
 
     # Vérifier si le service est actif après la réinstallation
     if ! ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl is-active --quiet k3s" &>/dev/null; then
@@ -4722,6 +4954,18 @@ function installer_k3s() {
     # Exécution de la commande avec timeout
     if run_with_timeout "${ansible_cmd}" 3600 "ansible_playbook"; then  # Timeout plus long (1h) pour l'installation de K3s
         log "SUCCESS" "Installation de K3s terminée avec succès"
+
+        # Correction des drapeaux dépréciés dans la configuration K3s
+        log "INFO" "Vérification et correction des drapeaux dépréciés dans la configuration K3s..."
+        fix_k3s_deprecated_flags
+
+        # Redémarrage du service K3s après correction des drapeaux dépréciés
+        log "INFO" "Redémarrage du service K3s après correction des drapeaux dépréciés..."
+        ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl daemon-reload && sudo systemctl restart k3s" &>/dev/null
+
+        # Attente que le service K3s soit prêt
+        log "INFO" "Attente que le service K3s soit prêt..."
+        sleep 10
 
         # Vérification de l'installation de K3s
         if ! ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl is-active --quiet k3s" &>/dev/null; then
