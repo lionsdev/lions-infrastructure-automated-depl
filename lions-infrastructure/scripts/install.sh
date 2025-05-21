@@ -761,8 +761,11 @@ function install_missing_commands() {
                 ;;
             "kubectl")
                 if [[ "${pkg_manager}" == "apt" ]]; then
-                    # Pour Debian/Ubuntu, kubectl nécessite un dépôt spécial
-                    log "INFO" "Configuration du dépôt Kubernetes pour apt..."
+                    # Pour Debian/Ubuntu, kubectl peut être installé de deux façons
+                    # Méthode 1 (directe): Téléchargement direct du binaire (plus fiable)
+                    log "INFO" "Installation de kubectl via téléchargement direct du binaire..."
+
+                    # Vérification de curl
                     if ! command_exists curl; then
                         log "INFO" "Installation de curl..."
                         secure_sudo apt-get install -y curl 2>&1 | tee /tmp/curl_install.log
@@ -772,48 +775,56 @@ function install_missing_commands() {
                         fi
                     fi
 
-                    # Méthode 1: Utilisation du dépôt Kubernetes
-                    log "INFO" "Tentative d'installation via le dépôt Kubernetes..."
-                    curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | secure_sudo apt-key add - 2>/tmp/kubectl_key.log
-                    if [[ $? -ne 0 ]]; then
-                        log "WARNING" "Problème lors de l'ajout de la clé Kubernetes. Voir /tmp/kubectl_key.log pour plus de détails."
+                    # Téléchargement du binaire kubectl
+                    local kubectl_version="v1.28.4"  # Version mise à jour
+                    local arch=$(uname -m)
+                    local kubectl_arch="amd64"
+
+                    if [[ "${arch}" == "aarch64" || "${arch}" == "arm64" ]]; then
+                        kubectl_arch="arm64"
+                    elif [[ "${arch}" == "armv7l" ]]; then
+                        kubectl_arch="arm"
                     fi
 
-                    echo "deb https://apt.kubernetes.io/ kubernetes-xenial main" | secure_sudo tee /etc/apt/sources.list.d/kubernetes.list >/dev/null
+                    log "INFO" "Téléchargement de kubectl ${kubectl_version} pour ${kubectl_arch}..."
+                    if curl -LO "https://dl.k8s.io/release/${kubectl_version}/bin/linux/${kubectl_arch}/kubectl" 2>/tmp/kubectl_download.log; then
+                        log "SUCCESS" "Téléchargement de kubectl réussi"
+                        secure_sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+                        if [[ $? -eq 0 ]]; then
+                            log "SUCCESS" "Installation de kubectl réussie via téléchargement direct"
+                            rm -f kubectl
+                            return 0
+                        else
+                            log "ERROR" "Échec de l'installation de kubectl dans /usr/local/bin"
+                            log "INFO" "Tentative avec méthode alternative..."
+                            rm -f kubectl
+                        fi
+                    else
+                        log "ERROR" "Échec du téléchargement de kubectl. Voir /tmp/kubectl_download.log pour plus de détails."
+                        log "INFO" "Tentative avec méthode alternative..."
+                    fi
+
+                    # Méthode 2 (fallback): Utilisation du dépôt Kubernetes
+                    log "INFO" "Tentative d'installation via le dépôt Kubernetes..."
+
+                    # Ajout de la clé GPG
+                    curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key | secure_sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg 2>/tmp/kubectl_key.log
+                    if [[ $? -ne 0 ]]; then
+                        log "WARNING" "Problème lors de l'ajout de la clé Kubernetes. Voir /tmp/kubectl_key.log pour plus de détails."
+                        # Création du répertoire si nécessaire
+                        secure_sudo mkdir -p /etc/apt/keyrings
+                        # Nouvelle tentative
+                        curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key | secure_sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg 2>/tmp/kubectl_key_retry.log
+                        if [[ $? -ne 0 ]]; then
+                            log "ERROR" "Échec de l'ajout de la clé Kubernetes même après nouvelle tentative."
+                        fi
+                    fi
+
+                    # Ajout du dépôt (nouvelle URL)
+                    echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /" | secure_sudo tee /etc/apt/sources.list.d/kubernetes.list >/dev/null
 
                     log "INFO" "Mise à jour des dépôts apt..."
                     secure_sudo apt-get update 2>/tmp/apt_update.log
-                    if [[ $? -ne 0 ]]; then
-                        log "WARNING" "Problème lors de la mise à jour des dépôts apt. Voir /tmp/apt_update.log pour plus de détails."
-                        log "INFO" "Tentative d'installation directe du binaire kubectl..."
-
-                        # Méthode 2: Téléchargement direct du binaire
-                        local kubectl_version="v1.27.1"
-                        local arch=$(uname -m)
-                        local kubectl_arch="amd64"
-
-                        if [[ "${arch}" == "aarch64" || "${arch}" == "arm64" ]]; then
-                            kubectl_arch="arm64"
-                        elif [[ "${arch}" == "armv7l" ]]; then
-                            kubectl_arch="arm"
-                        fi
-
-                        log "INFO" "Téléchargement de kubectl ${kubectl_version} pour ${kubectl_arch}..."
-                        if curl -LO "https://dl.k8s.io/release/${kubectl_version}/bin/linux/${kubectl_arch}/kubectl" 2>/tmp/kubectl_download.log; then
-                            log "SUCCESS" "Téléchargement de kubectl réussi"
-                            secure_sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
-                            if [[ $? -eq 0 ]]; then
-                                log "SUCCESS" "Installation de kubectl réussie via téléchargement direct"
-                                rm -f kubectl
-                                return 0
-                            else
-                                log "ERROR" "Échec de l'installation de kubectl dans /usr/local/bin"
-                                rm -f kubectl
-                            fi
-                        else
-                            log "ERROR" "Échec du téléchargement de kubectl. Voir /tmp/kubectl_download.log pour plus de détails."
-                        fi
-                    fi
 
                     pkg_name="kubectl"
                 elif [[ "${pkg_manager}" == "brew" ]]; then
@@ -891,7 +902,17 @@ function install_missing_commands() {
             if [[ "${cmd}" == "kubectl" && "${pkg_manager}" == "apt" ]]; then
                 log "INFO" "Tentative d'installation alternative de kubectl via téléchargement direct..."
 
-                local kubectl_version="v1.27.1"
+                # Vérification de curl
+                if ! command_exists curl; then
+                    log "INFO" "Installation de curl..."
+                    secure_sudo apt-get install -y curl 2>&1 | tee /tmp/curl_install_fallback.log
+                    if ! command_exists curl; then
+                        log "ERROR" "Échec de l'installation de curl. Voir /tmp/curl_install_fallback.log pour plus de détails."
+                        continue
+                    fi
+                fi
+
+                local kubectl_version="v1.28.4"  # Version mise à jour
                 local arch=$(uname -m)
                 local kubectl_arch="amd64"
 
@@ -902,19 +923,21 @@ function install_missing_commands() {
                 fi
 
                 log "INFO" "Téléchargement de kubectl ${kubectl_version} pour ${kubectl_arch}..."
-                if curl -LO "https://dl.k8s.io/release/${kubectl_version}/bin/linux/${kubectl_arch}/kubectl" 2>/tmp/kubectl_download.log; then
+                if curl -LO "https://dl.k8s.io/release/${kubectl_version}/bin/linux/${kubectl_arch}/kubectl" 2>/tmp/kubectl_download_fallback.log; then
                     log "SUCCESS" "Téléchargement de kubectl réussi"
                     secure_sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
                     if [[ $? -eq 0 ]]; then
-                        log "SUCCESS" "Installation de kubectl réussie via téléchargement direct"
+                        log "SUCCESS" "Installation de kubectl réussie via téléchargement direct (fallback)"
                         rm -f kubectl
                         continue  # Skip the success=false and continue with the next command
                     else
                         log "ERROR" "Échec de l'installation de kubectl dans /usr/local/bin"
+                        log "ERROR" "Vérifiez les permissions et l'espace disque"
                         rm -f kubectl
                     fi
                 else
-                    log "ERROR" "Échec du téléchargement de kubectl. Voir /tmp/kubectl_download.log pour plus de détails."
+                    log "ERROR" "Échec du téléchargement de kubectl. Voir /tmp/kubectl_download_fallback.log pour plus de détails."
+                    log "ERROR" "Vérifiez votre connexion Internet et les paramètres proxy"
                 fi
             fi
 
