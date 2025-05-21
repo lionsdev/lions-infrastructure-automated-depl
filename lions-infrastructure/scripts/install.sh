@@ -955,7 +955,120 @@ function install_missing_commands() {
     return $( [[ "${success}" == "true" ]] && echo 0 || echo 1 )
 }
 
-# Fonction pour vérifier et installer les collections Ansible requises
+# Fonction pour mettre à jour les commandes obsolètes
+function update_outdated_commands() {
+    local commands=("$@")
+    local success=true
+
+    for cmd_info in "${commands[@]}"; do
+        # Extraire le nom de la commande et la version requise
+        local cmd=$(echo "${cmd_info}" | cut -d' ' -f1)
+        local required_version=$(echo "${cmd_info}" | grep -o "requise: [0-9.]*" | cut -d' ' -f2)
+
+        log "INFO" "Tentative de mise à jour de la commande: ${cmd} vers la version ${required_version}"
+
+        case "${cmd}" in
+            "ansible-playbook")
+                if update_ansible; then
+                    log "SUCCESS" "Mise à jour d'ansible-playbook réussie"
+                else
+                    log "ERROR" "Échec de la mise à jour d'ansible-playbook"
+                    success=false
+                fi
+                ;;
+            "kubectl")
+                log "INFO" "Mise à jour de kubectl..."
+                if command_exists apt-get; then
+                    # Pour Debian/Ubuntu, utiliser le dépôt Kubernetes
+                    if ! secure_sudo apt-get update &>/dev/null; then
+                        log "WARNING" "Impossible de mettre à jour les dépôts apt"
+                    fi
+                    if ! secure_sudo apt-get install -y kubectl &>/dev/null; then
+                        log "ERROR" "Échec de la mise à jour de kubectl via apt"
+                        success=false
+                    fi
+                elif command_exists brew; then
+                    # Pour macOS, utiliser Homebrew
+                    if ! brew upgrade kubernetes-cli &>/dev/null; then
+                        log "ERROR" "Échec de la mise à jour de kubectl via Homebrew"
+                        success=false
+                    fi
+                else
+                    # Téléchargement direct du binaire
+                    local kubectl_version="v${required_version}"
+                    local arch=$(uname -m)
+                    local kubectl_arch="amd64"
+
+                    if [[ "${arch}" == "aarch64" || "${arch}" == "arm64" ]]; then
+                        kubectl_arch="arm64"
+                    elif [[ "${arch}" == "armv7l" ]]; then
+                        kubectl_arch="arm"
+                    fi
+
+                    log "INFO" "Téléchargement de kubectl ${kubectl_version} pour ${kubectl_arch}..."
+                    if curl -LO "https://dl.k8s.io/release/${kubectl_version}/bin/linux/${kubectl_arch}/kubectl" 2>/tmp/kubectl_update.log; then
+                        log "SUCCESS" "Téléchargement de kubectl réussi"
+                        secure_sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+                        if [[ $? -eq 0 ]]; then
+                            log "SUCCESS" "Installation de kubectl réussie via téléchargement direct"
+                            rm -f kubectl
+                        else
+                            log "ERROR" "Échec de l'installation de kubectl dans /usr/local/bin"
+                            rm -f kubectl
+                            success=false
+                        fi
+                    else
+                        log "ERROR" "Échec du téléchargement de kubectl. Voir /tmp/kubectl_update.log pour plus de détails."
+                        success=false
+                    fi
+                fi
+                ;;
+            "helm")
+                log "INFO" "Mise à jour de Helm..."
+                if command_exists apt-get; then
+                    # Pour Debian/Ubuntu, utiliser le dépôt Helm
+                    if ! secure_sudo apt-get update &>/dev/null; then
+                        log "WARNING" "Impossible de mettre à jour les dépôts apt"
+                    fi
+                    if ! secure_sudo apt-get install -y helm &>/dev/null; then
+                        log "ERROR" "Échec de la mise à jour de Helm via apt"
+                        success=false
+                    fi
+                elif command_exists brew; then
+                    # Pour macOS, utiliser Homebrew
+                    if ! brew upgrade helm &>/dev/null; then
+                        log "ERROR" "Échec de la mise à jour de Helm via Homebrew"
+                        success=false
+                    fi
+                else
+                    # Téléchargement et installation via le script officiel
+                    log "INFO" "Téléchargement du script d'installation de Helm..."
+                    if curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 2>/tmp/helm_download.log; then
+                        log "SUCCESS" "Téléchargement du script d'installation de Helm réussi"
+                        chmod 700 get_helm.sh
+                        if ! ./get_helm.sh &>/tmp/helm_install.log; then
+                            log "ERROR" "Échec de l'installation de Helm. Voir /tmp/helm_install.log pour plus de détails."
+                            success=false
+                        fi
+                        rm -f get_helm.sh
+                    else
+                        log "ERROR" "Échec du téléchargement du script d'installation de Helm. Voir /tmp/helm_download.log pour plus de détails."
+                        success=false
+                    fi
+                fi
+                ;;
+            *)
+                log "WARNING" "Mise à jour automatique non supportée pour la commande: ${cmd}"
+                log "INFO" "Veuillez mettre à jour cette commande manuellement"
+                success=false
+                ;;
+        esac
+    done
+
+    return $( [[ "${success}" == "true" ]] && echo 0 || echo 1 )
+}
+
+# Fonction pour mettre à jour Ansible
 function update_ansible() {
     log "INFO" "Mise à jour d'Ansible..."
 
@@ -1111,6 +1224,7 @@ function check_ansible_version() {
     fi
 }
 
+# Fonction pour vérifier et installer les collections Ansible requises
 function check_ansible_collections() {
     log "INFO" "Vérification des collections Ansible requises..."
 
@@ -3740,12 +3854,71 @@ function verifier_prerequis() {
 
     if [[ ${#outdated_commands[@]} -gt 0 ]]; then
         log "WARNING" "Commandes avec versions obsolètes: ${outdated_commands[*]}"
-        log "WARNING" "Il est recommandé de mettre à jour ces commandes avant de continuer"
-        log "INFO" "Voulez-vous continuer malgré tout? (o/N)"
-        read -r answer
-        if [[ ! "${answer}" =~ ^[Oo]$ ]]; then
-            cleanup
-            exit 1
+        log "INFO" "Voulez-vous tenter de mettre à jour ces commandes automatiquement? (o/N)"
+        read -r update_answer
+        if [[ "${update_answer}" =~ ^[Oo]$ ]]; then
+            log "INFO" "Tentative de mise à jour des commandes obsolètes..."
+            if update_outdated_commands "${outdated_commands[@]}"; then
+                log "SUCCESS" "Mise à jour des commandes obsolètes réussie"
+                # Vérifier à nouveau les commandes
+                outdated_commands=()
+                for cmd_with_version in "${required_commands[@]}"; do
+                    local cmd="${cmd_with_version%%:*}"
+                    local min_version="${cmd_with_version#*:}"
+
+                    if command_exists "${cmd}" && [[ "${min_version}" != "0" ]]; then
+                        local current_version=""
+                        case "${cmd}" in
+                            "ansible-playbook")
+                                current_version=$(timeout 5 ansible-playbook --version 2>/dev/null | head -n1 | awk '{print $2}' | cut -d[ -f1 || echo "${min_version}")
+                                ;;
+                            "kubectl")
+                                current_version=$(timeout 5 kubectl version --client --short 2>/dev/null | awk '{print $3}' | sed 's/v//' || echo "${min_version}")
+                                ;;
+                            "helm")
+                                current_version=$(timeout 5 helm version --short 2>/dev/null | sed 's/v//' | cut -d+ -f1 || echo "${min_version}")
+                                ;;
+                            *)
+                                current_version="${min_version}"
+                                ;;
+                        esac
+
+                        if [[ -n "${current_version}" && "${current_version}" != "${min_version}" ]]; then
+                            if ! version_greater_equal "${current_version}" "${min_version}"; then
+                                outdated_commands+=("${cmd} (actuelle: ${current_version}, requise: ${min_version})")
+                            fi
+                        fi
+                    fi
+                done
+
+                if [[ ${#outdated_commands[@]} -gt 0 ]]; then
+                    log "WARNING" "Certaines commandes sont toujours obsolètes après la mise à jour: ${outdated_commands[*]}"
+                    log "WARNING" "Il est recommandé de mettre à jour ces commandes manuellement avant de continuer"
+                    log "INFO" "Voulez-vous continuer malgré tout? (o/N)"
+                    read -r continue_answer
+                    if [[ ! "${continue_answer}" =~ ^[Oo]$ ]]; then
+                        cleanup
+                        exit 1
+                    fi
+                fi
+            else
+                log "WARNING" "Échec de la mise à jour automatique des commandes obsolètes"
+                log "WARNING" "Il est recommandé de mettre à jour ces commandes manuellement avant de continuer"
+                log "INFO" "Voulez-vous continuer malgré tout? (o/N)"
+                read -r continue_answer
+                if [[ ! "${continue_answer}" =~ ^[Oo]$ ]]; then
+                    cleanup
+                    exit 1
+                fi
+            fi
+        else
+            log "WARNING" "Il est recommandé de mettre à jour ces commandes avant de continuer"
+            log "INFO" "Voulez-vous continuer malgré tout? (o/N)"
+            read -r continue_answer
+            if [[ ! "${continue_answer}" =~ ^[Oo]$ ]]; then
+                cleanup
+                exit 1
+            fi
         fi
     fi
 
