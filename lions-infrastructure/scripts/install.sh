@@ -5640,17 +5640,130 @@ function deployer_infrastructure_base() {
     # Sauvegarde de l'état actuel
     echo "${INSTALLATION_STEP}" > "${STATE_FILE}"
 
+    # Configuration du KUBECONFIG pour l'exécution locale
+    if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+        log "INFO" "Exécution locale détectée, configuration du KUBECONFIG pour K3s..."
+        if [[ -f "/etc/rancher/k3s/k3s.yaml" ]]; then
+            log "INFO" "Fichier kubeconfig K3s trouvé à /etc/rancher/k3s/k3s.yaml"
+            export KUBECONFIG="/etc/rancher/k3s/k3s.yaml"
+            log "SUCCESS" "KUBECONFIG configuré pour l'exécution locale: ${KUBECONFIG}"
+        else
+            log "WARNING" "Fichier kubeconfig K3s non trouvé à /etc/rancher/k3s/k3s.yaml"
+            log "INFO" "Recherche d'autres fichiers kubeconfig..."
+
+            # Recherche d'autres emplacements possibles pour le fichier kubeconfig
+            local possible_kubeconfig_files=(
+                "/root/.kube/config"
+                "${HOME}/.kube/config"
+                "/var/lib/rancher/k3s/server/cred/admin.kubeconfig"
+            )
+
+            local kubeconfig_found=false
+            for kubeconfig_file in "${possible_kubeconfig_files[@]}"; do
+                if [[ -f "${kubeconfig_file}" ]]; then
+                    log "INFO" "Fichier kubeconfig trouvé à ${kubeconfig_file}"
+                    export KUBECONFIG="${kubeconfig_file}"
+                    kubeconfig_found=true
+                    log "SUCCESS" "KUBECONFIG configuré pour l'exécution locale: ${KUBECONFIG}"
+                    break
+                fi
+            done
+
+            if [[ "${kubeconfig_found}" == "false" ]]; then
+                log "WARNING" "Aucun fichier kubeconfig trouvé, utilisation de la configuration par défaut"
+            fi
+        fi
+    fi
+
     # Attente que les CRDs de cert-manager soient prêts
     log "INFO" "Vérification que les CRDs de cert-manager sont prêts..."
     local max_attempts=30
     local attempt=0
     local crds_ready=false
+    local connection_error=false
 
     while [[ "${crds_ready}" == "false" && ${attempt} -lt ${max_attempts} ]]; do
         attempt=$((attempt + 1))
         log "INFO" "Tentative ${attempt}/${max_attempts} de vérification des CRDs de cert-manager..."
 
-        if kubectl get crd | grep -q "clusterissuers.cert-manager.io"; then
+        # Vérification de la connectivité au cluster Kubernetes
+        if ! kubectl cluster-info &>/dev/null; then
+            log "WARNING" "Impossible de se connecter au cluster Kubernetes (tentative ${attempt}/${max_attempts})"
+
+            # Vérification du KUBECONFIG
+            if [[ -n "${KUBECONFIG}" ]]; then
+                log "INFO" "KUBECONFIG actuel: ${KUBECONFIG}"
+            else
+                log "INFO" "KUBECONFIG non défini, utilisation de la configuration par défaut"
+            fi
+
+            # Si exécution locale, tentative de configuration du KUBECONFIG
+            if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+                log "INFO" "Tentative de configuration du KUBECONFIG pour l'exécution locale..."
+
+                # Vérification de l'existence du fichier kubeconfig K3s
+                if [[ -f "/etc/rancher/k3s/k3s.yaml" ]]; then
+                    log "INFO" "Utilisation du fichier kubeconfig K3s: /etc/rancher/k3s/k3s.yaml"
+                    export KUBECONFIG="/etc/rancher/k3s/k3s.yaml"
+                elif [[ -f "${HOME}/.kube/config" ]]; then
+                    log "INFO" "Utilisation du fichier kubeconfig utilisateur: ${HOME}/.kube/config"
+                    export KUBECONFIG="${HOME}/.kube/config"
+                else
+                    log "WARNING" "Aucun fichier kubeconfig trouvé"
+                    connection_error=true
+                fi
+
+                # Vérification de la connectivité après configuration
+                if kubectl cluster-info &>/dev/null; then
+                    log "SUCCESS" "Connexion au cluster Kubernetes établie avec le nouveau KUBECONFIG"
+                else
+                    log "WARNING" "Impossible de se connecter au cluster Kubernetes même avec le nouveau KUBECONFIG"
+
+                    # Tentative de diagnostic
+                    log "INFO" "Diagnostic de la connexion Kubernetes..."
+                    log "INFO" "Vérification du service K3s..."
+                    systemctl status k3s &>/dev/null
+                    if [[ $? -eq 0 ]]; then
+                        log "INFO" "Le service K3s est en cours d'exécution"
+                        log "INFO" "Vérification des journaux K3s..."
+                        journalctl -u k3s --no-pager -n 20 > /tmp/k3s_logs.txt
+                        log "INFO" "Journaux K3s enregistrés dans /tmp/k3s_logs.txt"
+                    else
+                        log "WARNING" "Le service K3s n'est pas en cours d'exécution"
+                        log "INFO" "Tentative de démarrage du service K3s..."
+                        systemctl start k3s
+                        sleep 10
+                        if systemctl status k3s &>/dev/null; then
+                            log "SUCCESS" "Service K3s démarré avec succès"
+                        else
+                            log "ERROR" "Impossible de démarrer le service K3s"
+                            connection_error=true
+                        fi
+                    fi
+
+                    # Vérification des ports
+                    log "INFO" "Vérification du port 6443..."
+                    if netstat -tuln | grep -q ":6443"; then
+                        log "INFO" "Le port 6443 est ouvert"
+                    else
+                        log "WARNING" "Le port 6443 n'est pas ouvert"
+                        connection_error=true
+                    fi
+                fi
+            else
+                # Exécution distante
+                connection_error=true
+            fi
+
+            if [[ "${connection_error}" == "true" ]]; then
+                log "INFO" "Les CRDs de cert-manager ne sont pas encore prêts, attente de 10 secondes..."
+                sleep 10
+                continue
+            fi
+        fi
+
+        # Vérification des CRDs
+        if kubectl get crd 2>/dev/null | grep -q "clusterissuers.cert-manager.io"; then
             log "SUCCESS" "Les CRDs de cert-manager sont prêts"
             crds_ready=true
         else
@@ -5669,6 +5782,30 @@ function deployer_infrastructure_base() {
             log "SUCCESS" "Installation manuelle des CRDs de cert-manager réussie"
         else
             log "WARNING" "Échec de l'installation manuelle des CRDs de cert-manager"
+
+            # Diagnostic supplémentaire
+            log "INFO" "Diagnostic supplémentaire..."
+
+            # Vérification de la connectivité
+            if kubectl cluster-info &>/dev/null; then
+                log "INFO" "Connexion au cluster Kubernetes établie"
+
+                # Vérification des CRDs existants
+                log "INFO" "Liste des CRDs existants:"
+                kubectl get crd 2>&1 || log "WARNING" "Impossible de lister les CRDs"
+
+                # Vérification des namespaces
+                log "INFO" "Liste des namespaces:"
+                kubectl get namespaces 2>&1 || log "WARNING" "Impossible de lister les namespaces"
+
+                # Vérification des pods cert-manager
+                log "INFO" "Vérification des pods cert-manager:"
+                kubectl get pods --all-namespaces | grep cert-manager 2>&1 || log "INFO" "Aucun pod cert-manager trouvé"
+            else
+                log "ERROR" "Impossible de se connecter au cluster Kubernetes"
+                log "ERROR" "Vérifiez que le cluster Kubernetes est en cours d'exécution et accessible"
+            fi
+
             log "WARNING" "Le déploiement des ClusterIssuers pourrait échouer"
         fi
     fi
