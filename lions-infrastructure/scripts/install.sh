@@ -5225,32 +5225,58 @@ function restart_k3s_service() {
 function fix_k3s_deprecated_flags() {
     log "INFO" "Vérification et correction des drapeaux dépréciés dans la configuration K3s..."
 
-    # Vérifier si on peut accéder au VPS
-    if ! ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "echo 'Connexion réussie'" &>/dev/null; then
-        log "ERROR" "Impossible de se connecter au VPS pour corriger les drapeaux dépréciés"
-        return 1
+    # Vérifier si on est en exécution locale
+    if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+        log "INFO" "Exécution locale détectée, utilisation des commandes locales"
+    else
+        # Vérifier si on peut accéder au VPS
+        if ! ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "echo 'Connexion réussie'" &>/dev/null; then
+            log "ERROR" "Impossible de se connecter au VPS pour corriger les drapeaux dépréciés"
+            return 1
+        fi
     fi
 
     # Vérifier l'existence du fichier de service K3s
     local service_exists
-    service_exists=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "test -f /etc/systemd/system/k3s.service && echo 'true' || echo 'false'" 2>/dev/null)
+    if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+        # Exécution locale
+        service_exists=$(test -f /etc/systemd/system/k3s.service && echo 'true' || echo 'false')
+    else
+        # Exécution distante
+        service_exists=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "test -f /etc/systemd/system/k3s.service && echo 'true' || echo 'false'" 2>/dev/null)
+    fi
 
     if [[ "${service_exists}" == "true" ]]; then
         log "INFO" "Fichier de service K3s trouvé, vérification des drapeaux dépréciés..."
 
         # Vérifier si le fichier contient des drapeaux dépréciés
         local contains_deprecated
-        contains_deprecated=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "grep -q -- '--no-deploy' /etc/systemd/system/k3s.service && echo 'true' || echo 'false'" 2>/dev/null)
+        if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+            # Exécution locale
+            contains_deprecated=$(grep -q -- '--no-deploy' /etc/systemd/system/k3s.service && echo 'true' || echo 'false')
+        else
+            # Exécution distante
+            contains_deprecated=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "grep -q -- '--no-deploy' /etc/systemd/system/k3s.service && echo 'true' || echo 'false'" 2>/dev/null)
+        fi
 
         if [[ "${contains_deprecated}" == "true" ]]; then
             log "WARNING" "Drapeaux dépréciés trouvés dans le fichier de service K3s"
             log "INFO" "Remplacement des drapeaux dépréciés..."
 
             # Remplacer les drapeaux dépréciés (plusieurs formats possibles)
-            ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo sed -i 's/--no-deploy /--disable=/g; s/--no-deploy=/--disable=/g; s/--no-deploy\([[:space:]]\+\)\([[:alnum:]]\+\)/--disable=\2/g' /etc/systemd/system/k3s.service" &>/dev/null
+            if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+                # Exécution locale
+                sudo sed -i 's/--no-deploy /--disable=/g; s/--no-deploy=/--disable=/g; s/--no-deploy\([[:space:]]\+\)\([[:alnum:]]\+\)/--disable=\2/g' /etc/systemd/system/k3s.service &>/dev/null
 
-            # Recharger le daemon systemd
-            ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl daemon-reload" &>/dev/null
+                # Recharger le daemon systemd
+                sudo systemctl daemon-reload &>/dev/null
+            else
+                # Exécution distante
+                ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo sed -i 's/--no-deploy /--disable=/g; s/--no-deploy=/--disable=/g; s/--no-deploy\([[:space:]]\+\)\([[:alnum:]]\+\)/--disable=\2/g' /etc/systemd/system/k3s.service" &>/dev/null
+
+                # Recharger le daemon systemd
+                ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl daemon-reload" &>/dev/null
+            fi
 
             log "SUCCESS" "Drapeaux dépréciés remplacés avec succès"
             return 0
@@ -5262,28 +5288,52 @@ function fix_k3s_deprecated_flags() {
 
         # Vérifier s'il existe dans un autre emplacement
         local alt_service_exists
-        alt_service_exists=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "find /etc/systemd/system -name 'k3s*.service' | wc -l" 2>/dev/null)
+        if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+            # Exécution locale
+            alt_service_exists=$(find /etc/systemd/system -name 'k3s*.service' | wc -l)
+        else
+            # Exécution distante
+            alt_service_exists=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "find /etc/systemd/system -name 'k3s*.service' | wc -l" 2>/dev/null)
+        fi
 
         if [[ "${alt_service_exists}" -gt 0 ]]; then
             log "INFO" "Fichiers de service K3s alternatifs trouvés, vérification des drapeaux dépréciés..."
 
             # Obtenir la liste des fichiers de service K3s
             local service_files
-            service_files=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "find /etc/systemd/system -name 'k3s*.service'" 2>/dev/null)
+            if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+                # Exécution locale
+                service_files=$(find /etc/systemd/system -name 'k3s*.service')
+            else
+                # Exécution distante
+                service_files=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "find /etc/systemd/system -name 'k3s*.service'" 2>/dev/null)
+            fi
 
             # Pour chaque fichier, vérifier et remplacer les drapeaux dépréciés
             echo "${service_files}" | while read -r service_file; do
                 log "INFO" "Vérification du fichier ${service_file}..."
 
                 local file_contains_deprecated
-                file_contains_deprecated=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "grep -q -- '--no-deploy' \"${service_file}\" && echo 'true' || echo 'false'" 2>/dev/null)
+                if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+                    # Exécution locale
+                    file_contains_deprecated=$(grep -q -- '--no-deploy' "${service_file}" && echo 'true' || echo 'false')
+                else
+                    # Exécution distante
+                    file_contains_deprecated=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "grep -q -- '--no-deploy' \"${service_file}\" && echo 'true' || echo 'false'" 2>/dev/null)
+                fi
 
                 if [[ "${file_contains_deprecated}" == "true" ]]; then
                     log "WARNING" "Drapeaux dépréciés trouvés dans ${service_file}"
                     log "INFO" "Remplacement des drapeaux dépréciés..."
 
                     # Remplacer les drapeaux dépréciés (plusieurs formats possibles)
-                    ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo sed -i 's/--no-deploy /--disable=/g; s/--no-deploy=/--disable=/g; s/--no-deploy\([[:space:]]\+\)\([[:alnum:]]\+\)/--disable=\2/g' \"${service_file}\"" &>/dev/null
+                    if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+                        # Exécution locale
+                        sudo sed -i 's/--no-deploy /--disable=/g; s/--no-deploy=/--disable=/g; s/--no-deploy\([[:space:]]\+\)\([[:alnum:]]\+\)/--disable=\2/g' "${service_file}" &>/dev/null
+                    else
+                        # Exécution distante
+                        ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo sed -i 's/--no-deploy /--disable=/g; s/--no-deploy=/--disable=/g; s/--no-deploy\([[:space:]]\+\)\([[:alnum:]]\+\)/--disable=\2/g' \"${service_file}\"" &>/dev/null
+                    fi
 
                     log "SUCCESS" "Drapeaux dépréciés remplacés avec succès dans ${service_file}"
                 else
@@ -5292,7 +5342,13 @@ function fix_k3s_deprecated_flags() {
             done
 
             # Recharger le daemon systemd
-            ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl daemon-reload" &>/dev/null
+            if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+                # Exécution locale
+                sudo systemctl daemon-reload &>/dev/null
+            else
+                # Exécution distante
+                ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl daemon-reload" &>/dev/null
+            fi
 
             log "SUCCESS" "Vérification et correction des drapeaux dépréciés terminées"
             return 0
@@ -5405,7 +5461,13 @@ function reinstall_k3s() {
 
     # Redémarrage du service K3s après correction des drapeaux dépréciés
     log "INFO" "Redémarrage du service K3s après correction des drapeaux dépréciés..."
-    ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl daemon-reload && sudo systemctl restart k3s" &>/dev/null
+    if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+        # Exécution locale
+        sudo systemctl daemon-reload && sudo systemctl restart k3s &>/dev/null
+    else
+        # Exécution distante
+        ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl daemon-reload && sudo systemctl restart k3s" &>/dev/null
+    fi
 
     # Attente que le service K3s soit prêt
     log "INFO" "Attente que le service K3s soit prêt..."
@@ -5588,14 +5650,29 @@ function installer_k3s() {
 
         # Redémarrage du service K3s après correction des drapeaux dépréciés
         log "INFO" "Redémarrage du service K3s après correction des drapeaux dépréciés..."
-        ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl daemon-reload && sudo systemctl restart k3s" &>/dev/null
+        if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+            # Exécution locale
+            sudo systemctl daemon-reload && sudo systemctl restart k3s &>/dev/null
+        else
+            # Exécution distante
+            ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl daemon-reload && sudo systemctl restart k3s" &>/dev/null
+        fi
 
         # Attente que le service K3s soit prêt
         log "INFO" "Attente que le service K3s soit prêt..."
         sleep 10
 
         # Vérification de l'installation de K3s
-        if ! ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl is-active --quiet k3s" &>/dev/null; then
+        local k3s_active=false
+        if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+            # Exécution locale
+            sudo systemctl is-active --quiet k3s &>/dev/null && k3s_active=true
+        else
+            # Exécution distante
+            ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl is-active --quiet k3s" &>/dev/null && k3s_active=true
+        fi
+
+        if [[ "${k3s_active}" != "true" ]]; then
             log "WARNING" "Le service K3s ne semble pas être actif après l'installation"
             log "WARNING" "Vérifiez manuellement l'état du service sur le VPS"
         else
@@ -5603,7 +5680,13 @@ function installer_k3s() {
 
             # Vérification des pods système
             local pods_status
-            pods_status=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo kubectl get pods -n kube-system -o wide" 2>/dev/null || echo "Impossible de vérifier les pods")
+            if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+                # Exécution locale
+                pods_status=$(sudo kubectl get pods -n kube-system -o wide 2>/dev/null || echo "Impossible de vérifier les pods")
+            else
+                # Exécution distante
+                pods_status=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo kubectl get pods -n kube-system -o wide" 2>/dev/null || echo "Impossible de vérifier les pods")
+            fi
             log "INFO" "État des pods système:"
             echo "${pods_status}"
 
@@ -5616,11 +5699,23 @@ function installer_k3s() {
                 local kubeconfig_dir="${HOME}/.kube"
                 mkdir -p "${kubeconfig_dir}"
 
-                if scp -P "${ansible_port}" "${ansible_user}@${ansible_host}:/home/${ansible_user}/.kube/config" "${kubeconfig_dir}/config.k3s" &>/dev/null; then
-                    log "INFO" "Fichier kubeconfig récupéré dans ${kubeconfig_dir}/config.k3s"
-                    log "INFO" "Utilisez la commande: export KUBECONFIG=${kubeconfig_dir}/config.k3s"
+                if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+                    # Exécution locale
+                    if [[ -f "/home/${ansible_user}/.kube/config" ]]; then
+                        cp "/home/${ansible_user}/.kube/config" "${kubeconfig_dir}/config.k3s" &>/dev/null
+                        log "INFO" "Fichier kubeconfig copié dans ${kubeconfig_dir}/config.k3s"
+                        log "INFO" "Utilisez la commande: export KUBECONFIG=${kubeconfig_dir}/config.k3s"
+                    else
+                        log "ERROR" "Impossible de trouver le fichier kubeconfig local"
+                    fi
                 else
-                    log "ERROR" "Impossible de récupérer le fichier kubeconfig"
+                    # Exécution distante
+                    if scp -P "${ansible_port}" "${ansible_user}@${ansible_host}:/home/${ansible_user}/.kube/config" "${kubeconfig_dir}/config.k3s" &>/dev/null; then
+                        log "INFO" "Fichier kubeconfig récupéré dans ${kubeconfig_dir}/config.k3s"
+                        log "INFO" "Utilisez la commande: export KUBECONFIG=${kubeconfig_dir}/config.k3s"
+                    else
+                        log "ERROR" "Impossible de récupérer le fichier kubeconfig"
+                    fi
                 fi
             else
                 log "INFO" "Accès au cluster K3s depuis la machine locale vérifié avec succès"
@@ -5630,14 +5725,29 @@ function installer_k3s() {
         log "ERROR" "Échec de l'installation de K3s"
 
         # Vérification des erreurs courantes
-        if ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo grep -i 'failed=' /var/log/ansible.log 2>/dev/null | tail -10" &>/dev/null; then
-            log "INFO" "Dernières erreurs Ansible sur le VPS:"
-            ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo grep -i 'failed=' /var/log/ansible.log 2>/dev/null | tail -10" 2>/dev/null || true
+        if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+            # Exécution locale
+            if sudo grep -i 'failed=' /var/log/ansible.log 2>/dev/null | tail -10 &>/dev/null; then
+                log "INFO" "Dernières erreurs Ansible sur le VPS:"
+                sudo grep -i 'failed=' /var/log/ansible.log 2>/dev/null | tail -10 2>/dev/null || true
+            fi
+        else
+            # Exécution distante
+            if ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo grep -i 'failed=' /var/log/ansible.log 2>/dev/null | tail -10" &>/dev/null; then
+                log "INFO" "Dernières erreurs Ansible sur le VPS:"
+                ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo grep -i 'failed=' /var/log/ansible.log 2>/dev/null | tail -10" 2>/dev/null || true
+            fi
         fi
 
         # Vérification des logs de K3s
         local k3s_logs
-        k3s_logs=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo journalctl -u k3s --no-pager -n 50" 2>/dev/null || echo "Impossible de récupérer les logs de K3s")
+        if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+            # Exécution locale
+            k3s_logs=$(sudo journalctl -u k3s --no-pager -n 50 2>/dev/null || echo "Impossible de récupérer les logs de K3s")
+        else
+            # Exécution distante
+            k3s_logs=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo journalctl -u k3s --no-pager -n 50" 2>/dev/null || echo "Impossible de récupérer les logs de K3s")
+        fi
         log "INFO" "Derniers logs de K3s:"
         echo "${k3s_logs}"
 
@@ -5646,15 +5756,29 @@ function installer_k3s() {
         local k3s_ports=(6443 10250 10251 10252 8472 4789 51820 51821)
 
         for port in "${k3s_ports[@]}"; do
-            if ! ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "ss -tuln | grep :${port}" &>/dev/null; then
-                log "WARNING" "Le port ${port} n'est pas ouvert sur le VPS, ce qui peut causer des problèmes avec K3s"
+            if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+                # Exécution locale
+                if ! ss -tuln | grep ":${port}" &>/dev/null; then
+                    log "WARNING" "Le port ${port} n'est pas ouvert sur le VPS, ce qui peut causer des problèmes avec K3s"
+                fi
+            else
+                # Exécution distante
+                if ! ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "ss -tuln | grep :${port}" &>/dev/null; then
+                    log "WARNING" "Le port ${port} n'est pas ouvert sur le VPS, ce qui peut causer des problèmes avec K3s"
+                fi
             fi
         done
 
         # Vérification des prérequis système pour K3s
         log "INFO" "Vérification des prérequis système pour K3s..."
         local system_info
-        system_info=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "uname -a && cat /etc/os-release | grep PRETTY_NAME && free -h && df -h / && sysctl -a | grep -E 'vm.max_map_count|net.ipv4.ip_forward'" 2>/dev/null || echo "Impossible de récupérer les informations système")
+        if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+            # Exécution locale
+            system_info=$(uname -a && cat /etc/os-release | grep PRETTY_NAME && free -h && df -h / && sysctl -a | grep -E 'vm.max_map_count|net.ipv4.ip_forward' 2>/dev/null || echo "Impossible de récupérer les informations système")
+        else
+            # Exécution distante
+            system_info=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "uname -a && cat /etc/os-release | grep PRETTY_NAME && free -h && df -h / && sysctl -a | grep -E 'vm.max_map_count|net.ipv4.ip_forward'" 2>/dev/null || echo "Impossible de récupérer les informations système")
+        fi
         log "INFO" "Informations système:"
         echo "${system_info}"
 
