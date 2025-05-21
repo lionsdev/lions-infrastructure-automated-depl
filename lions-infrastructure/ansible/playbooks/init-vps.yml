@@ -27,6 +27,33 @@
         state: absent
       ignore_errors: yes
 
+    - name: Création du répertoire pour les clés GPG
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+
+    - name: Téléchargement de la clé GPG de Kubernetes
+      get_url:
+        url: https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key
+        dest: /tmp/k8s-release.key
+        mode: '0644'
+      ignore_errors: yes
+
+    - name: Ajout de la clé GPG de Kubernetes
+      shell: |
+        cat /tmp/k8s-release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+      args:
+        creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+      ignore_errors: yes
+
+    - name: Ajout du dépôt Kubernetes
+      apt_repository:
+        repo: deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /
+        state: present
+        filename: kubernetes
+      ignore_errors: yes
+
     - name: Mise à jour du cache APT
       apt:
         update_cache: yes
