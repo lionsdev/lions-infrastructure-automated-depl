@@ -1081,37 +1081,227 @@ function update_ansible() {
         # Détection de la distribution Linux
         if command_exists apt-get; then
             log "INFO" "Système Debian/Ubuntu détecté, utilisation de apt-get"
-            if ! secure_sudo apt-get update &>/dev/null; then
-                log "ERROR" "Échec de la mise à jour des dépôts"
-                return 1
+
+            # Création des fichiers de log pour capturer les erreurs
+            local apt_update_log="/tmp/apt_update_ansible.log"
+            local apt_install_log="/tmp/apt_install_ansible.log"
+
+            # Méthode 1: Mise à jour via apt standard
+            log "INFO" "Tentative de mise à jour via apt standard..."
+            if ! secure_sudo apt-get update 2>&1 | tee "${apt_update_log}"; then
+                log "WARNING" "Échec de la mise à jour des dépôts. Voir ${apt_update_log} pour plus de détails."
+                log "INFO" "Tentative avec méthode alternative..."
+            else
+                if ! secure_sudo apt-get install -y ansible 2>&1 | tee "${apt_install_log}"; then
+                    log "WARNING" "Échec de l'installation d'Ansible via apt. Voir ${apt_install_log} pour plus de détails."
+                    log "INFO" "Tentative avec méthode alternative..."
+                else
+                    log "SUCCESS" "Installation d'Ansible réussie via apt standard"
+                    return 0
+                fi
             fi
-            if ! secure_sudo apt-get install -y ansible &>/dev/null; then
-                log "ERROR" "Échec de la mise à jour d'Ansible"
-                return 1
+
+            # Méthode 2: Ajout du PPA Ansible
+            log "INFO" "Tentative d'ajout du PPA Ansible..."
+            if ! command_exists add-apt-repository; then
+                log "INFO" "Installation de software-properties-common pour add-apt-repository..."
+                secure_sudo apt-get install -y software-properties-common 2>&1 | tee /tmp/apt_install_properties.log
             fi
+
+            if secure_sudo add-apt-repository --yes --update ppa:ansible/ansible 2>&1 | tee /tmp/add_ansible_ppa.log; then
+                log "INFO" "PPA Ansible ajouté avec succès, installation d'Ansible..."
+                if secure_sudo apt-get install -y ansible 2>&1 | tee "${apt_install_log}"; then
+                    log "SUCCESS" "Installation d'Ansible réussie via PPA"
+                    return 0
+                else
+                    log "WARNING" "Échec de l'installation d'Ansible via PPA. Voir ${apt_install_log} pour plus de détails."
+                fi
+            else
+                log "WARNING" "Échec de l'ajout du PPA Ansible. Voir /tmp/add_ansible_ppa.log pour plus de détails."
+            fi
+
+            # Méthode 3: Installation via pip
+            log "INFO" "Tentative d'installation via pip..."
+            if ! command_exists pip3; then
+                log "INFO" "Installation de pip3..."
+                secure_sudo apt-get install -y python3-pip 2>&1 | tee /tmp/apt_install_pip.log
+            fi
+
+            if command_exists pip3; then
+                log "INFO" "Installation d'Ansible via pip3..."
+                if secure_sudo pip3 install --upgrade ansible 2>&1 | tee /tmp/pip_install_ansible.log; then
+                    log "SUCCESS" "Installation d'Ansible réussie via pip3"
+                    return 0
+                else
+                    log "WARNING" "Échec de l'installation d'Ansible via pip3. Voir /tmp/pip_install_ansible.log pour plus de détails."
+                fi
+            else
+                log "WARNING" "pip3 n'est pas disponible, impossible d'installer Ansible via pip"
+            fi
+
+            log "ERROR" "Toutes les méthodes d'installation d'Ansible ont échoué"
+            return 1
         elif command_exists dnf; then
             log "INFO" "Système Fedora détecté, utilisation de dnf"
-            if ! secure_sudo dnf update -y ansible &>/dev/null; then
-                log "ERROR" "Échec de la mise à jour d'Ansible"
-                return 1
+
+            # Création des fichiers de log pour capturer les erreurs
+            local dnf_update_log="/tmp/dnf_update_ansible.log"
+
+            # Méthode 1: Mise à jour via dnf standard
+            log "INFO" "Tentative de mise à jour via dnf standard..."
+            if ! secure_sudo dnf update -y ansible 2>&1 | tee "${dnf_update_log}"; then
+                log "WARNING" "Échec de la mise à jour d'Ansible via dnf. Voir ${dnf_update_log} pour plus de détails."
+
+                # Méthode 2: Installation via pip
+                log "INFO" "Tentative d'installation via pip..."
+                if ! command_exists pip3; then
+                    log "INFO" "Installation de pip3..."
+                    secure_sudo dnf install -y python3-pip 2>&1 | tee /tmp/dnf_install_pip.log
+                fi
+
+                if command_exists pip3; then
+                    log "INFO" "Installation d'Ansible via pip3..."
+                    if secure_sudo pip3 install --upgrade ansible 2>&1 | tee /tmp/pip_install_ansible.log; then
+                        log "SUCCESS" "Installation d'Ansible réussie via pip3"
+                        return 0
+                    else
+                        log "WARNING" "Échec de l'installation d'Ansible via pip3. Voir /tmp/pip_install_ansible.log pour plus de détails."
+                        log "ERROR" "Toutes les méthodes d'installation d'Ansible ont échoué"
+                        return 1
+                    fi
+                else
+                    log "WARNING" "pip3 n'est pas disponible, impossible d'installer Ansible via pip"
+                    log "ERROR" "Toutes les méthodes d'installation d'Ansible ont échoué"
+                    return 1
+                fi
+            else
+                log "SUCCESS" "Mise à jour d'Ansible réussie via dnf"
+                return 0
             fi
         elif command_exists yum; then
             log "INFO" "Système CentOS/RHEL détecté, utilisation de yum"
-            if ! secure_sudo yum update -y ansible &>/dev/null; then
-                log "ERROR" "Échec de la mise à jour d'Ansible"
-                return 1
+
+            # Création des fichiers de log pour capturer les erreurs
+            local yum_update_log="/tmp/yum_update_ansible.log"
+
+            # Méthode 1: Mise à jour via yum standard
+            log "INFO" "Tentative de mise à jour via yum standard..."
+            if ! secure_sudo yum update -y ansible 2>&1 | tee "${yum_update_log}"; then
+                log "WARNING" "Échec de la mise à jour d'Ansible via yum. Voir ${yum_update_log} pour plus de détails."
+
+                # Méthode 2: Installation via EPEL
+                log "INFO" "Tentative d'installation via EPEL..."
+                if secure_sudo yum install -y epel-release 2>&1 | tee /tmp/yum_install_epel.log; then
+                    log "INFO" "Dépôt EPEL installé, tentative d'installation d'Ansible..."
+                    if secure_sudo yum install -y ansible 2>&1 | tee /tmp/yum_install_ansible.log; then
+                        log "SUCCESS" "Installation d'Ansible réussie via EPEL"
+                        return 0
+                    else
+                        log "WARNING" "Échec de l'installation d'Ansible via EPEL. Voir /tmp/yum_install_ansible.log pour plus de détails."
+                    fi
+                else
+                    log "WARNING" "Échec de l'installation du dépôt EPEL. Voir /tmp/yum_install_epel.log pour plus de détails."
+                fi
+
+                # Méthode 3: Installation via pip
+                log "INFO" "Tentative d'installation via pip..."
+                if ! command_exists pip3; then
+                    log "INFO" "Installation de pip3..."
+                    secure_sudo yum install -y python3-pip 2>&1 | tee /tmp/yum_install_pip.log
+                fi
+
+                if command_exists pip3; then
+                    log "INFO" "Installation d'Ansible via pip3..."
+                    if secure_sudo pip3 install --upgrade ansible 2>&1 | tee /tmp/pip_install_ansible.log; then
+                        log "SUCCESS" "Installation d'Ansible réussie via pip3"
+                        return 0
+                    else
+                        log "WARNING" "Échec de l'installation d'Ansible via pip3. Voir /tmp/pip_install_ansible.log pour plus de détails."
+                        log "ERROR" "Toutes les méthodes d'installation d'Ansible ont échoué"
+                        return 1
+                    fi
+                else
+                    log "WARNING" "pip3 n'est pas disponible, impossible d'installer Ansible via pip"
+                    log "ERROR" "Toutes les méthodes d'installation d'Ansible ont échoué"
+                    return 1
+                fi
+            else
+                log "SUCCESS" "Mise à jour d'Ansible réussie via yum"
+                return 0
             fi
         elif command_exists pacman; then
             log "INFO" "Système Arch Linux détecté, utilisation de pacman"
-            if ! secure_sudo pacman -Syu --noconfirm ansible &>/dev/null; then
-                log "ERROR" "Échec de la mise à jour d'Ansible"
-                return 1
+
+            # Création des fichiers de log pour capturer les erreurs
+            local pacman_update_log="/tmp/pacman_update_ansible.log"
+
+            # Méthode 1: Mise à jour via pacman standard
+            log "INFO" "Tentative de mise à jour via pacman standard..."
+            if ! secure_sudo pacman -Syu --noconfirm ansible 2>&1 | tee "${pacman_update_log}"; then
+                log "WARNING" "Échec de la mise à jour d'Ansible via pacman. Voir ${pacman_update_log} pour plus de détails."
+
+                # Méthode 2: Installation via pip
+                log "INFO" "Tentative d'installation via pip..."
+                if ! command_exists pip3; then
+                    log "INFO" "Installation de pip3..."
+                    secure_sudo pacman -S --noconfirm python-pip 2>&1 | tee /tmp/pacman_install_pip.log
+                fi
+
+                if command_exists pip3; then
+                    log "INFO" "Installation d'Ansible via pip3..."
+                    if secure_sudo pip3 install --upgrade ansible 2>&1 | tee /tmp/pip_install_ansible.log; then
+                        log "SUCCESS" "Installation d'Ansible réussie via pip3"
+                        return 0
+                    else
+                        log "WARNING" "Échec de l'installation d'Ansible via pip3. Voir /tmp/pip_install_ansible.log pour plus de détails."
+                        log "ERROR" "Toutes les méthodes d'installation d'Ansible ont échoué"
+                        return 1
+                    fi
+                else
+                    log "WARNING" "pip3 n'est pas disponible, impossible d'installer Ansible via pip"
+                    log "ERROR" "Toutes les méthodes d'installation d'Ansible ont échoué"
+                    return 1
+                fi
+            else
+                log "SUCCESS" "Mise à jour d'Ansible réussie via pacman"
+                return 0
             fi
         elif command_exists zypper; then
             log "INFO" "Système openSUSE détecté, utilisation de zypper"
-            if ! secure_sudo zypper update -y ansible &>/dev/null; then
-                log "ERROR" "Échec de la mise à jour d'Ansible"
-                return 1
+
+            # Création des fichiers de log pour capturer les erreurs
+            local zypper_update_log="/tmp/zypper_update_ansible.log"
+
+            # Méthode 1: Mise à jour via zypper standard
+            log "INFO" "Tentative de mise à jour via zypper standard..."
+            if ! secure_sudo zypper update -y ansible 2>&1 | tee "${zypper_update_log}"; then
+                log "WARNING" "Échec de la mise à jour d'Ansible via zypper. Voir ${zypper_update_log} pour plus de détails."
+
+                # Méthode 2: Installation via pip
+                log "INFO" "Tentative d'installation via pip..."
+                if ! command_exists pip3; then
+                    log "INFO" "Installation de pip3..."
+                    secure_sudo zypper install -y python3-pip 2>&1 | tee /tmp/zypper_install_pip.log
+                fi
+
+                if command_exists pip3; then
+                    log "INFO" "Installation d'Ansible via pip3..."
+                    if secure_sudo pip3 install --upgrade ansible 2>&1 | tee /tmp/pip_install_ansible.log; then
+                        log "SUCCESS" "Installation d'Ansible réussie via pip3"
+                        return 0
+                    else
+                        log "WARNING" "Échec de l'installation d'Ansible via pip3. Voir /tmp/pip_install_ansible.log pour plus de détails."
+                        log "ERROR" "Toutes les méthodes d'installation d'Ansible ont échoué"
+                        return 1
+                    fi
+                else
+                    log "WARNING" "pip3 n'est pas disponible, impossible d'installer Ansible via pip"
+                    log "ERROR" "Toutes les méthodes d'installation d'Ansible ont échoué"
+                    return 1
+                fi
+            else
+                log "SUCCESS" "Mise à jour d'Ansible réussie via zypper"
+                return 0
             fi
         else
             log "ERROR" "Gestionnaire de paquets non supporté sur ce système Linux"
@@ -1122,27 +1312,134 @@ function update_ansible() {
         # macOS
         if command_exists brew; then
             log "INFO" "Système macOS détecté, utilisation de Homebrew"
-            if ! brew update &>/dev/null; then
-                log "ERROR" "Échec de la mise à jour des dépôts Homebrew"
-                return 1
+
+            # Création des fichiers de log pour capturer les erreurs
+            local brew_update_log="/tmp/brew_update.log"
+            local brew_upgrade_log="/tmp/brew_upgrade_ansible.log"
+
+            # Méthode 1: Mise à jour via Homebrew standard
+            log "INFO" "Tentative de mise à jour via Homebrew standard..."
+            if ! brew update 2>&1 | tee "${brew_update_log}"; then
+                log "WARNING" "Échec de la mise à jour des dépôts Homebrew. Voir ${brew_update_log} pour plus de détails."
+                log "INFO" "Tentative de mise à jour d'Ansible sans mettre à jour Homebrew..."
             fi
-            if ! brew upgrade ansible &>/dev/null; then
-                log "ERROR" "Échec de la mise à jour d'Ansible"
-                return 1
+
+            if ! brew upgrade ansible 2>&1 | tee "${brew_upgrade_log}"; then
+                log "WARNING" "Échec de la mise à jour d'Ansible via Homebrew. Voir ${brew_upgrade_log} pour plus de détails."
+
+                # Méthode 2: Installation via pip
+                log "INFO" "Tentative d'installation via pip..."
+                if ! command_exists pip3; then
+                    log "INFO" "Installation de pip3..."
+                    brew install python3 2>&1 | tee /tmp/brew_install_python.log
+                fi
+
+                if command_exists pip3; then
+                    log "INFO" "Installation d'Ansible via pip3..."
+                    if pip3 install --user --upgrade ansible 2>&1 | tee /tmp/pip_install_ansible.log; then
+                        log "SUCCESS" "Installation d'Ansible réussie via pip3"
+                        return 0
+                    else
+                        log "WARNING" "Échec de l'installation d'Ansible via pip3. Voir /tmp/pip_install_ansible.log pour plus de détails."
+                        log "ERROR" "Toutes les méthodes d'installation d'Ansible ont échoué"
+                        return 1
+                    fi
+                else
+                    log "WARNING" "pip3 n'est pas disponible, impossible d'installer Ansible via pip"
+                    log "ERROR" "Toutes les méthodes d'installation d'Ansible ont échoué"
+                    return 1
+                fi
+            else
+                log "SUCCESS" "Mise à jour d'Ansible réussie via Homebrew"
+                return 0
             fi
         else
-            log "ERROR" "Homebrew n'est pas installé sur ce système macOS"
-            log "INFO" "Installez Homebrew avec: /bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""
-            return 1
+            log "WARNING" "Homebrew n'est pas installé sur ce système macOS"
+            log "INFO" "Tentative d'installation via pip..."
+
+            # Méthode alternative: Installation via pip si Homebrew n'est pas disponible
+            if ! command_exists pip3; then
+                log "WARNING" "pip3 n'est pas disponible et Homebrew n'est pas installé"
+                log "INFO" "Installez Homebrew avec: /bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""
+                log "INFO" "Ou installez Python et pip manuellement"
+                return 1
+            fi
+
+            log "INFO" "Installation d'Ansible via pip3..."
+            if pip3 install --user --upgrade ansible 2>&1 | tee /tmp/pip_install_ansible.log; then
+                log "SUCCESS" "Installation d'Ansible réussie via pip3"
+                return 0
+            else
+                log "WARNING" "Échec de l'installation d'Ansible via pip3. Voir /tmp/pip_install_ansible.log pour plus de détails."
+                log "ERROR" "Toutes les méthodes d'installation d'Ansible ont échoué"
+                log "INFO" "Installez Homebrew avec: /bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""
+                return 1
+            fi
         fi
-    elif [[ "${os_name}" == *"MINGW"* || "${os_name}" == *"MSYS"* || "${os_name}" == *"CYGWIN"* ]]; then
-        # Windows (Git Bash, MSYS2, Cygwin)
-        log "ERROR" "Mise à jour automatique d'Ansible non supportée sur Windows"
-        log "INFO" "Veuillez mettre à jour Ansible manuellement"
+    elif [[ "${os_name}" == *"MINGW"* || "${os_name}" == *"MSYS"* || "${os_name}" == *"CYGWIN"* || "${os_name}" == *"Windows"* ]]; then
+        # Windows (Git Bash, MSYS2, Cygwin, WSL)
+        log "WARNING" "Mise à jour automatique d'Ansible limitée sur Windows"
+
+        # Détection de WSL
+        if [[ "${os_name}" == *"Linux"* && ("$(uname -r)" == *"WSL"* || "$(uname -r)" == *"Microsoft"* || "$(uname -r)" == *"microsoft"*) ]]; then
+            log "INFO" "Environnement WSL détecté, tentative d'installation via pip..."
+
+            # Méthode 1: Installation via pip dans WSL
+            if ! command_exists pip3; then
+                log "INFO" "Installation de pip3..."
+                if command_exists apt-get; then
+                    secure_sudo apt-get update && secure_sudo apt-get install -y python3-pip 2>&1 | tee /tmp/apt_install_pip_wsl.log
+                elif command_exists dnf; then
+                    secure_sudo dnf install -y python3-pip 2>&1 | tee /tmp/dnf_install_pip_wsl.log
+                elif command_exists yum; then
+                    secure_sudo yum install -y python3-pip 2>&1 | tee /tmp/yum_install_pip_wsl.log
+                else
+                    log "WARNING" "Impossible d'installer pip3 automatiquement dans WSL"
+                    log "INFO" "Veuillez installer pip3 manuellement avec la commande appropriée pour votre distribution"
+                    return 1
+                fi
+            fi
+
+            if command_exists pip3; then
+                log "INFO" "Installation d'Ansible via pip3 dans WSL..."
+                if pip3 install --user --upgrade ansible 2>&1 | tee /tmp/pip_install_ansible_wsl.log; then
+                    log "SUCCESS" "Installation d'Ansible réussie via pip3 dans WSL"
+                    return 0
+                else
+                    log "WARNING" "Échec de l'installation d'Ansible via pip3 dans WSL. Voir /tmp/pip_install_ansible_wsl.log pour plus de détails."
+                fi
+            fi
+        fi
+
+        # Instructions détaillées pour Windows
+        log "INFO" "Pour installer ou mettre à jour Ansible sur Windows, suivez ces étapes:"
+        log "INFO" "1. Installez WSL (Windows Subsystem for Linux) si ce n'est pas déjà fait:"
+        log "INFO" "   - Ouvrez PowerShell en tant qu'administrateur et exécutez: wsl --install"
+        log "INFO" "2. Installez une distribution Linux via le Microsoft Store (Ubuntu recommandé)"
+        log "INFO" "3. Dans votre distribution Linux, exécutez:"
+        log "INFO" "   - sudo apt update && sudo apt install -y ansible"
+        log "INFO" "4. Ou utilisez pip3:"
+        log "INFO" "   - sudo apt install -y python3-pip && pip3 install --user ansible"
+        log "INFO" "5. Alternative: Utilisez Ansible via Docker:"
+        log "INFO" "   - docker run --rm -it -v ${PWD}:/work -w /work cytopia/ansible ansible --version"
         return 1
     else
-        log "ERROR" "Système d'exploitation non supporté pour la mise à jour automatique: ${os_name}"
-        log "INFO" "Veuillez mettre à jour Ansible manuellement"
+        log "WARNING" "Système d'exploitation non reconnu pour la mise à jour automatique: ${os_name}"
+
+        # Tentative générique via pip
+        log "INFO" "Tentative d'installation générique via pip..."
+        if command_exists pip3; then
+            log "INFO" "Installation d'Ansible via pip3..."
+            if pip3 install --user --upgrade ansible 2>&1 | tee /tmp/pip_install_ansible_generic.log; then
+                log "SUCCESS" "Installation d'Ansible réussie via pip3"
+                return 0
+            else
+                log "WARNING" "Échec de l'installation d'Ansible via pip3. Voir /tmp/pip_install_ansible_generic.log pour plus de détails."
+            fi
+        fi
+
+        log "ERROR" "Impossible d'installer Ansible automatiquement sur ce système"
+        log "INFO" "Veuillez installer Ansible manuellement selon les instructions pour votre système d'exploitation"
         return 1
     fi
 
