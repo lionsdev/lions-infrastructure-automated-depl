@@ -11,7 +11,7 @@
 
   vars:
     k3s_version: "v1.25.6+k3s1"  # Version stable de K3s
-    k3s_server_args: "server --disable traefik --disable servicelb --disable local-storage --write-kubeconfig-mode 644 --kubelet-arg cgroup-driver=systemd --kubelet-arg feature-gates=GracefulNodeShutdown=false --kube-controller-manager-arg feature-gates=RemoveSelfLink=false"  # Arguments améliorés pour compatibilité WSL2
+    k3s_server_args: "server --disable traefik --disable servicelb --disable local-storage --write-kubeconfig-mode 644 --kubelet-arg cgroup-driver=systemd --kubelet-arg feature-gates=GracefulNodeShutdown=false"  # Arguments améliorés pour compatibilité WSL2
     kubeconfig_local_path: "~/.kube/config"
     traefik_version: "20.10.0"  # Version sans le préfixe 'v'
 
