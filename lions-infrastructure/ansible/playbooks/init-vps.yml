@@ -135,6 +135,13 @@
         rule: allow
         port: "{{ ansible_port }}"
         proto: tcp
+      register: ufw_ssh
+      failed_when: false
+
+    - name: Configuration alternative du pare-feu UFW - SSH (si la méthode précédente a échoué)
+      command: "ufw allow {{ ansible_port }}/tcp"
+      when: ufw_ssh is defined and ufw_ssh.failed
+      failed_when: false
 
     - name: Configuration du pare-feu UFW - HTTP
       ufw:
@@ -159,6 +166,18 @@
         rule: allow
         port: 22
         proto: tcp
+      register: ufw_ssh_standard
+      failed_when: false
+
+    - name: Vérification de la configuration SSH standard
+      debug:
+        msg: "Configuration SSH standard (port 22) {{ 'réussie' if not ufw_ssh_standard.failed else 'échouée mais ignorée' }}"
+
+    - name: Configuration alternative du pare-feu UFW - SSH standard (si la méthode précédente a échoué)
+      command: ufw allow 22/tcp
+      when: ufw_ssh_standard is defined and ufw_ssh_standard.failed
+      register: ufw_ssh_standard_alt
+      failed_when: false
 
     - name: Configuration du pare-feu UFW - Kubernetes Dashboard
       ufw:
