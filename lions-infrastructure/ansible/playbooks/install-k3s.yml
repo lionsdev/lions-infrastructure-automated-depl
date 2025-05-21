@@ -104,6 +104,15 @@
           when: "'--no-deploy' in k3s_service_content.stdout"
           register: k3s_config_fixed
 
+        # 3.1 Suppression du flag RemoveSelfLink qui est verrouillé à true dans les versions récentes de Kubernetes
+        - name: Suppression du flag RemoveSelfLink=false qui cause des erreurs
+          replace:
+            path: /etc/systemd/system/k3s.service
+            regexp: '--kube-controller-manager-arg feature-gates=RemoveSelfLink=false'
+            replace: ''
+          when: "k3s_service_content.stdout is defined and '--kube-controller-manager-arg feature-gates=RemoveSelfLink=false' in k3s_service_content.stdout"
+          register: k3s_removeselflink_fixed
+
         # 4. Nettoyage complet si flag déprécié détecté OU problème système détecté
         - name: Nettoyage complet et réinstallation si corruption détectée
           block:
