@@ -83,7 +83,7 @@
     - name: Mise à jour du statut de mise à jour système
       set_fact:
         system_updated: 
-          changed: "{{ system_updated.changed | default(false) or (system_updated_fallback is defined and system_updated_fallback.rc == 0) }}"
+          changed: "{{ system_updated.changed | default(false) or (system_updated_fallback is defined and system_updated_fallback.rc is defined and system_updated_fallback.rc == 0) }}"
 
     - name: Redémarrage si nécessaire après mise à jour (connexion distante)
       reboot:
