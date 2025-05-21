@@ -533,16 +533,37 @@
 
     - name: Installation de kubectl
       block:
-        - name: Ajout de la clé GPG de Kubernetes
-          apt_key:
-            url: https://packages.cloud.google.com/apt/doc/apt-key.gpg
-            state: present
+        # La clé GPG est maintenant gérée avec la nouvelle méthode ci-dessous
+
+        - name: Suppression de l'ancien dépôt Kubernetes (si présent)
+          file:
+            path: /etc/apt/sources.list.d/kubernetes.list
+            state: absent
+          ignore_errors: yes
 
         - name: Ajout du dépôt Kubernetes
           apt_repository:
-            repo: deb https://apt.kubernetes.io/ kubernetes-focal main
+            repo: deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /
             state: present
             filename: kubernetes
+
+        - name: Création du répertoire pour les clés GPG
+          file:
+            path: /etc/apt/keyrings
+            state: directory
+            mode: '0755'
+
+        - name: Téléchargement de la clé GPG de Kubernetes
+          get_url:
+            url: https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key
+            dest: /tmp/k8s-release.key
+            mode: '0644'
+
+        - name: Ajout de la clé GPG de Kubernetes
+          shell: |
+            cat /tmp/k8s-release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+          args:
+            creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
 
         - name: Installation de kubectl
           apt:

@@ -2717,8 +2717,39 @@ EOF
         log "INFO" "Détection d'exécution locale: le script est exécuté directement sur le VPS cible"
         log "INFO" "Les commandes SSH seront remplacées par des commandes locales"
     else
-        IS_LOCAL_EXECUTION=false
-        log "INFO" "Détection d'exécution distante: le script est exécuté depuis une machine différente du VPS cible"
+        # Vérification supplémentaire pour détecter l'exécution locale
+        log "INFO" "Tentative de détection alternative d'exécution locale..."
+
+        # Vérification si l'adresse IP du VPS correspond à une interface réseau locale
+        local local_ip_check=$(ip route get "${ansible_host}" 2>/dev/null | grep -q "dev lo" && echo "true" || echo "false")
+
+        # Vérification si le nom d'hôte du VPS correspond au nom d'hôte local
+        local hostname_check=$(hostname -I 2>/dev/null | grep -q "${ansible_host}" && echo "true" || echo "false")
+
+        # Vérification si l'utilisateur peut exécuter des commandes locales sans SSH
+        local sudo_check=$(sudo -n true 2>/dev/null && echo "true" || echo "false")
+
+        log "DEBUG" "Résultats des vérifications alternatives: IP locale=${local_ip_check}, Hostname=${hostname_check}, Sudo=${sudo_check}"
+
+        if [[ "${local_ip_check}" == "true" || "${hostname_check}" == "true" || "${ansible_host}" == "localhost" || "${ansible_host}" == "127.0.0.1" ]]; then
+            IS_LOCAL_EXECUTION=true
+            log "INFO" "Détection alternative d'exécution locale réussie: le script est exécuté directement sur le VPS cible"
+            log "INFO" "Les commandes SSH seront remplacées par des commandes locales"
+        else
+            # Demander à l'utilisateur si le script est exécuté localement
+            log "WARNING" "Impossible de déterminer automatiquement si le script est exécuté localement sur le VPS cible"
+            log "INFO" "Êtes-vous en train d'exécuter ce script directement sur le VPS cible? (o/n)"
+            read -r user_response
+
+            if [[ "${user_response}" =~ ^[oO][uU]?[iI]?$ || "${user_response}" =~ ^[yY][eE]?[sS]?$ ]]; then
+                IS_LOCAL_EXECUTION=true
+                log "INFO" "Configuration manuelle pour exécution locale: le script est exécuté directement sur le VPS cible"
+                log "INFO" "Les commandes SSH seront remplacées par des commandes locales"
+            else
+                IS_LOCAL_EXECUTION=false
+                log "INFO" "Configuration manuelle pour exécution distante: le script est exécuté depuis une machine différente du VPS cible"
+            fi
+        fi
     fi
 
     return 0
