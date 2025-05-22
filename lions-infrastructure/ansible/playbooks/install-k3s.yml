@@ -1,1161 +1,646 @@
 ---
-# Titre: Playbook d'installation de K3s
-# Description: Installe et configure K3s sur le VPS
+# =============================================================================
+# LIONS Infrastructure - Playbook d'Installation K3s Corrigé
+# =============================================================================
+# Titre: Playbook d'installation K3s optimisé et corrigé
+# Description: Installe et configure K3s sur VPS avec gestion d'erreurs robuste
 # Auteur: Équipe LIONS Infrastructure
-# Date: 2023-05-15
-# Version: 1.0.0
+# Date: 2025-05-22
+# Version: 2.0.0
+#
+# Corrections appliquées:
+# - Suppression du flag déprécié RemoveSelfLink=false
+# - Correction de la syntaxe des flags --disable
+# - Simplification de la logique de récupération
+# - Amélioration de la documentation et du logging
+# - Application des meilleures pratiques DevOps
+# =============================================================================
 
-- name: Installation de K3s sur le VPS
+- name: "LIONS K3s Installation - Production Ready Deployment"
   hosts: vps
   become: yes
+  gather_facts: yes
 
+  # =============================================================================
+  # VARIABLES DE CONFIGURATION
+  # =============================================================================
   vars:
-    k3s_version: "v1.28.6+k3s2"  # Version stable récente de K3s
-    k3s_server_args: "server --disable=traefik --disable=servicelb --disable=local-storage --write-kubeconfig-mode 644 --kubelet-arg cgroup-driver=systemd --kubelet-arg feature-gates=GracefulNodeShutdown=false"  # Arguments corrigés pour compatibilité WSL2
+    # Version K3s - Version LTS stable recommandée
+    k3s_version: "v1.28.6+k3s2"
+
+    # Configuration K3s optimisée (FLAGS CORRIGÉS)
+    k3s_server_args: >-
+      server
+      --disable=traefik
+      --disable=servicelb
+      --disable=local-storage
+      --write-kubeconfig-mode=644
+      --kubelet-arg=cgroup-driver=systemd
+      --kubelet-arg=feature-gates=GracefulNodeShutdown=false
+
+    # Chemins et configurations
     kubeconfig_local_path: "~/.kube/config"
-    traefik_version: "20.10.0"  # Version sans le préfixe 'v'
+    k3s_service_file: "/etc/systemd/system/k3s.service"
+    k3s_kubeconfig: "/etc/rancher/k3s/k3s.yaml"
+
+    # Versions des composants
+    traefik_chart_version: "25.0.0"
+    metallb_chart_version: "0.13.12"
+    cert_manager_version: "v1.13.3"
+
+    # Timeouts et retries
+    k3s_startup_timeout: 300
+    api_ready_timeout: 600
+    max_retries: 3
+
+    # Flags dépréciés à supprimer automatiquement
     deprecated_flags:
-      - name: "RemoveSelfLink=false"
-        regexp: "--kube-controller-manager-arg feature-gates=RemoveSelfLink=false"
-        replace: ""
-      - name: "no-deploy"
-        regexp: "--no-deploy ([a-zA-Z0-9-]+)"
-        replace: "--disable=\\1"
+      - pattern: "--kube-controller-manager-arg feature-gates=RemoveSelfLink=false"
+        description: "Flag RemoveSelfLink déprécié"
+      - pattern: "--no-deploy ([a-zA-Z0-9-]+)"
+        replacement: "--disable=\\1"
+        description: "Syntaxe --no-deploy dépréciée"
 
+  # =============================================================================
+  # TÂCHES PRINCIPALES
+  # =============================================================================
   tasks:
-    # Vérification proactive des drapeaux dépréciés dans le fichier de service K3s
-    # Cette section vérifie et corrige les drapeaux dépréciés avant le démarrage du service K3s
-    # pour éviter les problèmes de démarrage. C'est une solution à long terme qui empêche
-    # les erreurs liées aux drapeaux dépréciés comme RemoveSelfLink=false.
-    - name: Vérification de l'existence du fichier de service K3s
-      stat:
-        path: /etc/systemd/system/k3s.service
-      register: k3s_service_file
-      ignore_errors: true
 
-    - name: Vérification et correction proactive des drapeaux dépréciés
-      block:
-        - name: Lecture du contenu du fichier de service K3s
-          shell: cat /etc/systemd/system/k3s.service
-          register: k3s_service_content
-          changed_when: false
-          ignore_errors: true
+    # =========================================================================
+    # PHASE 1: VÉRIFICATIONS PRÉLIMINAIRES ET NETTOYAGE
+    # =========================================================================
 
-        - name: Correction des drapeaux dépréciés
-          replace:
-            path: /etc/systemd/system/k3s.service
-            regexp: "{{ item.regexp }}"
-            replace: "{{ item.replace }}"
-          loop: "{{ deprecated_flags }}"
-          when: k3s_service_content.stdout is defined and item.regexp in k3s_service_content.stdout
-          register: k3s_flags_fixed
-          ignore_errors: true
-
-        - name: Rechargement du daemon systemd si des drapeaux ont été corrigés
-          systemd:
-            daemon_reload: yes
-          when: k3s_flags_fixed.changed
-          ignore_errors: true
-
-        - name: Notification des corrections effectuées
-          debug:
-            msg: "Des drapeaux dépréciés ont été corrigés dans le fichier de service K3s"
-          when: k3s_flags_fixed.changed
-      when: k3s_service_file.stat.exists
-      ignore_errors: true
-
-    - name: Détection de l'environnement WSL2
-      shell: grep -i microsoft /proc/version || echo "NOT_WSL"
-      register: wsl2_check
-      changed_when: false
-      ignore_errors: true
-
-    - name: Avertissement environnement WSL2
+    - name: "📋 PHASE 1 - Vérifications préliminaires"
       debug:
         msg: |
-          ATTENTION: Installation depuis WSL2 détectée.
-          L'installation de K3s directement depuis WSL2 peut causer des problèmes.
-          Il est recommandé d'utiliser le script remote-install.sh pour installer directement sur le VPS.
-          Des correctifs spécifiques à WSL2 seront appliqués, mais le succès n'est pas garanti.
-      when: wsl2_check.stdout is defined and 'microsoft' in wsl2_check.stdout.lower()
+          ==========================================================
+          🚀 DÉMARRAGE INSTALLATION K3S - LIONS INFRASTRUCTURE
+          ==========================================================
+          Version K3s: {{ k3s_version }}
+          Host cible: {{ ansible_host }}
+          Environment: {{ lions_env | default('development') }}
+          ==========================================================
 
-    - name: Vérification de l'installation existante de K3s
-      stat:
-        path: /usr/local/bin/k3s
-      register: k3s_binary
+    - name: "🔍 Vérification de l'environnement système"
+      block:
+        - name: "Vérification des ressources système minimales"
+          assert:
+            that:
+              - ansible_memtotal_mb >= 1024
+              - ansible_processor_vcpus >= 1
+            fail_msg: "Ressources système insuffisantes (RAM: {{ ansible_memtotal_mb }}MB, CPU: {{ ansible_processor_vcpus }})"
+            success_msg: "✅ Ressources système suffisantes (RAM: {{ ansible_memtotal_mb }}MB, CPU: {{ ansible_processor_vcpus }})"
 
-    - name: Téléchargement du script d'installation K3s
+        - name: "Vérification de l'espace disque disponible"
+          shell: df / | awk 'NR==2 {print $4}'
+          register: disk_space_check
+          changed_when: false
+
+        - name: "Validation de l'espace disque"
+          assert:
+            that:
+              - disk_space_check.stdout | int > 5000000  # 5GB minimum
+            fail_msg: "Espace disque insuffisant: {{ (disk_space_check.stdout | int / 1024 / 1024) | round(1) }}GB disponible"
+            success_msg: "✅ Espace disque suffisant: {{ (disk_space_check.stdout | int / 1024 / 1024) | round(1) }}GB disponible"
+
+      rescue:
+        - name: "❌ Échec des vérifications préliminaires"
+          fail:
+            msg: "Les vérifications système ont échoué. Installation annulée."
+
+    - name: "🧹 Détection et nettoyage de l'installation K3s existante"
+      block:
+        - name: "Vérification de l'existence du binaire K3s"
+          stat:
+            path: /usr/local/bin/k3s
+          register: k3s_binary_exists
+
+        - name: "Vérification du service K3s existant"
+          systemd:
+            name: k3s
+          register: k3s_service_check
+          ignore_errors: true
+
+        - name: "Analyse de l'état du service K3s"
+          debug:
+            msg: |
+              K3s Binary: {{ 'Présent' if k3s_binary_exists.stat.exists else 'Absent' }}
+              Service K3s: {{ k3s_service_check.status.ActiveState | default('Inexistant') }}
+
+        - name: "Correction proactive des flags dépréciés"
+          block:
+            - name: "Lecture du fichier de service K3s"
+              slurp:
+                src: "{{ k3s_service_file }}"
+              register: k3s_service_content_raw
+              when: k3s_binary_exists.stat.exists
+
+            - name: "Décodage du contenu du service"
+              set_fact:
+                k3s_service_content: "{{ k3s_service_content_raw.content | b64decode }}"
+              when: k3s_service_content_raw is defined
+
+            - name: "Détection des flags dépréciés"
+              set_fact:
+                deprecated_flags_found: "{{ deprecated_flags_found | default([]) + [item] }}"
+              loop: "{{ deprecated_flags }}"
+              when:
+                - k3s_service_content is defined
+                - item.pattern in k3s_service_content
+
+            - name: "Notification des flags dépréciés détectés"
+              debug:
+                msg: |
+                  ⚠️  FLAGS DÉPRÉCIÉS DÉTECTÉS:
+                  {% for flag in deprecated_flags_found | default([]) %}
+                  - {{ flag.description }}
+                  {% endfor %}
+              when: deprecated_flags_found is defined and deprecated_flags_found | length > 0
+
+            - name: "Suppression des flags dépréciés"
+              replace:
+                path: "{{ k3s_service_file }}"
+                regexp: "{{ item.pattern }}"
+                replace: "{{ item.replacement | default('') }}"
+                backup: yes
+              loop: "{{ deprecated_flags }}"
+              when:
+                - k3s_service_content is defined
+                - item.pattern in k3s_service_content
+              register: flags_corrected
+              notify: "reload systemd and restart k3s"
+
+          when: k3s_binary_exists.stat.exists
+
+    # =========================================================================
+    # PHASE 2: INSTALLATION K3S
+    # =========================================================================
+
+    - name: "🚀 PHASE 2 - Installation K3s"
+      debug:
+        msg: "Démarrage de l'installation K3s avec la configuration corrigée"
+
+    - name: "📥 Téléchargement du script d'installation K3s"
       get_url:
-        url: https://get.k3s.io
-        dest: /tmp/k3s-install.sh
+        url: "https://get.k3s.io"
+        dest: "/tmp/k3s-install.sh"
         mode: '0755'
-      when: not k3s_binary.stat.exists
+        timeout: 30
+      register: k3s_script_download
+      retries: "{{ max_retries }}"
+      delay: 5
 
-    - name: Installation sécurisée de K3s avec protection contre les flags dépréciés et problèmes système
+    - name: "⚙️  Installation K3s avec configuration optimisée"
+      command: "/tmp/k3s-install.sh"
       environment:
         INSTALL_K3S_VERSION: "{{ k3s_version }}"
         INSTALL_K3S_EXEC: "{{ k3s_server_args }}"
         K3S_KUBECONFIG_MODE: "644"
-      command: /tmp/k3s-install.sh
-      args:
-        creates: /usr/local/bin/k3s
-      register: k3s_installed
-      when: not k3s_binary.stat.exists
+      register: k3s_installation
+      when: not k3s_binary_exists.stat.exists or (deprecated_flags_found is defined and deprecated_flags_found | length > 0)
 
-    - name: Attente que K3s soit prêt
-      wait_for:
-        path: /var/lib/rancher/k3s/server/node-token
-        state: present
-        delay: 10
-        timeout: 300
-      when: k3s_installed.changed
-
-    - name: Vérification de l'état du service K3s
-      service:
+    - name: "🔄 Démarrage et activation du service K3s"
+      systemd:
         name: k3s
         state: started
         enabled: yes
-      register: k3s_service_status
+        daemon_reload: yes
+      register: k3s_service_start
+      retries: "{{ max_retries }}"
+      delay: 10
 
-    - name: Affichage de l'état du service K3s
+    # =========================================================================
+    # PHASE 3: VÉRIFICATIONS POST-INSTALLATION
+    # =========================================================================
+
+    - name: "✅ PHASE 3 - Vérifications post-installation"
       debug:
-        msg: "État du service K3s: {{ k3s_service_status.status.ActiveState | default('inconnu') }}"
+        msg: "Vérification de l'installation K3s"
 
-    - name: Redémarrage du service K3s si nécessaire
-      service:
+    - name: "⏳ Attente de la disponibilité de l'API K3s"
+      wait_for:
+        port: 6443
+        host: localhost
+        delay: 10
+        timeout: "{{ k3s_startup_timeout }}"
+      register: k3s_api_ready
+
+    - name: "🔍 Vérification de l'état du service K3s"
+      systemd:
         name: k3s
-        state: restarted
-      register: k3s_restart_result
-      when: k3s_service_status.status.ActiveState is defined and k3s_service_status.status.ActiveState != "active"
-      ignore_errors: yes
+      register: k3s_final_status
 
-    - name: Vérification des journaux K3s en cas d'échec de redémarrage
-      shell: journalctl -u k3s -n 50 --no-pager
-      register: k3s_logs
-      when: k3s_restart_result is defined and k3s_restart_result.failed is defined and k3s_restart_result.failed
-
-    - name: Affichage des journaux K3s en cas d'échec
-      debug:
-        msg: "{{ k3s_logs.stdout_lines }}"
-      when: k3s_logs is defined and k3s_logs.stdout_lines is defined
-
-    - name: Vérification spécifique de l'erreur RemoveSelfLink
-      debug:
-        msg: "Erreur détectée: Le flag RemoveSelfLink=false n'est plus supporté dans cette version de Kubernetes. Ce flag sera supprimé automatiquement."
-      when: k3s_logs is defined and k3s_logs.stdout is defined and 'RemoveSelfLink=false' in k3s_logs.stdout
-
-    - name: Diagnostic et correction automatique complète de K3s
+    - name: "📊 Validation de l'installation K3s"
       block:
-        # 1. Arrêt propre du service
-        - name: Arrêt forcé du service K3s
-          systemd:
-            name: k3s
-            state: stopped
-          ignore_errors: yes
+        - name: "Test de connectivité kubectl"
+          command: "/usr/local/bin/k3s kubectl get nodes"
+          register: k3s_nodes_check
+          changed_when: false
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
 
-        # 2. Diagnostic de la configuration actuelle
-        - name: Vérification de la configuration K3s existante
-          shell: |
-            if [ -f /etc/systemd/system/k3s.service ]; then
-              cat /etc/systemd/system/k3s.service
-            else
-              echo "Service file not found"
-            fi
-          register: k3s_service_content
+        - name: "Vérification des pods système"
+          command: "/usr/local/bin/k3s kubectl get pods -n kube-system"
+          register: k3s_system_pods
+          changed_when: false
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
 
-        # 3. Détection et correction du flag déprécié --no-deploy
-        - name: Correction automatique du flag déprécié --no-deploy
-          replace:
-            path: /etc/systemd/system/k3s.service
-            regexp: '--no-deploy ([a-zA-Z0-9-]+)'
-            replace: '--disable=\1'
-          when: "'--no-deploy' in k3s_service_content.stdout"
-          register: k3s_config_fixed
-
-        # 3.1 Suppression du flag RemoveSelfLink qui est verrouillé à true dans les versions récentes de Kubernetes
-        - name: Suppression du flag RemoveSelfLink=false qui cause des erreurs
-          replace:
-            path: /etc/systemd/system/k3s.service
-            regexp: '--kube-controller-manager-arg feature-gates=RemoveSelfLink=false'
-            replace: ''
-          when: "k3s_service_content.stdout is defined"
-          register: k3s_removeselflink_fixed
-
-        # 3.2 Correction de la syntaxe des flags disable
-        - name: Correction de la syntaxe des flags disable dans le service K3s
-          replace:
-            path: /etc/systemd/system/k3s.service
-            regexp: '--disable ([a-zA-Z0-9-]+)'
-            replace: '--disable=\1'
-          when: "k3s_service_content.stdout is defined and k3s_service_content.stdout is search('--disable ')"
-          register: k3s_disable_flag_fixed
-
-        # 4. Nettoyage complet si flag déprécié détecté OU problème système détecté
-        - name: Nettoyage complet et réinstallation si corruption détectée
-          block:
-            - name: Diagnostic du problème système
-              shell: |
-                echo "=== DIAGNOSTIC SYSTÈME ==="
-                cat /proc/stat | head -5
-                echo "=== CGROUPS ==="
-                mount | grep cgroup
-                echo "=== SYSTEMD VERSION ==="
-                systemctl --version | head -2
-                echo "=== KERNEL VERSION ==="
-                uname -r
-              register: system_diag
-
-            - name: Affichage du diagnostic système
-              debug:
-                var: system_diag.stdout_lines
-
-            - name: Désinstallation complète de K3s
-              shell: |
-                /usr/local/bin/k3s-uninstall.sh || true
-                killall k3s || true
-                rm -rf /etc/rancher/k3s/*
-                rm -rf /var/lib/rancher/k3s/*
-                rm -f /etc/systemd/system/k3s.service
-                rm -f /etc/systemd/system/k3s.service.env
-
-            - name: Correction des problèmes système pour K3s
-              shell: |
-                # Fix cgroups issues - plus robuste
-                mkdir -p /sys/fs/cgroup/systemd
-                mount -t cgroup -o none,name=systemd cgroup /sys/fs/cgroup/systemd 2>/dev/null || true
-
-                # Ensure cgroup v2 compatibility
-                if [ -f /sys/fs/cgroup/cgroup.controllers ]; then
-                  echo "Cgroups v2 détecté, configuration optimisée..."
-
-                  # Configuration système pour cgroups v2
-                  cat > /etc/sysctl.d/99-kubernetes-cri-cgroups.conf << 'EOF'
-                  net.ipv4.ip_forward=1
-                  kernel.pid_max=4194304
-                  fs.inotify.max_user_instances=8192
-                  fs.inotify.max_user_watches=524288
-                  EOF
-                  sysctl --system || true
-                else
-                  # Configuration pour cgroups v1
-                  echo 'GRUB_CMDLINE_LINUX="cgroup_enable=memory swapaccount=1 systemd.unified_cgroup_hierarchy=0"' >> /etc/default/grub || true
-                fi
-
-                # Configuration optimisée pour WSL2
-                if uname -r | grep -q "WSL\|Microsoft"; then
-                  echo "Environnement WSL2 détecté, application de correctifs avancés..."
-
-                  # Configuration spécifique pour WSL2
-                  mkdir -p /etc/systemd/system/k3s.service.d/
-                  cat > /etc/systemd/system/k3s.service.d/wsl2-fixes.conf << 'EOF'
-                  [Service]
-                  Environment="CONTAINERD_SNAPSHOTTER=native"
-                  Environment="CONTAINERD_STRESS_TEST=no"
-                  Environment="CONTAINERD_CGROUP_DRIVER=systemd"
-                  Delegate=yes
-                  KillMode=mixed
-                  LimitNOFILE=infinity
-                  LimitNPROC=infinity
-                  LimitCORE=infinity
-                  TasksMax=infinity
-                  EOF
-
-                  # Montage supplémentaire parfois nécessaire dans WSL2
-                  if [ ! -d /sys/fs/cgroup/memory ]; then
-                    mkdir -p /sys/fs/cgroup/memory
-                    mount -t cgroup -o memory cgroup /sys/fs/cgroup/memory 2>/dev/null || true
-                  fi
-                fi
-
-                # Fix cgroups v2 issues (for system validation errors)
-                if [ -f /sys/fs/cgroup/unified ] || [ -d /sys/fs/cgroup/unified ]; then
-                  echo "Cgroups v2 detected, applying fixes for system validation errors..."
-                  mkdir -p /etc/systemd/system/k3s.service.d/
-                  cat > /etc/systemd/system/k3s.service.d/override.conf << 'EOF'
-                  [Service]
-                  Delegate=yes
-                  KillMode=mixed
-                  LimitNOFILE=infinity
-                  LimitNPROC=infinity
-                  LimitCORE=infinity
-                  TasksMax=infinity
-                  EOF
-                fi
-
-                # Fix systemd issues
-                systemctl daemon-reload
-                systemctl reset-failed || true
-
-                # Vérification et correction des modules noyau requis
-                modprobe br_netfilter || true
-                modprobe overlay || true
-
-                # Configuration sysctl pour Kubernetes
-                cat > /etc/sysctl.d/99-kubernetes-cri.conf << 'EOF'
-                net.bridge.bridge-nf-call-iptables  = 1
-                net.bridge.bridge-nf-call-ip6tables = 1
-                net.ipv4.ip_forward                 = 1
-                EOF
-                sysctl --system || true
-
-            - name: Réinstallation propre de K3s avec configuration système corrigée
-              shell: |
-                curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="{{ k3s_version }}" INSTALL_K3S_EXEC="{{ k3s_server_args }}" sh -
-              environment:
-                K3S_KUBECONFIG_MODE: "644"
-
-          when: >
-            (k3s_service_content.stdout is defined and '--no-deploy' in k3s_service_content.stdout) or
-            (k3s_logs is defined and k3s_logs.stdout is defined and ('ContainerManager' in k3s_logs.stdout or
-            'system validation failed' in k3s_logs.stdout or
-            'wrong number of fields' in k3s_logs.stdout or
-            'RemoveSelfLink=false' in k3s_logs.stdout or
-            'no-deploy flag is deprecated' in k3s_logs.stdout))
-
-        # 5. Vérifications système
-        - name: Vérification des ports utilisés
-          shell: netstat -tulpn | grep 6443 || echo "Port 6443 libre"
-          register: port_check
-
-        - name: Vérification de la mémoire disponible
-          shell: free -m
-          register: memory_check
-
-        # 6. Correction des permissions
-        - name: Correction des permissions des fichiers K3s
-          shell: |
-            chmod -R 755 /var/lib/rancher/k3s 2>/dev/null || true
-            chmod 600 /etc/rancher/k3s/k3s.yaml 2>/dev/null || true
-            chown -R root:root /var/lib/rancher/k3s 2>/dev/null || true
-
-        # 7. Rechargement systemd
-        - name: Rechargement du daemon systemd
-          systemd:
-            daemon_reload: yes
-
-        # 8. Démarrage avec retry automatique et attente prolongée
-        - name: Démarrage de K3s avec retry automatique
-          systemd:
-            name: k3s
-            state: started
-            enabled: yes
-          register: k3s_retry_restart
-          retries: 3
-          delay: 10
-
-        # 9. Attente prolongée de la stabilisation complète
-        - name: Attente de la stabilisation complète de K3s
-          wait_for:
-            port: 6443
-            host: localhost
-            timeout: 300
-            delay: 30
-          when: k3s_retry_restart is succeeded
-
-        # 10. Vérification que l'API répond correctement
-        - name: Attente que l'API K3s soit opérationnelle
-          uri:
-            url: "https://localhost:6443/readyz"
-            method: GET
-            validate_certs: no
-            status_code: 200
-          register: api_health_check
-          until: api_health_check.status == 200
-          retries: 30
-          delay: 10
-          ignore_errors: yes
-          when: k3s_retry_restart is succeeded
-
-        # 11. Configuration du kubeconfig pour kubectl
-        - name: Configuration du kubeconfig système
-          shell: |
-            mkdir -p /root/.kube
-            cp /etc/rancher/k3s/k3s.yaml /root/.kube/config
-            chmod 600 /root/.kube/config
-            export KUBECONFIG=/root/.kube/config
-          when: k3s_retry_restart is succeeded
-
-        # 12. Test de connectivité kubectl
-        - name: Test de connectivité kubectl
-          shell: |
-            export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-            /usr/local/bin/k3s kubectl get nodes
-          register: kubectl_test
-          retries: 10
-          delay: 5
-          ignore_errors: yes
-          when: k3s_retry_restart is succeeded
-
-        - name: Affichage des diagnostics complets
+        - name: "📈 Rapport d'état K3s"
           debug:
             msg: |
-              === DIAGNOSTIC COMPLET ===
-              Ports: {{ port_check.stdout_lines }}
-              Mémoire: {{ memory_check.stdout_lines }}
-              Configuration corrigée: {{ 'Oui' if k3s_config_fixed is defined and k3s_config_fixed.changed else 'Non nécessaire' }}
-              API Health Check: {{ 'SUCCESS' if api_health_check is defined and api_health_check.status == 200 else 'FAILED' }}
-              kubectl Test: {{ 'SUCCESS' if kubectl_test is defined and kubectl_test.rc == 0 else 'FAILED' }}
+              ==========================================================
+              ✅ K3S INSTALLATION RÉUSSIE
+              ==========================================================
+              Service Status: {{ k3s_final_status.status.ActiveState }}
+              API Port: ✅ Accessible sur :6443
+              Nodes: {{ k3s_nodes_check.stdout_lines | length }} nœud(s) détecté(s)
+              System Pods: {{ k3s_system_pods.stdout_lines | length - 1 }} pod(s) système
+              ==========================================================
 
       rescue:
-        # Gestion d'erreur avec diagnostic complet et récupération d'urgence
-        - name: Diagnostic d'urgence complet
-          shell: |
-            echo "=== STATUS K3S ==="
-            systemctl status k3s --no-pager || true
-            echo "=== LOGS K3S (50 dernières lignes) ==="
-            journalctl -u k3s --no-pager -n 50 || true
-            echo "=== CONFIGURATION SERVICE ==="
-            cat /etc/systemd/system/k3s.service 2>/dev/null || echo "Service file not found"
-            echo "=== PORTS ==="
-            netstat -tulpn | grep :6443 || echo "Port 6443 not in use"
-            echo "=== PROCESSES ==="
-            ps aux | grep k3s || echo "No k3s processes"
-            echo "=== DISK SPACE ==="
-            df -h / || true
-            echo "=== MEMORY ==="
-            free -h || true
-          register: k3s_emergency_diag
+        - name: "🔧 Diagnostic en cas d'échec"
+          block:
+            - name: "Collecte des logs K3s"
+              command: "journalctl -u k3s -n 20 --no-pager"
+              register: k3s_logs
 
-        - name: Affichage du diagnostic d'urgence
-          debug:
-            var: k3s_emergency_diag.stdout_lines
+            - name: "Analyse des erreurs K3s"
+              debug:
+                msg: |
+                  ❌ ÉCHEC DE L'INSTALLATION K3S
+                  ==========================================================
+                  Service Status: {{ k3s_final_status.status.ActiveState | default('Unknown') }}
+                  Derniers logs:
+                  {{ k3s_logs.stdout }}
+                  ==========================================================
 
-        - name: Récupération d'urgence - Installation fraîche avec corrections système
-          shell: |
-            # Nettoyage radical
-            systemctl stop k3s || true
-            killall k3s || true
-            killall containerd || true
-            rm -rf /var/lib/rancher/k3s/
-            rm -rf /etc/rancher/k3s/
-            rm -f /etc/systemd/system/k3s.service
+            - name: "Tentative de récupération automatique"
+              systemd:
+                name: k3s
+                state: restarted
+              register: k3s_recovery_attempt
 
-            # Corrections système spécifiques
-            echo "Correction des problèmes système..."
+            - name: "Vérification après récupération"
+              wait_for:
+                port: 6443
+                host: localhost
+                timeout: 60
+              register: k3s_recovery_check
+              ignore_errors: true
 
-            # Fix cgroups v2 issues
-            if [ -f /sys/fs/cgroup/unified ]; then
-              echo "Cgroups v2 detected, applying fixes..."
-              mkdir -p /etc/systemd/system/k3s.service.d/
-              cat > /etc/systemd/system/k3s.service.d/override.conf << 'EOF'
-            [Service]
-            Delegate=yes
-            KillMode=mixed
-            LimitNOFILE=infinity
-            LimitNPROC=infinity
-            LimitCORE=infinity
-            TasksMax=infinity
-            EOF
-            fi
+            - name: "Échec définitif si récupération impossible"
+              fail:
+                msg: |
+                  ❌ INSTALLATION K3S ÉCHOUÉE DÉFINITIVEMENT
+                  L'API K3s n'est pas accessible après tentative de récupération.
+                  Vérifiez les logs système et les ressources disponibles.
+              when: k3s_recovery_check is failed
 
-            # Installation avec flags de compatibilité corrigés
-            curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="{{ k3s_version }}" INSTALL_K3S_EXEC="server --disable=traefik --disable=servicelb --disable=local-storage --write-kubeconfig-mode 644 --kubelet-arg cgroup-driver=systemd --kubelet-arg feature-gates=GracefulNodeShutdown=false" sh -
+    # =========================================================================
+    # PHASE 4: CONFIGURATION KUBECTL ET KUBECONFIG
+    # =========================================================================
 
-            # Activation et attente
-            systemctl daemon-reload
-            systemctl enable k3s
-            systemctl start k3s
-
-            # Attente de stabilisation prolongée
-            sleep 90
-
-            # Configuration kubeconfig
-            mkdir -p /root/.kube
-            cp /etc/rancher/k3s/k3s.yaml /root/.kube/config 2>/dev/null || true
-            chmod 600 /root/.kube/config 2>/dev/null || true
-          register: k3s_emergency_install
-
-        - name: Vérification finale de récupération avec test API
-          shell: |
-            export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-            timeout 30 /usr/local/bin/k3s kubectl get nodes || echo "kubectl failed"
-          register: emergency_recovery_check
-          ignore_errors: yes
-
-        - name: Rapport final d'état d'urgence
-          debug:
-            msg: |
-              État de la récupération d'urgence: {{ 'SUCCÈS' if emergency_recovery_check is not failed and 'kubectl failed' not in emergency_recovery_check.stdout else 'ÉCHEC' }}
-              {% if emergency_recovery_check is failed or 'kubectl failed' in emergency_recovery_check.stdout %}
-              Installation K3s échouée après toutes les tentatives. Vérifiez les ressources système et la connectivité réseau.
-              {% endif %}
-
-        - name: Échec définitif si récupération impossible
-          fail:
-            msg: "Impossible de démarrer K3s après toutes les tentatives de récupération. API non fonctionnelle."
-          when: emergency_recovery_check is failed or 'kubectl failed' in emergency_recovery_check.stdout
-
-      when: k3s_restart_result is defined and k3s_restart_result.failed is defined and k3s_restart_result.failed
-
-    - name: Vérification finale de l'état du service K3s
-      shell: systemctl status k3s
-      register: k3s_final_status
-      ignore_errors: yes
-      when: (k3s_restart_result is defined and k3s_restart_result.failed is defined and k3s_restart_result.failed) or
-        (k3s_retry_restart is defined and k3s_retry_restart.failed is defined and k3s_retry_restart.failed)
-
-    - name: Affichage de l'état final du service K3s
+    - name: "🔧 PHASE 4 - Configuration kubectl et kubeconfig"
       debug:
-        msg: "État final du service K3s: {{ k3s_final_status.stdout_lines | default(['État inconnu']) }}"
-      when: k3s_final_status is defined
+        msg: "Configuration de l'accès kubectl"
 
-    - name: Vérification des processus K3s en cours d'exécution
-      shell: ps aux | grep k3s | grep -v grep || echo "Aucun processus K3s en cours d'exécution"
-      register: k3s_processes
-      when: (k3s_restart_result is defined and k3s_restart_result.failed is defined and k3s_restart_result.failed) or
-        (k3s_retry_restart is defined and k3s_retry_restart.failed is defined and k3s_retry_restart.failed)
-
-    - name: Affichage des processus K3s
-      debug:
-        msg: "Processus K3s en cours d'exécution: {{ k3s_processes.stdout_lines | default(['Aucun']) }}"
-      when: k3s_processes is defined
-
-    - name: Vérification spécifique pour l'erreur "control process exited with error code"
-      block:
-        - name: Vérification des dépendances du binaire K3s
-          shell: ldd /usr/local/bin/k3s || echo "Impossible de vérifier les dépendances"
-          register: k3s_dependencies
-
-        - name: Affichage des dépendances du binaire K3s
-          debug:
-            msg: "Dépendances du binaire K3s: {{ k3s_dependencies.stdout_lines }}"
-
-        - name: Vérification des permissions du binaire K3s
-          shell: ls -la /usr/local/bin/k3s
-          register: k3s_permissions
-
-        - name: Affichage des permissions du binaire K3s
-          debug:
-            msg: "Permissions du binaire K3s: {{ k3s_permissions.stdout_lines }}"
-
-        - name: Vérification de l'intégrité du binaire K3s
-          shell: file /usr/local/bin/k3s
-          register: k3s_file_info
-
-        - name: Affichage des informations sur le binaire K3s
-          debug:
-            msg: "Informations sur le binaire K3s: {{ k3s_file_info.stdout_lines }}"
-
-        - name: Tentative de réparation du binaire K3s
-          shell: "cp /usr/local/bin/k3s /usr/local/bin/k3s.bak && curl -sfL https://get.k3s.io -o /tmp/k3s-install.sh && chmod +x /tmp/k3s-install.sh && INSTALL_K3S_SKIP_START=true /tmp/k3s-install.sh"
-          when: k3s_final_status.stdout is defined and k3s_final_status.stdout is search("control process exited with error code")
-          register: k3s_repair_attempt
-
-        - name: Affichage du résultat de la tentative de réparation
-          debug:
-            msg: "Résultat de la tentative de réparation: {{ k3s_repair_attempt.stdout_lines | default(['Aucune réparation effectuée']) }}"
-          when: k3s_repair_attempt is defined
-
-      when: k3s_final_status is defined and k3s_final_status.stdout is defined and k3s_final_status.stdout is search("control process exited with error code")
-
-    - name: Tentative finale de redémarrage du service K3s après diagnostics et réparations
-      service:
-        name: k3s
-        state: restarted
-      register: k3s_final_restart
-      ignore_errors: yes
-      when: (k3s_restart_result is defined and k3s_restart_result.failed is defined and k3s_restart_result.failed) or
-        (k3s_retry_restart is defined and k3s_retry_restart.failed is defined and k3s_retry_restart.failed) or
-        (k3s_repair_attempt is defined)
-
-    - name: Vérification ultime de l'état du service K3s
-      shell: systemctl status k3s
-      register: k3s_ultimate_status
-      ignore_errors: yes
-      when: k3s_final_restart is defined
-
-    - name: Affichage de l'état ultime du service K3s
-      debug:
-        msg: "État ultime du service K3s après toutes les tentatives: {{ k3s_ultimate_status.stdout_lines | default(['État inconnu']) }}"
-      when: k3s_ultimate_status is defined
-
-    - name: Notification de résultat final
-      debug:
-        msg: >
-          {% if k3s_ultimate_status is defined and k3s_ultimate_status.rc == 0 %}
-          Le service K3s a été démarré avec succès après plusieurs tentatives.
-          {% else %}
-          Le service K3s n'a pas pu être démarré malgré plusieurs tentatives. Veuillez consulter les journaux pour plus d'informations.
-          {% endif %}
-
-    - name: Attente que le serveur API K3s soit prêt avec configuration kubeconfig
-      block:
-        - name: Attente prolongée de l'API K3s
-          wait_for:
-            port: 6443
-            delay: 30
-            timeout: 600
-
-        - name: Configuration du kubeconfig global
-          shell: |
-            mkdir -p /root/.kube
-            cp /etc/rancher/k3s/k3s.yaml /root/.kube/config
-            chmod 600 /root/.kube/config
-          ignore_errors: yes
-
-        - name: Test final de connectivité K3s
-          shell: |
-            export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-            /usr/local/bin/k3s kubectl get nodes
-          register: final_k3s_test
-          retries: 5
-          delay: 10
-
-      when: (k3s_installed.changed or k3s_service_status.changed) and
-        not (k3s_ultimate_status is defined and k3s_ultimate_status.rc != 0)
-
-    - name: Création du répertoire .kube pour l'utilisateur
+    - name: "📁 Création des répertoires de configuration"
       file:
-        path: /home/{{ ansible_user }}/.kube
+        path: "{{ item }}"
         state: directory
         mode: '0755'
         owner: "{{ ansible_user }}"
         group: "{{ ansible_user }}"
-      when: not (k3s_ultimate_status is defined and k3s_ultimate_status.rc != 0)
+      loop:
+        - "/home/{{ ansible_user }}/.kube"
+        - "/root/.kube"
 
-    - name: Vérification de l'existence du fichier kubeconfig
-      stat:
-        path: /etc/rancher/k3s/k3s.yaml
-      register: k3s_kubeconfig
-      when: not (k3s_ultimate_status is defined and k3s_ultimate_status.rc != 0)
-
-    - name: Copie du fichier kubeconfig pour l'utilisateur
+    - name: "📄 Configuration du kubeconfig utilisateur"
       copy:
-        src: /etc/rancher/k3s/k3s.yaml
-        dest: /home/{{ ansible_user }}/.kube/config
+        src: "{{ k3s_kubeconfig }}"
+        dest: "/home/{{ ansible_user }}/.kube/config"
         remote_src: yes
         owner: "{{ ansible_user }}"
         group: "{{ ansible_user }}"
         mode: '0600'
-      when: not (k3s_ultimate_status is defined and k3s_ultimate_status.rc != 0) and
-        (k3s_kubeconfig is defined and k3s_kubeconfig.stat.exists)
+      when: k3s_kubeconfig is exists
 
-    - name: Mise à jour du fichier kubeconfig avec l'adresse IP externe
+    - name: "📄 Configuration du kubeconfig root"
+      copy:
+        src: "{{ k3s_kubeconfig }}"
+        dest: "/root/.kube/config"
+        remote_src: yes
+        mode: '0600'
+      when: k3s_kubeconfig is exists
+
+    - name: "🌐 Mise à jour du kubeconfig avec l'IP externe"
       replace:
-        path: /home/{{ ansible_user }}/.kube/config
+        path: "/home/{{ ansible_user }}/.kube/config"
         regexp: 'https://127.0.0.1:6443'
         replace: 'https://{{ ansible_host }}:6443'
-      when: not (k3s_ultimate_status is defined and k3s_ultimate_status.rc != 0) and
-        (k3s_kubeconfig is defined and k3s_kubeconfig.stat.exists)
 
-    - name: Configuration de l'accès à kubectl
+    - name: "⚙️  Configuration de l'environnement bash"
       lineinfile:
-        path: /home/{{ ansible_user }}/.bashrc
-        line: 'export KUBECONFIG=/home/{{ ansible_user }}/.kube/config'
+        path: "/home/{{ ansible_user }}/.bashrc"
+        line: "export KUBECONFIG=/home/{{ ansible_user }}/.kube/config"
         state: present
-      when: not (k3s_ultimate_status is defined and k3s_ultimate_status.rc != 0)
 
-    - name: Installation de kubectl
+    # =========================================================================
+    # PHASE 5: INSTALLATION DES OUTILS COMPLÉMENTAIRES
+    # =========================================================================
+
+    - name: "🛠️  PHASE 5 - Installation des outils complémentaires"
+      debug:
+        msg: "Installation de kubectl et Helm"
+
+    - name: "📦 Installation de kubectl"
       block:
-        # La clé GPG est maintenant gérée avec la nouvelle méthode ci-dessous
-
-        - name: Suppression de l'ancien dépôt Kubernetes (si présent)
-          file:
-            path: /etc/apt/sources.list.d/kubernetes.list
-            state: absent
-          ignore_errors: yes
-
-        - name: Ajout du dépôt Kubernetes
-          apt_repository:
-            repo: deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /
-            state: present
-            filename: kubernetes
-
-        - name: Création du répertoire pour les clés GPG
+        - name: "Création du répertoire pour les clés GPG"
           file:
             path: /etc/apt/keyrings
             state: directory
             mode: '0755'
 
-        - name: Téléchargement de la clé GPG de Kubernetes
+        - name: "Téléchargement de la clé GPG Kubernetes"
           get_url:
-            url: https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key
-            dest: /tmp/k8s-release.key
+            url: "https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key"
+            dest: "/tmp/kubernetes-release.key"
             mode: '0644'
 
-        - name: Ajout de la clé GPG de Kubernetes
+        - name: "Installation de la clé GPG Kubernetes"
           shell: |
-            cat /tmp/k8s-release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+            cat /tmp/kubernetes-release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
           args:
             creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
 
-        - name: Installation de kubectl
+        - name: "Ajout du dépôt Kubernetes"
+          apt_repository:
+            repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /"
+            state: present
+            filename: kubernetes
+
+        - name: "Installation de kubectl"
           apt:
             name: kubectl
             state: present
             update_cache: yes
-      when: not k3s_binary.stat.exists and not (k3s_ultimate_status is defined and k3s_ultimate_status.rc != 0)
 
-    - name: Récupération du fichier kubeconfig pour utilisation locale
-      fetch:
-        src: /home/{{ ansible_user }}/.kube/config
-        dest: "{{ kubeconfig_local_path }}"
-        flat: yes
-      when: kubeconfig_local_path is defined and
-        not (k3s_ultimate_status is defined and k3s_ultimate_status.rc != 0) and
-        (k3s_kubeconfig is defined and k3s_kubeconfig.stat.exists)
-
-    - name: Installation de Helm
+    - name: "🎛️  Installation de Helm"
       block:
-        - name: Téléchargement du script d'installation de Helm
+        - name: "Téléchargement du script d'installation Helm"
           get_url:
-            url: https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
-            dest: /tmp/get-helm-3.sh
+            url: "https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3"
+            dest: "/tmp/get-helm-3.sh"
             mode: '0755'
 
-        - name: Exécution du script d'installation de Helm
-          command: /tmp/get-helm-3.sh
+        - name: "Exécution de l'installation Helm"
+          command: "/tmp/get-helm-3.sh"
           args:
             creates: /usr/local/bin/helm
 
-        - name: Configuration de Helm pour utiliser le bon kubeconfig
-          lineinfile:
-            path: /home/{{ ansible_user }}/.bashrc
-            line: 'export KUBECONFIG=/home/{{ ansible_user }}/.kube/config'
-            state: present
-
-        # Pas besoin de recharger l'environnement, on va utiliser le paramètre environment pour les tâches Helm
-
-        - name: Vérification que le répertoire /root/.kube existe
-          file:
-            path: /root/.kube
-            state: directory
-            mode: '0755'
-          become: yes
-          when: k3s_kubeconfig is defined and k3s_kubeconfig.stat.exists
-
-        - name: Création d'un lien symbolique pour le kubeconfig dans /root/.kube
-          file:
-            src: /home/{{ ansible_user }}/.kube/config
-            dest: /root/.kube/config
-            state: link
-            force: yes
-          become: yes
-          when: k3s_kubeconfig is defined and k3s_kubeconfig.stat.exists
-      when: not (k3s_ultimate_status is defined and k3s_ultimate_status.rc != 0)
-
-    - name: Vérification de l'installation de K3s
-      command: k3s kubectl get nodes
-      register: k3s_nodes
-      changed_when: false
-      environment:
-        KUBECONFIG: /home/{{ ansible_user }}/.kube/config
-      when: not (k3s_ultimate_status is defined and k3s_ultimate_status.rc != 0) and
-        (k3s_kubeconfig is defined and k3s_kubeconfig.stat.exists)
-      ignore_errors: yes
-
-    - name: Affichage des nœuds K3s
-      debug:
-        var: k3s_nodes.stdout_lines
-      when: k3s_nodes is defined and k3s_nodes.stdout_lines is defined
-
-    - name: Vérification des pods système
-      command: k3s kubectl get pods -n kube-system
-      register: k3s_system_pods
-      changed_when: false
-      environment:
-        KUBECONFIG: /home/{{ ansible_user }}/.kube/config
-      when: not (k3s_ultimate_status is defined and k3s_ultimate_status.rc != 0) and
-        (k3s_kubeconfig is defined and k3s_kubeconfig.stat.exists)
-      ignore_errors: yes
-
-    - name: Affichage des pods système
-      debug:
-        var: k3s_system_pods.stdout_lines
-      when: k3s_system_pods is defined and k3s_system_pods.stdout_lines is defined
-
-    - name: Installation des dépendances Python pour Kubernetes
+    - name: "🐍 Installation des dépendances Python Kubernetes"
       pip:
         name:
-          - kubernetes
-          - openshift
+          - kubernetes>=28.0.0
+          - openshift>=0.13.0
+          - PyYAML>=6.0
         state: present
-      become: yes
-      when: not (k3s_ultimate_status is defined and k3s_ultimate_status.rc != 0)
+        extra_args: "--upgrade"
 
-    - name: Installation de Traefik via Helm
+    # =========================================================================
+    # PHASE 6: DÉPLOIEMENT DE L'INFRASTRUCTURE DE BASE
+    # =========================================================================
+
+    - name: "🏗️  PHASE 6 - Déploiement de l'infrastructure de base"
+      debug:
+        msg: "Déploiement des composants d'infrastructure essentiels"
+
+    - name: "🌐 Déploiement de Traefik (Ingress Controller)"
       block:
-        - name: Ajout du dépôt Helm de Traefik
+        - name: "Ajout du dépôt Helm Traefik"
           kubernetes.core.helm_repository:
             name: traefik
-            repo_url: https://helm.traefik.io/traefik
+            repo_url: "https://helm.traefik.io/traefik"
           environment:
-            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
 
-        - name: Mise à jour des dépôts Helm
-          command: helm repo update
-          environment:
-            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
-
-        - name: Création du namespace traefik
+        - name: "Création du namespace Traefik"
           kubernetes.core.k8s:
             name: traefik
             api_version: v1
             kind: Namespace
             state: present
           environment:
-            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
 
-        - name: Déploiement de Traefik via Helm
+        - name: "Déploiement de Traefik via Helm"
           kubernetes.core.helm:
             name: traefik
-            chart_ref: traefik/traefik
-            chart_version: "{{ traefik_version }}"
+            chart_ref: "traefik/traefik"
+            chart_version: "{{ traefik_chart_version }}"
             release_namespace: traefik
             create_namespace: true
             wait: true
+            wait_timeout: 600
             values:
+              deployment:
+                replicas: 1
               ports:
                 web:
                   port: 80
                   expose: true
                   exposedPort: 80
-                  protocol: TCP
                 websecure:
                   port: 443
                   expose: true
                   exposedPort: 443
-                  protocol: TCP
               service:
                 type: LoadBalancer
-                externalIPs:
-                  - "{{ ansible_host }}"
+                spec:
+                  externalIPs:
+                    - "{{ ansible_host }}"
               ingressClass:
                 enabled: true
                 isDefaultClass: true
               logs:
                 general:
                   level: INFO
-                access:
+              metrics:
+                prometheus:
                   enabled: true
           environment:
-            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
 
-        - name: Attente que Traefik soit prêt
-          kubernetes.core.k8s_info:
-            api_version: v1
-            kind: Pod
-            namespace: traefik
-            label_selectors:
-              - app.kubernetes.io/name=traefik
-          register: traefik_pods
-          until: traefik_pods.resources | length > 0 and (traefik_pods.resources[0].status.phase == 'Running')
-          retries: 30
-          delay: 10
-          environment:
-            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
-
-        - name: Vérification de l'accès à Traefik
-          uri:
-            url: "http://{{ ansible_host }}"
-            method: GET
-            status_code: 200, 404, 503
-            validate_certs: no
-          register: traefik_access
-          ignore_errors: yes
-
-        - name: Affichage du statut d'accès à Traefik
-          debug:
-            msg: "Traefik est {{ 'accessible' if traefik_access is succeeded else 'inaccessible' }} à l'adresse http://{{ ansible_host }}"
-      when: not (k3s_ultimate_status is defined and k3s_ultimate_status.rc != 0) and
-        (k3s_kubeconfig is defined and k3s_kubeconfig.stat.exists)
-
-    - name: Installation de MetalLB pour le LoadBalancer
+    - name: "🔒 Déploiement de cert-manager (Gestion TLS)"
       block:
-        - name: Création du namespace metallb-system
-          kubernetes.core.k8s:
-            name: metallb-system
-            api_version: v1
-            kind: Namespace
-            state: present
-            host: "https://{{ ansible_host }}:6443"
-            validate_certs: false
+        - name: "Ajout du dépôt Helm cert-manager"
+          kubernetes.core.helm_repository:
+            name: jetstack
+            repo_url: "https://charts.jetstack.io"
           environment:
-            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
 
-        - name: Déploiement de MetalLB via Helm
+        - name: "Déploiement de cert-manager"
+          kubernetes.core.helm:
+            name: cert-manager
+            chart_ref: "jetstack/cert-manager"
+            chart_version: "{{ cert_manager_version }}"
+            release_namespace: cert-manager
+            create_namespace: true
+            wait: true
+            wait_timeout: 600
+            values:
+              installCRDs: true
+              global:
+                leaderElection:
+                  namespace: cert-manager
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+
+    - name: "⚖️  Déploiement de MetalLB (Load Balancer)"
+      block:
+        - name: "Ajout du dépôt Helm MetalLB"
+          kubernetes.core.helm_repository:
+            name: metallb
+            repo_url: "https://metallb.github.io/metallb"
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+
+        - name: "Déploiement de MetalLB"
           kubernetes.core.helm:
             name: metallb
-            chart_ref: metallb/metallb
+            chart_ref: "metallb/metallb"
+            chart_version: "{{ metallb_chart_version }}"
             release_namespace: metallb-system
             create_namespace: true
             wait: true
+            wait_timeout: 600
           environment:
-            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
 
-        - name: Configuration de l'IPAddressPool pour MetalLB
+        - name: "Configuration IPAddressPool MetalLB"
           kubernetes.core.k8s:
             state: present
             definition:
               apiVersion: metallb.io/v1beta1
               kind: IPAddressPool
               metadata:
-                name: first-pool
+                name: lions-ip-pool
                 namespace: metallb-system
               spec:
                 addresses:
-                  - "{{ ansible_host }}/32"  # Utilise l'adresse IP du VPS
-            host: "https://{{ ansible_host }}:6443"
-            validate_certs: false
+                  - "{{ ansible_host }}/32"
           environment:
-            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
 
-        - name: Configuration de L2Advertisement pour MetalLB
+        - name: "Configuration L2Advertisement MetalLB"
           kubernetes.core.k8s:
             state: present
             definition:
               apiVersion: metallb.io/v1beta1
               kind: L2Advertisement
               metadata:
-                name: l2-advert
+                name: lions-l2-advert
                 namespace: metallb-system
               spec:
                 ipAddressPools:
-                  - first-pool
-            host: "https://{{ ansible_host }}:6443"
-            validate_certs: false
+                  - lions-ip-pool
           environment:
-            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
-      when: k3s_installed.changed and not (k3s_ultimate_status is defined and k3s_ultimate_status.rc != 0) and
-        (k3s_kubeconfig is defined and k3s_kubeconfig.stat.exists)
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
 
-    - name: Installation de cert-manager pour les certificats TLS
-      block:
-        - name: Ajout du dépôt Helm de cert-manager
-          kubernetes.core.helm_repository:
-            name: jetstack
-            repo_url: https://charts.jetstack.io
-          environment:
-            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+    # =========================================================================
+    # PHASE 7: VÉRIFICATIONS FINALES ET RAPPORT
+    # =========================================================================
 
-        - name: Déploiement de cert-manager via Helm
-          kubernetes.core.helm:
-            name: cert-manager
-            chart_ref: jetstack/cert-manager
-            release_namespace: cert-manager
-            create_namespace: true
-            wait: true
-            values:
-              installCRDs: true
-          environment:
-            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
-      when: not (k3s_ultimate_status is defined and k3s_ultimate_status.rc != 0) and
-        (k3s_kubeconfig is defined and k3s_kubeconfig.stat.exists)
-
-    # Traefik est maintenant utilisé comme contrôleur d'ingress par défaut
-    # Le bloc d'installation de Nginx Ingress Controller a été supprimé
-    # Traefik est installé automatiquement avec K3s
-
-    - name: Installation du Kubernetes Dashboard
-      block:
-        - name: Création du namespace kubernetes-dashboard
-          kubernetes.core.k8s:
-            name: kubernetes-dashboard
-            api_version: v1
-            kind: Namespace
-            state: present
-            host: "https://{{ ansible_host }}:6443"
-            validate_certs: false
-          environment:
-            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
-
-        - name: Déploiement du Kubernetes Dashboard
-          shell: kubectl apply -f https://raw.githubusercontent.com/kubernetes/dashboard/v2.7.0/aio/deploy/recommended.yaml
-          environment:
-            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
-
-        - name: Création du Service NodePort pour exposer le Dashboard
-          kubernetes.core.k8s:
-            state: present
-            definition:
-              apiVersion: v1
-              kind: Service
-              metadata:
-                name: kubernetes-dashboard-nodeport
-                namespace: kubernetes-dashboard
-              spec:
-                ports:
-                  - port: 443
-                    targetPort: 8443
-                    nodePort: 30001
-                selector:
-                  k8s-app: kubernetes-dashboard
-                type: NodePort
-            host: "https://{{ ansible_host }}:6443"
-            validate_certs: false
-          environment:
-            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
-
-        - name: Création d'un compte de service avec droits d'administration
-          kubernetes.core.k8s:
-            state: present
-            definition:
-              apiVersion: v1
-              kind: ServiceAccount
-              metadata:
-                name: dashboard-admin
-                namespace: kubernetes-dashboard
-            host: "https://{{ ansible_host }}:6443"
-            validate_certs: false
-          environment:
-            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
-
-        - name: Création d'un ClusterRoleBinding pour le compte admin
-          kubernetes.core.k8s:
-            state: present
-            definition:
-              apiVersion: rbac.authorization.k8s.io/v1
-              kind: ClusterRoleBinding
-              metadata:
-                name: dashboard-admin
-              roleRef:
-                apiGroup: rbac.authorization.k8s.io
-                kind: ClusterRole
-                name: cluster-admin
-              subjects:
-                - kind: ServiceAccount
-                  name: dashboard-admin
-                  namespace: kubernetes-dashboard
-            host: "https://{{ ansible_host }}:6443"
-            validate_certs: false
-          environment:
-            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
-
-        - name: Création de l'Ingress pour le Kubernetes Dashboard (Production)
-          kubernetes.core.k8s:
-            state: present
-            definition:
-              apiVersion: networking.k8s.io/v1
-              kind: Ingress
-              metadata:
-                name: kubernetes-dashboard-prod
-                namespace: kubernetes-dashboard
-                annotations:
-                  cert-manager.io/cluster-issuer: letsencrypt-prod
-                  traefik.ingress.kubernetes.io/router.entrypoints: "websecure"
-                  traefik.ingress.kubernetes.io/router.tls: "true"
-                  traefik.ingress.kubernetes.io/router.middlewares: "kubernetes-dashboard-strip-prefix@kubernetescrd"
-              spec:
-                ingressClassName: traefik
-                tls:
-                  - hosts:
-                      - "k3s.lions.dev"
-                    secretName: kubernetes-dashboard-tls-prod
-                rules:
-                  - host: "k3s.lions.dev"
-                    http:
-                      paths:
-                        - path: /
-                          pathType: Prefix
-                          backend:
-                            service:
-                              name: kubernetes-dashboard
-                              port:
-                                number: 443
-            host: "https://{{ ansible_host }}:6443"
-            validate_certs: false
-          environment:
-            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
-
-        - name: Création de l'Ingress pour le Kubernetes Dashboard (Développement)
-          kubernetes.core.k8s:
-            state: present
-            definition:
-              apiVersion: networking.k8s.io/v1
-              kind: Ingress
-              metadata:
-                name: kubernetes-dashboard-dev
-                namespace: kubernetes-dashboard
-                annotations:
-                  cert-manager.io/cluster-issuer: letsencrypt-staging
-                  traefik.ingress.kubernetes.io/router.entrypoints: "websecure"
-                  traefik.ingress.kubernetes.io/router.tls: "true"
-                  traefik.ingress.kubernetes.io/router.middlewares: "kubernetes-dashboard-strip-prefix@kubernetescrd"
-              spec:
-                ingressClassName: traefik
-                tls:
-                  - hosts:
-                      - "k3s.dev.lions.dev"
-                    secretName: kubernetes-dashboard-tls-dev
-                rules:
-                  - host: "k3s.dev.lions.dev"
-                    http:
-                      paths:
-                        - path: /
-                          pathType: Prefix
-                          backend:
-                            service:
-                              name: kubernetes-dashboard
-                              port:
-                                number: 443
-            host: "https://{{ ansible_host }}:6443"
-            validate_certs: false
-          environment:
-            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
-
-        - name: Installation des CRDs Traefik
-          shell: kubectl apply -f https://raw.githubusercontent.com/traefik/traefik/v2.10/docs/content/reference/dynamic-configuration/kubernetes-crd-definition-v1.yml
-          environment:
-            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
-
-        - name: Création du middleware pour le Dashboard
-          kubernetes.core.k8s:
-            state: present
-            definition:
-              apiVersion: traefik.io/v1alpha1
-              kind: Middleware
-              metadata:
-                name: kubernetes-dashboard-strip-prefix
-                namespace: kubernetes-dashboard
-              spec:
-                stripPrefix:
-                  prefixes:
-                    - "/dashboard"
-            host: "https://{{ ansible_host }}:6443"
-            validate_certs: false
-          environment:
-            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
-
-        - name: Création d'un Secret pour le token permanent du Dashboard
-          kubernetes.core.k8s:
-            state: present
-            definition:
-              apiVersion: v1
-              kind: Secret
-              metadata:
-                name: dashboard-admin-token
-                namespace: kubernetes-dashboard
-                annotations:
-                  kubernetes.io/service-account.name: dashboard-admin
-              type: kubernetes.io/service-account-token
-            host: "https://{{ ansible_host }}:6443"
-            validate_certs: false
-          environment:
-            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
-          register: dashboard_secret
-
-        - name: Attente que le token soit généré
-          pause:
-            seconds: 5
-
-        - name: Récupération du token permanent
-          shell: k3s kubectl get secret dashboard-admin-token -n kubernetes-dashboard -o jsonpath='{.data.token}' | base64 --decode
-          register: dashboard_token
-          changed_when: false
-          environment:
-            KUBECONFIG: /home/{{ ansible_user }}/.kube/config
-
-        - name: Affichage du token permanent pour l'accès au Dashboard
-          debug:
-            msg: "Token permanent pour l'accès au Kubernetes Dashboard: {{ dashboard_token.stdout }}"
-      when: not (k3s_ultimate_status is defined and k3s_ultimate_status.rc != 0) and
-        (k3s_kubeconfig is defined and k3s_kubeconfig.stat.exists)
-
-    - name: Vérification finale de l'installation
+    - name: "✅ PHASE 7 - Vérifications finales"
       debug:
-        msg: >
-          {% if k3s_ultimate_status is defined and k3s_ultimate_status.rc != 0 %}
-          L'installation de K3s a rencontré des problèmes. Veuillez consulter les journaux pour plus d'informations.
-          {% else %}
-          K3s a été installé avec succès sur le VPS et est prêt à recevoir les applications.
-          {% endif %}
+        msg: "Validation finale de l'installation"
+
+    - name: "🏥 Tests de santé des composants"
+      block:
+        - name: "Vérification des nœuds K3s"
+          command: "/usr/local/bin/k3s kubectl get nodes -o wide"
+          register: final_nodes_check
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+
+        - name: "Vérification des pods système"
+          command: "/usr/local/bin/k3s kubectl get pods --all-namespaces"
+          register: final_pods_check
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+
+        - name: "Vérification des services"
+          command: "/usr/local/bin/k3s kubectl get services --all-namespaces"
+          register: final_services_check
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+
+    - name: "🎯 Test de connectivité Traefik"
+      uri:
+        url: "http://{{ ansible_host }}"
+        method: GET
+        status_code: [200, 404, 503]
+        timeout: 10
+      register: traefik_connectivity
+      ignore_errors: true
+
+    - name: "📊 RAPPORT FINAL D'INSTALLATION"
+      debug:
+        msg: |
+          ==========================================================
+          🎉 INSTALLATION K3S LIONS TERMINÉE AVEC SUCCÈS
+          ==========================================================
+          
+          📍 INFORMATIONS GÉNÉRALES:
+          • Host: {{ ansible_host }}
+          • Version K3s: {{ k3s_version }}
+          • Environment: {{ lions_env | default('development') }}
+          • Date: {{ ansible_date_time.iso8601 }}
+          
+          🔧 COMPOSANTS INSTALLÉS:
+          • ✅ K3s Server (API: :6443)
+          • ✅ kubectl
+          • ✅ Helm v3
+          • ✅ Traefik Ingress Controller
+          • ✅ cert-manager (TLS)
+          • ✅ MetalLB Load Balancer
+          
+          🌐 ACCÈS:
+          • API Kubernetes: https://{{ ansible_host }}:6443
+          • Traefik Dashboard: http://{{ ansible_host }}
+          • Kubeconfig: /home/{{ ansible_user }}/.kube/config
+          
+          📈 STATISTIQUES:
+          • Nœuds: {{ final_nodes_check.stdout_lines | length - 1 }}
+          • Namespaces: {{ (final_pods_check.stdout_lines | select('match', '^[^\\s]+\\s+[^\\s]+\\s+') | list | map('regex_replace', '^([^\\s]+)\\s+.*', '\\1') | unique | list) | length }}
+          • Pods actifs: {{ (final_pods_check.stdout_lines | select('match', '.*Running.*') | list) | length }}
+          
+          🚀 PROCHAINES ÉTAPES:
+          1. Configurer les certificats SSL (Let's Encrypt)
+          2. Déployer le monitoring (Prometheus/Grafana)
+          3. Configurer les sauvegardes automatiques
+          4. Déployer les applications LIONS
+          
+          ==========================================================
+
+  # =============================================================================
+  # HANDLERS
+  # =============================================================================
+  handlers:
+    - name: "reload systemd and restart k3s"
+      listen: "reload systemd and restart k3s"
+      systemd:
+        name: k3s
+        state: restarted
+        daemon_reload: yes
+      register: k3s_handler_restart
+
+    - name: "verify k3s after handler restart"
+      listen: "reload systemd and restart k3s"
+      wait_for:
+        port: 6443
+        host: localhost
+        timeout: 120
+      when: k3s_handler_restart is succeeded
