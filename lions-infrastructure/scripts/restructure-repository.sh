@@ -129,10 +129,10 @@ backup_repository() {
 
     if [ "${DRY_RUN}" = "true" ]; then
         log "DEBUG" "Simulation: mkdir -p ${BACKUP_DIR}"
-        log "DEBUG" "Simulation: cp -r ${PROJECT_ROOT}/* ${BACKUP_DIR}/"
+        log "DEBUG" "Simulation: cp -r --exclude=\"$(basename ${BACKUP_DIR})\" ${PROJECT_ROOT}/* ${BACKUP_DIR}/"
     else
         mkdir -p "${BACKUP_DIR}"
-        cp -r "${PROJECT_ROOT}"/* "${BACKUP_DIR}/"
+        cp -r --exclude="$(basename ${BACKUP_DIR})" "${PROJECT_ROOT}"/* "${BACKUP_DIR}/"
         log "SUCCESS" "Sauvegarde terminée"
     fi
 }
