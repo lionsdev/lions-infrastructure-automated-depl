@@ -6125,77 +6125,67 @@ function deployer_infrastructure_base() {
     # Note: Traefik peut être déployé de différentes manières (K3s, Helm, etc.) avec différentes étiquettes
     # Cette vérification prend en charge plusieurs méthodes de détection
     log "INFO" "Vérification de Traefik..."
-    local max_traefik_attempts=30
-    local traefik_attempt=0
-    local traefik_ready=false
+        local max_traefik_attempts=20  # Réduire le nombre de tentatives
+        local traefik_attempt=0
+        local traefik_ready=false
 
-    while [[ "${traefik_ready}" == "false" && ${traefik_attempt} -lt ${max_traefik_attempts} ]]; do
-        traefik_attempt=$((traefik_attempt + 1))
-        log "INFO" "Tentative ${traefik_attempt}/${max_traefik_attempts} de vérification de Traefik..."
+        while [[ "${traefik_ready}" == "false" && ${traefik_attempt} -lt ${max_traefik_attempts} ]]; do
+            traefik_attempt=$((traefik_attempt + 1))
+            log "INFO" "Tentative ${traefik_attempt}/${max_traefik_attempts} de vérification de Traefik..."
 
-        # Vérification avec le label app=traefik (méthode standard)
-        if kubectl get pods -n kube-system -l app=traefik -o jsonpath='{.items[*].status.phase}' 2>/dev/null | grep -q "Running"; then
-            log "SUCCESS" "Traefik est en cours d'exécution (label app=traefik)"
-
-            # Vérification que Traefik est prêt
-            if kubectl get pods -n kube-system -l app=traefik -o jsonpath='{.items[*].status.containerStatuses[0].ready}' 2>/dev/null | grep -q "true"; then
-                log "SUCCESS" "Traefik est prêt"
-                traefik_ready=true
+            # Vérification multiple pour plus de robustesse
+            if kubectl get pods -n kube-system -l app.kubernetes.io/name=traefik -o jsonpath='{.items[*].status.phase}' 2>/dev/null | grep -q "Running"; then
+                log "SUCCESS" "Traefik est en cours d'exécution (label app.kubernetes.io/name=traefik)"
+                if kubectl get pods -n kube-system -l app.kubernetes.io/name=traefik -o jsonpath='{.items[*].status.containerStatuses[0].ready}' 2>/dev/null | grep -q "true"; then
+                    traefik_ready=true
+                    log "SUCCESS" "Traefik est prêt"
+                else
+                    log "INFO" "Traefik démarre, attente de 5 secondes..."
+                    sleep 5
+                fi
+            elif kubectl get pods -n traefik -l app.kubernetes.io/name=traefik -o jsonpath='{.items[*].status.phase}' 2>/dev/null | grep -q "Running"; then
+                log "SUCCESS" "Traefik est en cours d'exécution (namespace traefik)"
+                if kubectl get pods -n traefik -l app.kubernetes.io/name=traefik -o jsonpath='{.items[*].status.containerStatuses[0].ready}' 2>/dev/null | grep -q "true"; then
+                    traefik_ready=true
+                    log "SUCCESS" "Traefik est prêt"
+                else
+                    log "INFO" "Traefik démarre, attente de 5 secondes..."
+                    sleep 5
+                fi
             else
-                log "INFO" "Traefik est en cours d'exécution mais n'est pas encore prêt, attente de 10 secondes..."
-                sleep 10
+                log "INFO" "Traefik n'est pas encore en cours d'exécution, attente de 5 secondes..."
+                sleep 5
             fi
-        # Vérification alternative avec le nom du pod commençant par "traefik-"
-        elif kubectl get pods -n kube-system -o name 2>/dev/null | grep -q "pod/traefik-"; then
-            log "SUCCESS" "Traefik est en cours d'exécution (pod commençant par traefik-)"
+        done
 
-            # Récupération du nom du pod Traefik
-            local traefik_pod_name=$(kubectl get pods -n kube-system -o name 2>/dev/null | grep "pod/traefik-" | head -n 1 | sed 's|pod/||')
+        if [[ "${traefik_ready}" == "false" ]]; then
+            log "WARNING" "Traefik n'est pas prêt après ${max_traefik_attempts} tentatives"
+            log "INFO" "Tentative de déploiement manuel de Traefik..."
 
-            # Vérification que Traefik est prêt
-            if kubectl get pod -n kube-system "${traefik_pod_name}" -o jsonpath='{.status.containerStatuses[0].ready}' 2>/dev/null | grep -q "true"; then
-                log "SUCCESS" "Traefik est prêt"
-                traefik_ready=true
-            else
-                log "INFO" "Traefik est en cours d'exécution mais n'est pas encore prêt, attente de 10 secondes..."
-                sleep 10
-            fi
-        else
-            log "INFO" "Traefik n'est pas encore en cours d'exécution, attente de 10 secondes..."
-            sleep 10
-        fi
-    done
-
-    if [[ "${traefik_ready}" == "false" ]]; then
-        log "WARNING" "Traefik n'est pas prêt après ${max_traefik_attempts} tentatives"
-        log "INFO" "Tentative de déploiement manuel de Traefik..."
-
-        # Vérification si Traefik est déjà installé mais pas en cours d'exécution
-        if kubectl get deployment -n kube-system traefik &>/dev/null; then
-            log "INFO" "Traefik est déjà installé mais n'est pas en cours d'exécution"
-            log "INFO" "Tentative de redémarrage de Traefik..."
-            kubectl rollout restart deployment traefik -n kube-system
-        else
-            log "INFO" "Traefik n'est pas installé, tentative d'installation via Helm..."
-
-            # Ajout du dépôt Helm de Traefik
+            # Installation manuelle avec configuration corrigée
             if ! helm repo list | grep -q "traefik"; then
-                helm repo add traefik https://helm.traefik.io/traefik
+                helm repo add traefik https://traefik.github.io/charts
                 helm repo update
             fi
 
-            # Installation de Traefik via Helm
+            # Déploiement dans namespace kube-system (comme K3s par défaut)
             helm upgrade --install traefik traefik/traefik \
                 --namespace kube-system \
-                --set ports.web.port=80 \
-                --set ports.websecure.port=443 \
+                --set deployment.replicas=1 \
                 --set service.type=LoadBalancer \
-                --set ports.web.expose=true \
-                --set ports.websecure.expose=true \
-                --set hostNetwork=true \
+                --set ports.web.port=80 \
+                --set ports.web.exposedPort=80 \
+                --set ports.websecure.port=443 \
+                --set ports.websecure.exposedPort=443 \
                 --set ingressClass.enabled=true \
-                --set ingressClass.isDefaultClass=true
-        fi
+                --set ingressClass.isDefaultClass=true \
+                --set providers.kubernetesCRD.enabled=true \
+                --set providers.kubernetesIngress.enabled=true \
+                --set resources.requests.cpu=100m \
+                --set resources.requests.memory=64Mi \
+                --set resources.limits.cpu=300m \
+                --set resources.limits.memory=256Mi \
+                --wait --timeout 5m
 
         # Attente que Traefik soit prêt après l'installation manuelle
         # Note: Traefik peut être déployé de différentes manières (K3s, Helm, etc.) avec différentes étiquettes
@@ -6325,44 +6315,121 @@ function deployer_monitoring() {
     # Création d'un fichier de valeurs temporaire pour Prometheus
     local values_file=$(mktemp)
     cat > "${values_file}" << EOF
-grafana:
-  adminPassword: admin
-  service:
-    type: NodePort
-    nodePort: 30000
-  resources:
-    requests:
-      cpu: 100m
-      memory: 256Mi
-    limits:
-      cpu: 200m
-      memory: 512Mi
-prometheus:
-  prometheusSpec:
-    retention: 15d
-    resources:
-      requests:
-        cpu: 200m
-        memory: 512Mi
-      limits:
-        cpu: 500m
-        memory: 1Gi
-    storageSpec:
-      volumeClaimTemplate:
-        spec:
-          accessModes: ["ReadWriteOnce"]
-          resources:
-            requests:
-              storage: 10Gi
-alertmanager:
-  alertmanagerSpec:
-    resources:
-      requests:
-        cpu: 50m
-        memory: 128Mi
-      limits:
-        cpu: 100m
-        memory: 256Mi
+    # Configuration allégée et stable pour Prometheus/Grafana
+    defaultRules:
+      create: true
+      rules:
+        alertmanager: false
+        etcd: false
+        configReloaders: false
+        general: false
+        k8s: false
+        kubeApiserverAvailability: false
+        kubeApiserverBurnrate: false
+        kubeApiserverHistogram: false
+        kubeApiserverSlos: false
+        kubelet: false
+        kubeProxy: false
+        kubePrometheusGeneral: false
+        kubePrometheusNodeRecording: false
+        kubernetesApps: false
+        kubernetesResources: false
+        kubernetesStorage: false
+        kubernetesSystem: false
+        kubeScheduler: false
+        kubeStateMetrics: false
+        network: false
+        node: false
+        nodeExporterAlerting: false
+        nodeExporterRecording: false
+        prometheus: false
+        prometheusOperator: false
+
+    alertmanager:
+      enabled: false
+
+    grafana:
+      enabled: true
+      adminPassword: admin
+      service:
+        type: NodePort
+        nodePort: 30000
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 200m
+          memory: 256Mi
+      persistence:
+        enabled: false
+      sidecar:
+        dashboards:
+          enabled: true
+        datasources:
+          enabled: true
+
+    prometheusOperator:
+      enabled: true
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 200m
+          memory: 256Mi
+
+    prometheus:
+      enabled: true
+      prometheusSpec:
+        retention: 7d
+        resources:
+          requests:
+            cpu: 200m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        storageSpec: {}
+        serviceMonitorSelectorNilUsesHelmValues: false
+        serviceMonitorSelector: {}
+        ruleSelectorNilUsesHelmValues: false
+        ruleSelector: {}
+
+    kubeStateMetrics:
+      enabled: true
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 100m
+          memory: 128Mi
+
+    nodeExporter:
+      enabled: true
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 100m
+          memory: 128Mi
+
+    kubeEtcd:
+      enabled: false
+
+    kubeControllerManager:
+      enabled: false
+
+    kubeScheduler:
+      enabled: false
+
+    kubeProxy:
+      enabled: false
+
+    kubelet:
+      enabled: true
 EOF
 
     # Déploiement de Prometheus
