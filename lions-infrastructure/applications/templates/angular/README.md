@@ -42,9 +42,11 @@ Copiez les fichiers suivants dans votre projet Angular :
 
 ```bash
 # À la racine de votre projet Angular
-docker build -t registry.lions.dev/mon-application:latest .
-docker push registry.lions.dev/mon-application:latest
+docker build -t registry.ENVIRONMENT.lions.dev/mon-application:latest .
+docker push registry.ENVIRONMENT.lions.dev/mon-application:latest
 ```
+
+Remplacez `ENVIRONMENT` par votre environnement cible (`development`, `staging`, ou `production`).
 
 ### 4. Déploiement sur Kubernetes
 

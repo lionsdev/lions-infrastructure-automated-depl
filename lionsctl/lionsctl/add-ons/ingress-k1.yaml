@@ -5,33 +5,45 @@ metadata:
   namespace: {{ .Values.namespace }}
   labels:
     app: {{ .Values.name }}
+    environment: {{ .Values.environment }}
   annotations:
-    kubernetes.io/ingress.class: nginx
-    nginx.ingress.kubernetes.io/rewrite-target: /$1
-    nginx.ingress.kubernetes.io/use-regex: "true"
-    nginx.ingress.kubernetes.io/proxy-body-size: "0"
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
-    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
-    nginx.ingress.kubernetes.io/proxy-connect-timeout: "600"
-    nginx.ingress.kubernetes.io/proxy-buffer-size: "128k"
-    nginx.ingress.kubernetes.io/client-max-body-size: "0"
-    nginx.ingress.kubernetes.io/proxy-buffering: "on"
-    nginx.ingress.kubernetes.io/proxy-buffers-number: "4"
-    nginx.ingress.kubernetes.io/proxy-max-temp-file-size: "1024m"
-    nginx.ingress.kubernetes.io/proxy-request-buffering: "on"
-    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
-    nginx.ingress.kubernetes.io/configuration-snippet: |
-      proxy_set_header Upgrade $http_upgrade;
-      proxy_set_header Connection "upgrade";
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    traefik.ingress.kubernetes.io/router.entrypoints: "websecure"
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/ssl-redirect: "true"
+    traefik.ingress.kubernetes.io/ssl-permanent-redirect: "true"
+    traefik.ingress.kubernetes.io/request-timeout: "300"
+    traefik.ingress.kubernetes.io/compress: "true"
+    traefik.ingress.kubernetes.io/headers-customrequestheaders: "X-Forwarded-Proto:https||X-Forwarded-Port:443"
+    traefik.ingress.kubernetes.io/headers-customresponseheaders: "X-Content-Type-Options:nosniff||X-Frame-Options:SAMEORIGIN||X-XSS-Protection:1; mode=block"
+    traefik.ingress.kubernetes.io/router.middlewares: "{{ .Values.namespace }}-{{ .Values.name }}-strip-prefix@kubernetescrd"
 spec:
+  ingressClassName: traefik
+  tls:
+  - hosts:
+    - {{ .Values.name }}.{{ .Values.environment }}.dev.lions.dev
+    secretName: {{ .Values.name }}-tls
   rules:
   - host: {{ .Values.name }}.{{ .Values.environment }}.dev.lions.dev
     http:
       paths:
-      - path: /(.*)
+      - path: /
         pathType: Prefix
         backend:
           service:
             name: {{ .Values.name }}
             port:
               number: 80
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ .Values.name }}-strip-prefix
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: {{ .Values.name }}
+    environment: {{ .Values.environment }}
+spec:
+  stripPrefix:
+    prefixes:
+      - "/"

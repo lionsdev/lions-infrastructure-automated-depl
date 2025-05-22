@@ -130,10 +130,10 @@ lionsctl pipeline -u https://github.com/lionsdev/admin-dashboard -b main -e prod
 
 ```bash
 # Déployer avec des paramètres spécifiques en environnement de staging
-lionsctl pipeline -u https://github.com/lionsdev/backend-service -b develop -j 17 -p dev -d "quarkus.log.level=DEBUG" -e staging -m dev-team@lions.dev
+lionsctl pipeline -u https://github.com/lionsdev/backend-service -b develop -j 17 -p dev -d "quarkus.log.level=DEBUG" -e staging -m dev-team@dev.lions.dev
 
 # Déployer avec des paramètres spécifiques en environnement de production
-lionsctl pipeline -u https://github.com/lionsdev/backend-service -b main -j 17 -p prod -d "quarkus.log.level=INFO" -e production -m ops@lions.dev
+lionsctl pipeline -u https://github.com/lionsdev/backend-service -b main -j 17 -p prod -d "quarkus.log.level=INFO" -e production -m ops@dev.lions.dev
 ```
 
 ### Stratégies de branche recommandées par environnement
@@ -144,4 +144,4 @@ lionsctl pipeline -u https://github.com/lionsdev/backend-service -b main -j 17 -
 
 ## Support
 
-Pour toute question ou problème, veuillez contacter l'équipe d'infrastructure LIONS à infrastructure@lions.dev ou ouvrir une issue sur le dépôt GitHub.
+Pour toute question ou problème, veuillez contacter l'équipe d'infrastructure LIONS à infrastructure@dev.lions.dev ou ouvrir une issue sur le dépôt GitHub.

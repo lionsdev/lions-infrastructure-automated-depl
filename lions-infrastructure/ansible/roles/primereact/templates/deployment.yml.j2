@@ -47,7 +47,7 @@ spec:
         fsGroup: 1000
       containers:
         - name: "{{ app_name }}"
-          image: "registry.lions.dev/{{ app_name }}:{{ app_version }}"
+          image: "registry.{{ app_environment }}.lions.dev/{{ app_name }}:{{ app_version }}"
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

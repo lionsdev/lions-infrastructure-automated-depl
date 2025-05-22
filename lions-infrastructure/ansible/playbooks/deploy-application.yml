@@ -18,17 +18,17 @@
     extra_params: "{{ extra_params | default({}) }}"
     deployment_timestamp: "{{ deployment_timestamp | default(lookup('pipe', 'date +%Y%m%d%H%M%S')) }}"
     deployment_user: "{{ deployment_user | default(lookup('env', 'USER')) }}"
-    
+
     # Variables dérivées
     namespace: "{{ application_name }}-{{ environment }}"
-    image_name: "registry.lions.dev/{{ application_name }}:{{ version }}"
-    
+    image_name: "registry.{{ environment }}.lions.dev/{{ application_name }}:{{ version }}"
+
     # Variables spécifiques à l'environnement
     domain_suffix:
       production: "lions.dev"
       staging: "staging.lions.dev"
       development: "dev.lions.dev"
-    
+
     # Ressources par défaut
     default_resources:
       requests:
@@ -37,7 +37,7 @@
       limits:
         cpu: "500m"
         memory: "512Mi"
-    
+
   tasks:
     - name: Affichage des informations de déploiement
       debug:
@@ -48,18 +48,18 @@
           - "Version: {{ version }}"
           - "Namespace: {{ namespace }}"
           - "Image: {{ image_name }}"
-    
+
     - name: Vérification de l'existence de l'image Docker
       shell: "kubectl exec -n registry -l app=registry -- /bin/sh -c 'curl -s -f http://localhost:5000/v2/{{ application_name }}/tags/list | grep {{ version }}'"
       register: image_check
       ignore_errors: yes
       changed_when: false
-    
+
     - name: Échec si l'image n'existe pas
       fail:
         msg: "L'image {{ image_name }} n'existe pas dans le registre. Veuillez construire et pousser l'image avant le déploiement."
       when: image_check.rc != 0 and version != 'latest'
-    
+
     - name: Création du namespace si nécessaire
       k8s:
         state: present
@@ -73,12 +73,12 @@
               environment: "{{ environment }}"
               technology: "{{ technology }}"
               app: "{{ application_name }}"
-    
+
     - name: Chargement de la configuration spécifique à la technologie
       include_vars:
         file: "{{ playbook_dir }}/../roles/{{ technology }}/vars/main.yml"
       ignore_errors: yes
-    
+
     - name: Inclusion du rôle spécifique à la technologie
       include_role:
         name: "{{ technology }}"
@@ -90,7 +90,7 @@
         app_domain: "{{ application_name }}.{{ domain_suffix[environment] }}"
         app_resources: "{{ extra_params.resources | default(default_resources) }}"
         app_replicas: "{{ extra_params.replicas | default(1) }}"
-    
+
     - name: Vérification du déploiement
       k8s_info:
         api_version: apps/v1
@@ -102,17 +102,17 @@
       retries: 30
       delay: 10
       ignore_errors: yes
-    
+
     - name: Affichage du statut du déploiement
       debug:
         msg: "Déploiement terminé avec succès. L'application est accessible à l'adresse: https://{{ application_name }}.{{ domain_suffix[environment] }}"
       when: deployment_status is succeeded
-    
+
     - name: Échec si le déploiement a échoué
       fail:
         msg: "Le déploiement a échoué. Veuillez vérifier les logs pour plus d'informations."
       when: deployment_status is failed
-    
+
     - name: Enregistrement du déploiement dans l'historique
       copy:
         content: |

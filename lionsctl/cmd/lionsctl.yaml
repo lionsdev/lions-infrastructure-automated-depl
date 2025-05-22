@@ -1,5 +1,5 @@
 DOCKER:
-   REGISTRY_URL: "registry.dev.lions.dev"
+   REGISTRY_URL: "registry.development.lions.dev"
 GIT:
    CFG_USERNAME: lionsctl
    CFG_EMAIL: lionsctl@dev.lions.dev

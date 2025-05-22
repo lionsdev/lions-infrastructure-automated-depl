@@ -1,5 +1,5 @@
 container:
-  registryUri: registry.dev.lions.dev
+  registryUri: registry.development.lions.dev
   tag: "v1.0.0"
   memory: "1Gi"
   storage: "1Gi"
@@ -8,7 +8,7 @@ hostAlias:
   hostname: api.dev.lions.dev
 
 image:
-  repository: registry.dev.lions.dev/app-name
+  repository: registry.development.lions.dev/app-name
   tag: latest
   pullPolicy: IfNotPresent
 

@@ -30,7 +30,7 @@ spec:
     spec:
       containers:
       - name: APP_NAME # Will be replaced with the actual app name
-        image: registry.lions.dev/angular-app:latest # Will be replaced with actual values
+        image: registry.ENVIRONMENT.lions.dev/angular-app:latest # Will be replaced with actual values
         imagePullPolicy: Always
         ports:
         - containerPort: 80
