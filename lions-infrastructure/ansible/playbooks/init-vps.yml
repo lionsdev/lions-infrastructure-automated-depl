@@ -270,6 +270,28 @@
         port: 10252
         proto: tcp
 
+    # Configuration pour que UFW utilise l'option -w avec iptables
+    - name: Création du répertoire /etc/ufw/conf.d si nécessaire
+      file:
+        path: /etc/ufw/conf.d
+        state: directory
+        mode: '0755'
+
+    - name: Configuration de UFW pour utiliser l'option -w avec iptables
+      copy:
+        dest: /etc/ufw/conf.d/iptables-wait.conf
+        content: |
+          # Configuration pour que iptables attende la libération du verrou
+          IPTABLES_WAIT="-w"
+        mode: '0644'
+      register: ufw_wait_config
+
+    - name: Redémarrage de UFW si la configuration a changé
+      service:
+        name: ufw
+        state: restarted
+      when: ufw_wait_config.changed
+
     - name: Configuration du pare-feu UFW - K3s flannel VXLAN
       ufw:
         rule: allow
