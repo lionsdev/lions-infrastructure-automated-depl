@@ -410,7 +410,7 @@
 
     - name: "⚙️  Configuration de l'environnement bash"
       lineinfile:
-        path: "{{ ansible_user == 'root' | ternary('/root/.bashrc', '/home/' + ansible_user + '/.bashrc') }}"
+        path: "{{ (ansible_user == 'root' or ansible_user_id == 'root') | ternary('/root/.bashrc', '/home/' + ansible_user + '/.bashrc') }}"
         line: "export KUBECONFIG={{ ansible_user == 'root' | ternary('/root/.kube/config', '/home/' + ansible_user + '/.kube/config') }}"
         state: present
 
