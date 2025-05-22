@@ -1,0 +1,226 @@
+---
+# =============================================================================
+# Titre: Nom du Playbook
+# Description: Description détaillée du playbook et de son objectif
+# Auteur: Nom de l'auteur
+# Date de création: YYYY-MM-DD
+# Version: 1.0.0
+# Usage: ansible-playbook -i inventories/environment/hosts.yml playbook-template.yml [--extra-vars "var1=value1 var2=value2"]
+# =============================================================================
+
+- name: Nom du Playbook
+  hosts: target_hosts
+  become: yes  # Utiliser sudo si nécessaire
+  gather_facts: yes  # Collecter les informations sur les hôtes
+
+  # =============================================================================
+  # Variables
+  # =============================================================================
+  vars:
+    # Variables internes au playbook
+    internal_var1: "valeur1"
+    internal_var2: "valeur2"
+
+  vars_files:
+    # Fichiers de variables externes
+    - "vars/common.yml"
+    - "vars/{{ environment }}.yml"
+
+  # =============================================================================
+  # Gestionnaires
+  # =============================================================================
+  handlers:
+    - name: restart service
+      service:
+        name: "{{ service_name }}"
+        state: restarted
+      listen: "restart service handler"
+
+    - name: reload configuration
+      shell: "{{ reload_command }}"
+      listen: "reload configuration handler"
+
+  # =============================================================================
+  # Pré-tâches
+  # =============================================================================
+  pre_tasks:
+    - name: Vérification des prérequis
+      block:
+        - name: Vérification de la connectivité
+          ping:
+
+        - name: Vérification de l'espace disque
+          shell: df -h / | awk 'NR==2 {print $5}' | sed 's/%//'
+          register: disk_usage
+          changed_when: false
+
+        - name: Échec si l'espace disque est insuffisant
+          fail:
+            msg: "Espace disque insuffisant: {{ disk_usage.stdout }}% utilisé (maximum 90%)"
+          when: disk_usage.stdout|int > 90
+
+        - name: Vérification de la mémoire disponible
+          shell: free -m | awk 'NR==2 {print $4}'
+          register: available_memory
+          changed_when: false
+
+        - name: Échec si la mémoire est insuffisante
+          fail:
+            msg: "Mémoire insuffisante: {{ available_memory.stdout }}MB disponible (minimum 512MB)"
+          when: available_memory.stdout|int < 512
+
+      tags:
+        - always
+        - check
+
+    - name: Création des répertoires nécessaires
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - "/opt/application/config"
+        - "/opt/application/data"
+        - "/var/log/application"
+      tags:
+        - setup
+        - directories
+
+  # =============================================================================
+  # Tâches
+  # =============================================================================
+  tasks:
+    # Groupe de tâches 1: Installation des dépendances
+    - name: Installation des dépendances
+      block:
+        - name: Mise à jour du cache des paquets
+          apt:
+            update_cache: yes
+            cache_valid_time: 3600
+          when: ansible_os_family == "Debian"
+
+        - name: Installation des paquets requis
+          package:
+            name: "{{ required_packages }}"
+            state: present
+      tags:
+        - install
+        - packages
+
+    # Groupe de tâches 2: Configuration
+    - name: Configuration de l'application
+      block:
+        - name: Copie des fichiers de configuration
+          template:
+            src: "templates/{{ item }}.j2"
+            dest: "/opt/application/config/{{ item }}"
+            owner: "{{ app_user }}"
+            group: "{{ app_group }}"
+            mode: '0644'
+          loop:
+            - "app.conf"
+            - "logging.conf"
+          notify: "reload configuration handler"
+
+        - name: Configuration des variables d'environnement
+          lineinfile:
+            path: "/etc/environment"
+            line: "{{ item.key }}={{ item.value }}"
+            regexp: "^{{ item.key }}="
+            state: present
+          loop: "{{ environment_variables | dict2items }}"
+      tags:
+        - configure
+
+    # Groupe de tâches 3: Déploiement
+    - name: Déploiement de l'application
+      block:
+        - name: Téléchargement de l'application
+          get_url:
+            url: "{{ app_download_url }}"
+            dest: "/tmp/application.tar.gz"
+            mode: '0644'
+            timeout: 60
+            force: "{{ force_download | default(false) }}"
+          register: download_result
+
+        - name: Extraction de l'application
+          unarchive:
+            src: "/tmp/application.tar.gz"
+            dest: "/opt/application"
+            remote_src: yes
+            owner: "{{ app_user }}"
+            group: "{{ app_group }}"
+            creates: "/opt/application/VERSION"
+          when: download_result.changed
+
+        - name: Création du lien symbolique vers la version courante
+          file:
+            src: "/opt/application/{{ app_version }}"
+            dest: "/opt/application/current"
+            state: link
+            owner: "{{ app_user }}"
+            group: "{{ app_group }}"
+      tags:
+        - deploy
+
+    # Groupe de tâches 4: Service
+    - name: Configuration du service
+      block:
+        - name: Copie du fichier de service systemd
+          template:
+            src: "templates/application.service.j2"
+            dest: "/etc/systemd/system/{{ service_name }}.service"
+            mode: '0644'
+          notify: "restart service handler"
+
+        - name: Activation du service
+          systemd:
+            name: "{{ service_name }}"
+            enabled: yes
+            daemon_reload: yes
+          notify: "restart service handler"
+      tags:
+        - service
+
+    # Groupe de tâches 5: Vérification
+    - name: Vérification du déploiement
+      block:
+        - name: Attente que le service soit prêt
+          wait_for:
+            port: "{{ app_port }}"
+            timeout: 60
+          when: app_port is defined
+
+        - name: Vérification de l'état du service
+          command: "systemctl status {{ service_name }}"
+          register: service_status
+          changed_when: false
+          failed_when: "'active (running)' not in service_status.stdout"
+
+        - name: Vérification de la réponse de l'application
+          uri:
+            url: "http://localhost:{{ app_port }}/health"
+            return_content: yes
+          register: health_check
+          failed_when: health_check.status != 200
+          when: app_port is defined
+      tags:
+        - verify
+
+  # =============================================================================
+  # Post-tâches
+  # =============================================================================
+  post_tasks:
+    - name: Nettoyage
+      file:
+        path: "/tmp/application.tar.gz"
+        state: absent
+      tags:
+        - cleanup
+
+    - name: Notification de fin de déploiement
+      debug:
+        msg: "Déploiement de l'application {{ app_name }} v{{ app_version }} terminé avec succès"
+      tags:
+        - always

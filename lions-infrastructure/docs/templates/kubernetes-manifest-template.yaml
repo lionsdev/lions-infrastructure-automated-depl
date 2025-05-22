@@ -1,0 +1,433 @@
+---
+# =============================================================================
+# Titre: Nom du Manifest Kubernetes
+# Description: Description détaillée du manifest et de son objectif
+# Auteur: Nom de l'auteur
+# Date de création: YYYY-MM-DD
+# Version: 1.0.0
+# Usage: kubectl apply -f kubernetes-manifest-template.yaml
+# =============================================================================
+
+# =============================================================================
+# Namespace
+# =============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: app-namespace # REPLACE: Nom du namespace
+  labels:
+    name: app-namespace # REPLACE: Nom du namespace
+    app.kubernetes.io/name: app-name # REPLACE: Nom de l'application
+    app.kubernetes.io/instance: app-instance # REPLACE: Instance de l'application
+    app.kubernetes.io/version: "1.0.0" # REPLACE: Version de l'application
+    app.kubernetes.io/component: component # REPLACE: Composant de l'application
+    app.kubernetes.io/part-of: lions-infrastructure
+    app.kubernetes.io/managed-by: kubectl
+    environment: development # REPLACE: Environnement (development, staging, production)
+---
+
+# =============================================================================
+# ConfigMap
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-name-config # REPLACE: Nom de l'application + "-config"
+  namespace: app-namespace # REPLACE: Nom du namespace
+  labels:
+    app.kubernetes.io/name: app-name # REPLACE: Nom de l'application
+    app.kubernetes.io/instance: app-instance # REPLACE: Instance de l'application
+    app.kubernetes.io/version: "1.0.0" # REPLACE: Version de l'application
+    app.kubernetes.io/component: component # REPLACE: Composant de l'application
+    app.kubernetes.io/part-of: lions-infrastructure
+    app.kubernetes.io/managed-by: kubectl
+    environment: development # REPLACE: Environnement (development, staging, production)
+data:
+  app.properties: |
+    # Configuration de l'application
+    app.name=app-name # REPLACE: Nom de l'application
+    app.version=1.0.0 # REPLACE: Version de l'application
+    app.environment=development # REPLACE: Environnement
+    
+    # Paramètres spécifiques
+    app.parameter1=value1
+    app.parameter2=value2
+  
+  logging.properties: |
+    # Configuration de logging
+    logging.level.root=INFO
+    logging.level.com.example=DEBUG # REPLACE: Niveau de log (DEBUG, INFO, WARN, ERROR)
+---
+
+# =============================================================================
+# Secret
+# =============================================================================
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-name-secrets # REPLACE: Nom de l'application + "-secrets"
+  namespace: app-namespace # REPLACE: Nom du namespace
+  labels:
+    app.kubernetes.io/name: app-name # REPLACE: Nom de l'application
+    app.kubernetes.io/instance: app-instance # REPLACE: Instance de l'application
+    app.kubernetes.io/version: "1.0.0" # REPLACE: Version de l'application
+    app.kubernetes.io/component: component # REPLACE: Composant de l'application
+    app.kubernetes.io/part-of: lions-infrastructure
+    app.kubernetes.io/managed-by: kubectl
+    environment: development # REPLACE: Environnement (development, staging, production)
+type: Opaque
+data:
+  # Les valeurs doivent être encodées en base64
+  # echo -n "valeur" | base64
+  db-username: dXNlcm5hbWU= # REPLACE: Nom d'utilisateur encodé en base64
+  db-password: cGFzc3dvcmQ= # REPLACE: Mot de passe encodé en base64
+  api-key: YXBpLWtleQ== # REPLACE: Clé API encodée en base64
+---
+
+# =============================================================================
+# Service
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-name # REPLACE: Nom de l'application
+  namespace: app-namespace # REPLACE: Nom du namespace
+  labels:
+    app.kubernetes.io/name: app-name # REPLACE: Nom de l'application
+    app.kubernetes.io/instance: app-instance # REPLACE: Instance de l'application
+    app.kubernetes.io/version: "1.0.0" # REPLACE: Version de l'application
+    app.kubernetes.io/component: component # REPLACE: Composant de l'application
+    app.kubernetes.io/part-of: lions-infrastructure
+    app.kubernetes.io/managed-by: kubectl
+    environment: development # REPLACE: Environnement (development, staging, production)
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080" # REPLACE: Port des métriques
+    prometheus.io/path: "/metrics"
+spec:
+  selector:
+    app.kubernetes.io/name: app-name # REPLACE: Nom de l'application
+    app.kubernetes.io/instance: app-instance # REPLACE: Instance de l'application
+  ports:
+    - name: http
+      port: 80 # REPLACE: Port du service
+      targetPort: 8080 # REPLACE: Port du conteneur
+      protocol: TCP
+    - name: metrics
+      port: 8080 # REPLACE: Port des métriques
+      targetPort: 8080 # REPLACE: Port des métriques du conteneur
+      protocol: TCP
+  type: ClusterIP
+---
+
+# =============================================================================
+# Deployment
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-name # REPLACE: Nom de l'application
+  namespace: app-namespace # REPLACE: Nom du namespace
+  labels:
+    app.kubernetes.io/name: app-name # REPLACE: Nom de l'application
+    app.kubernetes.io/instance: app-instance # REPLACE: Instance de l'application
+    app.kubernetes.io/version: "1.0.0" # REPLACE: Version de l'application
+    app.kubernetes.io/component: component # REPLACE: Composant de l'application
+    app.kubernetes.io/part-of: lions-infrastructure
+    app.kubernetes.io/managed-by: kubectl
+    environment: development # REPLACE: Environnement (development, staging, production)
+spec:
+  replicas: 2 # REPLACE: Nombre de réplicas
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: app-name # REPLACE: Nom de l'application
+      app.kubernetes.io/instance: app-instance # REPLACE: Instance de l'application
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: app-name # REPLACE: Nom de l'application
+        app.kubernetes.io/instance: app-instance # REPLACE: Instance de l'application
+        app.kubernetes.io/version: "1.0.0" # REPLACE: Version de l'application
+        app.kubernetes.io/component: component # REPLACE: Composant de l'application
+        app.kubernetes.io/part-of: lions-infrastructure
+        environment: development # REPLACE: Environnement (development, staging, production)
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080" # REPLACE: Port des métriques
+        prometheus.io/path: "/metrics"
+        checksum/config: "abc123" # REPLACE: Checksum de la configuration (généré automatiquement)
+    spec:
+      serviceAccountName: app-name-sa # REPLACE: Nom de l'application + "-sa"
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: app-name # REPLACE: Nom de l'application
+          image: registry.development.lions.dev/app-name:1.0.0 # REPLACE: URL du registre, nom de l'application et version
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080 # REPLACE: Port du conteneur
+              protocol: TCP
+            - name: metrics
+              containerPort: 8080 # REPLACE: Port des métriques du conteneur
+              protocol: TCP
+          env:
+            - name: ENVIRONMENT
+              value: "development" # REPLACE: Environnement (development, staging, production)
+            - name: LOG_LEVEL
+              value: "DEBUG" # REPLACE: Niveau de log (DEBUG, INFO, WARN, ERROR)
+            - name: DB_HOST
+              value: "postgres.database.svc.cluster.local" # REPLACE: Hôte de la base de données
+            - name: DB_PORT
+              value: "5432" # REPLACE: Port de la base de données
+            - name: DB_NAME
+              value: "app_database" # REPLACE: Nom de la base de données
+            - name: DB_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: app-name-secrets # REPLACE: Nom de l'application + "-secrets"
+                  key: db-username
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: app-name-secrets # REPLACE: Nom de l'application + "-secrets"
+                  key: db-password
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: app-name-secrets # REPLACE: Nom de l'application + "-secrets"
+                  key: api-key
+          volumeMounts:
+            - name: config-volume
+              mountPath: /app/config
+            - name: data-volume
+              mountPath: /app/data
+          resources:
+            requests:
+              cpu: "100m" # REPLACE: Requête CPU
+              memory: "256Mi" # REPLACE: Requête mémoire
+            limits:
+              cpu: "500m" # REPLACE: Limite CPU
+              memory: "512Mi" # REPLACE: Limite mémoire
+          livenessProbe:
+            httpGet:
+              path: /health/liveness
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health/readiness
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /health/startup
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 12
+      volumes:
+        - name: config-volume
+          configMap:
+            name: app-name-config # REPLACE: Nom de l'application + "-config"
+        - name: data-volume
+          emptyDir: {}
+      nodeSelector:
+        kubernetes.io/os: linux
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app.kubernetes.io/name
+                      operator: In
+                      values:
+                        - app-name # REPLACE: Nom de l'application
+                topologyKey: kubernetes.io/hostname
+---
+
+# =============================================================================
+# HorizontalPodAutoscaler
+# =============================================================================
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: app-name # REPLACE: Nom de l'application
+  namespace: app-namespace # REPLACE: Nom du namespace
+  labels:
+    app.kubernetes.io/name: app-name # REPLACE: Nom de l'application
+    app.kubernetes.io/instance: app-instance # REPLACE: Instance de l'application
+    app.kubernetes.io/version: "1.0.0" # REPLACE: Version de l'application
+    app.kubernetes.io/component: component # REPLACE: Composant de l'application
+    app.kubernetes.io/part-of: lions-infrastructure
+    app.kubernetes.io/managed-by: kubectl
+    environment: development # REPLACE: Environnement (development, staging, production)
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: app-name # REPLACE: Nom de l'application
+  minReplicas: 2 # REPLACE: Nombre minimum de réplicas
+  maxReplicas: 10 # REPLACE: Nombre maximum de réplicas
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 80
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 10
+          periodSeconds: 60
+---
+
+# =============================================================================
+# ServiceAccount
+# =============================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: app-name-sa # REPLACE: Nom de l'application + "-sa"
+  namespace: app-namespace # REPLACE: Nom du namespace
+  labels:
+    app.kubernetes.io/name: app-name # REPLACE: Nom de l'application
+    app.kubernetes.io/instance: app-instance # REPLACE: Instance de l'application
+    app.kubernetes.io/version: "1.0.0" # REPLACE: Version de l'application
+    app.kubernetes.io/component: component # REPLACE: Composant de l'application
+    app.kubernetes.io/part-of: lions-infrastructure
+    app.kubernetes.io/managed-by: kubectl
+    environment: development # REPLACE: Environnement (development, staging, production)
+---
+
+# =============================================================================
+# NetworkPolicy
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: app-name-network-policy # REPLACE: Nom de l'application + "-network-policy"
+  namespace: app-namespace # REPLACE: Nom du namespace
+  labels:
+    app.kubernetes.io/name: app-name # REPLACE: Nom de l'application
+    app.kubernetes.io/instance: app-instance # REPLACE: Instance de l'application
+    app.kubernetes.io/version: "1.0.0" # REPLACE: Version de l'application
+    app.kubernetes.io/component: component # REPLACE: Composant de l'application
+    app.kubernetes.io/part-of: lions-infrastructure
+    app.kubernetes.io/managed-by: kubectl
+    environment: development # REPLACE: Environnement (development, staging, production)
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: app-name # REPLACE: Nom de l'application
+      app.kubernetes.io/instance: app-instance # REPLACE: Instance de l'application
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8080 # REPLACE: Port du conteneur
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+      ports:
+        - protocol: TCP
+          port: 8080 # REPLACE: Port des métriques du conteneur
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: database
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 53
+        - protocol: UDP
+          port: 53
+---
+
+# =============================================================================
+# Ingress
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: app-name # REPLACE: Nom de l'application
+  namespace: app-namespace # REPLACE: Nom du namespace
+  labels:
+    app.kubernetes.io/name: app-name # REPLACE: Nom de l'application
+    app.kubernetes.io/instance: app-instance # REPLACE: Instance de l'application
+    app.kubernetes.io/version: "1.0.0" # REPLACE: Version de l'application
+    app.kubernetes.io/component: component # REPLACE: Composant de l'application
+    app.kubernetes.io/part-of: lions-infrastructure
+    app.kubernetes.io/managed-by: kubectl
+    environment: development # REPLACE: Environnement (development, staging, production)
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  tls:
+    - hosts:
+        - app-name.development.lions.dev # REPLACE: Nom d'hôte de l'application
+      secretName: app-name-tls # REPLACE: Nom de l'application + "-tls"
+  rules:
+    - host: app-name.development.lions.dev # REPLACE: Nom d'hôte de l'application
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: app-name # REPLACE: Nom de l'application
+                port:
+                  name: http
