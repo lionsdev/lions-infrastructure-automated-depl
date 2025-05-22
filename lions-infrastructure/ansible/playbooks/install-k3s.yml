@@ -55,7 +55,8 @@
 
     # Flags dépréciés à supprimer automatiquement
     deprecated_flags:
-      - pattern: "--kube-controller-manager-arg feature-gates=RemoveSelfLink=false"
+      - pattern: "--kube-controller-manager-arg.*feature-gates=.*RemoveSelfLink=false.*"
+        replacement: ""
         description: "Flag RemoveSelfLink déprécié"
       - pattern: "--no-deploy ([a-zA-Z0-9-]+)"
         replacement: "--disable=\\1"
@@ -140,13 +141,20 @@
                 k3s_service_content: "{{ k3s_service_content_raw.content | b64decode }}"
               when: k3s_service_content_raw is defined
 
+            - name: "🔍 Diagnostic du contenu du service K3s"
+              debug:
+                msg: |
+                  Contenu du service K3s:
+                  {{ k3s_service_content }}
+              when: k3s_service_content is defined
+
             - name: "Détection des flags dépréciés"
               set_fact:
                 deprecated_flags_found: "{{ deprecated_flags_found | default([]) + [item] }}"
               loop: "{{ deprecated_flags }}"
               when:
                 - k3s_service_content is defined
-                - item.pattern in k3s_service_content
+                - k3s_service_content is search(item.pattern)
 
             - name: "Notification des flags dépréciés détectés"
               debug:
@@ -166,9 +174,27 @@
               loop: "{{ deprecated_flags }}"
               when:
                 - k3s_service_content is defined
-                - item.pattern in k3s_service_content
+                - k3s_service_content is search(item.pattern)
               register: flags_corrected
               notify: "reload systemd and restart k3s"
+
+            - name: "🔧 Correction forcée du flag RemoveSelfLink (solution de secours)"
+              replace:
+                path: "{{ k3s_service_file }}"
+                regexp: "RemoveSelfLink=false"
+                replace: ""
+                backup: yes
+              when:
+                - k3s_service_content is defined
+                - "'RemoveSelfLink=false' in k3s_service_content"
+              register: forced_correction
+              notify: "reload systemd and restart k3s"
+
+            - name: "📋 Rapport de correction des flags"
+              debug:
+                msg: |
+                  Flags corrigés automatiquement: {{ 'Oui' if flags_corrected.changed else 'Non' }}
+                  Correction forcée effectuée: {{ 'Oui' if forced_correction.changed else 'Non' }}
 
           when: k3s_binary_exists.stat.exists
 
@@ -265,37 +291,79 @@
               command: "journalctl -u k3s -n 20 --no-pager"
               register: k3s_logs
 
-            - name: "Analyse des erreurs K3s"
+            - name: "🔍 Vérification du contenu actuel du service K3s"
+              slurp:
+                src: "{{ k3s_service_file }}"
+              register: current_service_content
+
+            - name: "📋 Diagnostic détaillé"
               debug:
                 msg: |
-                  ❌ ÉCHEC DE L'INSTALLATION K3S
+                  ❌ ÉCHEC DE L'INSTALLATION K3S - DIAGNOSTIC DÉTAILLÉ
                   ==========================================================
                   Service Status: {{ k3s_final_status.status.ActiveState | default('Unknown') }}
+                  
+                  Contenu actuel du service K3s:
+                  {{ current_service_content.content | b64decode }}
+                  
                   Derniers logs:
                   {{ k3s_logs.stdout }}
                   ==========================================================
 
-            - name: "Tentative de récupération automatique"
-              systemd:
-                name: k3s
-                state: restarted
-              register: k3s_recovery_attempt
+            - name: "🔧 Nettoyage complet et réinstallation si flag RemoveSelfLink détecté"
+              block:
+                - name: "Arrêt du service K3s"
+                  systemd:
+                    name: k3s
+                    state: stopped
+                  ignore_errors: true
 
-            - name: "Vérification après récupération"
-              wait_for:
-                port: 6443
-                host: localhost
-                timeout: 60
-              register: k3s_recovery_check
-              ignore_errors: true
+                - name: "Désinstallation complète de K3s"
+                  shell: |
+                    /usr/local/bin/k3s-uninstall.sh || true
+                    rm -rf /etc/rancher/k3s/*
+                    rm -rf /var/lib/rancher/k3s/*
+                    rm -f /etc/systemd/system/k3s.service*
+                  ignore_errors: true
 
-            - name: "Échec définitif si récupération impossible"
+                - name: "Rechargement systemd"
+                  systemd:
+                    daemon_reload: yes
+
+                - name: "Réinstallation propre de K3s"
+                  command: "/tmp/k3s-install.sh"
+                  environment:
+                    INSTALL_K3S_VERSION: "{{ k3s_version }}"
+                    INSTALL_K3S_EXEC: "{{ k3s_server_args }}"
+                    K3S_KUBECONFIG_MODE: "644"
+
+                - name: "Démarrage du service K3s après réinstallation"
+                  systemd:
+                    name: k3s
+                    state: started
+                    enabled: yes
+                    daemon_reload: yes
+                  register: k3s_fresh_start
+
+                - name: "Attente de l'API après réinstallation"
+                  wait_for:
+                    port: 6443
+                    host: localhost
+                    timeout: 120
+                  when: k3s_fresh_start is succeeded
+
+              when: "'RemoveSelfLink=false' in (current_service_content.content | b64decode)"
+
+            - name: "❌ Échec définitif si problème persiste"
               fail:
                 msg: |
                   ❌ INSTALLATION K3S ÉCHOUÉE DÉFINITIVEMENT
-                  L'API K3s n'est pas accessible après tentative de récupération.
-                  Vérifiez les logs système et les ressources disponibles.
-              when: k3s_recovery_check is failed
+                  Le flag RemoveSelfLink=false cause toujours des problèmes.
+                  Vérifiez manuellement le fichier {{ k3s_service_file }}
+                  et supprimez toute référence à RemoveSelfLink=false
+              when:
+                - "'RemoveSelfLink=false' in (current_service_content.content | b64decode)"
+                - k3s_fresh_start is failed
 
     # =========================================================================
     # PHASE 4: CONFIGURATION KUBECTL ET KUBECONFIG
