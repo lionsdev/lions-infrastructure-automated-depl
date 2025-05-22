@@ -381,13 +381,13 @@
         owner: "{{ ansible_user }}"
         group: "{{ ansible_user }}"
       loop:
-        - "{{ ansible_user == 'root' | ternary('/root/.kube', '/home/' + ansible_user + '/.kube') }}"
+        - "{{ (ansible_user == 'root' or ansible_user_id == 'root') | ternary('/root/.kube', '/home/' + ansible_user + '/.kube') }}"
         - "/root/.kube"
 
     - name: "📄 Configuration du kubeconfig utilisateur"
       copy:
         src: "{{ k3s_kubeconfig }}"
-        dest: "{{ ansible_user == 'root' | ternary('/root/.kube/config', '/home/' + ansible_user + '/.kube/config') }}"
+        dest: "{{ (ansible_user == 'root' or ansible_user_id == 'root') | ternary('/root/.kube/config', '/home/' + ansible_user + '/.kube/config') }}"
         remote_src: yes
         owner: "{{ ansible_user }}"
         group: "{{ ansible_user }}"
@@ -404,14 +404,14 @@
 
     - name: "🌐 Mise à jour du kubeconfig avec l'IP externe"
       replace:
-        path: "{{ ansible_user == 'root' | ternary('/root/.kube/config', '/home/' + ansible_user + '/.kube/config') }}"
+        path: "{{ (ansible_user == 'root' or ansible_user_id == 'root') | ternary('/root/.kube/config', '/home/' + ansible_user + '/.kube/config') }}"
         regexp: 'https://127.0.0.1:6443'
         replace: 'https://{{ ansible_host }}:6443'
 
     - name: "⚙️  Configuration de l'environnement bash"
       lineinfile:
         path: "{{ (ansible_user == 'root' or ansible_user_id == 'root') | ternary('/root/.bashrc', '/home/' + ansible_user + '/.bashrc') }}"
-        line: "export KUBECONFIG={{ ansible_user == 'root' | ternary('/root/.kube/config', '/home/' + ansible_user + '/.kube/config') }}"
+        line: "export KUBECONFIG={{ (ansible_user == 'root' or ansible_user_id == 'root') | ternary('/root/.kube/config', '/home/' + ansible_user + '/.kube/config') }}"
         state: present
 
     # =========================================================================
@@ -678,7 +678,7 @@
           🌐 ACCÈS:
           • API Kubernetes: https://{{ ansible_host }}:6443
           • Traefik Dashboard: http://{{ ansible_host }}
-          • Kubeconfig: {{ ansible_user == 'root' | ternary('/root/.kube/config', '/home/' + ansible_user + '/.kube/config') }}
+          • Kubeconfig: {{ (ansible_user == 'root' or ansible_user_id == 'root') | ternary('/root/.kube/config', '/home/' + ansible_user + '/.kube/config') }}
 
           📈 STATISTIQUES:
           • Nœuds: {{ final_nodes_check.stdout_lines | length - 1 }}
