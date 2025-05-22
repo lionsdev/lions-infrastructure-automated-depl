@@ -48,11 +48,6 @@
     metallb_chart_version: "0.13.12"
     cert_manager_version: "v1.13.3"
 
-    # Timeouts et retries
-    k3s_startup_timeout: 300
-    api_ready_timeout: 600
-    max_retries: 3
-
     # Flags dépréciés à supprimer automatiquement
     deprecated_flags:
       - pattern: "--kube-controller-manager-arg.*feature-gates=.*RemoveSelfLink=false.*"
@@ -101,8 +96,8 @@
           assert:
             that:
               - disk_space_check.stdout | int > 5000000  # 5GB minimum
-            fail_msg: "Espace disque insuffisant: {{ (disk_space_check.stdout | int / 1024 / 1024) | round(1) }}GB disponible"
-            success_msg: "✅ Espace disque suffisant: {{ (disk_space_check.stdout | int / 1024 / 1024) | round(1) }}GB disponible"
+            fail_msg: "Espace disque insuffisant: {{ (disk_space_check.stdout | int / 1000 / 1000) | round(1) }}GB disponible"
+            success_msg: "✅ Espace disque suffisant: {{ (disk_space_check.stdout | int / 1000 / 1000) | round(1) }}GB disponible"
 
       rescue:
         - name: "❌ Échec des vérifications préliminaires"
@@ -213,7 +208,7 @@
         mode: '0755'
         timeout: 30
       register: k3s_script_download
-      retries: "{{ max_retries }}"
+      retries: 3
       delay: 5
 
     - name: "⚙️  Installation K3s avec configuration optimisée"
@@ -232,7 +227,7 @@
         enabled: yes
         daemon_reload: yes
       register: k3s_service_start
-      retries: "{{ max_retries }}"
+      retries: 3
       delay: 10
 
     # =========================================================================
@@ -248,7 +243,7 @@
         port: 6443
         host: localhost
         delay: 10
-        timeout: "{{ k3s_startup_timeout }}"
+        timeout: 300
       register: k3s_api_ready
 
     - name: "🔍 Vérification de l'état du service K3s"
@@ -302,10 +297,10 @@
                   ❌ ÉCHEC DE L'INSTALLATION K3S - DIAGNOSTIC DÉTAILLÉ
                   ==========================================================
                   Service Status: {{ k3s_final_status.status.ActiveState | default('Unknown') }}
-
+                  
                   Contenu actuel du service K3s:
                   {{ current_service_content.content | b64decode }}
-
+                  
                   Derniers logs:
                   {{ k3s_logs.stdout }}
                   ==========================================================
@@ -373,26 +368,33 @@
       debug:
         msg: "Configuration de l'accès kubectl"
 
+    - name: "🔍 Détection de l'utilisateur courant"
+      set_fact:
+        current_user: "{{ ansible_user | default(ansible_user_id) | default('root') }}"
+        current_user_home: "{{ ansible_user_dir | default('/root') }}"
+
     - name: "📁 Création des répertoires de configuration"
       file:
         path: "{{ item }}"
         state: directory
         mode: '0755'
-        owner: "{{ ansible_user }}"
-        group: "{{ ansible_user }}"
+        owner: "{{ current_user }}"
+        group: "{{ current_user }}"
       loop:
-        - "{{ (ansible_user == 'root' or ansible_user_id == 'root') | ternary('/root/.kube', '/home/' + ansible_user + '/.kube') }}"
+        - "{{ current_user_home }}/.kube"
         - "/root/.kube"
 
     - name: "📄 Configuration du kubeconfig utilisateur"
       copy:
         src: "{{ k3s_kubeconfig }}"
-        dest: "{{ (ansible_user == 'root' or ansible_user_id == 'root') | ternary('/root/.kube/config', '/home/' + ansible_user + '/.kube/config') }}"
+        dest: "{{ current_user_home }}/.kube/config"
         remote_src: yes
-        owner: "{{ ansible_user }}"
-        group: "{{ ansible_user }}"
+        owner: "{{ current_user }}"
+        group: "{{ current_user }}"
         mode: '0600'
-      when: k3s_kubeconfig is exists
+      when:
+        - k3s_kubeconfig is exists
+        - current_user_home != '/root'
 
     - name: "📄 Configuration du kubeconfig root"
       copy:
@@ -402,17 +404,34 @@
         mode: '0600'
       when: k3s_kubeconfig is exists
 
-    - name: "🌐 Mise à jour du kubeconfig avec l'IP externe"
+    - name: "🌐 Mise à jour du kubeconfig avec l'IP externe (utilisateur)"
       replace:
-        path: "{{ (ansible_user == 'root' or ansible_user_id == 'root') | ternary('/root/.kube/config', '/home/' + ansible_user + '/.kube/config') }}"
+        path: "{{ current_user_home }}/.kube/config"
+        regexp: 'https://127.0.0.1:6443'
+        replace: 'https://{{ ansible_host }}:6443'
+      when: current_user_home != '/root'
+
+    - name: "🌐 Mise à jour du kubeconfig avec l'IP externe (root)"
+      replace:
+        path: "/root/.kube/config"
         regexp: 'https://127.0.0.1:6443'
         replace: 'https://{{ ansible_host }}:6443'
 
+    - name: "📁 Création du fichier .bashrc si nécessaire"
+      file:
+        path: "{{ current_user_home }}/.bashrc"
+        state: touch
+        owner: "{{ current_user }}"
+        group: "{{ current_user }}"
+        mode: '0644'
+      when: current_user_home != '/root'
+
     - name: "⚙️  Configuration de l'environnement bash"
       lineinfile:
-        path: "{{ (ansible_user == 'root' or ansible_user_id == 'root') | ternary('/root/.bashrc', '/home/' + ansible_user + '/.bashrc') }}"
-        line: "export KUBECONFIG={{ (ansible_user == 'root' or ansible_user_id == 'root') | ternary('/root/.kube/config', '/home/' + ansible_user + '/.kube/config') }}"
+        path: "{{ current_user_home }}/.bashrc"
+        line: "export KUBECONFIG={{ current_user_home }}/.kube/config"
         state: present
+      when: current_user_home != '/root'
 
     # =========================================================================
     # PHASE 5: INSTALLATION DES OUTILS COMPLÉMENTAIRES
@@ -510,7 +529,7 @@
             release_namespace: traefik
             create_namespace: true
             wait: true
-            wait_timeout: 600
+            wait_timeout: "600s"
             values:
               deployment:
                 replicas: 1
@@ -557,7 +576,7 @@
             release_namespace: cert-manager
             create_namespace: true
             wait: true
-            wait_timeout: 600
+            wait_timeout: "600s"
             values:
               installCRDs: true
               global:
@@ -583,7 +602,7 @@
             release_namespace: metallb-system
             create_namespace: true
             wait: true
-            wait_timeout: 600
+            wait_timeout: "600s"
           environment:
             KUBECONFIG: "{{ k3s_kubeconfig }}"
 
@@ -660,13 +679,13 @@
           ==========================================================
           🎉 INSTALLATION K3S LIONS TERMINÉE AVEC SUCCÈS
           ==========================================================
-
+          
           📍 INFORMATIONS GÉNÉRALES:
           • Host: {{ ansible_host }}
           • Version K3s: {{ k3s_version }}
           • Environment: {{ lions_env | default('development') }}
           • Date: {{ ansible_date_time.iso8601 }}
-
+          
           🔧 COMPOSANTS INSTALLÉS:
           • ✅ K3s Server (API: :6443)
           • ✅ kubectl
@@ -674,23 +693,23 @@
           • ✅ Traefik Ingress Controller
           • ✅ cert-manager (TLS)
           • ✅ MetalLB Load Balancer
-
+          
           🌐 ACCÈS:
           • API Kubernetes: https://{{ ansible_host }}:6443
           • Traefik Dashboard: http://{{ ansible_host }}
-          • Kubeconfig: {{ (ansible_user == 'root' or ansible_user_id == 'root') | ternary('/root/.kube/config', '/home/' + ansible_user + '/.kube/config') }}
-
+          • Kubeconfig: /home/{{ ansible_user }}/.kube/config
+          
           📈 STATISTIQUES:
           • Nœuds: {{ final_nodes_check.stdout_lines | length - 1 }}
           • Namespaces: {{ (final_pods_check.stdout_lines | select('match', '^[^\\s]+\\s+[^\\s]+\\s+') | list | map('regex_replace', '^([^\\s]+)\\s+.*', '\\1') | unique | list) | length }}
           • Pods actifs: {{ (final_pods_check.stdout_lines | select('match', '.*Running.*') | list) | length }}
-
+          
           🚀 PROCHAINES ÉTAPES:
           1. Configurer les certificats SSL (Let's Encrypt)
           2. Déployer le monitoring (Prometheus/Grafana)
           3. Configurer les sauvegardes automatiques
           4. Déployer les applications LIONS
-
+          
           ==========================================================
 
   # =============================================================================
