@@ -302,10 +302,10 @@
                   ❌ ÉCHEC DE L'INSTALLATION K3S - DIAGNOSTIC DÉTAILLÉ
                   ==========================================================
                   Service Status: {{ k3s_final_status.status.ActiveState | default('Unknown') }}
-                  
+
                   Contenu actuel du service K3s:
                   {{ current_service_content.content | b64decode }}
-                  
+
                   Derniers logs:
                   {{ k3s_logs.stdout }}
                   ==========================================================
@@ -381,13 +381,13 @@
         owner: "{{ ansible_user }}"
         group: "{{ ansible_user }}"
       loop:
-        - "/home/{{ ansible_user }}/.kube"
+        - "{{ ansible_user == 'root' | ternary('/root/.kube', '/home/' + ansible_user + '/.kube') }}"
         - "/root/.kube"
 
     - name: "📄 Configuration du kubeconfig utilisateur"
       copy:
         src: "{{ k3s_kubeconfig }}"
-        dest: "/home/{{ ansible_user }}/.kube/config"
+        dest: "{{ ansible_user == 'root' | ternary('/root/.kube/config', '/home/' + ansible_user + '/.kube/config') }}"
         remote_src: yes
         owner: "{{ ansible_user }}"
         group: "{{ ansible_user }}"
@@ -404,14 +404,14 @@
 
     - name: "🌐 Mise à jour du kubeconfig avec l'IP externe"
       replace:
-        path: "/home/{{ ansible_user }}/.kube/config"
+        path: "{{ ansible_user == 'root' | ternary('/root/.kube/config', '/home/' + ansible_user + '/.kube/config') }}"
         regexp: 'https://127.0.0.1:6443'
         replace: 'https://{{ ansible_host }}:6443'
 
     - name: "⚙️  Configuration de l'environnement bash"
       lineinfile:
-        path: "/home/{{ ansible_user }}/.bashrc"
-        line: "export KUBECONFIG=/home/{{ ansible_user }}/.kube/config"
+        path: "{{ ansible_user == 'root' | ternary('/root/.bashrc', '/home/' + ansible_user + '/.bashrc') }}"
+        line: "export KUBECONFIG={{ ansible_user == 'root' | ternary('/root/.kube/config', '/home/' + ansible_user + '/.kube/config') }}"
         state: present
 
     # =========================================================================
@@ -660,13 +660,13 @@
           ==========================================================
           🎉 INSTALLATION K3S LIONS TERMINÉE AVEC SUCCÈS
           ==========================================================
-          
+
           📍 INFORMATIONS GÉNÉRALES:
           • Host: {{ ansible_host }}
           • Version K3s: {{ k3s_version }}
           • Environment: {{ lions_env | default('development') }}
           • Date: {{ ansible_date_time.iso8601 }}
-          
+
           🔧 COMPOSANTS INSTALLÉS:
           • ✅ K3s Server (API: :6443)
           • ✅ kubectl
@@ -674,23 +674,23 @@
           • ✅ Traefik Ingress Controller
           • ✅ cert-manager (TLS)
           • ✅ MetalLB Load Balancer
-          
+
           🌐 ACCÈS:
           • API Kubernetes: https://{{ ansible_host }}:6443
           • Traefik Dashboard: http://{{ ansible_host }}
-          • Kubeconfig: /home/{{ ansible_user }}/.kube/config
-          
+          • Kubeconfig: {{ ansible_user == 'root' | ternary('/root/.kube/config', '/home/' + ansible_user + '/.kube/config') }}
+
           📈 STATISTIQUES:
           • Nœuds: {{ final_nodes_check.stdout_lines | length - 1 }}
           • Namespaces: {{ (final_pods_check.stdout_lines | select('match', '^[^\\s]+\\s+[^\\s]+\\s+') | list | map('regex_replace', '^([^\\s]+)\\s+.*', '\\1') | unique | list) | length }}
           • Pods actifs: {{ (final_pods_check.stdout_lines | select('match', '.*Running.*') | list) | length }}
-          
+
           🚀 PROCHAINES ÉTAPES:
           1. Configurer les certificats SSL (Let's Encrypt)
           2. Déployer le monitoring (Prometheus/Grafana)
           3. Configurer les sauvegardes automatiques
           4. Déployer les applications LIONS
-          
+
           ==========================================================
 
   # =============================================================================
