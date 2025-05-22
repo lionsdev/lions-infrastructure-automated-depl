@@ -14,8 +14,56 @@
     k3s_server_args: "server --disable=traefik --disable=servicelb --disable=local-storage --write-kubeconfig-mode 644 --kubelet-arg cgroup-driver=systemd --kubelet-arg feature-gates=GracefulNodeShutdown=false"  # Arguments corrigés pour compatibilité WSL2
     kubeconfig_local_path: "~/.kube/config"
     traefik_version: "20.10.0"  # Version sans le préfixe 'v'
+    deprecated_flags:
+      - name: "RemoveSelfLink=false"
+        regexp: "--kube-controller-manager-arg feature-gates=RemoveSelfLink=false"
+        replace: ""
+      - name: "no-deploy"
+        regexp: "--no-deploy ([a-zA-Z0-9-]+)"
+        replace: "--disable=\\1"
 
   tasks:
+    # Vérification proactive des drapeaux dépréciés dans le fichier de service K3s
+    # Cette section vérifie et corrige les drapeaux dépréciés avant le démarrage du service K3s
+    # pour éviter les problèmes de démarrage. C'est une solution à long terme qui empêche
+    # les erreurs liées aux drapeaux dépréciés comme RemoveSelfLink=false.
+    - name: Vérification de l'existence du fichier de service K3s
+      stat:
+        path: /etc/systemd/system/k3s.service
+      register: k3s_service_file
+      ignore_errors: true
+
+    - name: Vérification et correction proactive des drapeaux dépréciés
+      block:
+        - name: Lecture du contenu du fichier de service K3s
+          shell: cat /etc/systemd/system/k3s.service
+          register: k3s_service_content
+          changed_when: false
+          ignore_errors: true
+
+        - name: Correction des drapeaux dépréciés
+          replace:
+            path: /etc/systemd/system/k3s.service
+            regexp: "{{ item.regexp }}"
+            replace: "{{ item.replace }}"
+          loop: "{{ deprecated_flags }}"
+          when: k3s_service_content.stdout is defined and item.regexp in k3s_service_content.stdout
+          register: k3s_flags_fixed
+          ignore_errors: true
+
+        - name: Rechargement du daemon systemd si des drapeaux ont été corrigés
+          systemd:
+            daemon_reload: yes
+          when: k3s_flags_fixed.changed
+          ignore_errors: true
+
+        - name: Notification des corrections effectuées
+          debug:
+            msg: "Des drapeaux dépréciés ont été corrigés dans le fichier de service K3s"
+          when: k3s_flags_fixed.changed
+      when: k3s_service_file.stat.exists
+      ignore_errors: true
+
     - name: Détection de l'environnement WSL2
       shell: grep -i microsoft /proc/version || echo "NOT_WSL"
       register: wsl2_check
@@ -132,7 +180,7 @@
             replace: ''
           when: "k3s_service_content.stdout is defined"
           register: k3s_removeselflink_fixed
-          
+
         # 3.2 Correction de la syntaxe des flags disable
         - name: Correction de la syntaxe des flags disable dans le service K3s
           replace:
@@ -175,11 +223,11 @@
                 # Fix cgroups issues - plus robuste
                 mkdir -p /sys/fs/cgroup/systemd
                 mount -t cgroup -o none,name=systemd cgroup /sys/fs/cgroup/systemd 2>/dev/null || true
-                
+
                 # Ensure cgroup v2 compatibility
                 if [ -f /sys/fs/cgroup/cgroup.controllers ]; then
                   echo "Cgroups v2 détecté, configuration optimisée..."
-                  
+
                   # Configuration système pour cgroups v2
                   cat > /etc/sysctl.d/99-kubernetes-cri-cgroups.conf << 'EOF'
                   net.ipv4.ip_forward=1
@@ -211,7 +259,7 @@
                   LimitCORE=infinity
                   TasksMax=infinity
                   EOF
-                  
+
                   # Montage supplémentaire parfois nécessaire dans WSL2
                   if [ ! -d /sys/fs/cgroup/memory ]; then
                     mkdir -p /sys/fs/cgroup/memory
