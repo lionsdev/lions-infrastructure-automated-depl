@@ -51,6 +51,6 @@ func init() {
 	notifyCmd.MarkFlagRequired("name")
 	notifyCmd.Flags().StringVarP(&environment, "environment", "e", "development", "le nom de l'environment: eg -e development")
 	notifyCmd.MarkFlagRequired("environment")
-	mails = notifyCmd.Flags().StringSliceP("mails", "m", []string{}, "notifcations emails, eg: -m  'admin@lions.dev,ops@lions.dev' ")
+	mails = notifyCmd.Flags().StringSliceP("mails", "m", []string{}, "notifcations emails, eg: -m  'admin@dev.lions.dev,ops@dev.lions.dev' ")
 	notifyCmd.MarkFlagRequired("mails")
 }

@@ -25,7 +25,7 @@ metadata:
       proxy_set_header Connection "upgrade";
 spec:
   rules:
-  - host: {{ .Values.name }}.{{ .Values.environment }}.lions.dev
+  - host: {{ .Values.name }}.{{ .Values.environment }}.dev.lions.dev
     http:
       paths:
       - path: /(.*)

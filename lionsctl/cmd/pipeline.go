@@ -65,7 +65,7 @@ func init() {
 	pipelineCmd.Flags().Int16VarP(&javaVersion, "java-version", "j", 11, "la version du jdk 11 ou 17")
 	pipelineCmd.Flags().StringVarP(&environment, "environment", "e", "development", "le nom de l'environment: eg -e development")
 	pipelineCmd.Flags().StringVarP(&cluster, "cluster", "c", "k2", "k8s cluster k1 or k2")
-	mails = pipelineCmd.Flags().StringSliceP("mails", "m", []string{}, "notifcations emails, eg: -m  'admin@lions.dev,ops@lions.dev' ")
+	mails = pipelineCmd.Flags().StringSliceP("mails", "m", []string{}, "notifcations emails, eg: -m  'admin@dev.lions.dev,ops@dev.lions.dev' ")
 	pipelineCmd.MarkFlagRequired("url")
 	pipelineCmd.MarkFlagRequired("branch")
 	pipelineCmd.MarkFlagRequired("environment")

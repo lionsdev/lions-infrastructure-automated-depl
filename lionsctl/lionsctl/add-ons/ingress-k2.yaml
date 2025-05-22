@@ -27,10 +27,10 @@ spec:
   ingressClassName: nginx
   tls:
   - hosts:
-    - {{ .Values.name }}.{{ .Values.environment }}.lions.dev
+    - {{ .Values.name }}.{{ .Values.environment }}.dev.lions.dev
     secretName: {{ .Values.name }}-tls
   rules:
-  - host: {{ .Values.name }}.{{ .Values.environment }}.lions.dev
+  - host: {{ .Values.name }}.{{ .Values.environment }}.dev.lions.dev
     http:
       paths:
       - path: /(.*)

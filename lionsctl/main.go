@@ -1,5 +1,5 @@
 /*
-Copyright © 2025 LIONS Infrastructure Team <infrastructure@lions.dev>
+Copyright © 2025 LIONS Infrastructure Team <infrastructure@dev.lions.dev>
 
 */
 package main

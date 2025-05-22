@@ -69,7 +69,7 @@ lionsctl delete -n mon-application -e development
 ### Déployer une application
 
 ```bash
-lionsctl pipeline -u https://github.com/lionsdev/mon-application -b main -j 17 -e development -m admin@lions.dev
+lionsctl pipeline -u https://github.com/lionsdev/mon-application -b main -j 17 -e development -m admin@dev.lions.dev
 ```
 
 **Paramètres:**
@@ -110,20 +110,20 @@ lionsctl init -n mon-application -e production -i -v
 
 ```bash
 # Déployer en environnement de développement
-lionsctl pipeline -u https://github.com/lionsdev/api-service -b develop -j 17 -e development -m dev-team@lions.dev
+lionsctl pipeline -u https://github.com/lionsdev/api-service -b develop -j 17 -e development -m dev-team@dev.lions.dev
 
 # Déployer en environnement de staging
-lionsctl pipeline -u https://github.com/lionsdev/api-service -b release -j 17 -e staging -m dev-team@lions.dev,qa@lions.dev
+lionsctl pipeline -u https://github.com/lionsdev/api-service -b release -j 17 -e staging -m dev-team@dev.lions.dev,qa@dev.lions.dev
 ```
 
 ### Déployer une application React
 
 ```bash
 # Déployer en environnement de développement
-lionsctl pipeline -u https://github.com/lionsdev/admin-dashboard -b develop -e development -m admin@lions.dev
+lionsctl pipeline -u https://github.com/lionsdev/admin-dashboard -b develop -e development -m admin@dev.lions.dev
 
 # Déployer en environnement de production
-lionsctl pipeline -u https://github.com/lionsdev/admin-dashboard -b main -e production -m admin@lions.dev,ops@lions.dev
+lionsctl pipeline -u https://github.com/lionsdev/admin-dashboard -b main -e production -m admin@dev.lions.dev,ops@dev.lions.dev
 ```
 
 ### Déployer avec des paramètres spécifiques

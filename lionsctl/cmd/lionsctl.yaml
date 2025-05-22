@@ -1,8 +1,8 @@
 DOCKER:
-   REGISTRY_URL: "registry.lions.dev"
+   REGISTRY_URL: "registry.dev.lions.dev"
 GIT:
    CFG_USERNAME: lionsctl
-   CFG_EMAIL: lionsctl@lions.dev
+   CFG_EMAIL: lionsctl@dev.lions.dev
    CFG_PASSWORD: LionsCtl2025!
    CFG_DEFAULT_BRNCH: main
    DOMAIN: "github.com"
@@ -15,6 +15,6 @@ HELM:
   CONFIG_REPO_URL: https://github.com/lionsdev/config
   CONFIG_REPO_TOKEN: "ghp_LionsInfrastructureConfigToken2025"
 NOTIFICATION:
-  FROM_URL: notifications@lions.dev
-  SMTP_URL: "smtp://smtp.lions.dev:587"
+  FROM_URL: notifications@dev.lions.dev
+  SMTP_URL: "smtp://smtp.dev.lions.dev:587"
   SERVER_TOKEN: "smtp_LionsNotificationToken2025"
