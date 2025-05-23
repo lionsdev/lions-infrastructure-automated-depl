@@ -323,10 +323,10 @@
                   ❌ ÉCHEC DE L'INSTALLATION K3S - DIAGNOSTIC DÉTAILLÉ
                   ==========================================================
                   Service Status: {{ k3s_final_status.status.ActiveState | default('Unknown') }}
-                  
+
                   Contenu actuel du service K3s:
                   {{ current_service_content.content | b64decode }}
-                  
+
                   Derniers logs:
                   {{ k3s_logs.stdout }}
                   ==========================================================
@@ -775,16 +775,18 @@
             release_namespace: "{{ monitoring_config.namespace }}"
             create_namespace: false
             wait: true
-            wait_timeout: "300s"
+            wait_timeout: "600s"  # Augmenté de 300s à 600s
             atomic: true
             values:
               # Configuration Prometheus simplifiée
               prometheus:
                 enabled: true
                 prometheusSpec:
-                  retention: "7d"
-                  retentionSize: "5GB"
-                  maximumStartupDurationSeconds: 300
+                  retention: "3d"  # Réduit de 7d à 3d
+                  retentionSize: "2GB"  # Réduit de 5GB à 2GB
+                  maximumStartupDurationSeconds: 600  # Augmenté de 300 à 600
+                  scrapeInterval: "2m"  # Augmenté de 1m à 2m
+                  evaluationInterval: "2m"  # Augmenté de 1m à 2m
                   storageSpec:
                     volumeClaimTemplate:
                       spec:
@@ -795,13 +797,11 @@
                             storage: "8Gi"
                   resources:
                     requests:
-                      cpu: "100m"
-                      memory: "256Mi"
+                      cpu: "50m"  # Réduit de 100m à 50m
+                      memory: "128Mi"  # Réduit de 256Mi à 128Mi
                     limits:
-                      cpu: "500m"
-                      memory: "1Gi"
-                  evaluationInterval: "1m"
-                  scrapeInterval: "1m"
+                      cpu: "300m"  # Réduit de 500m à 300m
+                      memory: "512Mi"  # Réduit de 1Gi à 512Mi
                   scrapeTimeout: "30s"
                 service:
                   type: ClusterIP
@@ -927,11 +927,21 @@
                     nodePort: 30000
                   resources:
                     requests:
-                      cpu: "50m"
-                      memory: "64Mi"
+                      cpu: "25m"  # Réduit de 50m à 25m
+                      memory: "32Mi"  # Réduit de 64Mi à 32Mi
                     limits:
-                      cpu: "200m"
-                      memory: "256Mi"
+                      cpu: "100m"  # Réduit de 200m à 100m
+                      memory: "128Mi"  # Réduit de 256Mi à 128Mi
+                  # Configuration pour utiliser Prometheus s'il est installé manuellement plus tard
+                  datasources:
+                    datasources.yaml:
+                      apiVersion: 1
+                      datasources:
+                        - name: Prometheus
+                          type: prometheus
+                          url: http://prometheus-server.monitoring.svc.cluster.local:9090
+                          access: proxy
+                          isDefault: true
               environment:
                 KUBECONFIG: "{{ k3s_kubeconfig }}"
 
@@ -1034,15 +1044,15 @@
                 URL NodePort: http://{{ ansible_host }}:30000
                 Utilisateur: admin
                 Mot de passe: {{ monitoring_config.grafana_admin_password }}
-              
+
               📊 Prometheus:
                 URL HTTPS: https://{{ services_domains.prometheus }}
                 URL NodePort: http://{{ ansible_host }}:30090
                 Interface Web: https://{{ services_domains.prometheus }}/graph
-              
+
               🚨 AlertManager:
                 URL interne: http://prometheus-kube-prometheus-alertmanager:9093
-              
+
               🌐 Site Principal:
                 URL: https://{{ services_domains.lions_main }}
               ==========================================================
@@ -1059,12 +1069,12 @@
                 URL NodePort: http://{{ ansible_host }}:30000
                 Utilisateur: admin
                 Mot de passe: {{ monitoring_config.grafana_admin_password }}
-              
+
               🌐 Site Principal:
                 URL: https://{{ services_domains.lions_main }}
-              
+
               ⚠️  Prometheus n'est pas installé - configuration manuelle requise
-              
+
               📋 Services à venir:
               • Keycloak: https://{{ services_domains.keycloak }}
               • Kubernetes Dashboard: https://{{ services_domains.k3s_dashboard }}
@@ -1334,7 +1344,7 @@
                           <div class="logo">🦁 LIONS</div>
                           <div class="subtitle">Infrastructure de Déploiement Automatisé</div>
                           <p>Votre infrastructure Kubernetes est prête !</p>
-                  
+
                           <div class="services">
                               <div class="service">
                                   <a href="/grafana">📊 Grafana</a>
@@ -1361,7 +1371,7 @@
                                   <span class="status coming-soon">Bientôt</span>
                               </div>
                           </div>
-                  
+
                           <div style="margin-top: 2rem; font-size: 0.9rem; opacity: 0.8;">
                               Infrastructure LIONS déployée avec succès
                           </div>
@@ -1489,13 +1499,13 @@
           ==========================================================
           🎉 INSTALLATION K3S LIONS + MONITORING TERMINÉE
           ==========================================================
-          
+
           📍 INFORMATIONS GÉNÉRALES:
           • Host: {{ ansible_host }}
           • Version K3s: {{ k3s_version }}
           • Environment: {{ lions_env | default('development') }}
           • Date: {{ ansible_date_time.iso8601 }}
-          
+
           🔧 COMPOSANTS INSTALLÉS:
           • ✅ K3s Server (API: :6443)
           • ✅ kubectl
@@ -1507,12 +1517,12 @@
           • ✅ Grafana avec dashboards
           • ✅ AlertManager
           • ✅ Node Exporter
-          
+
           🌐 ACCÈS SERVICES:
           • API Kubernetes: https://{{ ansible_host }}:6443
           • Site Principal: https://{{ services_domains.lions_main }} {{ '✅' if lions_main_connectivity.status in [200, 404] else '⚠️' }}
           • Traefik (HTTP): http://{{ ansible_host }} {{ '✅' if traefik_connectivity.status == 200 else '⚠️' }}
-          
+
           📊 MONITORING:
           • Grafana HTTPS: https://{{ services_domains.grafana }} {{ '✅' if grafana_https_connectivity.status in [200, 302] else '⚠️' }}
           • Grafana NodePort: http://{{ ansible_host }}:30000 {{ '✅' if grafana_nodeport_connectivity.status in [200, 302] else '⚠️' }}
@@ -1522,23 +1532,23 @@
           {% else %}
           • Prometheus: Non installé (fallback mode)
           {% endif %}
-          
+
           🔮 SERVICES À VENIR:
           • Keycloak: https://{{ services_domains.keycloak }}
           • Kubernetes Dashboard: https://{{ services_domains.k3s_dashboard }}
           • pgAdmin: https://{{ services_domains.pgadmin }}
           • Gitea: https://{{ services_domains.gitea }}
-          
+
           🔐 CREDENTIALS:
           • Grafana User: admin
           • Grafana Password: {{ monitoring_config.grafana_admin_password }}
-          
+
           📈 STATISTIQUES:
           • Nœuds: {{ final_nodes_check.stdout_lines | length - 1 }}
           • Namespaces: {{ (final_pods_check.stdout_lines | select('match', '^[^\\s]+\\s+[^\\s]+\\s+') | list | map('regex_replace', '^([^\\s]+)\\s+.*', '\\1') | unique | list) | length }}
           • Pods actifs: {{ (final_pods_check.stdout_lines | select('match', '.*Running.*') | list) | length }}
           • Pods monitoring: {{ (monitoring_final_check.stdout_lines | select('match', '.*Running.*') | list) | length if monitoring_final_check is succeeded else 'N/A' }} / {{ monitoring_final_check.stdout_lines | length - 1 if monitoring_final_check is succeeded else 'N/A' }}
-          
+
           🚀 PROCHAINES ÉTAPES:
           {% if prometheus_install_result is succeeded %}
           1. ✅ Infrastructure complète opérationnelle
@@ -1553,7 +1563,7 @@
           4. Déployer les applications LIONS (Keycloak, Gitea, etc.)
           5. Configurer les sauvegardes automatiques
           {% endif %}
-          
+
           💡 CONSEILS D'UTILISATION:
           • Utilisez les URLs HTTPS pour un accès sécurisé
           • Les certificats SSL sont automatiquement renouvelés
@@ -1568,13 +1578,13 @@
           • Vous pouvez installer Prometheus séparément plus tard
           • Les URLs NodePort restent disponibles en backup
           {% endif %}
-          
+
           🔐 DNS CONFIGURATION REQUISE:
           Configurez vos DNS pour pointer vers {{ ansible_host }}:
           {% for service_name, domain in services_domains.items() %}
           • {{ domain }} → {{ ansible_host }}
           {% endfor %}
-          
+
           ==========================================================
 
   # =============================================================================

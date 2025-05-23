@@ -6358,7 +6358,7 @@ function deployer_monitoring() {
         alertmanager: false
         etcd: false
         configReloaders: false
-        general: false
+        general: true  # Activé pour les règles essentielles
         k8s: false
         kubeApiserverAvailability: false
         kubeApiserverBurnrate: false
@@ -6368,14 +6368,14 @@ function deployer_monitoring() {
         kubeProxy: false
         kubePrometheusGeneral: false
         kubePrometheusNodeRecording: false
-        kubernetesApps: false
-        kubernetesResources: false
+        kubernetesApps: true  # Activé pour les applications
+        kubernetesResources: true  # Activé pour les ressources
         kubernetesStorage: false
         kubernetesSystem: false
         kubeScheduler: false
         kubeStateMetrics: false
         network: false
-        node: false
+        node: true  # Activé pour la surveillance des nœuds
         nodeExporterAlerting: false
         nodeExporterRecording: false
         prometheus: false
@@ -6392,8 +6392,8 @@ function deployer_monitoring() {
         nodePort: 30000
       resources:
         requests:
-          cpu: 100m
-          memory: 128Mi
+          cpu: 50m  # Réduit de 100m à 50m
+          memory: 64Mi  # Réduit de 128Mi à 64Mi
         limits:
           cpu: 200m
           memory: 256Mi
@@ -6404,6 +6404,26 @@ function deployer_monitoring() {
           enabled: true
         datasources:
           enabled: true
+      # Ajout de dashboards prédéfinis
+      dashboardProviders:
+        dashboardproviders.yaml:
+          apiVersion: 1
+          providers:
+            - name: 'default'
+              orgId: 1
+              folder: ''
+              type: file
+              disableDeletion: false
+              editable: true
+              options:
+                path: /var/lib/grafana/dashboards/default
+      # Configuration pour utiliser Prometheus comme source de données
+      additionalDataSources:
+        - name: Prometheus
+          type: prometheus
+          url: http://prometheus-kube-prometheus-prometheus:9090/
+          access: proxy
+          isDefault: true
 
     prometheusOperator:
       enabled: true
@@ -6418,14 +6438,17 @@ function deployer_monitoring() {
     prometheus:
       enabled: true
       prometheusSpec:
-        retention: 7d
+        retention: 3d  # Réduit de 7d à 3d
+        retentionSize: "2GB"  # Ajout d'une limitation de taille
         resources:
           requests:
-            cpu: 300m
-            memory: 512Mi
+            cpu: 50m  # Réduit de 300m à 50m
+            memory: 128Mi  # Réduit de 512Mi à 128Mi
           limits:
-            cpu: 700m
-            memory: 1Gi
+            cpu: 300m  # Réduit de 700m à 300m
+            memory: 512Mi  # Réduit de 1Gi à 512Mi
+        scrapeInterval: 2m  # Augmenté de 1m à 2m pour réduire la charge
+        evaluationInterval: 2m  # Augmenté de 1m à 2m
         storageSpec: {}
         serviceMonitorSelectorNilUsesHelmValues: false
         serviceMonitorSelector: {}
