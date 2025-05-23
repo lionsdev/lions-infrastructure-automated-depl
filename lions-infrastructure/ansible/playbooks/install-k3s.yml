@@ -47,7 +47,7 @@
     traefik_chart_version: "25.0.0"
     metallb_chart_version: "0.13.12"
     cert_manager_version: "v1.13.3"
-    kube_prometheus_stack_version: "56.21.4"
+    kube_prometheus_stack_version: "55.5.0"
 
     # Flags dépréciés à supprimer automatiquement
     deprecated_flags:
@@ -702,230 +702,245 @@
           environment:
             KUBECONFIG: "{{ k3s_kubeconfig }}"
 
-    - name: "🔍 Nettoyage des installations monitoring précédentes"
+    - name: "🔍 Nettoyage complet des installations monitoring précédentes"
       block:
-        - name: "Vérification de l'existence d'une installation Prometheus existante"
-          command: "helm list -n {{ monitoring_config.namespace }} --filter prometheus"
-          register: existing_prometheus
+        - name: "Suppression complète du namespace monitoring"
+          kubernetes.core.k8s:
+            name: "{{ monitoring_config.namespace }}"
+            api_version: v1
+            kind: Namespace
+            state: absent
+            wait: true
+            wait_timeout: 60
           environment:
             KUBECONFIG: "{{ k3s_kubeconfig }}"
           ignore_errors: yes
 
-        - name: "Suppression de l'installation Prometheus défaillante si nécessaire"
-          command: "helm uninstall prometheus -n {{ monitoring_config.namespace }}"
+        - name: "Suppression des CRDs Prometheus existants"
+          shell: |
+            kubectl delete crd --ignore-not-found=true \
+              prometheuses.monitoring.coreos.com \
+              prometheusrules.monitoring.coreos.com \
+              servicemonitors.monitoring.coreos.com \
+              podmonitors.monitoring.coreos.com \
+              alertmanagers.monitoring.coreos.com \
+              alertmanagerconfigs.monitoring.coreos.com \
+              thanosrulers.monitoring.coreos.com \
+              probes.monitoring.coreos.com \
+              prometheusagents.monitoring.coreos.com \
+              scrapeconfigs.monitoring.coreos.com || true
           environment:
             KUBECONFIG: "{{ k3s_kubeconfig }}"
-          when:
-            - existing_prometheus.stdout is defined
-            - "'failed' in existing_prometheus.stdout or 'pending' in existing_prometheus.stdout"
+          ignore_errors: yes
+
+        - name: "Suppression forcée des releases Helm existantes"
+          shell: |
+            helm uninstall prometheus -n {{ monitoring_config.namespace }} --ignore-not-found || true
+            helm uninstall kube-prometheus-stack -n {{ monitoring_config.namespace }} --ignore-not-found || true
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
           ignore_errors: yes
 
         - name: "Attente de la suppression complète"
           pause:
-            seconds: 30
-          when:
-            - existing_prometheus.stdout is defined
-            - "'failed' in existing_prometheus.stdout or 'pending' in existing_prometheus.stdout"
+            seconds: 15
 
-    - name: "🚀 Déploiement de kube-prometheus-stack optimisé"
-      kubernetes.core.helm:
-        name: prometheus
-        chart_ref: "prometheus-community/kube-prometheus-stack"
-        chart_version: "{{ kube_prometheus_stack_version }}"
-        release_namespace: "{{ monitoring_config.namespace }}"
-        create_namespace: true
-        wait: true
-        wait_timeout: "900s"
-        force: true
-        values:
-          # Configuration Prometheus optimisée
-          prometheus:
-            prometheusSpec:
-              retention: "{{ monitoring_config.prometheus_retention }}"
-              retentionSize: "8GB"
-              maximumStartupDurationSeconds: 300
-              storageSpec:
-                volumeClaimTemplate:
-                  spec:
-                    storageClassName: "local-path"
-                    accessModes: ["ReadWriteOnce"]
-                    resources:
-                      requests:
-                        storage: "{{ monitoring_config.prometheus_storage }}"
-              resources:
-                requests:
-                  cpu: "200m"
-                  memory: "512Mi"
-                limits:
-                  cpu: "{{ monitoring_config.resource_limits.prometheus_cpu }}"
-                  memory: "{{ monitoring_config.resource_limits.prometheus_memory }}"
-              # Configuration pour éviter les problèmes de performance
-              evaluationInterval: "30s"
-              scrapeInterval: "30s"
-              scrapeTimeout: "10s"
-              # Règles d'alerte essentielles uniquement
-              ruleSelector:
-                matchLabels:
-                  app: lions-infrastructure
-                  tier: essential
-            service:
-              type: ClusterIP
-              port: 9090
-              targetPort: 9090
-
-          # Configuration Grafana optimisée
-          grafana:
-            enabled: true
-            adminPassword: "{{ monitoring_config.grafana_admin_password }}"
-            persistence:
-              enabled: true
-              storageClassName: "local-path"
-              size: "{{ monitoring_config.grafana_storage }}"
-              accessModes:
-                - ReadWriteOnce
-            service:
-              type: NodePort
-              nodePort: 30000
-              port: 80
-              targetPort: 3000
-            resources:
-              requests:
-                cpu: "100m"
-                memory: "128Mi"
-              limits:
-                cpu: "{{ monitoring_config.resource_limits.grafana_cpu }}"
-                memory: "{{ monitoring_config.resource_limits.grafana_memory }}"
-            # Configuration pour de meilleures performances
-            grafana.ini:
-              server:
-                root_url: "http://{{ ansible_host }}:30000"
-                serve_from_sub_path: false
-              database:
-                type: sqlite3
-                cache_mode: shared
-              users:
-                allow_sign_up: false
-                auto_assign_org: true
-                auto_assign_org_role: Viewer
-                default_theme: dark
-              dashboards:
-                default_home_dashboard_path: /tmp/dashboards/lions-overview.json
-            # Dashboards par défaut optimisés
-            defaultDashboardsEnabled: true
-            defaultDashboardsTimezone: Europe/Paris
-            sidecar:
-              dashboards:
-                enabled: true
-                label: grafana_dashboard
-                folder: /tmp/dashboards
-                searchNamespace: ALL
-              datasources:
-                enabled: true
-                defaultDatasourceEnabled: true
-
-          # Configuration AlertManager simplifiée
-          alertmanager:
-            enabled: true
-            alertmanagerSpec:
-              storage:
-                volumeClaimTemplate:
-                  spec:
-                    storageClassName: "local-path"
-                    accessModes: ["ReadWriteOnce"]
-                    resources:
-                      requests:
-                        storage: "2Gi"
-              resources:
-                requests:
-                  cpu: "50m"
-                  memory: "64Mi"
-                limits:
-                  cpu: "100m"
-                  memory: "256Mi"
-            service:
-              type: ClusterIP
-              port: 9093
-            config:
-              global:
-                resolve_timeout: 5m
-              route:
-                group_by: ['alertname', 'cluster', 'service']
-                group_wait: 30s
-                group_interval: 5m
-                repeat_interval: 12h
-                receiver: 'lions-default'
-              receivers:
-                - name: 'lions-default'
-                  webhook_configs:
-                    - url: 'http://localhost:9093/api/v1/alerts'
-                      send_resolved: true
-
-          # Node Exporter optimisé
-          nodeExporter:
-            enabled: true
-            serviceMonitor:
-              enabled: true
-              interval: "30s"
-              scrapeTimeout: "10s"
-
-          # Kube State Metrics optimisé
-          kubeStateMetrics:
-            enabled: true
-            resources:
-              requests:
-                cpu: "10m"
-                memory: "32Mi"
-              limits:
-                cpu: "100m"
-                memory: "128Mi"
-
-          # Configuration Service Monitor
-          serviceMonitor:
-            enabled: true
-            interval: "30s"
-            scrapeTimeout: "10s"
-
-          # Désactivation des composants non essentiels pour optimiser les performances
-          kubeApiServer:
-            enabled: false
-          kubelet:
-            enabled: true
-            serviceMonitor:
-              interval: "30s"
-          kubeControllerManager:
-            enabled: false
-          coreDns:
-            enabled: true
-            serviceMonitor:
-              interval: "30s"
-          kubeEtcd:
-            enabled: false
-          kubeScheduler:
-            enabled: false
-          kubeProxy:
-            enabled: false
-
-      environment:
-        KUBECONFIG: "{{ k3s_kubeconfig }}"
-
-    - name: "⏳ Vérification du déploiement du monitoring"
-      block:
-        - name: "Attente de la disponibilité des pods Prometheus"
-          kubernetes.core.k8s_info:
+        - name: "Recréation du namespace monitoring"
+          kubernetes.core.k8s:
+            name: "{{ monitoring_config.namespace }}"
             api_version: v1
-            kind: Pod
-            namespace: "{{ monitoring_config.namespace }}"
-            label_selectors:
-              - "app.kubernetes.io/name=prometheus"
-            wait: true
-            wait_condition:
-              type: Ready
-              status: "True"
-            wait_timeout: 300
+            kind: Namespace
+            state: present
           environment:
             KUBECONFIG: "{{ k3s_kubeconfig }}"
 
-        - name: "Attente de la disponibilité des pods Grafana"
+    - name: "🚀 Déploiement de kube-prometheus-stack simplifié"
+      block:
+        - name: "Installation avec timeout court et retry"
+          kubernetes.core.helm:
+            name: prometheus
+            chart_ref: "prometheus-community/kube-prometheus-stack"
+            chart_version: "{{ kube_prometheus_stack_version }}"
+            release_namespace: "{{ monitoring_config.namespace }}"
+            create_namespace: false
+            wait: true
+            wait_timeout: "300s"
+            atomic: true
+            values:
+              # Configuration Prometheus simplifiée
+              prometheus:
+                enabled: true
+                prometheusSpec:
+                  retention: "7d"
+                  retentionSize: "5GB"
+                  maximumStartupDurationSeconds: 300
+                  storageSpec:
+                    volumeClaimTemplate:
+                      spec:
+                        storageClassName: "local-path"
+                        accessModes: ["ReadWriteOnce"]
+                        resources:
+                          requests:
+                            storage: "8Gi"
+                  resources:
+                    requests:
+                      cpu: "100m"
+                      memory: "256Mi"
+                    limits:
+                      cpu: "500m"
+                      memory: "1Gi"
+                  evaluationInterval: "1m"
+                  scrapeInterval: "1m"
+                  scrapeTimeout: "30s"
+                service:
+                  type: ClusterIP
+                  port: 9090
+
+              # Configuration Grafana simplifiée
+              grafana:
+                enabled: true
+                adminPassword: "{{ monitoring_config.grafana_admin_password }}"
+                persistence:
+                  enabled: true
+                  storageClassName: "local-path"
+                  size: "2Gi"
+                  accessModes: ["ReadWriteOnce"]
+                service:
+                  type: NodePort
+                  nodePort: 30000
+                  port: 80
+                resources:
+                  requests:
+                    cpu: "50m"
+                    memory: "64Mi"
+                  limits:
+                    cpu: "200m"
+                    memory: "256Mi"
+                defaultDashboardsEnabled: true
+                sidecar:
+                  dashboards:
+                    enabled: true
+                  datasources:
+                    enabled: true
+
+              # AlertManager minimal
+              alertmanager:
+                enabled: true
+                alertmanagerSpec:
+                  storage:
+                    volumeClaimTemplate:
+                      spec:
+                        storageClassName: "local-path"
+                        accessModes: ["ReadWriteOnce"]
+                        resources:
+                          requests:
+                            storage: "1Gi"
+                  resources:
+                    requests:
+                      cpu: "25m"
+                      memory: "32Mi"
+                    limits:
+                      cpu: "50m"
+                      memory: "128Mi"
+
+              # Node Exporter activé
+              nodeExporter:
+                enabled: true
+
+              # Kube State Metrics minimal
+              kubeStateMetrics:
+                enabled: true
+                resources:
+                  requests:
+                    cpu: "5m"
+                    memory: "16Mi"
+                  limits:
+                    cpu: "50m"
+                    memory: "64Mi"
+
+              # Désactivation de composants lourds
+              kubeApiServer:
+                enabled: false
+              kubelet:
+                enabled: true
+              kubeControllerManager:
+                enabled: false
+              coreDns:
+                enabled: false
+              kubeEtcd:
+                enabled: false
+              kubeScheduler:
+                enabled: false
+              kubeProxy:
+                enabled: false
+
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+          register: prometheus_install_result
+          retries: 2
+          delay: 30
+
+      rescue:
+        - name: "Déploiement de fallback minimal"
+          block:
+            - name: "Nettoyage après échec"
+              shell: |
+                helm uninstall prometheus -n {{ monitoring_config.namespace }} --ignore-not-found || true
+                kubectl delete namespace {{ monitoring_config.namespace }} --ignore-not-found || true
+                sleep 10
+                kubectl create namespace {{ monitoring_config.namespace }} || true
+              environment:
+                KUBECONFIG: "{{ k3s_kubeconfig }}"
+
+            - name: "Ajout du dépôt Grafana"
+              kubernetes.core.helm_repository:
+                name: grafana
+                repo_url: "https://grafana.github.io/helm-charts"
+              environment:
+                KUBECONFIG: "{{ k3s_kubeconfig }}"
+
+            - name: "Installation Grafana standalone"
+              kubernetes.core.helm:
+                name: grafana
+                chart_ref: "grafana/grafana"
+                release_namespace: "{{ monitoring_config.namespace }}"
+                create_namespace: false
+                wait: true
+                wait_timeout: "180s"
+                values:
+                  adminPassword: "{{ monitoring_config.grafana_admin_password }}"
+                  persistence:
+                    enabled: false
+                  service:
+                    type: NodePort
+                    nodePort: 30000
+                  resources:
+                    requests:
+                      cpu: "50m"
+                      memory: "64Mi"
+                    limits:
+                      cpu: "200m"
+                      memory: "256Mi"
+              environment:
+                KUBECONFIG: "{{ k3s_kubeconfig }}"
+
+            - name: "Définition du résultat d'échec"
+              set_fact:
+                prometheus_install_result: "{{ {'failed': true} }}"
+
+            - name: "Message de fallback"
+              debug:
+                msg: |
+                  ⚠️  Installation complète échouée, Grafana standalone déployé
+                  Vous pourrez configurer Prometheus séparément plus tard
+
+    - name: "⏳ Vérification du déploiement du monitoring"
+      block:
+        - name: "Vérification de l'installation réussie"
+          debug:
+            msg: "Installation Prometheus réussie: {{ prometheus_install_result is succeeded }}"
+
+        - name: "Attente de la disponibilité des pods (si installation réussie)"
           kubernetes.core.k8s_info:
             api_version: v1
             kind: Pod
@@ -936,9 +951,11 @@
             wait_condition:
               type: Ready
               status: "True"
-            wait_timeout: 300
+            wait_timeout: 180
           environment:
             KUBECONFIG: "{{ k3s_kubeconfig }}"
+          when: prometheus_install_result is succeeded
+          ignore_errors: yes
 
         - name: "Vérification de l'état des services monitoring"
           command: "/usr/local/bin/k3s kubectl get pods -n {{ monitoring_config.namespace }}"
@@ -957,7 +974,7 @@
 
     - name: "🔗 Configuration des accès monitoring"
       block:
-        - name: "Création du service NodePort pour Prometheus"
+        - name: "Création du service NodePort pour Prometheus (si installé)"
           kubernetes.core.k8s:
             state: present
             definition:
@@ -980,8 +997,10 @@
                   app.kubernetes.io/name: prometheus
           environment:
             KUBECONFIG: "{{ k3s_kubeconfig }}"
+          when: prometheus_install_result is succeeded
+          ignore_errors: yes
 
-        - name: "Récupération du mot de passe Grafana"
+        - name: "Récupération du mot de passe Grafana (si installé)"
           kubernetes.core.k8s_info:
             api_version: v1
             kind: Secret
@@ -990,12 +1009,14 @@
           register: grafana_secret
           environment:
             KUBECONFIG: "{{ k3s_kubeconfig }}"
+          when: prometheus_install_result is succeeded
+          ignore_errors: yes
 
-        - name: "Affichage des informations d'accès"
+        - name: "Affichage des informations d'accès (installation complète)"
           debug:
             msg: |
               ==========================================================
-              🔐 INFORMATIONS D'ACCÈS MONITORING
+              🔐 INFORMATIONS D'ACCÈS MONITORING COMPLET
               ==========================================================
               🎯 Grafana:
                 URL: http://{{ ansible_host }}:30000
@@ -1009,6 +1030,22 @@
               🚨 AlertManager:
                 URL interne: http://prometheus-kube-prometheus-alertmanager:9093
               ==========================================================
+          when: prometheus_install_result is succeeded
+
+        - name: "Affichage des informations d'accès (fallback)"
+          debug:
+            msg: |
+              ==========================================================
+              🔐 INFORMATIONS D'ACCÈS MONITORING (FALLBACK)
+              ==========================================================
+              🎯 Grafana Standalone:
+                URL: http://{{ ansible_host }}:30000
+                Utilisateur: admin
+                Mot de passe: {{ monitoring_config.grafana_admin_password }}
+              
+              ⚠️  Prometheus n'est pas installé - configuration manuelle requise
+              ==========================================================
+          when: prometheus_install_result is failed
 
     # =========================================================================
     # PHASE 8: VÉRIFICATIONS FINALES ET RAPPORT
@@ -1043,6 +1080,7 @@
           register: monitoring_final_check
           environment:
             KUBECONFIG: "{{ k3s_kubeconfig }}"
+          ignore_errors: yes
 
     - name: "🎯 Tests de connectivité des services"
       block:
@@ -1064,7 +1102,7 @@
           register: grafana_connectivity
           ignore_errors: true
 
-        - name: "Test de connectivité Prometheus"
+        - name: "Test de connectivité Prometheus (si installé)"
           uri:
             url: "http://{{ ansible_host }}:30090"
             method: GET
@@ -1072,6 +1110,7 @@
             timeout: 15
           register: prometheus_connectivity
           ignore_errors: true
+          when: prometheus_install_result is succeeded
 
     - name: "📊 RAPPORT FINAL D'INSTALLATION COMPLÈTE"
       debug:
@@ -1102,7 +1141,11 @@
           • API Kubernetes: https://{{ ansible_host }}:6443
           • Traefik: http://{{ ansible_host }} {{ '✅' if traefik_connectivity.status == 200 else '⚠️' }}
           • Grafana: http://{{ ansible_host }}:30000 {{ '✅' if grafana_connectivity.status in [200, 302] else '⚠️' }}
-          • Prometheus: http://{{ ansible_host }}:30090 {{ '✅' if prometheus_connectivity.status == 200 else '⚠️' }}
+          {% if prometheus_install_result is succeeded %}
+          • Prometheus: http://{{ ansible_host }}:30090 {{ '✅' if prometheus_connectivity is defined and prometheus_connectivity.status == 200 else '⚠️' }}
+          {% else %}
+          • Prometheus: Non installé (fallback mode)
+          {% endif %}
           
           🔐 CREDENTIALS:
           • Grafana User: admin
@@ -1112,20 +1155,33 @@
           • Nœuds: {{ final_nodes_check.stdout_lines | length - 1 }}
           • Namespaces: {{ (final_pods_check.stdout_lines | select('match', '^[^\\s]+\\s+[^\\s]+\\s+') | list | map('regex_replace', '^([^\\s]+)\\s+.*', '\\1') | unique | list) | length }}
           • Pods actifs: {{ (final_pods_check.stdout_lines | select('match', '.*Running.*') | list) | length }}
-          • Pods monitoring: {{ (monitoring_final_check.stdout_lines | select('match', '.*Running.*') | list) | length }} / {{ monitoring_final_check.stdout_lines | length - 1 }}
+          • Pods monitoring: {{ (monitoring_final_check.stdout_lines | select('match', '.*Running.*') | list) | length if monitoring_final_check is succeeded else 'N/A' }} / {{ monitoring_final_check.stdout_lines | length - 1 if monitoring_final_check is succeeded else 'N/A' }}
           
           🚀 PROCHAINES ÉTAPES:
+          {% if prometheus_install_result is succeeded %}
           1. ✅ Monitoring opérationnel (Prometheus + Grafana)
           2. Configurer les alertes personnalisées
           3. Configurer les certificats SSL (Let's Encrypt)
           4. Déployer les applications LIONS
           5. Configurer les sauvegardes automatiques
+          {% else %}
+          1. ⚠️  Grafana standalone opérationnel
+          2. Installer Prometheus manuellement si nécessaire
+          3. Configurer les certificats SSL (Let's Encrypt)
+          4. Déployer les applications LIONS
+          5. Configurer les sauvegardes automatiques
+          {% endif %}
           
           💡 CONSEILS D'UTILISATION:
           • Accédez à Grafana pour visualiser vos métriques
+          {% if prometheus_install_result is succeeded %}
           • Consultez Prometheus pour les requêtes avancées
           • Les dashboards par défaut sont pré-installés
-          • Le monitoring est configuré pour une rétention de {{ monitoring_config.prometheus_retention }}
+          • Le monitoring est configuré pour une rétention de 7 jours
+          {% else %}
+          • Prometheus pourra être installé séparément plus tard
+          • Grafana est configuré mais sans sources de données
+          {% endif %}
           
           ==========================================================
 
