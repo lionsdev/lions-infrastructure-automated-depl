@@ -5841,6 +5841,9 @@ function deployer_infrastructure_base() {
         attempt=$((attempt + 1))
         log "INFO" "Tentative ${attempt}/${max_attempts} de vérification des CRDs de cert-manager..."
 
+        # Réinitialiser la variable connection_error au début de chaque itération
+        connection_error=false
+
         # Vérification de la connectivité au cluster Kubernetes
         if ! kubectl cluster-info &>/dev/null; then
             log "WARNING" "Impossible de se connecter au cluster Kubernetes (tentative ${attempt}/${max_attempts})"
@@ -5918,7 +5921,9 @@ function deployer_infrastructure_base() {
         fi
 
         # Vérification des CRDs
-        if kubectl get crd 2>/dev/null | grep -q "clusterissuers.cert-manager.io"; then
+        if kubectl get crd 2>/dev/null | grep -q "clusterissuers.cert-manager.io" && \
+           kubectl get crd 2>/dev/null | grep -q "certificates.cert-manager.io" && \
+           kubectl get crd 2>/dev/null | grep -q "issuers.cert-manager.io"; then
             log "SUCCESS" "Les CRDs de cert-manager sont prêts"
             crds_ready=true
         else
@@ -5935,6 +5940,19 @@ function deployer_infrastructure_base() {
         # Tentative d'installation manuelle des CRDs
         if run_with_timeout "kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.11.0/cert-manager.crds.yaml" 300; then
             log "SUCCESS" "Installation manuelle des CRDs de cert-manager réussie"
+
+            # Vérification que les CRDs sont bien installés
+            log "INFO" "Vérification que les CRDs sont bien installés..."
+            sleep 30  # Attendre que les CRDs soient complètement installés
+
+            if kubectl get crd 2>/dev/null | grep -q "clusterissuers.cert-manager.io" && \
+               kubectl get crd 2>/dev/null | grep -q "certificates.cert-manager.io" && \
+               kubectl get crd 2>/dev/null | grep -q "issuers.cert-manager.io"; then
+                log "SUCCESS" "Les CRDs de cert-manager sont maintenant prêts"
+                crds_ready=true
+            else
+                log "WARNING" "Les CRDs de cert-manager ne sont toujours pas prêts après l'installation manuelle"
+            fi
         else
             log "WARNING" "Échec de l'installation manuelle des CRDs de cert-manager"
 
@@ -6312,6 +6330,24 @@ function deployer_monitoring() {
         exit 1
     fi
 
+    # Vérification des dépendances avant le déploiement de Prometheus
+    log "INFO" "Vérification des dépendances pour Prometheus et Grafana..."
+
+    # Vérifier que cert-manager est installé et fonctionnel
+    if ! kubectl get deployment -n cert-manager cert-manager 2>/dev/null | grep -q "cert-manager"; then
+        log "WARNING" "cert-manager ne semble pas être installé correctement"
+        log "INFO" "Tentative de diagnostic..."
+        kubectl get pods -n cert-manager
+        kubectl get events -n cert-manager
+    fi
+
+    # Vérifier que les CRDs nécessaires sont présents
+    if ! kubectl get crd 2>/dev/null | grep -q "servicemonitors.monitoring.coreos.com"; then
+        log "WARNING" "Les CRDs de Prometheus Operator ne sont pas installés"
+        log "INFO" "Installation des CRDs de Prometheus Operator..."
+        run_with_timeout "kubectl apply -f https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/main/example/prometheus-operator-crd/monitoring.coreos.com_servicemonitors.yaml" 300
+    fi
+
     # Création d'un fichier de valeurs temporaire pour Prometheus
     local values_file=$(mktemp)
     cat > "${values_file}" << EOF
@@ -6385,11 +6421,11 @@ function deployer_monitoring() {
         retention: 7d
         resources:
           requests:
-            cpu: 200m
-            memory: 256Mi
-          limits:
-            cpu: 500m
+            cpu: 300m
             memory: 512Mi
+          limits:
+            cpu: 700m
+            memory: 1Gi
         storageSpec: {}
         serviceMonitorSelectorNilUsesHelmValues: false
         serviceMonitorSelector: {}
@@ -6435,7 +6471,7 @@ EOF
     # Déploiement de Prometheus
     LAST_COMMAND="helm upgrade --install prometheus prometheus-community/kube-prometheus-stack --namespace monitoring --values ${values_file}"
 
-    if ! run_with_timeout "helm upgrade --install prometheus prometheus-community/kube-prometheus-stack --namespace monitoring --values ${values_file}" 1800; then
+    if ! run_with_timeout "helm upgrade --install prometheus prometheus-community/kube-prometheus-stack --namespace monitoring --values ${values_file}" 3600; then
         log "ERROR" "Échec du déploiement de Prometheus et Grafana"
 
         # Tentative de diagnostic
@@ -6458,6 +6494,15 @@ EOF
 
         # Vérification des ressources disponibles
         kubectl describe nodes
+
+        # Vérification des ressources du cluster
+        log "INFO" "Vérification des ressources du cluster..."
+        kubectl top nodes || true
+        kubectl top pods --all-namespaces || true
+
+        # Vérification de l'état des CRDs
+        log "INFO" "Vérification de l'état des CRDs..."
+        kubectl get crd | grep -E 'cert-manager.io|monitoring.coreos.com'
 
         # Nettoyage du fichier de valeurs temporaire
         rm -f "${values_file}"
