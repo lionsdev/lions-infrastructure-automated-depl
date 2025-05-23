@@ -744,6 +744,7 @@
             prometheusSpec:
               retention: "{{ monitoring_config.prometheus_retention }}"
               retentionSize: "8GB"
+              maximumStartupDurationSeconds: 300
               storageSpec:
                 volumeClaimTemplate:
                   spec:
