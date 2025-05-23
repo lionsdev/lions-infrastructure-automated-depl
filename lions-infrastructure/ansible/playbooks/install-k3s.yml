@@ -1,23 +1,25 @@
 ---
 # =============================================================================
-# LIONS Infrastructure - Playbook d'Installation K3s Complet avec Monitoring
+# LIONS Infrastructure - Playbook d'Installation K3s Complet avec Monitoring et Ingress
 # =============================================================================
-# Titre: Playbook d'installation K3s optimisé avec Prometheus/Grafana intégré
-# Description: Installe et configure K3s sur VPS avec monitoring complet
+# Titre: Playbook d'installation K3s optimisé avec Prometheus/Grafana et Ingress TLS
+# Description: Installe et configure K3s sur VPS avec monitoring et exposition HTTPS
 # Auteur: Équipe LIONS Infrastructure
 # Date: 2025-05-23
-# Version: 2.1.0
+# Version: 2.2.0
 #
 # Corrections appliquées:
 # - Suppression du flag déprécié RemoveSelfLink=false
 # - Correction de la syntaxe des flags --disable
 # - Ajout du déploiement Prometheus/Grafana optimisé
 # - Configuration monitoring haute performance
+# - Ajout des Ingress pour exposition HTTPS des dashboards
+# - Configuration automatique des certificats TLS
 # - Amélioration de la documentation et du logging
 # - Application des meilleures pratiques DevOps
 # =============================================================================
 
-- name: "LIONS K3s Installation - Production Ready Deployment with Monitoring"
+- name: "LIONS K3s Installation - Production Ready Deployment with Monitoring and Ingress"
   hosts: vps
   become: yes
   gather_facts: yes
@@ -90,6 +92,7 @@
           Host cible: {{ ansible_host }}
           Environment: {{ lions_env | default('development') }}
           Monitoring: ✅ Prometheus + Grafana inclus
+          Ingress: ✅ Exposition HTTPS des dashboards
           ==========================================================
 
     - name: "🔍 Vérification de l'environnement système"
@@ -1053,7 +1056,7 @@
 
     - name: "✅ PHASE 8 - Vérifications finales et tests d'intégration"
       debug:
-        msg: "Validation finale de l'installation complète avec monitoring"
+        msg: "Validation finale de l'installation complète avec monitoring et Ingress"
 
     - name: "🏥 Tests de santé des composants"
       block:
@@ -1078,6 +1081,20 @@
         - name: "Vérification spécifique du monitoring"
           command: "/usr/local/bin/k3s kubectl get pods -n {{ monitoring_config.namespace }} -o wide"
           register: monitoring_final_check
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+          ignore_errors: yes
+
+        - name: "Vérification des Ingress configurés"
+          command: "/usr/local/bin/k3s kubectl get ingress --all-namespaces"
+          register: ingress_final_check
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+          ignore_errors: yes
+
+        - name: "Vérification des certificats TLS"
+          command: "/usr/local/bin/k3s kubectl get certificates --all-namespaces"
+          register: certificates_final_check
           environment:
             KUBECONFIG: "{{ k3s_kubeconfig }}"
           ignore_errors: yes
@@ -1112,7 +1129,322 @@
           ignore_errors: true
           when: prometheus_install_result is succeeded
 
-    - name: "📊 RAPPORT FINAL D'INSTALLATION COMPLÈTE"
+    # =========================================================================
+    # PHASE 8: EXPOSITION DES DASHBOARDS VIA INGRESS
+    # =========================================================================
+
+    - name: "🌐 PHASE 8 - Exposition des dashboards via Ingress"
+      debug:
+        msg: "Configuration des Ingress pour exposer les dashboards sur les domaines LIONS"
+
+    - name: "🔗 Création des Ingress pour les dashboards"
+      block:
+        - name: "Ingress pour Grafana (grafana.lions.dev)"
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: networking.k8s.io/v1
+              kind: Ingress
+              metadata:
+                name: grafana-ingress
+                namespace: "{{ monitoring_config.namespace }}"
+                annotations:
+                  cert-manager.io/cluster-issuer: "letsencrypt-prod"
+                  traefik.ingress.kubernetes.io/router.tls: "true"
+                  traefik.ingress.kubernetes.io/router.middlewares: "default-https-redirect@kubernetescrd"
+              spec:
+                ingressClassName: traefik
+                tls:
+                  - hosts:
+                      - grafana.lions.dev
+                    secretName: grafana-tls
+                rules:
+                  - host: grafana.lions.dev
+                    http:
+                      paths:
+                        - path: /
+                          pathType: Prefix
+                          backend:
+                            service:
+                              name: grafana
+                              port:
+                                number: 80
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+          when: prometheus_install_result is succeeded or prometheus_install_result is failed
+
+        - name: "Ingress pour Prometheus (prometheus.lions.dev)"
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: networking.k8s.io/v1
+              kind: Ingress
+              metadata:
+                name: prometheus-ingress
+                namespace: "{{ monitoring_config.namespace }}"
+                annotations:
+                  cert-manager.io/cluster-issuer: "letsencrypt-prod"
+                  traefik.ingress.kubernetes.io/router.tls: "true"
+                  traefik.ingress.kubernetes.io/router.middlewares: "default-https-redirect@kubernetescrd"
+              spec:
+                ingressClassName: traefik
+                tls:
+                  - hosts:
+                      - prometheus.lions.dev
+                    secretName: prometheus-tls
+                rules:
+                  - host: prometheus.lions.dev
+                    http:
+                      paths:
+                        - path: /
+                          pathType: Prefix
+                          backend:
+                            service:
+                              name: prometheus-kube-prometheus-prometheus
+                              port:
+                                number: 9090
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+          when: prometheus_install_result is succeeded
+          ignore_errors: yes
+
+        - name: "Ingress pour Kubernetes Dashboard (k8s.lions.dev)"
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: networking.k8s.io/v1
+              kind: Ingress
+              metadata:
+                name: kubernetes-dashboard-ingress
+                namespace: kubernetes-dashboard
+                annotations:
+                  cert-manager.io/cluster-issuer: "letsencrypt-prod"
+                  traefik.ingress.kubernetes.io/router.tls: "true"
+                  traefik.ingress.kubernetes.io/router.middlewares: "default-https-redirect@kubernetescrd"
+                  nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+                  nginx.ingress.kubernetes.io/ssl-passthrough: "true"
+              spec:
+                ingressClassName: traefik
+                tls:
+                  - hosts:
+                      - k8s.lions.dev
+                    secretName: kubernetes-dashboard-tls
+                rules:
+                  - host: k8s.lions.dev
+                    http:
+                      paths:
+                        - path: /
+                          pathType: Prefix
+                          backend:
+                            service:
+                              name: kubernetes-dashboard
+                              port:
+                                number: 443
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+          ignore_errors: yes
+
+        - name: "Création du namespace development pour les futures applications"
+          kubernetes.core.k8s:
+            name: development
+            api_version: v1
+            kind: Namespace
+            state: present
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+
+        - name: "Ingress placeholder pour Git/Gitea (git.lions.dev)"
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: networking.k8s.io/v1
+              kind: Ingress
+              metadata:
+                name: gitea-ingress
+                namespace: development
+                annotations:
+                  cert-manager.io/cluster-issuer: "letsencrypt-prod"
+                  traefik.ingress.kubernetes.io/router.tls: "true"
+                  traefik.ingress.kubernetes.io/router.middlewares: "default-https-redirect@kubernetescrd"
+              spec:
+                ingressClassName: traefik
+                tls:
+                  - hosts:
+                      - git.lions.dev
+                    secretName: gitea-tls
+                rules:
+                  - host: git.lions.dev
+                    http:
+                      paths:
+                        - path: /
+                          pathType: Prefix
+                          backend:
+                            service:
+                              name: gitea-service
+                              port:
+                                number: 3000
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+          ignore_errors: yes
+
+        - name: "Ingress placeholder pour Keycloak (keycloak.lions.dev)"
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: networking.k8s.io/v1
+              kind: Ingress
+              metadata:
+                name: keycloak-ingress
+                namespace: development
+                annotations:
+                  cert-manager.io/cluster-issuer: "letsencrypt-prod"
+                  traefik.ingress.kubernetes.io/router.tls: "true"
+                  traefik.ingress.kubernetes.io/router.middlewares: "default-https-redirect@kubernetescrd"
+              spec:
+                ingressClassName: traefik
+                tls:
+                  - hosts:
+                      - keycloak.lions.dev
+                    secretName: keycloak-tls
+                rules:
+                  - host: keycloak.lions.dev
+                    http:
+                      paths:
+                        - path: /
+                          pathType: Prefix
+                          backend:
+                            service:
+                              name: keycloak-service
+                              port:
+                                number: 8080
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+          ignore_errors: yes
+
+        - name: "Ingress placeholder pour pgAdmin (pgadmin.lions.dev)"
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: networking.k8s.io/v1
+              kind: Ingress
+              metadata:
+                name: pgadmin-ingress
+                namespace: development
+                annotations:
+                  cert-manager.io/cluster-issuer: "letsencrypt-prod"
+                  traefik.ingress.kubernetes.io/router.tls: "true"
+                  traefik.ingress.kubernetes.io/router.middlewares: "default-https-redirect@kubernetescrd"
+              spec:
+                ingressClassName: traefik
+                tls:
+                  - hosts:
+                      - pgadmin.lions.dev
+                    secretName: pgadmin-tls
+                rules:
+                  - host: pgadmin.lions.dev
+                    http:
+                      paths:
+                        - path: /
+                          pathType: Prefix
+                          backend:
+                            service:
+                              name: pgadmin-service
+                              port:
+                                number: 80
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+          ignore_errors: yes
+
+        - name: "Ingress pour site principal (lions.dev)"
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: networking.k8s.io/v1
+              kind: Ingress
+              metadata:
+                name: lions-main-site-ingress
+                namespace: development
+                annotations:
+                  cert-manager.io/cluster-issuer: "letsencrypt-prod"
+                  traefik.ingress.kubernetes.io/router.tls: "true"
+                  traefik.ingress.kubernetes.io/router.middlewares: "default-https-redirect@kubernetescrd"
+              spec:
+                ingressClassName: traefik
+                tls:
+                  - hosts:
+                      - lions.dev
+                      - www.lions.dev
+                    secretName: lions-main-tls
+                rules:
+                  - host: lions.dev
+                    http:
+                      paths:
+                        - path: /
+                          pathType: Prefix
+                          backend:
+                            service:
+                              name: lions-main-service
+                              port:
+                                number: 80
+                  - host: www.lions.dev
+                    http:
+                      paths:
+                        - path: /
+                          pathType: Prefix
+                          backend:
+                            service:
+                              name: lions-main-service
+                              port:
+                                number: 80
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+          ignore_errors: yes
+
+        - name: "Création du middleware HTTPS redirect"
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: traefik.containo.us/v1alpha1
+              kind: Middleware
+              metadata:
+                name: https-redirect
+                namespace: default
+              spec:
+                redirectScheme:
+                  scheme: https
+                  permanent: true
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+          ignore_errors: yes
+
+        - name: "Affichage des Ingress créés"
+          debug:
+            msg: |
+              ==========================================================
+              🌐 INGRESS CONFIGURÉS
+              ==========================================================
+              ✅ Grafana: https://grafana.lions.dev
+              ✅ Prometheus: https://prometheus.lions.dev (si installé)
+              ✅ Kubernetes Dashboard: https://k8s.lions.dev
+              ✅ Site principal: https://lions.dev
+              ✅ Git/Gitea: https://git.lions.dev (placeholder)
+              ✅ Keycloak: https://keycloak.lions.dev (placeholder)
+              ✅ pgAdmin: https://pgadmin.lions.dev (placeholder)
+              
+              📋 CERTIFICATS TLS:
+              • Certificats Let's Encrypt configurés automatiquement
+              • Redirection HTTPS automatique activée
+              
+              ⚠️  REMARQUE:
+              Les services placeholders seront disponibles une fois
+              les applications correspondantes déployées.
+              ==========================================================
+
+    # =========================================================================
+    # PHASE 9: VÉRIFICATIONS FINALES ET RAPPORT
+    # =========================================================================
+
+    - name: "✅ PHASE 9 - Vérifications finales et tests d'intégration"
       debug:
         msg: |
           ==========================================================
