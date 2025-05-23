@@ -34,7 +34,6 @@
       server
       --disable=traefik
       --disable=servicelb
-      --disable=local-storage
       --write-kubeconfig-mode=644
       --kubelet-arg=cgroup-driver=systemd
       --kubelet-arg=feature-gates=GracefulNodeShutdown=false
@@ -748,6 +747,7 @@
               storageSpec:
                 volumeClaimTemplate:
                   spec:
+                    storageClassName: "local-path"
                     accessModes: ["ReadWriteOnce"]
                     resources:
                       requests:
@@ -779,6 +779,7 @@
             adminPassword: "{{ monitoring_config.grafana_admin_password }}"
             persistence:
               enabled: true
+              storageClassName: "local-path"
               size: "{{ monitoring_config.grafana_storage }}"
               accessModes:
                 - ReadWriteOnce
@@ -829,6 +830,7 @@
               storage:
                 volumeClaimTemplate:
                   spec:
+                    storageClassName: "local-path"
                     accessModes: ["ReadWriteOnce"]
                     resources:
                       requests:
