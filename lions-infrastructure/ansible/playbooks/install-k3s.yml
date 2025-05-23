@@ -783,11 +783,11 @@
               prometheus:
                 enabled: true
                 prometheusSpec:
-                  retention: "1d"  # Réduit de 3d à 1d
-                  retentionSize: "1GB"  # Réduit de 2GB à 1GB
+                  retention: "6h"  # Réduit de 1d à 6h
+                  retentionSize: "500MB"  # Réduit de 1GB à 500MB
                   maximumStartupDurationSeconds: 2400  # Augmenté de 1200 à 2400
-                  scrapeInterval: "5m"  # Augmenté de 2m à 5m
-                  evaluationInterval: "5m"  # Augmenté de 2m à 5m
+                  scrapeInterval: "10m"  # Augmenté de 5m à 10m
+                  evaluationInterval: "10m"  # Augmenté de 5m à 10m
                   enableAdminAPI: false
                   walCompression: true
                   storageSpec:
@@ -800,11 +800,11 @@
                             storage: "1Gi"  # Réduit de 2Gi à 1Gi
                   resources:
                     requests:
-                      cpu: "10m"  # Réduit de 25m à 10m
-                      memory: "32Mi"  # Réduit de 64Mi à 32Mi
+                      cpu: "5m"  # Réduit de 10m à 5m
+                      memory: "16Mi"  # Réduit de 32Mi à 16Mi
                     limits:
-                      cpu: "50m"  # Réduit de 100m à 50m
-                      memory: "128Mi"  # Réduit de 256Mi à 128Mi
+                      cpu: "25m"  # Réduit de 50m à 25m
+                      memory: "64Mi"  # Réduit de 128Mi à 64Mi
                   scrapeTimeout: "30s"
                 service:
                   type: ClusterIP
@@ -825,11 +825,11 @@
                   port: 80
                 resources:
                   requests:
-                    cpu: "25m"  # Réduit de 50m à 25m
-                    memory: "32Mi"  # Réduit de 64Mi à 32Mi
+                    cpu: "10m"  # Réduit de 25m à 10m
+                    memory: "16Mi"  # Réduit de 32Mi à 16Mi
                   limits:
-                    cpu: "100m"  # Réduit de 200m à 100m
-                    memory: "128Mi"  # Réduit de 256Mi à 128Mi
+                    cpu: "50m"  # Réduit de 100m à 50m
+                    memory: "64Mi"  # Réduit de 128Mi à 64Mi
                 defaultDashboardsEnabled: true
                 sidecar:
                   dashboards:
@@ -846,33 +846,33 @@
                 enabled: true
                 resources:
                   requests:
-                    cpu: "5m"
-                    memory: "16Mi"
+                    cpu: "2m"
+                    memory: "8Mi"
                   limits:
-                    cpu: "25m"
-                    memory: "32Mi"
+                    cpu: "10m"
+                    memory: "16Mi"
 
               # Kube State Metrics avec ressources minimales
               kubeStateMetrics:
                 enabled: true
                 resources:
                   requests:
-                    cpu: "5m"
-                    memory: "16Mi"
+                    cpu: "2m"
+                    memory: "8Mi"
                   limits:
-                    cpu: "25m"
-                    memory: "32Mi"
+                    cpu: "10m"
+                    memory: "16Mi"
 
               # Configuration minimale pour Prometheus Operator
               prometheusOperator:
                 enabled: true
                 resources:
                   requests:
-                    cpu: "5m"  # Réduit de 10m à 5m
-                    memory: "16Mi"  # Réduit de 32Mi à 16Mi
+                    cpu: "2m"  # Réduit de 5m à 2m
+                    memory: "8Mi"  # Réduit de 16Mi à 8Mi
                   limits:
-                    cpu: "25m"  # Réduit de 50m à 25m
-                    memory: "32Mi"  # Réduit de 64Mi à 32Mi
+                    cpu: "10m"  # Réduit de 25m à 10m
+                    memory: "16Mi"  # Réduit de 32Mi à 16Mi
                 admissionWebhooks:
                   enabled: false  # Désactivé pour réduire la charge
                 tls:
@@ -883,7 +883,7 @@
               kubeApiServer:
                 enabled: false
               kubelet:
-                enabled: true
+                enabled: false  # Désactivé pour réduire la charge
               kubeControllerManager:
                 enabled: false
               coreDns:
