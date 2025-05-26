@@ -307,4 +307,5 @@ Pour désinstaller l'infrastructure :
 - [Guide d'administration](administration.md)
 - [Guide de déploiement](deployment.md)
 - [Guide de surveillance](monitoring.md)
+- [Guide de désinstallation](uninstallation.md)
 - [Architecture de référence](../architecture/overview.md)
