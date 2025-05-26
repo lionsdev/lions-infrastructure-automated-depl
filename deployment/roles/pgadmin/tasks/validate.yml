@@ -1,0 +1,80 @@
+---
+# Titre: Validation post-déploiement pour pgAdmin
+# Description: Valide le déploiement de pgAdmin
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-10
+# Version: 1.0.0
+
+- name: Récupération des informations sur les pods après initialisation
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: "{{ app_namespace }}"
+    label_selectors:
+      - app={{ app_name }}
+  register: pods_info_after_init
+
+- name: Attente que pgAdmin soit prêt
+  uri:
+    url: "http://{{ app_name }}.{{ app_namespace }}.svc.cluster.local:{{ pgadmin_default_port }}{{ pgadmin_health_path | default('/') }}"
+    status_code: 200
+    validate_certs: no
+  register: health_check
+  until: health_check.status == 200
+  retries: 30
+  delay: 10
+  failed_when: false
+
+- name: Vérification de l'état de santé de pgAdmin
+  debug:
+    msg: "pgAdmin {{ app_name }} est en bonne santé et prêt à recevoir des requêtes."
+  when: health_check.status is defined and health_check.status == 200
+
+- name: Avertissement si pgAdmin n'est pas en bonne santé
+  debug:
+    msg: "AVERTISSEMENT: pgAdmin {{ app_name }} n'est pas en bonne santé. Vérifiez les logs pour plus d'informations."
+  when: health_check.status is not defined or health_check.status != 200
+
+- name: Affichage de l'URL d'accès
+  set_fact:
+    service_url: "{{ app_name }}.{{ app_namespace }}.svc.cluster.local:{{ pgadmin_default_port }}"
+    ingress_url: "{{ app_name }}.{{ app_environment }}.lions.dev"
+
+- name: Affichage des informations d'accès
+  debug:
+    msg: 
+      - "pgAdmin {{ app_name }} est accessible à l'adresse interne: {{ service_url }}"
+      - "pgAdmin {{ app_name }} est accessible à l'adresse externe: https://{{ ingress_url }} (si l'ingress est configuré)"
+
+- name: Vérification de la connexion à Postgres
+  kubernetes.core.k8s_exec:
+    namespace: "{{ app_namespace }}"
+    pod: "{{ pods_info_after_init.resources[0].metadata.name }}"
+    command: >
+      curl -s http://{{ pgadmin_database_service | default('postgres') }}:{{ pgadmin_database_port | default('5432') }}
+  register: postgres_connection
+  failed_when: false
+  when: pods_info_after_init.resources | length > 0
+
+- name: Affichage du statut de connexion à Postgres
+  debug:
+    msg: "La connexion à Postgres est {{ 'établie' if postgres_connection.rc == 0 else 'impossible' }}."
+  when: pods_info_after_init.resources | length > 0
+
+- name: Récupération des logs de pgAdmin
+  kubernetes.core.k8s_log:
+    namespace: "{{ app_namespace }}"
+    name: "{{ pods_info_after_init.resources[0].metadata.name }}"
+    container: "{{ app_name }}"
+  register: pgadmin_logs
+  when: pods_info_after_init.resources | length > 0
+
+- name: Vérification des erreurs dans les logs
+  debug:
+    msg: "AVERTISSEMENT: Des erreurs ont été détectées dans les logs de pgAdmin. Veuillez les vérifier."
+  when: pods_info_after_init.resources | length > 0 and pgadmin_logs.log is search("ERROR")
+
+- name: Résumé du déploiement
+  debug:
+    msg: "Le déploiement de pgAdmin {{ app_name }} en version {{ app_version }} est terminé avec succès."
+  when: health_check.status is defined and health_check.status == 200

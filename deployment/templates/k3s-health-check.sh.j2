@@ -1,0 +1,237 @@
+#!/bin/bash
+# =============================================================================
+# LIONS Infrastructure - Script de vérification de santé K3s
+# =============================================================================
+# Titre: Script de vérification de santé pour les nœuds K3s
+# Description: Vérifie l'état des nœuds K3s et détecte les problèmes potentiels
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-25
+# Version: 1.0.0
+# =============================================================================
+
+# Configuration
+KUBECONFIG="{{ k3s_kubeconfig }}"
+LOG_FILE="/var/log/k3s-health.log"
+ALERT_FILE="/var/run/k3s-health-alert"
+MAX_ERRORS=3
+ERROR_COUNT_FILE="/var/run/k3s-health-errors"
+NODE_NAME="$(hostname)"
+API_SERVER="https://{{ k3s_api_lb_host }}:{{ k3s_api_lb_port }}"
+{% if inventory_hostname in groups['k3s_servers'] %}
+NODE_TYPE="server"
+{% else %}
+NODE_TYPE="agent"
+{% endif %}
+
+# Fonction de logging
+log() {
+    local level="$1"
+    local message="$2"
+    local timestamp
+    timestamp="$(date +"%Y-%m-%d %H:%M:%S")"
+    
+    echo "[${timestamp}] [${level}] ${message}" >> "${LOG_FILE}"
+    
+    # Affichage sur la console si le niveau est ERROR ou ALERT
+    if [[ "${level}" == "ERROR" || "${level}" == "ALERT" ]]; then
+        echo "[${timestamp}] [${level}] ${message}" >&2
+    fi
+}
+
+# Fonction pour incrémenter le compteur d'erreurs
+increment_error_count() {
+    if [[ -f "${ERROR_COUNT_FILE}" ]]; then
+        local count
+        count=$(cat "${ERROR_COUNT_FILE}")
+        count=$((count + 1))
+        echo "${count}" > "${ERROR_COUNT_FILE}"
+    else
+        echo "1" > "${ERROR_COUNT_FILE}"
+    fi
+}
+
+# Fonction pour réinitialiser le compteur d'erreurs
+reset_error_count() {
+    echo "0" > "${ERROR_COUNT_FILE}"
+}
+
+# Fonction pour vérifier si le nombre d'erreurs dépasse le seuil
+check_error_threshold() {
+    if [[ -f "${ERROR_COUNT_FILE}" ]]; then
+        local count
+        count=$(cat "${ERROR_COUNT_FILE}")
+        if [[ "${count}" -ge "${MAX_ERRORS}" ]]; then
+            return 0  # Seuil dépassé
+        fi
+    fi
+    return 1  # Seuil non dépassé
+}
+
+# Fonction pour créer une alerte
+create_alert() {
+    local reason="$1"
+    echo "${reason}" > "${ALERT_FILE}"
+    log "ALERT" "Alerte créée: ${reason}"
+}
+
+# Fonction pour supprimer une alerte
+clear_alert() {
+    if [[ -f "${ALERT_FILE}" ]]; then
+        rm -f "${ALERT_FILE}"
+        log "INFO" "Alerte supprimée"
+    fi
+}
+
+# Fonction pour vérifier l'état du service K3s
+check_k3s_service() {
+    log "INFO" "Vérification du service K3s"
+    
+    if ! systemctl is-active --quiet k3s{% if NODE_TYPE == "agent" %}-agent{% endif %}; then
+        log "ERROR" "Le service K3s{% if NODE_TYPE == "agent" %}-agent{% endif %} n'est pas en cours d'exécution"
+        increment_error_count
+        return 1
+    fi
+    
+    log "INFO" "Le service K3s{% if NODE_TYPE == "agent" %}-agent{% endif %} est en cours d'exécution"
+    return 0
+}
+
+# Fonction pour vérifier la connectivité à l'API Kubernetes
+check_api_connectivity() {
+    log "INFO" "Vérification de la connectivité à l'API Kubernetes"
+    
+    if ! curl -s --insecure --max-time 10 "${API_SERVER}/healthz" | grep -q "ok"; then
+        log "ERROR" "Impossible de se connecter à l'API Kubernetes"
+        increment_error_count
+        return 1
+    fi
+    
+    log "INFO" "Connectivité à l'API Kubernetes OK"
+    return 0
+}
+
+# Fonction pour vérifier l'état du nœud dans le cluster
+check_node_status() {
+    log "INFO" "Vérification de l'état du nœud dans le cluster"
+    
+    local node_status
+    node_status=$(kubectl --kubeconfig="${KUBECONFIG}" get node "${NODE_NAME}" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+    
+    if [[ "${node_status}" != "True" ]]; then
+        log "ERROR" "Le nœud n'est pas prêt dans le cluster (status: ${node_status:-Unknown})"
+        increment_error_count
+        return 1
+    fi
+    
+    log "INFO" "Le nœud est prêt dans le cluster"
+    return 0
+}
+
+# Fonction pour vérifier l'utilisation des ressources
+check_resource_usage() {
+    log "INFO" "Vérification de l'utilisation des ressources"
+    
+    # Vérification de l'utilisation du CPU
+    local cpu_usage
+    cpu_usage=$(top -bn1 | grep "Cpu(s)" | awk '{print $2 + $4}')
+    
+    if (( $(echo "${cpu_usage} > 90" | bc -l) )); then
+        log "WARNING" "Utilisation élevée du CPU: ${cpu_usage}%"
+    fi
+    
+    # Vérification de l'utilisation de la mémoire
+    local mem_usage
+    mem_usage=$(free | grep Mem | awk '{print $3/$2 * 100.0}')
+    
+    if (( $(echo "${mem_usage} > 90" | bc -l) )); then
+        log "WARNING" "Utilisation élevée de la mémoire: ${mem_usage}%"
+    fi
+    
+    # Vérification de l'espace disque
+    local disk_usage
+    disk_usage=$(df -h / | awk 'NR==2 {print $5}' | sed 's/%//')
+    
+    if [[ "${disk_usage}" -gt 90 ]]; then
+        log "WARNING" "Espace disque faible: ${disk_usage}%"
+    fi
+    
+    return 0
+}
+
+# Fonction pour vérifier les journaux d'erreurs
+check_error_logs() {
+    log "INFO" "Vérification des journaux d'erreurs"
+    
+    local error_count
+    error_count=$(journalctl -u k3s{% if NODE_TYPE == "agent" %}-agent{% endif %} -p err --since "5 minutes ago" | wc -l)
+    
+    if [[ "${error_count}" -gt 10 ]]; then
+        log "WARNING" "Nombre élevé d'erreurs dans les journaux: ${error_count}"
+        return 1
+    fi
+    
+    return 0
+}
+
+# Fonction pour vérifier la connectivité réseau
+check_network_connectivity() {
+    log "INFO" "Vérification de la connectivité réseau"
+    
+    # Vérification de la connectivité aux autres nœuds
+    {% for host in groups['k3s_cluster'] %}
+    {% if hostvars[host]['inventory_hostname'] != inventory_hostname %}
+    if ! ping -c 1 -W 2 {{ hostvars[host]['ansible_host'] }} &>/dev/null; then
+        log "WARNING" "Impossible de joindre le nœud {{ hostvars[host]['inventory_hostname'] }} ({{ hostvars[host]['ansible_host'] }})"
+    fi
+    {% endif %}
+    {% endfor %}
+    
+    return 0
+}
+
+# Fonction principale
+main() {
+    log "INFO" "Démarrage de la vérification de santé pour le nœud ${NODE_NAME} (type: ${NODE_TYPE})"
+    
+    local has_error=false
+    
+    # Vérification du service K3s
+    if ! check_k3s_service; then
+        has_error=true
+    fi
+    
+    # Vérification de la connectivité à l'API
+    if ! check_api_connectivity; then
+        has_error=true
+    fi
+    
+    # Vérification de l'état du nœud
+    if ! check_node_status; then
+        has_error=true
+    fi
+    
+    # Vérification des ressources
+    check_resource_usage
+    
+    # Vérification des journaux d'erreurs
+    check_error_logs
+    
+    # Vérification de la connectivité réseau
+    check_network_connectivity
+    
+    # Gestion des alertes
+    if [[ "${has_error}" == "true" ]]; then
+        if check_error_threshold; then
+            create_alert "Problèmes détectés sur le nœud ${NODE_NAME} (${NODE_TYPE})"
+        fi
+    else
+        clear_alert
+        reset_error_count
+    fi
+    
+    log "INFO" "Fin de la vérification de santé pour le nœud ${NODE_NAME}"
+    return 0
+}
+
+# Exécution de la fonction principale
+main "$@"

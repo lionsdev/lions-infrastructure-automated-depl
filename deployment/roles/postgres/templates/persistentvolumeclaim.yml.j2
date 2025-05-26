@@ -1,0 +1,17 @@
+{% if postgres_persistent_storage | bool %}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ app_name }}-data
+  namespace: {{ app_namespace }}
+  labels:
+    app: {{ app_name }}
+    environment: {{ app_environment }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: {{ postgres_storage_class }}
+  resources:
+    requests:
+      storage: {{ postgres_storage_size }}
+{% endif %}

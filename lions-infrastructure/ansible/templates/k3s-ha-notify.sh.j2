@@ -1,0 +1,98 @@
+#!/bin/bash
+# Script de notification pour les changements d'état de keepalived
+# Généré automatiquement par Ansible
+
+# Variables de configuration
+LOG_FILE="/var/log/k3s-ha-notify.log"
+HOSTNAME=$(hostname)
+STATE=$1
+TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+NOTIFICATION_URL="{{ lookup('hashi_vault', 'secret=kv/data/lions/monitoring:webhook_url', errors='ignore') | default('') }}"
+
+# Fonction de journalisation
+log() {
+    echo "[$TIMESTAMP] $1" >> $LOG_FILE
+    logger -t k3s-ha-notify "$1"
+}
+
+# Fonction d'envoi de notification
+send_notification() {
+    local message="$1"
+    local severity="$2"
+    
+    # Enregistrement dans le journal
+    log "$message"
+    
+    # Envoi d'une notification par webhook si configuré
+    if [ -n "$NOTIFICATION_URL" ]; then
+        curl -s -X POST "$NOTIFICATION_URL" \
+            -H "Content-Type: application/json" \
+            -d "{\"hostname\": \"$HOSTNAME\", \"state\": \"$STATE\", \"message\": \"$message\", \"severity\": \"$severity\", \"timestamp\": \"$TIMESTAMP\"}" \
+            --max-time 5 || true
+    fi
+}
+
+# Actions spécifiques à l'état MASTER
+handle_master() {
+    log "Passage à l'état MASTER"
+    
+    # Vérification que le service K3s est actif
+    if ! systemctl is-active --quiet k3s; then
+        log "Service K3s inactif, tentative de démarrage"
+        systemctl start k3s
+    fi
+    
+    # Notification
+    send_notification "K3s HA: Nœud $HOSTNAME est maintenant MASTER" "info"
+}
+
+# Actions spécifiques à l'état BACKUP
+handle_backup() {
+    log "Passage à l'état BACKUP"
+    
+    # Notification
+    send_notification "K3s HA: Nœud $HOSTNAME est maintenant BACKUP" "info"
+}
+
+# Actions spécifiques à l'état FAULT
+handle_fault() {
+    log "Passage à l'état FAULT"
+    
+    # Notification avec niveau d'alerte élevé
+    send_notification "K3s HA: Nœud $HOSTNAME est en état FAULT" "critical"
+    
+    # Tentative de récupération
+    log "Tentative de redémarrage du service K3s"
+    systemctl restart k3s
+}
+
+# Fonction principale
+main() {
+    # Vérification des arguments
+    if [ -z "$STATE" ]; then
+        log "Erreur: État non spécifié"
+        exit 1
+    fi
+    
+    # Traitement en fonction de l'état
+    case "$STATE" in
+        "MASTER")
+            handle_master
+            ;;
+        "BACKUP")
+            handle_backup
+            ;;
+        "FAULT")
+            handle_fault
+            ;;
+        *)
+            log "État inconnu: $STATE"
+            exit 1
+            ;;
+    esac
+    
+    exit 0
+}
+
+# Exécution du script principal
+main

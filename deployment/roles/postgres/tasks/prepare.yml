@@ -1,0 +1,149 @@
+---
+# Titre: Préparation des ressources pour PostgreSQL
+# Description: Prépare les ressources nécessaires pour déployer PostgreSQL
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-07
+# Version: 1.0.0
+
+- name: Création du répertoire temporaire pour les templates
+  tempfile:
+    state: directory
+    suffix: postgres-deploy
+  register: temp_dir
+  changed_when: false
+
+- name: Génération des fichiers de configuration Kubernetes
+  template:
+    src: "{{ item.src }}"
+    dest: "{{ temp_dir.path }}/{{ item.dest }}"
+  loop:
+    - { src: "statefulset.yml.j2", dest: "statefulset.yml" }
+    - { src: "service.yml.j2", dest: "service.yml" }
+    - { src: "configmap.yml.j2", dest: "configmap.yml" }
+    - { src: "serviceaccount.yml.j2", dest: "serviceaccount.yml" }
+    - { src: "servicemonitor.yml.j2", dest: "servicemonitor.yml" }
+    - { src: "persistentvolumeclaim.yml.j2", dest: "persistentvolumeclaim.yml" }
+  register: templates_generated
+
+- name: Vérification des fichiers générés
+  stat:
+    path: "{{ temp_dir.path }}/{{ item }}"
+  loop:
+    - "statefulset.yml"
+    - "service.yml"
+    - "configmap.yml"
+    - "serviceaccount.yml"
+    - "servicemonitor.yml"
+    - "persistentvolumeclaim.yml"
+  register: files_check
+
+- name: Vérification que tous les fichiers existent
+  assert:
+    that: "item.stat.exists"
+    fail_msg: "Le fichier {{ item.invocation.module_args.path }} n'existe pas"
+  loop: "{{ files_check.results }}"
+
+- name: Création du compte de service
+  k8s:
+    state: present
+    src: "{{ temp_dir.path }}/serviceaccount.yml"
+  register: serviceaccount_result
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+
+- name: Création du ConfigMap pour la configuration de PostgreSQL
+  k8s:
+    state: present
+    src: "{{ temp_dir.path }}/configmap.yml"
+  register: configmap_result
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+
+- name: Vérification de l'existence du secret pour l'administrateur PostgreSQL
+  k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: "{{ app_namespace }}"
+    name: "{{ postgres_admin_password_secret }}"
+  register: admin_secret_info
+  ignore_errors: yes
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+
+- name: Avertissement si le secret administrateur n'existe pas
+  debug:
+    msg: "AVERTISSEMENT: Le secret pour l'administrateur PostgreSQL n'existe pas. Utilisez kubectl pour créer le secret {{ postgres_admin_password_secret }}."
+  when: admin_secret_info is failed or admin_secret_info.resources | length == 0
+
+- name: Création d'un secret temporaire pour l'administrateur PostgreSQL si nécessaire
+  k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ postgres_admin_password_secret }}"
+        namespace: "{{ app_namespace }}"
+        labels:
+          app: "{{ app_name }}"
+          environment: "{{ app_environment }}"
+        annotations:
+          description: "Secret temporaire pour l'administrateur PostgreSQL. À remplacer par un secret sécurisé."
+      type: Opaque
+      stringData:
+        password: "changeme"
+  register: temp_admin_secret_result
+  when: admin_secret_info is failed or admin_secret_info.resources | length == 0
+  ignore_errors: yes
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+
+- name: Avertissement pour le mot de passe temporaire
+  debug:
+    msg: "AVERTISSEMENT: Un mot de passe temporaire a été créé pour l'administrateur PostgreSQL. Veuillez le changer dès que possible."
+  when: temp_admin_secret_result is succeeded
+
+- name: Vérification de l'existence du secret pour la réplication (si HA activé)
+  k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: "{{ app_namespace }}"
+    name: "{{ postgres_ha_replication_password_secret }}"
+  register: replication_secret_info
+  ignore_errors: yes
+  when: postgres_ha_enabled | bool
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+
+- name: Avertissement si le secret de réplication n'existe pas
+  debug:
+    msg: "AVERTISSEMENT: Le secret pour la réplication PostgreSQL n'existe pas. Utilisez kubectl pour créer le secret {{ postgres_ha_replication_password_secret }}."
+  when: postgres_ha_enabled | bool and (replication_secret_info is failed or replication_secret_info.resources | length == 0)
+
+- name: Création d'un secret temporaire pour la réplication si nécessaire
+  k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ postgres_ha_replication_password_secret }}"
+        namespace: "{{ app_namespace }}"
+        labels:
+          app: "{{ app_name }}"
+          environment: "{{ app_environment }}"
+        annotations:
+          description: "Secret temporaire pour la réplication PostgreSQL. À remplacer par un secret sécurisé."
+      type: Opaque
+      stringData:
+        password: "changeme"
+  register: temp_replication_secret_result
+  when: postgres_ha_enabled | bool and (replication_secret_info is failed or replication_secret_info.resources | length == 0)
+  ignore_errors: yes
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+
+- name: Avertissement pour le mot de passe de réplication temporaire
+  debug:
+    msg: "AVERTISSEMENT: Un mot de passe temporaire a été créé pour la réplication PostgreSQL. Veuillez le changer dès que possible."
+  when: temp_replication_secret_result is succeeded

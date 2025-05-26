@@ -1,0 +1,276 @@
+---
+# Titre: Playbook de maintenance
+# Description: Effectue des tâches de maintenance sur l'infrastructure
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-08
+# Version: 1.0.0
+
+- name: Maintenance de l'infrastructure LIONS
+  hosts: all
+  become: true
+  gather_facts: true
+  
+  vars:
+    maintenance_log_file: "/var/log/lions/maintenance/maintenance-{{ ansible_date_time.date }}.log"
+    maintenance_tasks:
+      - name: "Mise à jour des packages système"
+        enabled: true
+      - name: "Nettoyage des ressources inutilisées"
+        enabled: true
+      - name: "Vérification de l'état du cluster"
+        enabled: true
+      - name: "Rotation des logs"
+        enabled: true
+      - name: "Vérification des sauvegardes"
+        enabled: true
+      - name: "Vérification des certificats"
+        enabled: true
+  
+  tasks:
+    - name: Création du répertoire de logs
+      file:
+        path: "/var/log/lions/maintenance"
+        state: directory
+        mode: '0755'
+      ignore_errors: yes
+    
+    - name: Affichage du début de la maintenance
+      debug:
+        msg: "Début des tâches de maintenance - {{ ansible_date_time.iso8601 }}"
+    
+    - name: Enregistrement du début de la maintenance
+      lineinfile:
+        path: "{{ maintenance_log_file }}"
+        line: "Début des tâches de maintenance - {{ ansible_date_time.iso8601 }}"
+        create: yes
+        mode: '0644'
+      ignore_errors: yes
+    
+    # Mise à jour des packages système
+    - name: Mise à jour des packages système
+      block:
+        - name: Mise à jour des packages (Debian/Ubuntu)
+          apt:
+            update_cache: yes
+            upgrade: dist
+          when: ansible_os_family == "Debian"
+        
+        - name: Mise à jour des packages (RedHat/CentOS)
+          yum:
+            name: '*'
+            state: latest
+          when: ansible_os_family == "RedHat"
+        
+        - name: Enregistrement de la mise à jour des packages
+          lineinfile:
+            path: "{{ maintenance_log_file }}"
+            line: "Mise à jour des packages système terminée - {{ ansible_date_time.iso8601 }}"
+            create: yes
+          ignore_errors: yes
+      when: maintenance_tasks | selectattr('name', 'equalto', 'Mise à jour des packages système') | selectattr('enabled') | list | length > 0
+      ignore_errors: yes
+    
+    # Nettoyage des ressources inutilisées
+    - name: Nettoyage des ressources inutilisées
+      block:
+        - name: Nettoyage des packages inutilisés (Debian/Ubuntu)
+          apt:
+            autoremove: yes
+            autoclean: yes
+          when: ansible_os_family == "Debian"
+        
+        - name: Nettoyage des packages inutilisés (RedHat/CentOS)
+          yum:
+            autoremove: yes
+          when: ansible_os_family == "RedHat"
+        
+        - name: Nettoyage des images Docker inutilisées
+          shell: docker image prune -af
+          ignore_errors: yes
+          changed_when: false
+          when: ansible_facts.packages.docker is defined or ansible_facts.packages['docker-ce'] is defined
+        
+        - name: Nettoyage des volumes Docker inutilisés
+          shell: docker volume prune -f
+          ignore_errors: yes
+          changed_when: false
+          when: ansible_facts.packages.docker is defined or ansible_facts.packages['docker-ce'] is defined
+        
+        - name: Nettoyage des ressources Kubernetes
+          shell: |
+            kubectl get pods --all-namespaces -o json | jq '.items[] | select(.status.phase == "Succeeded" or .status.phase == "Failed") | "kubectl delete pod \(.metadata.name) -n \(.metadata.namespace)"' | xargs -r bash -c
+          ignore_errors: yes
+          changed_when: false
+          when: ansible_facts.packages.kubectl is defined
+        
+        - name: Enregistrement du nettoyage des ressources
+          lineinfile:
+            path: "{{ maintenance_log_file }}"
+            line: "Nettoyage des ressources inutilisées terminé - {{ ansible_date_time.iso8601 }}"
+            create: yes
+          ignore_errors: yes
+      when: maintenance_tasks | selectattr('name', 'equalto', 'Nettoyage des ressources inutilisées') | selectattr('enabled') | list | length > 0
+      ignore_errors: yes
+    
+    # Vérification de l'état du cluster
+    - name: Vérification de l'état du cluster
+      block:
+        - name: Vérification des nœuds Kubernetes
+          shell: kubectl get nodes -o wide
+          register: k8s_nodes
+          ignore_errors: yes
+          changed_when: false
+          when: ansible_facts.packages.kubectl is defined
+        
+        - name: Affichage de l'état des nœuds
+          debug:
+            msg: "{{ k8s_nodes.stdout_lines }}"
+          when: k8s_nodes is defined and k8s_nodes.stdout is defined
+        
+        - name: Vérification des pods système
+          shell: kubectl get pods -n kube-system
+          register: k8s_system_pods
+          ignore_errors: yes
+          changed_when: false
+          when: ansible_facts.packages.kubectl is defined
+        
+        - name: Affichage de l'état des pods système
+          debug:
+            msg: "{{ k8s_system_pods.stdout_lines }}"
+          when: k8s_system_pods is defined and k8s_system_pods.stdout is defined
+        
+        - name: Vérification des pods en erreur
+          shell: kubectl get pods --all-namespaces | grep -v "Running\|Completed"
+          register: k8s_error_pods
+          ignore_errors: yes
+          changed_when: false
+          when: ansible_facts.packages.kubectl is defined
+        
+        - name: Affichage des pods en erreur
+          debug:
+            msg: "{{ k8s_error_pods.stdout_lines }}"
+          when: k8s_error_pods is defined and k8s_error_pods.stdout is defined
+        
+        - name: Enregistrement de la vérification du cluster
+          lineinfile:
+            path: "{{ maintenance_log_file }}"
+            line: "Vérification de l'état du cluster terminée - {{ ansible_date_time.iso8601 }}"
+            create: yes
+          ignore_errors: yes
+      when: maintenance_tasks | selectattr('name', 'equalto', 'Vérification de l\'état du cluster') | selectattr('enabled') | list | length > 0
+      ignore_errors: yes
+    
+    # Rotation des logs
+    - name: Rotation des logs
+      block:
+        - name: Vérification de l'espace disque
+          shell: df -h
+          register: disk_space
+          changed_when: false
+        
+        - name: Affichage de l'espace disque
+          debug:
+            msg: "{{ disk_space.stdout_lines }}"
+        
+        - name: Compression des anciens logs
+          find:
+            paths: /var/log
+            patterns: "*.log"
+            age: 7d
+            recurse: yes
+          register: old_logs
+        
+        - name: Compression des fichiers de log
+          archive:
+            path: "{{ item.path }}"
+            dest: "{{ item.path }}.{{ ansible_date_time.date }}.gz"
+            remove: yes
+          with_items: "{{ old_logs.files }}"
+          when: old_logs.matched > 0
+        
+        - name: Enregistrement de la rotation des logs
+          lineinfile:
+            path: "{{ maintenance_log_file }}"
+            line: "Rotation des logs terminée - {{ ansible_date_time.iso8601 }}"
+            create: yes
+          ignore_errors: yes
+      when: maintenance_tasks | selectattr('name', 'equalto', 'Rotation des logs') | selectattr('enabled') | list | length > 0
+      ignore_errors: yes
+    
+    # Vérification des sauvegardes
+    - name: Vérification des sauvegardes
+      block:
+        - name: Vérification des sauvegardes récentes
+          find:
+            paths: /var/backups
+            patterns: "*.tar.gz,*.sql.gz,*.dump"
+            age: 2d
+            recurse: yes
+          register: recent_backups
+        
+        - name: Affichage des sauvegardes récentes
+          debug:
+            msg: "{{ recent_backups.matched }} sauvegardes récentes trouvées"
+        
+        - name: Avertissement si aucune sauvegarde récente
+          debug:
+            msg: "AVERTISSEMENT: Aucune sauvegarde récente trouvée!"
+          when: recent_backups.matched == 0
+        
+        - name: Enregistrement de la vérification des sauvegardes
+          lineinfile:
+            path: "{{ maintenance_log_file }}"
+            line: "Vérification des sauvegardes terminée - {{ ansible_date_time.iso8601 }}"
+            create: yes
+          ignore_errors: yes
+      when: maintenance_tasks | selectattr('name', 'equalto', 'Vérification des sauvegardes') | selectattr('enabled') | list | length > 0
+      ignore_errors: yes
+    
+    # Vérification des certificats
+    - name: Vérification des certificats
+      block:
+        - name: Vérification des certificats Kubernetes
+          shell: kubectl get certificates --all-namespaces
+          register: k8s_certs
+          ignore_errors: yes
+          changed_when: false
+          when: ansible_facts.packages.kubectl is defined
+        
+        - name: Affichage des certificats
+          debug:
+            msg: "{{ k8s_certs.stdout_lines }}"
+          when: k8s_certs is defined and k8s_certs.stdout is defined
+        
+        - name: Vérification des certificats expirant bientôt
+          shell: |
+            kubectl get certificates --all-namespaces -o json | jq -r '.items[] | select(.status.notAfter != null) | select((.status.notAfter | fromdateiso8601) < (now + 30*24*60*60)) | "\(.metadata.namespace)/\(.metadata.name): Expire le \(.status.notAfter)"'
+          register: expiring_certs
+          ignore_errors: yes
+          changed_when: false
+          when: ansible_facts.packages.kubectl is defined
+        
+        - name: Affichage des certificats expirant bientôt
+          debug:
+            msg: "{{ expiring_certs.stdout_lines }}"
+          when: expiring_certs is defined and expiring_certs.stdout is defined
+        
+        - name: Enregistrement de la vérification des certificats
+          lineinfile:
+            path: "{{ maintenance_log_file }}"
+            line: "Vérification des certificats terminée - {{ ansible_date_time.iso8601 }}"
+            create: yes
+          ignore_errors: yes
+      when: maintenance_tasks | selectattr('name', 'equalto', 'Vérification des certificats') | selectattr('enabled') | list | length > 0
+      ignore_errors: yes
+    
+    - name: Affichage de la fin de la maintenance
+      debug:
+        msg: "Fin des tâches de maintenance - {{ ansible_date_time.iso8601 }}"
+    
+    - name: Enregistrement de la fin de la maintenance
+      lineinfile:
+        path: "{{ maintenance_log_file }}"
+        line: "Fin des tâches de maintenance - {{ ansible_date_time.iso8601 }}"
+        create: yes
+        mode: '0644'
+      ignore_errors: yes

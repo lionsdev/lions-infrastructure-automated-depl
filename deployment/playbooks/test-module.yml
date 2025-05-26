@@ -1,0 +1,17 @@
+---
+# Playbook de test pour vérifier le chargement des modules
+- name: Test de chargement des modules
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  
+  tasks:
+    - name: Test d'un module simple
+      debug:
+        msg: "Test de chargement des modules"
+      
+    - name: Test d'un module kubernetes.core
+      kubernetes.core.k8s_info:
+        kind: Pod
+        namespace: default
+      ignore_errors: yes

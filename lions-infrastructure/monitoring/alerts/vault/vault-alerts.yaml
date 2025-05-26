@@ -1,0 +1,81 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: vault-alerts
+  namespace: monitoring
+  labels:
+    app: kube-prometheus-stack
+    release: prometheus
+spec:
+  groups:
+  - name: vault.rules
+    rules:
+    - alert: VaultSealed
+      expr: vault_core_unsealed == 0
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Vault is sealed"
+        description: "Vault has been sealed for more than 5 minutes. Secrets cannot be accessed until Vault is unsealed."
+        runbook_url: "https://www.vaultproject.io/docs/concepts/seal"
+
+    - alert: VaultHighMemoryUsage
+      expr: vault_runtime_alloc_bytes / vault_runtime_sys_bytes > 0.85
+      for: 15m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Vault high memory usage"
+        description: "Vault is using more than 85% of allocated memory for over 15 minutes."
+        runbook_url: "https://www.vaultproject.io/docs/internals/high-availability"
+
+    - alert: VaultHighResponseTime
+      expr: vault_core_handle_request_mean > 0.5
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Vault high response time"
+        description: "Vault average response time is above 500ms for over 10 minutes."
+        runbook_url: "https://www.vaultproject.io/docs/internals/performance"
+
+    - alert: VaultHighRequestRate
+      expr: rate(vault_core_handle_request_count[5m]) > 100
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Vault high request rate"
+        description: "Vault is processing more than 100 requests per second for over 10 minutes."
+        runbook_url: "https://www.vaultproject.io/docs/internals/performance"
+
+    - alert: VaultAuthFailure
+      expr: rate(vault_audit_log_request{type="request", auth_type="error"}[5m]) > 10
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Vault authentication failures"
+        description: "Vault is experiencing more than 10 authentication failures per second for over 5 minutes."
+        runbook_url: "https://www.vaultproject.io/docs/audit"
+
+    - alert: VaultTokenLeak
+      expr: vault_token_count > 1000
+      for: 1h
+      labels:
+        severity: warning
+      annotations:
+        summary: "Possible Vault token leak"
+        description: "Vault has more than 1000 active tokens for over 1 hour. This might indicate a token leak."
+        runbook_url: "https://www.vaultproject.io/docs/concepts/tokens"
+
+    - alert: VaultDown
+      expr: up{job="vault"} == 0
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Vault is down"
+        description: "Vault service has been down for more than 5 minutes."
+        runbook_url: "https://www.vaultproject.io/docs/internals/high-availability"

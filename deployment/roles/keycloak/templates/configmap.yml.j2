@@ -1,0 +1,81 @@
+---
+# Titre: Template de ConfigMap Kubernetes pour Keycloak
+# Description: Définit la ConfigMap Kubernetes pour Keycloak
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-07
+# Version: 1.0.0
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: "{{ app_name }}-config"
+  namespace: "{{ app_namespace }}"
+  labels:
+    app: "{{ app_name }}"
+    version: "{{ app_version }}"
+    environment: "{{ app_environment }}"
+    technology: "keycloak"
+  annotations:
+    description: "ConfigMap pour Keycloak {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+data:
+  # Variables d'environnement pour Keycloak
+  KC_LOG_LEVEL: "{% if app_environment == 'production' %}WARN{% elif app_environment == 'staging' %}INFO{% else %}DEBUG{% endif %}"
+  KC_CACHE: "{% if app_environment == 'production' %}true{% else %}false{% endif %}"
+  KC_CACHE_STACK: "{% if app_environment == 'production' %}kubernetes{% else %}local{% endif %}"
+  
+  # Configuration du realm par défaut
+  KC_FEATURES: "admin2,declarative-user-profile,update-email"
+  KC_FEATURES_DISABLED: "account2,docker,impersonation,openshift-integration"
+  KC_SPI_EVENTS_LISTENER_JBOSS_LOGGING_SUCCESS_LEVEL: "info"
+  KC_SPI_EVENTS_LISTENER_JBOSS_LOGGING_ERROR_LEVEL: "warn"
+  
+  # Configuration de la sécurité
+  KC_HOSTNAME_STRICT_BACKCHANNEL: "true"
+  KC_HTTP_ENABLED: "true"
+  KC_HTTPS_CERTIFICATE_FILE: "/opt/keycloak/conf/tls.crt"
+  KC_HTTPS_CERTIFICATE_KEY_FILE: "/opt/keycloak/conf/tls.key"
+  KC_HTTPS_PROTOCOLS: "TLSv1.2,TLSv1.3"
+  
+  # Configuration des performances
+  KC_TRANSACTION_XA_ENABLED: "{% if app_environment == 'production' %}true{% else %}false{% endif %}"
+  KC_HTTP_RELATIVE_PATH: "/auth"
+  KC_HOSTNAME_STRICT: "false"
+  KC_PROXY: "edge"
+  
+  # Configuration du realm LIONS
+  keycloak.realm: |
+    {
+      "realm": "{{ keycloak_realm }}",
+      "enabled": true,
+      "displayName": "LIONS Realm",
+      "displayNameHtml": "<div class=\"kc-logo-text\"><span>LIONS</span></div>",
+      "sslRequired": "external",
+      "registrationAllowed": false,
+      "loginWithEmailAllowed": true,
+      "duplicateEmailsAllowed": false,
+      "resetPasswordAllowed": true,
+      "editUsernameAllowed": false,
+      "bruteForceProtected": true,
+      "permanentLockout": false,
+      "maxFailureWaitSeconds": 900,
+      "minimumQuickLoginWaitSeconds": 60,
+      "waitIncrementSeconds": 60,
+      "quickLoginCheckMilliSeconds": 1000,
+      "maxDeltaTimeSeconds": 43200,
+      "failureFactor": 5,
+      "defaultSignatureAlgorithm": "RS256",
+      "revokeRefreshToken": true,
+      "refreshTokenMaxReuse": 0,
+      "accessTokenLifespan": 300,
+      "accessTokenLifespanForImplicitFlow": 900,
+      "ssoSessionIdleTimeout": 1800,
+      "ssoSessionMaxLifespan": 36000,
+      "offlineSessionIdleTimeout": 2592000,
+      "accessCodeLifespan": 60,
+      "accessCodeLifespanUserAction": 300,
+      "accessCodeLifespanLogin": 1800,
+      "actionTokenGeneratedByAdminLifespan": 43200,
+      "actionTokenGeneratedByUserLifespan": 300,
+      "oauth2DeviceCodeLifespan": 600,
+      "oauth2DevicePollingInterval": 5
+    }

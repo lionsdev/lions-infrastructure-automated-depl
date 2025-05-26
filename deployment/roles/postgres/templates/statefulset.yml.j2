@@ -1,0 +1,131 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ app_name }}
+  namespace: {{ app_namespace }}
+  labels:
+    app: {{ app_name }}
+    environment: {{ app_environment }}
+spec:
+  serviceName: {{ app_name }}
+  replicas: {{ postgres_replicas[app_environment] | default(1) }}
+  selector:
+    matchLabels:
+      app: {{ app_name }}
+  template:
+    metadata:
+      labels:
+        app: {{ app_name }}
+        environment: {{ app_environment }}
+      annotations:
+        prometheus.io/scrape: "{{ postgres_prometheus_scrape | string }}"
+        prometheus.io/port: "{{ postgres_prometheus_port }}"
+        prometheus.io/path: "{{ postgres_prometheus_path }}"
+    spec:
+      serviceAccountName: {{ app_name }}
+      containers:
+        - name: {{ app_name }}
+          image: "postgres:{{ postgres_version }}"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: {{ postgres_default_port }}
+              name: postgres
+            - containerPort: {{ postgres_prometheus_port }}
+              name: metrics
+          env:
+            - name: POSTGRES_USER
+              value: "{{ postgres_admin_user }}"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ postgres_admin_password_secret }}
+                  key: password
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+            - name: POSTGRES_DB
+              value: postgres
+{% if postgres_ha_enabled | bool %}
+            - name: POSTGRES_REPLICATION_USER
+              value: "{{ postgres_ha_replication_user }}"
+            - name: POSTGRES_REPLICATION_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ postgres_ha_replication_password_secret }}
+                  key: password
+{% endif %}
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+            - name: postgres-config
+              mountPath: /etc/postgresql/postgresql.conf
+              subPath: postgresql.conf
+            - name: postgres-config
+              mountPath: /etc/postgresql/pg_hba.conf
+              subPath: pg_hba.conf
+          resources:
+            requests:
+              cpu: {{ postgres_resources[app_environment].requests.cpu }}
+              memory: {{ postgres_resources[app_environment].requests.memory }}
+            limits:
+              cpu: {{ postgres_resources[app_environment].limits.cpu }}
+              memory: {{ postgres_resources[app_environment].limits.memory }}
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - pg_isready -U {{ postgres_admin_user }} -h 127.0.0.1 -p {{ postgres_default_port }}
+            initialDelaySeconds: {{ postgres_readiness_probe.initialDelaySeconds }}
+            periodSeconds: {{ postgres_readiness_probe.periodSeconds }}
+            timeoutSeconds: {{ postgres_readiness_probe.timeoutSeconds }}
+            failureThreshold: {{ postgres_readiness_probe.failureThreshold }}
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - pg_isready -U {{ postgres_admin_user }} -h 127.0.0.1 -p {{ postgres_default_port }}
+            initialDelaySeconds: {{ postgres_liveness_probe.initialDelaySeconds }}
+            periodSeconds: {{ postgres_liveness_probe.periodSeconds }}
+            timeoutSeconds: {{ postgres_liveness_probe.timeoutSeconds }}
+            failureThreshold: {{ postgres_liveness_probe.failureThreshold }}
+        - name: postgres-exporter
+          image: prometheuscommunity/postgres-exporter:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: {{ postgres_prometheus_port }}
+              name: metrics
+          env:
+            - name: DATA_SOURCE_NAME
+              value: "postgresql://{{ postgres_admin_user }}:$(POSTGRES_PASSWORD)@localhost:{{ postgres_default_port }}/postgres?sslmode=disable"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ postgres_admin_password_secret }}
+                  key: password
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+      volumes:
+        - name: postgres-config
+          configMap:
+            name: {{ app_name }}-config
+{% if not postgres_persistent_storage | bool %}
+        - name: postgres-data
+          emptyDir: {}
+{% endif %}
+{% if postgres_persistent_storage | bool %}
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ postgres_storage_class }}
+        resources:
+          requests:
+            storage: {{ postgres_storage_size }}
+{% endif %}

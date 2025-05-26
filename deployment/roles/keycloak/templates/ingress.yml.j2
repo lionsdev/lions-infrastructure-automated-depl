@@ -1,0 +1,39 @@
+---
+# Titre: Template d'ingress Kubernetes pour Keycloak
+# Description: Définit l'ingress Kubernetes pour Keycloak
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-07
+# Version: 1.0.0
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: "{{ app_name }}"
+  namespace: "{{ app_namespace }}"
+  labels:
+    app: "{{ app_name }}"
+    version: "{{ app_version }}"
+    environment: "{{ app_environment }}"
+    technology: "keycloak"
+  annotations:
+    description: "Ingress pour Keycloak {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    {% for key, value in keycloak_ingress_annotations.items() %}
+    {{ key }}: "{{ value }}"
+    {% endfor %}
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - "{{ app_domain }}"
+      secretName: "{{ app_name }}-tls"
+  rules:
+    - host: "{{ app_domain }}"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: "{{ app_name }}"
+                port:
+                  name: http

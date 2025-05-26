@@ -1,0 +1,137 @@
+---
+# Titre: Préparation des ressources pour le service de notification
+# Description: Prépare les ressources nécessaires pour déployer le service de notification
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-08
+# Version: 1.0.0
+
+- name: Création du répertoire temporaire pour les templates
+  tempfile:
+    state: directory
+    suffix: notification-deploy
+  register: temp_dir
+  changed_when: false
+
+- name: Génération des fichiers de configuration Kubernetes
+  template:
+    src: "{{ item.src }}"
+    dest: "{{ temp_dir.path }}/{{ item.dest }}"
+  loop:
+    - { src: "deployment.yml.j2", dest: "deployment.yml" }
+    - { src: "service.yml.j2", dest: "service.yml" }
+    - { src: "ingress.yml.j2", dest: "ingress.yml" }
+    - { src: "configmap.yml.j2", dest: "configmap.yml" }
+    - { src: "serviceaccount.yml.j2", dest: "serviceaccount.yml" }
+    - { src: "servicemonitor.yml.j2", dest: "servicemonitor.yml" }
+  register: templates_generated
+
+- name: Vérification des fichiers générés
+  stat:
+    path: "{{ temp_dir.path }}/{{ item }}"
+  loop:
+    - "deployment.yml"
+    - "service.yml"
+    - "ingress.yml"
+    - "configmap.yml"
+    - "serviceaccount.yml"
+    - "servicemonitor.yml"
+  register: files_check
+  failed_when: not item.stat.exists
+
+- name: Création du compte de service
+  k8s:
+    state: present
+    src: "{{ temp_dir.path }}/serviceaccount.yml"
+  register: serviceaccount_result
+
+- name: Création du ConfigMap pour la configuration du service de notification
+  k8s:
+    state: present
+    src: "{{ temp_dir.path }}/configmap.yml"
+  register: configmap_result
+
+- name: Création du ConfigMap pour les templates d'email (si activé)
+  k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ app_name }}-email-templates"
+        namespace: "{{ app_namespace }}"
+        labels:
+          app: "{{ app_name }}"
+          version: "{{ app_version }}"
+          environment: "{{ app_environment }}"
+          technology: "notification-service"
+        annotations:
+          description: "Templates d'email pour le service de notification {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+      data:
+        "welcome_fr.html": |
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <meta charset="UTF-8">
+            <title>Bienvenue</title>
+          </head>
+          <body>
+            <h1>Bienvenue sur notre plateforme !</h1>
+            <p>Bonjour {{name}},</p>
+            <p>Nous sommes ravis de vous accueillir sur notre plateforme.</p>
+            <p>Cordialement,<br>L'équipe LIONS</p>
+          </body>
+          </html>
+        "welcome_en.html": |
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <meta charset="UTF-8">
+            <title>Welcome</title>
+          </head>
+          <body>
+            <h1>Welcome to our platform!</h1>
+            <p>Hello {{name}},</p>
+            <p>We are delighted to welcome you to our platform.</p>
+            <p>Best regards,<br>The LIONS Team</p>
+          </body>
+          </html>
+  register: email_templates_result
+  when: notification_channels.email.enabled | default(true) | bool
+
+- name: Vérification de l'existence des secrets requis
+  k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: "{{ app_namespace }}"
+    name: "{{ app_name }}-secrets"
+  register: secrets_info
+  ignore_errors: yes
+
+- name: Création d'un secret temporaire si nécessaire
+  k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ app_name }}-secrets"
+        namespace: "{{ app_namespace }}"
+        labels:
+          app: "{{ app_name }}"
+          environment: "{{ app_environment }}"
+        annotations:
+          description: "Secret temporaire pour le service de notification. À remplacer par un secret sécurisé."
+      type: Opaque
+      stringData:
+        ADMIN_PASSWORD: "changeme"
+        SMTP_USER: "notification@example.com"
+        SMTP_PASSWORD: "changeme"
+        SLACK_WEBHOOK_URL: "https://hooks.slack.com/services/TXXXXXXXX/BXXXXXXXX/XXXXXXXXXXXXXXXXXXXXXXXX"
+  register: temp_secret_result
+  when: secrets_info is failed or secrets_info.resources | length == 0
+  ignore_errors: yes
+
+- name: Avertissement pour les secrets temporaires
+  debug:
+    msg: "AVERTISSEMENT: Des secrets temporaires ont été créés pour le service de notification. Veuillez les remplacer par des secrets sécurisés."
+  when: temp_secret_result is succeeded

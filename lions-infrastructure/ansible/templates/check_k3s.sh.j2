@@ -1,0 +1,75 @@
+#!/bin/bash
+# Script de vérification de l'état de K3s pour keepalived
+# Généré automatiquement par Ansible
+
+# Variables de configuration
+K3S_API_URL="https://localhost:6443/healthz"
+K3S_SERVICE="k3s"
+LOG_FILE="/var/log/k3s-ha-check.log"
+
+# Fonction de journalisation
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> $LOG_FILE
+}
+
+# Vérification de l'état du service K3s
+check_service() {
+    if systemctl is-active --quiet $K3S_SERVICE; then
+        return 0
+    else
+        log "Service K3s inactif"
+        return 1
+    fi
+}
+
+# Vérification de l'API Kubernetes
+check_api() {
+    # Utilisation de curl avec un timeout court pour vérifier l'API
+    if curl -s -k --max-time 2 $K3S_API_URL | grep -q "ok"; then
+        return 0
+    else
+        log "API Kubernetes inaccessible"
+        return 1
+    fi
+}
+
+# Vérification des pods système critiques
+check_critical_pods() {
+    # Liste des pods critiques à vérifier
+    CRITICAL_NAMESPACES="kube-system"
+    
+    # Vérification des pods en état CrashLoopBackOff ou Failed
+    FAILED_PODS=$(kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml get pods --all-namespaces -o json | jq -r '.items[] | select(.status.phase=="Failed" or (.status.containerStatuses != null and .status.containerStatuses[].state.waiting.reason == "CrashLoopBackOff")) | .metadata.namespace + "/" + .metadata.name')
+    
+    if [ -n "$FAILED_PODS" ]; then
+        log "Pods critiques en échec: $FAILED_PODS"
+        return 1
+    fi
+    
+    return 0
+}
+
+# Exécution des vérifications
+main() {
+    # Vérification du service
+    if ! check_service; then
+        exit 1
+    fi
+    
+    # Vérification de l'API
+    if ! check_api; then
+        exit 1
+    fi
+    
+    # Vérification des pods critiques (désactivée par défaut pour éviter les faux positifs)
+    # Décommentez pour activer
+    # if ! check_critical_pods; then
+    #     exit 1
+    # fi
+    
+    # Tout est OK
+    exit 0
+}
+
+# Exécution du script principal
+main

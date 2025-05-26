@@ -1,0 +1,21 @@
+---
+# Titre: Tâches pour le déploiement d'applications PrimeFaces
+# Description: Déploie une application PrimeFaces sur Kubernetes
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-07
+# Version: 1.0.0
+
+- name: Vérification des prérequis pour PrimeFaces
+  include_tasks: prerequisites.yml
+
+- name: Préparation des ressources Kubernetes
+  include_tasks: prepare.yml
+
+- name: Déploiement de l'application PrimeFaces
+  include_tasks: deploy.yml
+
+- name: Configuration du monitoring pour PrimeFaces
+  include_tasks: monitoring.yml
+
+- name: Validation post-déploiement
+  include_tasks: validate.yml

@@ -1,0 +1,26 @@
+---
+# Titre: Template de PersistentVolumeClaim Kubernetes pour Redis
+# Description: Définit le PersistentVolumeClaim Kubernetes pour Redis
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-08
+# Version: 1.0.0
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: "{{ app_name }}-data"
+  namespace: "{{ app_namespace }}"
+  labels:
+    app: "{{ app_name }}"
+    version: "{{ app_version }}"
+    environment: "{{ app_environment }}"
+    technology: "redis"
+  annotations:
+    description: "PersistentVolumeClaim pour Redis {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: "{{ redis_storage_class }}"
+  resources:
+    requests:
+      storage: "{{ redis_storage_size }}"

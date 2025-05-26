@@ -1,0 +1,406 @@
+---
+# Titre: Playbook de Déploiement des Services d'Application
+# Description: Déploie les services d'application (Afterwork, API, Associations, BTP, Immobilier, etc.)
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-16
+# Version: 1.0.0
+
+- name: Déploiement des Services d'Application
+  hosts: vps
+  become: yes
+  gather_facts: yes
+  vars:
+    deploy_environment: "{{ target_env | default('development') }}"
+    roles_path: "{{ playbook_dir }}/../roles"
+    base_domain: "lions.dev"
+    api_domain: "api.lions.dev"
+
+  pre_tasks:
+    - name: Installation des dépendances Python requises
+      pip:
+        name:
+          - kubernetes
+          - PyYAML
+          - jsonpatch
+        state: present
+      become: yes
+
+  tasks:
+    - name: Affichage des informations de déploiement
+      debug:
+        msg: 
+          - "Environnement: {{ deploy_environment }}"
+          - "Services à déployer: Afterwork, API, Associations, BTP, Immobilier, etc."
+
+    # Site principal
+    - name: Déploiement du site principal
+      include_role:
+        name: "{{ roles_path }}/quarkus"
+      vars:
+        app_name: site-principal
+        app_namespace: "site-principal-{{ deploy_environment }}"
+        app_environment: "{{ deploy_environment }}"
+        app_domain: "{{ base_domain }}"
+        app_version: "latest"
+        app_replicas: 1
+        app_port: 8080
+
+    # API principale
+    - name: Déploiement de l'API principale
+      include_role:
+        name: "{{ roles_path }}/quarkus"
+      vars:
+        app_name: api-principale
+        app_namespace: "api-principale-{{ deploy_environment }}"
+        app_environment: "{{ deploy_environment }}"
+        app_domain: "{{ api_domain }}"
+        app_version: "latest"
+        app_replicas: 1
+        app_port: 8081
+        app_path: "/portail"
+
+    # Associations API
+    - name: Déploiement de l'API Associations
+      include_role:
+        name: "{{ roles_path }}/quarkus"
+      vars:
+        app_name: associations-api
+        app_namespace: "associations-api-{{ deploy_environment }}"
+        app_environment: "{{ deploy_environment }}"
+        app_domain: "{{ api_domain }}"
+        app_version: "latest"
+        app_replicas: 1
+        app_port: 8082
+        app_path: "/associations"
+
+    # Afterwork API
+    - name: Déploiement de l'API Afterwork
+      include_role:
+        name: "{{ roles_path }}/quarkus"
+      vars:
+        app_name: afterwork-api
+        app_namespace: "afterwork-api-{{ deploy_environment }}"
+        app_environment: "{{ deploy_environment }}"
+        app_domain: "{{ api_domain }}"
+        app_version: "latest"
+        app_replicas: 1
+        app_port: 8083
+        app_path: "/afterwork"
+
+    # Bacy Event API
+    - name: Déploiement de l'API Bacy Event
+      include_role:
+        name: "{{ roles_path }}/quarkus"
+      vars:
+        app_name: bacy-event-api
+        app_namespace: "bacy-event-api-{{ deploy_environment }}"
+        app_environment: "{{ deploy_environment }}"
+        app_domain: "{{ api_domain }}"
+        app_version: "latest"
+        app_replicas: 1
+        app_port: 8084
+        app_path: "/bacy-event"
+
+    # BTP API
+    - name: Déploiement de l'API BTP
+      include_role:
+        name: "{{ roles_path }}/quarkus"
+      vars:
+        app_name: btp-api
+        app_namespace: "btp-api-{{ deploy_environment }}"
+        app_environment: "{{ deploy_environment }}"
+        app_domain: "{{ api_domain }}"
+        app_version: "latest"
+        app_replicas: 1
+        app_port: 8087
+        app_path: "/btp"
+
+    # Immobilier API
+    - name: Déploiement de l'API Immobilier
+      include_role:
+        name: "{{ roles_path }}/quarkus"
+      vars:
+        app_name: immobilier-api
+        app_namespace: "immobilier-api-{{ deploy_environment }}"
+        app_environment: "{{ deploy_environment }}"
+        app_domain: "{{ api_domain }}"
+        app_version: "latest"
+        app_replicas: 1
+        app_port: 8088
+        app_path: "/immobilier"
+
+    # Mail API
+    - name: Déploiement de l'API Mail
+      include_role:
+        name: "{{ roles_path }}/quarkus"
+      vars:
+        app_name: mail-api
+        app_namespace: "mail-api-{{ deploy_environment }}"
+        app_environment: "{{ deploy_environment }}"
+        app_domain: "{{ api_domain }}"
+        app_version: "latest"
+        app_replicas: 1
+        app_port: 8026
+        app_path: "/mail"
+
+    # Afterwork Application
+    - name: Déploiement de l'application Afterwork
+      include_role:
+        name: "{{ roles_path }}/quarkus"
+      vars:
+        app_name: afterwork-app
+        app_namespace: "afterwork-app-{{ deploy_environment }}"
+        app_environment: "{{ deploy_environment }}"
+        app_domain: "afterwork.{{ base_domain }}"
+        app_version: "latest"
+        app_replicas: 1
+        app_port: 8091
+
+    # Associations Application
+    - name: Déploiement de l'application Associations
+      include_role:
+        name: "{{ roles_path }}/quarkus"
+      vars:
+        app_name: associations-app
+        app_namespace: "associations-app-{{ deploy_environment }}"
+        app_environment: "{{ deploy_environment }}"
+        app_domain: "associations.{{ base_domain }}"
+        app_version: "latest"
+        app_replicas: 1
+        app_port: 8090
+
+    # BTP Application
+    - name: Déploiement de l'application BTP
+      include_role:
+        name: "{{ roles_path }}/quarkus"
+      vars:
+        app_name: btp-app
+        app_namespace: "btp-app-{{ deploy_environment }}"
+        app_environment: "{{ deploy_environment }}"
+        app_domain: "btp.{{ base_domain }}"
+        app_version: "latest"
+        app_replicas: 1
+        app_port: 8086
+
+    # Immobilier Application
+    - name: Déploiement de l'application Immobilier
+      include_role:
+        name: "{{ roles_path }}/quarkus"
+      vars:
+        app_name: immobilier-app
+        app_namespace: "immobilier-app-{{ deploy_environment }}"
+        app_environment: "{{ deploy_environment }}"
+        app_domain: "immobilier.{{ base_domain }}"
+        app_version: "latest"
+        app_replicas: 1
+        app_port: 8089
+
+    # Mail Service
+    - name: Déploiement du service Mail
+      include_role:
+        name: "{{ roles_path }}/quarkus"
+      vars:
+        app_name: mail-service
+        app_namespace: "mail-service-{{ deploy_environment }}"
+        app_environment: "{{ deploy_environment }}"
+        app_domain: "mail.{{ base_domain }}"
+        app_version: "latest"
+        app_replicas: 1
+        app_port: 8025
+
+    # Kubernetes Dashboard
+    - name: Configuration de l'Ingress pour le Kubernetes Dashboard
+      k8s:
+        state: present
+        definition:
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: kubernetes-dashboard
+            namespace: kubernetes-dashboard
+            annotations:
+              cert-manager.io/cluster-issuer: "letsencrypt-prod"
+              traefik.ingress.kubernetes.io/router.entrypoints: "websecure"
+              traefik.ingress.kubernetes.io/router.tls: "true"
+              traefik.ingress.kubernetes.io/router.middlewares: "kubernetes-dashboard-strip-prefix@kubernetescrd"
+          spec:
+            ingressClassName: traefik
+            tls:
+              - hosts:
+                  - "k8s.{{ base_domain }}"
+                secretName: kubernetes-dashboard-tls
+            rules:
+              - host: "k8s.{{ base_domain }}"
+                http:
+                  paths:
+                    - path: /
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: kubernetes-dashboard
+                          port:
+                            number: 443
+
+    # Git (Gitea)
+    - name: Configuration de l'Ingress pour Gitea
+      k8s:
+        state: present
+        definition:
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: gitea
+            namespace: "gitea-{{ deploy_environment }}"
+            annotations:
+              cert-manager.io/cluster-issuer: "letsencrypt-prod"
+              traefik.ingress.kubernetes.io/router.entrypoints: "websecure"
+              traefik.ingress.kubernetes.io/router.tls: "true"
+          spec:
+            ingressClassName: traefik
+            tls:
+              - hosts:
+                  - "git.{{ base_domain }}"
+                secretName: gitea-tls
+            rules:
+              - host: "git.{{ base_domain }}"
+                http:
+                  paths:
+                    - path: /
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: gitea
+                          port:
+                            number: 3001
+
+    # pgAdmin
+    - name: Configuration de l'Ingress pour pgAdmin
+      k8s:
+        state: present
+        definition:
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: pgadmin
+            namespace: "pgadmin-{{ deploy_environment }}"
+            annotations:
+              cert-manager.io/cluster-issuer: "letsencrypt-prod"
+              traefik.ingress.kubernetes.io/router.entrypoints: "websecure"
+              traefik.ingress.kubernetes.io/router.tls: "true"
+          spec:
+            ingressClassName: traefik
+            tls:
+              - hosts:
+                  - "pgadmin.{{ base_domain }}"
+                secretName: pgadmin-tls
+            rules:
+              - host: "pgadmin.{{ base_domain }}"
+                http:
+                  paths:
+                    - path: /
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: pgadmin
+                          port:
+                            number: 5050
+
+    # Keycloak
+    - name: Configuration de l'Ingress pour Keycloak
+      k8s:
+        state: present
+        definition:
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: keycloak
+            namespace: "keycloak-{{ deploy_environment }}"
+            annotations:
+              cert-manager.io/cluster-issuer: "letsencrypt-prod"
+              traefik.ingress.kubernetes.io/router.entrypoints: "websecure"
+              traefik.ingress.kubernetes.io/router.tls: "true"
+          spec:
+            ingressClassName: traefik
+            tls:
+              - hosts:
+                  - "keycloak.{{ base_domain }}"
+                secretName: keycloak-tls
+            rules:
+              - host: "keycloak.{{ base_domain }}"
+                http:
+                  paths:
+                    - path: /
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: keycloak
+                          port:
+                            number: 8085
+
+    # Prometheus
+    - name: Configuration de l'Ingress pour Prometheus
+      k8s:
+        state: present
+        definition:
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: prometheus
+            namespace: monitoring
+            annotations:
+              cert-manager.io/cluster-issuer: "letsencrypt-prod"
+              traefik.ingress.kubernetes.io/router.entrypoints: "websecure"
+              traefik.ingress.kubernetes.io/router.tls: "true"
+          spec:
+            ingressClassName: traefik
+            tls:
+              - hosts:
+                  - "prometheus.{{ base_domain }}"
+                secretName: prometheus-tls
+            rules:
+              - host: "prometheus.{{ base_domain }}"
+                http:
+                  paths:
+                    - path: /
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: prometheus-kube-prometheus-prometheus
+                          port:
+                            number: 9090
+
+    # Grafana
+    - name: Configuration de l'Ingress pour Grafana
+      k8s:
+        state: present
+        definition:
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: grafana
+            namespace: monitoring
+            annotations:
+              cert-manager.io/cluster-issuer: "letsencrypt-prod"
+              traefik.ingress.kubernetes.io/router.entrypoints: "websecure"
+              traefik.ingress.kubernetes.io/router.tls: "true"
+          spec:
+            ingressClassName: traefik
+            tls:
+              - hosts:
+                  - "grafana.{{ base_domain }}"
+                secretName: grafana-tls
+            rules:
+              - host: "grafana.{{ base_domain }}"
+                http:
+                  paths:
+                    - path: /
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: prometheus-grafana
+                          port:
+                            number: 80
+
+    - name: Vérification du déploiement des services
+      debug:
+        msg: "Tous les services d'application ont été déployés avec succès"

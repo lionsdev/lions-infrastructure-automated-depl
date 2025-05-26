@@ -1,0 +1,130 @@
+---
+# Titre: Template de déploiement Kubernetes pour Ollama
+# Description: Définit le déploiement Kubernetes pour Ollama
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-14
+# Version: 1.0.0
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "{{ app_name }}"
+  namespace: "{{ app_namespace }}"
+  labels:
+    app: "{{ app_name }}"
+    version: "{{ app_version }}"
+    environment: "{{ app_environment }}"
+    technology: "ollama"
+  annotations:
+    description: "Déploiement d'Ollama {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    deployment.kubernetes.io/revision: "1"
+spec:
+  replicas: {{ ollama_replicas[app_environment] }}
+  selector:
+    matchLabels:
+      app: "{{ app_name }}"
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: "{{ app_name }}"
+        version: "{{ app_version }}"
+        environment: "{{ app_environment }}"
+        technology: "ollama"
+      annotations:
+        prometheus.io/scrape: "{{ ollama_prometheus_scrape | string | lower }}"
+        prometheus.io/path: "{{ ollama_prometheus_path }}"
+        prometheus.io/port: "{{ ollama_prometheus_port | string }}"
+    spec:
+      serviceAccountName: "{{ app_name }}"
+      securityContext:
+        runAsNonRoot: false
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: "{{ app_name }}"
+          image: "ollama/ollama:{{ app_version }}"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: {{ ollama_default_port }}
+              protocol: TCP
+          env:
+            - name: OLLAMA_HOST
+              value: "0.0.0.0:{{ ollama_default_port }}"
+            - name: OLLAMA_ORIGINS
+              value: "{{ ollama_cors_allowed_origins }}"
+            - name: OLLAMA_MODELS
+              value: "/var/lib/ollama/models"
+            - name: OLLAMA_HOME
+              value: "/tmp/ollama"
+            - name: KUBERNETES_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          envFrom:
+            - configMapRef:
+                name: "{{ app_name }}-config"
+          resources:
+            requests:
+              cpu: "{{ ollama_resources[app_environment].requests.cpu }}"
+              memory: "{{ ollama_resources[app_environment].requests.memory }}"
+            limits:
+              cpu: "{{ ollama_resources[app_environment].limits.cpu }}"
+              memory: "{{ ollama_resources[app_environment].limits.memory }}"
+          readinessProbe:
+            {{- ollama_readiness_probe | to_nice_yaml(indent=2) | indent(12) }}
+          livenessProbe:
+            {{- ollama_liveness_probe | to_nice_yaml(indent=2) | indent(12) }}
+          volumeMounts:
+            - name: tmp-volume
+              mountPath: /tmp
+            - name: ollama-home
+              mountPath: /tmp/ollama
+            - name: config-volume
+              mountPath: /etc/ollama
+              readOnly: true
+            {% if ollama_persistent_storage | bool %}
+            - name: data-volume
+              mountPath: /var/lib/ollama
+            {% endif %}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: false
+      volumes:
+        - name: tmp-volume
+          emptyDir: {}
+        - name: ollama-home
+          emptyDir: {}
+        - name: config-volume
+          configMap:
+            name: "{{ app_name }}-config"
+        {% if ollama_persistent_storage | bool %}
+        - name: data-volume
+          persistentVolumeClaim:
+            claimName: "{{ app_name }}-pvc"
+        {% endif %}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - "{{ app_name }}"
+                topologyKey: kubernetes.io/hostname
+      terminationGracePeriodSeconds: 60

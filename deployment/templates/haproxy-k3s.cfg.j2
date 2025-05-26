@@ -1,0 +1,107 @@
+# =============================================================================
+# LIONS Infrastructure - Configuration HAProxy pour K3s
+# =============================================================================
+# Titre: Configuration HAProxy pour le load balancing des serveurs K3s
+# Description: Équilibre la charge entre les serveurs K3s pour la haute disponibilité
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-25
+# Version: 1.0.0
+# =============================================================================
+
+global
+    log /dev/log local0
+    log /dev/log local1 notice
+    chroot /var/lib/haproxy
+    stats socket /run/haproxy/admin.sock mode 660 level admin expose-fd listeners
+    stats timeout 30s
+    user haproxy
+    group haproxy
+    daemon
+
+    # SSL/TLS configuration
+    ssl-default-bind-options no-sslv3 no-tlsv10 no-tlsv11
+    ssl-default-bind-ciphersuites TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256
+    ssl-default-bind-ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305
+    tune.ssl.default-dh-param 2048
+
+defaults
+    log     global
+    mode    tcp
+    option  tcplog
+    option  dontlognull
+    timeout connect 5000
+    timeout client  50000
+    timeout server  50000
+    errorfile 400 /etc/haproxy/errors/400.http
+    errorfile 403 /etc/haproxy/errors/403.http
+    errorfile 408 /etc/haproxy/errors/408.http
+    errorfile 500 /etc/haproxy/errors/500.http
+    errorfile 502 /etc/haproxy/errors/502.http
+    errorfile 503 /etc/haproxy/errors/503.http
+    errorfile 504 /etc/haproxy/errors/504.http
+
+# Stats page
+listen stats
+    bind *:9000
+    mode http
+    stats enable
+    stats uri /
+    stats refresh 10s
+    stats auth admin:{{ lookup('env', 'LIONS_HAPROXY_STATS_PASSWORD') | default('StrongPassword123!') }}
+
+# K3s API Server
+frontend k3s-api
+    bind *:{{ k3s_api_lb_port }}
+    option tcplog
+    mode tcp
+    default_backend k3s-api-backend
+
+# K3s API Backend
+backend k3s-api-backend
+    mode tcp
+    option tcp-check
+    balance roundrobin
+    default-server inter 10s downinter 5s rise 2 fall 2 slowstart 60s maxconn 250 maxqueue 256 weight 100
+    
+    # K3s Servers
+    {% for host in groups['k3s_servers'] %}
+    server {{ hostvars[host]['inventory_hostname'] }} {{ hostvars[host]['ansible_host'] }}:6443 check
+    {% endfor %}
+
+# HTTP Frontend (optional, for web services)
+frontend http-frontend
+    bind *:80
+    mode http
+    option forwardfor
+    default_backend http-backend
+
+# HTTPS Frontend (optional, for web services)
+frontend https-frontend
+    bind *:443 ssl crt /etc/haproxy/certs/
+    mode http
+    option forwardfor
+    default_backend https-backend
+
+# HTTP Backend (optional, for web services)
+backend http-backend
+    mode http
+    balance roundrobin
+    option httpchk GET /healthz
+    http-check expect status 200
+    
+    # K3s Agents (assuming they run ingress controllers)
+    {% for host in groups['k3s_agents'] %}
+    server {{ hostvars[host]['inventory_hostname'] }} {{ hostvars[host]['ansible_host'] }}:80 check
+    {% endfor %}
+
+# HTTPS Backend (optional, for web services)
+backend https-backend
+    mode http
+    balance roundrobin
+    option httpchk GET /healthz
+    http-check expect status 200
+    
+    # K3s Agents (assuming they run ingress controllers)
+    {% for host in groups['k3s_agents'] %}
+    server {{ hostvars[host]['inventory_hostname'] }} {{ hostvars[host]['ansible_host'] }}:443 check ssl verify none
+    {% endfor %}

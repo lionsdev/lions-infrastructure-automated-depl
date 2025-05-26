@@ -1,0 +1,101 @@
+---
+# Titre: Template de NetworkPolicy Kubernetes pour PrimeReact
+# Description: Définit la NetworkPolicy Kubernetes pour une application PrimeReact
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-07
+# Version: 1.0.0
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: "{{ app_name }}-network-policy"
+  namespace: "{{ app_namespace }}"
+  labels:
+    app: "{{ app_name }}"
+    version: "{{ app_version }}"
+    environment: "{{ app_environment }}"
+    technology: "primereact"
+  annotations:
+    description: "NetworkPolicy pour l'application {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+spec:
+  podSelector:
+    matchLabels:
+      app: "{{ app_name }}"
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Autoriser le trafic entrant depuis l'ingress-controller
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress-nginx
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: {{ primereact_default_port }}
+    
+    # Autoriser le trafic entrant depuis le même namespace
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: "{{ app_namespace }}"
+      ports:
+        - protocol: TCP
+          port: {{ primereact_default_port }}
+    
+    # Autoriser le trafic entrant depuis Prometheus pour le scraping des métriques
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+          podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - protocol: TCP
+          port: {{ primereact_default_port }}
+  
+  egress:
+    # Autoriser le trafic sortant vers les serveurs DNS
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    
+    # Autoriser le trafic sortant vers les services internes
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: "{{ app_namespace }}"
+    
+    {% if primereact_use_redis | bool %}
+    # Autoriser le trafic sortant vers Redis
+    - to:
+        - podSelector:
+            matchLabels:
+              app: "{{ primereact_redis_service }}"
+      ports:
+        - protocol: TCP
+          port: {{ primereact_redis_port }}
+    {% endif %}
+    
+    # Autoriser le trafic sortant vers les API externes
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443

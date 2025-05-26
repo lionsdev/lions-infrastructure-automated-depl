@@ -1,0 +1,54 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ app_name }}-config
+  namespace: {{ app_namespace }}
+  labels:
+    app: {{ app_name }}
+    environment: {{ app_environment }}
+data:
+  postgresql.conf: |
+    listen_addresses = '*'
+    port = {{ postgres_default_port }}
+    max_connections = {{ postgres_max_connections }}
+    shared_buffers = {{ postgres_shared_buffers }}
+    effective_cache_size = {{ postgres_effective_cache_size }}
+    maintenance_work_mem = {{ postgres_maintenance_work_mem }}
+    checkpoint_completion_target = {{ postgres_checkpoint_completion_target }}
+    wal_buffers = {{ postgres_wal_buffers }}
+    default_statistics_target = {{ postgres_default_statistics_target }}
+    random_page_cost = {{ postgres_random_page_cost }}
+    effective_io_concurrency = {{ postgres_effective_io_concurrency }}
+    work_mem = {{ postgres_work_mem }}
+    min_wal_size = {{ postgres_min_wal_size }}
+    max_wal_size = {{ postgres_max_wal_size }}
+    log_destination = 'stderr'
+    logging_collector = on
+    log_directory = 'pg_log'
+    log_filename = 'postgresql-%Y-%m-%d_%H%M%S.log'
+    log_rotation_age = 1d
+    log_rotation_size = 10MB
+    log_min_duration_statement = 1000
+    log_checkpoints = on
+    log_connections = on
+    log_disconnections = on
+    log_lock_waits = on
+    log_temp_files = 0
+    log_autovacuum_min_duration = 0
+    log_line_prefix = '%t [%p]: [%l-1] user=%u,db=%d,app=%a,client=%h '
+    {% if postgres_ha_enabled | bool %}
+    wal_level = replica
+    max_wal_senders = 10
+    wal_keep_segments = 64
+    hot_standby = on
+    {% endif %}
+
+  pg_hba.conf: |
+    # TYPE  DATABASE        USER            ADDRESS                 METHOD
+    local   all             all                                     trust
+    host    all             all             127.0.0.1/32            md5
+    host    all             all             ::1/128                 md5
+    host    all             all             0.0.0.0/0               md5
+    {% if postgres_ha_enabled | bool %}
+    host    replication     {{ postgres_ha_replication_user }}      0.0.0.0/0               md5
+    {% endif %}

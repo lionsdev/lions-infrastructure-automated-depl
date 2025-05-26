@@ -1,0 +1,40 @@
+[Unit]
+Description=K3s Auto Recovery Service
+Documentation=https://github.com/k3s-io/k3s
+After=network-online.target
+Wants=network-online.target
+{% if inventory_hostname in groups['k3s_servers'] %}
+After=k3s.service
+Requires=k3s.service
+{% else %}
+After=k3s-agent.service
+Requires=k3s-agent.service
+{% endif %}
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/local/bin/k3s-auto-recovery.sh
+Restart=always
+RestartSec=10
+TimeoutStartSec=0
+TimeoutStopSec=30
+
+# Security settings
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+
+# Resource limits
+CPUQuota=20%
+MemoryLimit=256M
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=k3s-auto-recovery
+
+[Install]
+WantedBy=multi-user.target

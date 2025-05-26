@@ -1,0 +1,117 @@
+---
+# Titre: Template de ConfigMap Kubernetes pour le service de notification
+# Description: Définit le ConfigMap Kubernetes pour le service de notification
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-08
+# Version: 1.0.0
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: "{{ app_name }}-config"
+  namespace: "{{ app_namespace }}"
+  labels:
+    app: "{{ app_name }}"
+    version: "{{ app_version }}"
+    environment: "{{ app_environment }}"
+    technology: "notification-service"
+  annotations:
+    description: "ConfigMap pour le service de notification {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+data:
+  # Variables d'environnement pour l'application
+  SPRING_PROFILES_ACTIVE: "{{ app_environment }}"
+  SERVER_PORT: "{{ notification_default_port }}"
+  APPLICATION_NAME: "{{ app_name }}"
+  APPLICATION_VERSION: "{{ app_version }}"
+
+  # Variables spécifiques à l'environnement
+  LOG_LEVEL: "{% if app_environment == 'production' %}WARN{% elif app_environment == 'staging' %}INFO{% else %}DEBUG{% endif %}"
+  
+  # Configuration des canaux de notification
+  NOTIFICATION_CHANNELS_EMAIL_ENABLED: "{{ notification_channels.email.enabled | string | lower }}"
+{% if notification_channels.email.enabled | default(true) | bool %}
+  NOTIFICATION_CHANNELS_EMAIL_HOST: "{{ notification_channels.email.smtp_host }}"
+  NOTIFICATION_CHANNELS_EMAIL_PORT: "{{ notification_channels.email.smtp_port }}"
+  NOTIFICATION_CHANNELS_EMAIL_FROM: "{{ notification_channels.email.from_address }}"
+{% endif %}
+
+  NOTIFICATION_CHANNELS_SLACK_ENABLED: "{{ notification_channels.slack.enabled | string | lower }}"
+{% if notification_channels.slack.enabled | default(true) | bool %}
+  NOTIFICATION_CHANNELS_SLACK_DEFAULT_CHANNEL: "{{ notification_channels.slack.default_channel }}"
+{% endif %}
+
+  NOTIFICATION_CHANNELS_SMS_ENABLED: "{{ notification_channels.sms.enabled | string | lower }}"
+{% if notification_channels.sms.enabled | default(false) | bool %}
+  NOTIFICATION_CHANNELS_SMS_PROVIDER: "{{ notification_channels.sms.provider }}"
+  NOTIFICATION_CHANNELS_SMS_FROM_NUMBER: "{{ notification_channels.sms.from_number }}"
+{% endif %}
+
+  # Configuration des templates
+  NOTIFICATION_TEMPLATES_PATH: "{{ notification_templates_path }}"
+  NOTIFICATION_DEFAULT_LANGUAGE: "{{ notification_default_language }}"
+  NOTIFICATION_AVAILABLE_LANGUAGES: "{{ notification_available_languages | join(',') }}"
+
+  # Configuration du monitoring
+  MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: "health,info,prometheus,metrics"
+  MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: "always"
+  MANAGEMENT_METRICS_EXPORT_PROMETHEUS_ENABLED: "{{ notification_prometheus_scrape | string | lower }}"
+
+  # Configuration de la sécurité
+  SECURITY_REQUIRE_SSL: "{{ notification_tls_enabled | string | lower }}"
+  SECURITY_AUTHENTICATION_ENABLED: "{{ notification_auth_enabled | string | lower }}"
+  SECURITY_RATE_LIMIT: "{{ notification_rate_limit }}"
+
+  # Configuration de l'application
+  application.yml: |
+    spring:
+      application:
+        name: {{ app_name }}
+      profiles:
+        active: {{ app_environment }}
+      
+    server:
+      port: {{ notification_default_port }}
+      
+    management:
+      endpoints:
+        web:
+          exposure:
+            include: health,info,prometheus,metrics
+      endpoint:
+        health:
+          show-details: always
+      metrics:
+        export:
+          prometheus:
+            enabled: {{ notification_prometheus_scrape | string | lower }}
+            
+    notification:
+      channels:
+        email:
+          enabled: {{ notification_channels.email.enabled | string | lower }}
+{% if notification_channels.email.enabled | default(true) | bool %}
+          host: {{ notification_channels.email.smtp_host }}
+          port: {{ notification_channels.email.smtp_port }}
+          from: {{ notification_channels.email.from_address }}
+{% endif %}
+        slack:
+          enabled: {{ notification_channels.slack.enabled | string | lower }}
+{% if notification_channels.slack.enabled | default(true) | bool %}
+          default-channel: {{ notification_channels.slack.default_channel }}
+{% endif %}
+        sms:
+          enabled: {{ notification_channels.sms.enabled | string | lower }}
+{% if notification_channels.sms.enabled | default(false) | bool %}
+          provider: {{ notification_channels.sms.provider }}
+          from-number: {{ notification_channels.sms.from_number }}
+{% endif %}
+      
+      templates:
+        path: {{ notification_templates_path }}
+        default-language: {{ notification_default_language }}
+        available-languages: {{ notification_available_languages | to_json }}
+        
+      security:
+        require-ssl: {{ notification_tls_enabled | string | lower }}
+        authentication-enabled: {{ notification_auth_enabled | string | lower }}
+        rate-limit: {{ notification_rate_limit }}

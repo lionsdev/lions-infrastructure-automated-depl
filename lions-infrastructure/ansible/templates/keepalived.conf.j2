@@ -1,0 +1,43 @@
+! Configuration File for keepalived
+
+global_defs {
+   notification_email {
+     admin@{{ domain_name }}
+   }
+   notification_email_from k3s-ha@{{ domain_name }}
+   smtp_server 127.0.0.1
+   smtp_connect_timeout 30
+   router_id K3S_HA_{{ k3s_server_id }}
+   vrrp_skip_check_adv_addr
+   vrrp_garp_interval 0
+   vrrp_gna_interval 0
+}
+
+vrrp_script check_k3s {
+   script "/usr/local/bin/check_k3s.sh"
+   interval 2
+   weight 50
+   fall 2
+   rise 1
+}
+
+vrrp_instance VI_1 {
+    state {{ "MASTER" if k3s_server_id == 1 else "BACKUP" }}
+    interface {{ ansible_default_ipv4.interface }}
+    virtual_router_id 51
+    priority {{ 100 + (50 - k3s_server_id * 10) }}
+    advert_int 1
+    authentication {
+        auth_type PASS
+        auth_pass {{ lookup('hashi_vault', 'secret=kv/data/lions/k3s:keepalived_auth', errors='ignore') | default('k3s-ha-auth-' + ansible_date_time.date | hash('md5')) }}
+    }
+    virtual_ipaddress {
+        {{ lookup('hashi_vault', 'secret=kv/data/lions/k3s:virtual_ip', errors='ignore') | default(hostvars[groups['k3s_server'][0]]['ansible_host']) }}
+    }
+    track_script {
+        check_k3s
+    }
+    notify_master "/usr/local/bin/k3s-ha-notify.sh MASTER"
+    notify_backup "/usr/local/bin/k3s-ha-notify.sh BACKUP"
+    notify_fault "/usr/local/bin/k3s-ha-notify.sh FAULT"
+}

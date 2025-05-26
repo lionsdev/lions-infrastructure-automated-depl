@@ -9,7 +9,7 @@
   hosts: vps
   become: true
   gather_facts: true
-  
+
   vars:
     vault_version: "{{ lookup('env', 'LIONS_VAULT_VERSION') | default('1.15.2') }}"
     vault_port: "{{ lookup('env', 'LIONS_VAULT_PORT') | default('8200') }}"
@@ -24,7 +24,7 @@
     vault_cluster_addr: "https://{{ ansible_host }}:8201"
     vault_namespace: "vault"
     vault_secrets_path: "kv"
-  
+
   tasks:
     - name: Création des répertoires pour Vault
       file:
@@ -36,13 +36,13 @@
         - "{{ vault_log_path }}"
         - "{{ vault_config_path }}"
         - "{{ vault_config_path }}/tls"
-    
+
     - name: Téléchargement de HashiCorp Vault
       get_url:
         url: "https://releases.hashicorp.com/vault/{{ vault_version }}/vault_{{ vault_version }}_linux_amd64.zip"
         dest: "/tmp/vault.zip"
         mode: '0644'
-    
+
     - name: Installation de HashiCorp Vault
       unarchive:
         src: "/tmp/vault.zip"
@@ -51,28 +51,28 @@
         mode: '0755'
         owner: root
         group: root
-    
+
     - name: Création du fichier de configuration Vault
       template:
         src: "../templates/vault.hcl.j2"
         dest: "{{ vault_config_path }}/vault.hcl"
         mode: '0644'
       notify: restart vault
-    
+
     - name: Création du service systemd pour Vault
       template:
         src: "../templates/vault.service.j2"
         dest: "/etc/systemd/system/vault.service"
         mode: '0644'
       notify: restart vault
-    
+
     - name: Démarrage et activation du service Vault
       systemd:
         name: vault
         state: started
         enabled: yes
         daemon_reload: yes
-    
+
     - name: Attente que Vault soit prêt
       uri:
         url: "{{ vault_api_addr }}/v1/sys/health"
@@ -82,31 +82,40 @@
       until: vault_status.status == 200 or vault_status.status == 429 or vault_status.status == 501 or vault_status.status == 503
       retries: 10
       delay: 5
-    
+
+    - name: Création du répertoire sécurisé pour les données d'initialisation Vault
+      file:
+        path: "/etc/vault.d/secure"
+        state: directory
+        mode: '0700'
+        owner: root
+        group: root
+
     - name: Initialisation de Vault (si nécessaire)
       shell: |
-        vault operator init -format=json > /root/vault-init.json
+        vault operator init -format=json > /etc/vault.d/secure/vault-init.json
+        chmod 600 /etc/vault.d/secure/vault-init.json
       environment:
         VAULT_ADDR: "{{ vault_api_addr }}"
         VAULT_SKIP_VERIFY: "true"
       register: vault_init
       failed_when: vault_init.rc != 0 and "Vault is already initialized" not in vault_init.stderr
       changed_when: vault_init.rc == 0
-    
+
     - name: Déverrouillage de Vault (si nécessaire)
       shell: |
-        cat /root/vault-init.json | jq -r '.unseal_keys_b64[0]' | vault operator unseal -
-        cat /root/vault-init.json | jq -r '.unseal_keys_b64[1]' | vault operator unseal -
-        cat /root/vault-init.json | jq -r '.unseal_keys_b64[2]' | vault operator unseal -
+        cat /etc/vault.d/secure/vault-init.json | jq -r '.unseal_keys_b64[0]' | vault operator unseal -
+        cat /etc/vault.d/secure/vault-init.json | jq -r '.unseal_keys_b64[1]' | vault operator unseal -
+        cat /etc/vault.d/secure/vault-init.json | jq -r '.unseal_keys_b64[2]' | vault operator unseal -
       environment:
         VAULT_ADDR: "{{ vault_api_addr }}"
         VAULT_SKIP_VERIFY: "true"
       when: vault_status.status == 503
       ignore_errors: yes
-    
+
     - name: Activation du moteur de secrets KV version 2
       shell: |
-        export VAULT_TOKEN=$(cat /root/vault-init.json | jq -r '.root_token')
+        export VAULT_TOKEN=$(cat /etc/vault.d/secure/vault-init.json | jq -r '.root_token')
         vault secrets enable -version=2 {{ vault_secrets_path }}
       environment:
         VAULT_ADDR: "{{ vault_api_addr }}"
@@ -114,10 +123,10 @@
       register: kv_enable
       failed_when: kv_enable.rc != 0 and "path is already in use" not in kv_enable.stderr
       changed_when: kv_enable.rc == 0
-    
+
     - name: Création d'une politique pour les applications
       shell: |
-        export VAULT_TOKEN=$(cat /root/vault-init.json | jq -r '.root_token')
+        export VAULT_TOKEN=$(cat /etc/vault.d/secure/vault-init.json | jq -r '.root_token')
         cat > /tmp/app-policy.hcl << EOF
         path "{{ vault_secrets_path }}/data/lions/*" {
           capabilities = ["read"]
@@ -129,10 +138,10 @@
         VAULT_SKIP_VERIFY: "true"
       register: policy_create
       changed_when: policy_create.rc == 0
-    
+
     - name: Création d'un rôle pour Kubernetes
       shell: |
-        export VAULT_TOKEN=$(cat /root/vault-init.json | jq -r '.root_token')
+        export VAULT_TOKEN=$(cat /etc/vault.d/secure/vault-init.json | jq -r '.root_token')
         vault auth enable kubernetes
         vault write auth/kubernetes/config \
           kubernetes_host="https://kubernetes.default.svc:443" \
@@ -151,7 +160,7 @@
       failed_when: k8s_role.rc != 0 and "path is already in use" not in k8s_role.stderr
       changed_when: k8s_role.rc == 0
       ignore_errors: yes
-    
+
     - name: Déploiement de l'agent Vault sur Kubernetes
       kubernetes.core.k8s:
         state: present
@@ -162,7 +171,7 @@
             name: "{{ vault_namespace }}"
       environment:
         KUBECONFIG: /home/{{ ansible_user }}/.kube/config
-    
+
     - name: Déploiement du service Vault sur Kubernetes
       kubernetes.core.k8s:
         state: present
@@ -187,7 +196,7 @@
             type: ClusterIP
       environment:
         KUBECONFIG: /home/{{ ansible_user }}/.kube/config
-    
+
     - name: Déploiement de l'Ingress pour Vault
       kubernetes.core.k8s:
         state: present
@@ -220,15 +229,15 @@
                         number: 8200
       environment:
         KUBECONFIG: /home/{{ ansible_user }}/.kube/config
-    
+
     - name: Affichage des informations de Vault
       debug:
         msg: 
           - "Vault est installé et configuré avec succès"
           - "URL d'accès: {{ vault_api_addr }}"
-          - "Les informations d'initialisation sont stockées dans /root/vault-init.json"
+          - "Les informations d'initialisation sont stockées dans /etc/vault.d/secure/vault-init.json"
           - "IMPORTANT: Sauvegardez ce fichier dans un endroit sécurisé, il contient les clés de déverrouillage et le token root"
-  
+
   handlers:
     - name: restart vault
       systemd:

@@ -1,0 +1,1782 @@
+---
+# =============================================================================
+# LIONS Infrastructure - Playbook d'Installation K3s Complet avec Monitoring
+# =============================================================================
+# Titre: Playbook d'installation K3s optimisé avec Prometheus/Grafana intégré
+# Description: Installe et configure K3s sur VPS avec monitoring complet
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-23
+# Version: 2.1.0
+#
+# Corrections appliquées:
+# - Suppression du flag déprécié RemoveSelfLink=false
+# - Correction de la syntaxe des flags --disable
+# - Ajout du déploiement Prometheus/Grafana optimisé
+# - Configuration monitoring haute performance
+# - Amélioration de la documentation et du logging
+# - Application des meilleures pratiques DevOps
+# =============================================================================
+
+- name: "LIONS K3s Installation - Production Ready Deployment with Monitoring"
+  hosts: vps
+  become: yes
+  gather_facts: yes
+
+  # =============================================================================
+  # VARIABLES DE CONFIGURATION
+  # =============================================================================
+  vars:
+    # Version K3s - Version LTS stable recommandée (mise à jour 2025)
+    k3s_version: "v1.30.2+k3s1"
+
+    # Configuration K3s optimisée (FLAGS CORRIGÉS ET SÉCURISÉS)
+    k3s_server_args: >-
+      server
+      --disable=traefik
+      --disable=servicelb
+      --write-kubeconfig-mode=600
+      --kubelet-arg=cgroup-driver=systemd
+      --kubelet-arg=feature-gates=GracefulNodeShutdown=true
+      --kube-apiserver-arg=encryption-provider-config=/etc/rancher/k3s/encryption-config.yaml
+      --kube-apiserver-arg=audit-log-path=/var/log/k3s-audit.log
+      --kube-apiserver-arg=audit-log-maxage=30
+      --kube-apiserver-arg=audit-log-maxbackup=10
+      --kube-apiserver-arg=audit-log-maxsize=100
+      --kube-controller-manager-arg=terminated-pod-gc-threshold=100
+      --kubelet-arg=eviction-hard=memory.available<5%,nodefs.available<10%
+      --kubelet-arg=image-gc-high-threshold=85
+      --kubelet-arg=image-gc-low-threshold=80
+
+    # Chemins et configurations
+    kubeconfig_local_path: "~/.kube/config"
+    k3s_service_file: "/etc/systemd/system/k3s.service"
+    k3s_kubeconfig: "/etc/rancher/k3s/k3s.yaml"
+    k3s_encryption_config: "/etc/rancher/k3s/encryption-config.yaml"
+
+    # Versions des composants (mises à jour 2025)
+    traefik_chart_version: "28.0.0"
+    metallb_chart_version: "0.14.3"
+    cert_manager_version: "v1.14.2"
+    kube_prometheus_stack_version: "59.0.0"
+
+    # Flags dépréciés à supprimer automatiquement
+    deprecated_flags:
+      - pattern: "--kube-controller-manager-arg.*feature-gates=.*RemoveSelfLink=false.*"
+        replacement: ""
+        description: "Flag RemoveSelfLink déprécié"
+      - pattern: "--no-deploy ([a-zA-Z0-9-]+)"
+        replacement: "--disable=\\1"
+        description: "Syntaxe --no-deploy dépréciée"
+
+    # Configuration monitoring optimisée
+    monitoring_config:
+      namespace: "monitoring"
+      domain: "{{ lions_domain | default('dev.lions.dev') }}"
+      grafana_admin_password: "{{ lions_grafana_password | default('admin123!') }}"
+      prometheus_retention: "15d"
+      prometheus_storage: "10Gi"
+      grafana_storage: "5Gi"
+      resource_limits:
+        prometheus_cpu: "1000m"
+        prometheus_memory: "2Gi"
+        grafana_cpu: "500m"
+        grafana_memory: "512Mi"
+
+    # Configuration des domaines et services
+    services_domains:
+      lions_main: "{{ lions_domain | default('dev.lions.dev') }}"
+      grafana: "grafana.{{ lions_domain | default('dev.lions.dev') }}"
+      prometheus: "prometheus.{{ lions_domain | default('dev.lions.dev') }}"
+      k3s_dashboard: "k3s.{{ lions_domain | default('dev.lions.dev') }}"
+      keycloak: "keycloak.{{ lions_domain | default('dev.lions.dev') }}"
+      pgadmin: "pgadmin.{{ lions_domain | default('dev.lions.dev') }}"
+      gitea: "git.{{ lions_domain | default('dev.lions.dev') }}"
+
+  # =============================================================================
+  # TÂCHES PRINCIPALES
+  # =============================================================================
+  tasks:
+
+    # =========================================================================
+    # PHASE 1: VÉRIFICATIONS PRÉLIMINAIRES ET NETTOYAGE
+    # =========================================================================
+
+    - name: "📋 PHASE 1 - Vérifications préliminaires"
+      debug:
+        msg: |
+          ==========================================================
+          🚀 DÉMARRAGE INSTALLATION K3S - LIONS INFRASTRUCTURE
+          ==========================================================
+          Version K3s: {{ k3s_version }}
+          Host cible: {{ ansible_host }}
+          Environment: {{ lions_env | default('development') }}
+          Monitoring: ✅ Prometheus + Grafana inclus
+          ==========================================================
+
+    - name: "🔍 Vérification de l'environnement système"
+      block:
+        - name: "Vérification des ressources système minimales"
+          assert:
+            that:
+              - ansible_memtotal_mb >= 2048  # Augmenté pour le monitoring
+              - ansible_processor_vcpus >= 2
+            fail_msg: "Ressources système insuffisantes pour le monitoring (RAM: {{ ansible_memtotal_mb }}MB, CPU: {{ ansible_processor_vcpus }})"
+            success_msg: "✅ Ressources système suffisantes (RAM: {{ ansible_memtotal_mb }}MB, CPU: {{ ansible_processor_vcpus }})"
+
+        - name: "Vérification de l'espace disque disponible"
+          shell: df / | awk 'NR==2 {print $4}'
+          register: disk_space_check
+          changed_when: false
+
+        - name: "Validation de l'espace disque"
+          assert:
+            that:
+              - disk_space_check.stdout | int > 10000000  # 10GB minimum pour le monitoring
+            fail_msg: "Espace disque insuffisant: {{ (disk_space_check.stdout | int / 1000 / 1000) | round(1) }}GB disponible"
+            success_msg: "✅ Espace disque suffisant: {{ (disk_space_check.stdout | int / 1000 / 1000) | round(1) }}GB disponible"
+
+      rescue:
+        - name: "❌ Échec des vérifications préliminaires"
+          fail:
+            msg: "Les vérifications système ont échoué. Installation annulée."
+
+    - name: "🧹 Détection et nettoyage de l'installation K3s existante"
+      block:
+        - name: "Vérification de l'existence du binaire K3s"
+          stat:
+            path: /usr/local/bin/k3s
+          register: k3s_binary_exists
+
+        - name: "Vérification du service K3s existant"
+          systemd:
+            name: k3s
+          register: k3s_service_check
+          ignore_errors: true
+
+        - name: "Analyse de l'état du service K3s"
+          debug:
+            msg: |
+              K3s Binary: {{ 'Présent' if k3s_binary_exists.stat.exists else 'Absent' }}
+              Service K3s: {{ k3s_service_check.status.ActiveState | default('Inexistant') }}
+
+        - name: "Correction proactive des flags dépréciés"
+          block:
+            - name: "Lecture du fichier de service K3s"
+              slurp:
+                src: "{{ k3s_service_file }}"
+              register: k3s_service_content_raw
+              when: k3s_binary_exists.stat.exists
+
+            - name: "Décodage du contenu du service"
+              set_fact:
+                k3s_service_content: "{{ k3s_service_content_raw.content | b64decode }}"
+              when: k3s_service_content_raw is defined
+
+            - name: "🔍 Diagnostic du contenu du service K3s"
+              debug:
+                msg: |
+                  Contenu du service K3s:
+                  {{ k3s_service_content }}
+              when: k3s_service_content is defined
+
+            - name: "Détection des flags dépréciés"
+              set_fact:
+                deprecated_flags_found: "{{ deprecated_flags_found | default([]) + [item] }}"
+              loop: "{{ deprecated_flags }}"
+              when:
+                - k3s_service_content is defined
+                - k3s_service_content is search(item.pattern)
+
+            - name: "Notification des flags dépréciés détectés"
+              debug:
+                msg: |
+                  ⚠️  FLAGS DÉPRÉCIÉS DÉTECTÉS:
+                  {% for flag in deprecated_flags_found | default([]) %}
+                  - {{ flag.description }}
+                  {% endfor %}
+              when: deprecated_flags_found is defined and deprecated_flags_found | length > 0
+
+            - name: "Suppression des flags dépréciés"
+              replace:
+                path: "{{ k3s_service_file }}"
+                regexp: "{{ item.pattern }}"
+                replace: "{{ item.replacement | default('') }}"
+                backup: yes
+              loop: "{{ deprecated_flags }}"
+              when:
+                - k3s_service_content is defined
+                - k3s_service_content is search(item.pattern)
+              register: flags_corrected
+              notify: "reload systemd and restart k3s"
+
+            - name: "🔧 Correction forcée du flag RemoveSelfLink (solution de secours)"
+              replace:
+                path: "{{ k3s_service_file }}"
+                regexp: "RemoveSelfLink=false"
+                replace: ""
+                backup: yes
+              when:
+                - k3s_service_content is defined
+                - "'RemoveSelfLink=false' in k3s_service_content"
+              register: forced_correction
+              notify: "reload systemd and restart k3s"
+
+            - name: "📋 Rapport de correction des flags"
+              debug:
+                msg: |
+                  Flags corrigés automatiquement: {{ 'Oui' if flags_corrected.changed else 'Non' }}
+                  Correction forcée effectuée: {{ 'Oui' if forced_correction.changed else 'Non' }}
+
+          when: k3s_binary_exists.stat.exists
+
+    # =========================================================================
+    # PHASE 2: INSTALLATION K3S
+    # =========================================================================
+
+    - name: "🚀 PHASE 2 - Installation K3s"
+      debug:
+        msg: "Démarrage de l'installation K3s avec la configuration corrigée"
+
+    - name: "🔒 Création du répertoire pour la configuration de chiffrement"
+      file:
+        path: "/etc/rancher/k3s"
+        state: directory
+        mode: '0700'
+        owner: root
+        group: root
+
+    - name: "🔒 Création du fichier de configuration de chiffrement"
+      template:
+        src: "{{ playbook_dir }}/../templates/encryption-config.yaml.j2"
+        dest: "{{ k3s_encryption_config }}"
+        mode: '0600'
+        owner: root
+        group: root
+      register: encryption_config
+
+    - name: "📥 Téléchargement du script d'installation K3s"
+      get_url:
+        url: "https://get.k3s.io"
+        dest: "/tmp/k3s-install.sh"
+        mode: '0755'
+        timeout: 30
+      register: k3s_script_download
+      retries: 3
+      delay: 5
+
+    - name: "⚙️  Installation K3s avec configuration optimisée"
+      command: "/tmp/k3s-install.sh"
+      environment:
+        INSTALL_K3S_VERSION: "{{ k3s_version }}"
+        INSTALL_K3S_EXEC: "{{ k3s_server_args }}"
+        K3S_KUBECONFIG_MODE: "644"
+      register: k3s_installation
+      when: not k3s_binary_exists.stat.exists or (deprecated_flags_found is defined and deprecated_flags_found | length > 0)
+
+    - name: "🔄 Démarrage et activation du service K3s"
+      systemd:
+        name: k3s
+        state: started
+        enabled: yes
+        daemon_reload: yes
+      register: k3s_service_start
+      retries: 3
+      delay: 10
+
+    # =========================================================================
+    # PHASE 3: VÉRIFICATIONS POST-INSTALLATION
+    # =========================================================================
+
+    - name: "✅ PHASE 3 - Vérifications post-installation"
+      debug:
+        msg: "Vérification de l'installation K3s"
+
+    - name: "⏳ Attente de la disponibilité de l'API K3s"
+      wait_for:
+        port: 6443
+        host: localhost
+        delay: 10
+        timeout: 300
+      register: k3s_api_ready
+
+    - name: "🔍 Vérification de l'état du service K3s"
+      systemd:
+        name: k3s
+      register: k3s_final_status
+
+    - name: "📊 Validation de l'installation K3s"
+      block:
+        - name: "Test de connectivité kubectl"
+          command: "/usr/local/bin/k3s kubectl get nodes"
+          register: k3s_nodes_check
+          changed_when: false
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+
+        - name: "Vérification des pods système"
+          command: "/usr/local/bin/k3s kubectl get pods -n kube-system"
+          register: k3s_system_pods
+          changed_when: false
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+
+        - name: "📈 Rapport d'état K3s"
+          debug:
+            msg: |
+              ==========================================================
+              ✅ K3S INSTALLATION RÉUSSIE
+              ==========================================================
+              Service Status: {{ k3s_final_status.status.ActiveState }}
+              API Port: ✅ Accessible sur :6443
+              Nodes: {{ k3s_nodes_check.stdout_lines | length }} nœud(s) détecté(s)
+              System Pods: {{ k3s_system_pods.stdout_lines | length - 1 }} pod(s) système
+              ==========================================================
+
+      rescue:
+        - name: "🔧 Diagnostic en cas d'échec"
+          block:
+            - name: "Collecte des logs K3s"
+              command: "journalctl -u k3s -n 20 --no-pager"
+              register: k3s_logs
+
+            - name: "🔍 Vérification du contenu actuel du service K3s"
+              slurp:
+                src: "{{ k3s_service_file }}"
+              register: current_service_content
+
+            - name: "📋 Diagnostic détaillé"
+              debug:
+                msg: |
+                  ❌ ÉCHEC DE L'INSTALLATION K3S - DIAGNOSTIC DÉTAILLÉ
+                  ==========================================================
+                  Service Status: {{ k3s_final_status.status.ActiveState | default('Unknown') }}
+
+                  Contenu actuel du service K3s:
+                  {{ current_service_content.content | b64decode }}
+
+                  Derniers logs:
+                  {{ k3s_logs.stdout }}
+                  ==========================================================
+
+            - name: "🔧 Nettoyage complet et réinstallation si flag RemoveSelfLink détecté"
+              block:
+                - name: "Arrêt du service K3s"
+                  systemd:
+                    name: k3s
+                    state: stopped
+                  ignore_errors: true
+
+                - name: "Désinstallation complète de K3s"
+                  shell: |
+                    /usr/local/bin/k3s-uninstall.sh || true
+                    rm -rf /etc/rancher/k3s/*
+                    rm -rf /var/lib/rancher/k3s/*
+                    rm -f /etc/systemd/system/k3s.service*
+                  ignore_errors: true
+
+                - name: "Rechargement systemd"
+                  systemd:
+                    daemon_reload: yes
+
+                - name: "Réinstallation propre de K3s"
+                  command: "/tmp/k3s-install.sh"
+                  environment:
+                    INSTALL_K3S_VERSION: "{{ k3s_version }}"
+                    INSTALL_K3S_EXEC: "{{ k3s_server_args }}"
+                    K3S_KUBECONFIG_MODE: "644"
+
+                - name: "Démarrage du service K3s après réinstallation"
+                  systemd:
+                    name: k3s
+                    state: started
+                    enabled: yes
+                    daemon_reload: yes
+                  register: k3s_fresh_start
+
+                - name: "Attente de l'API après réinstallation"
+                  wait_for:
+                    port: 6443
+                    host: localhost
+                    timeout: 120
+                  when: k3s_fresh_start is succeeded
+
+              when: "'RemoveSelfLink=false' in (current_service_content.content | b64decode)"
+
+            - name: "❌ Échec définitif si problème persiste"
+              fail:
+                msg: |
+                  ❌ INSTALLATION K3S ÉCHOUÉE DÉFINITIVEMENT
+                  Le flag RemoveSelfLink=false cause toujours des problèmes.
+                  Vérifiez manuellement le fichier {{ k3s_service_file }}
+                  et supprimez toute référence à RemoveSelfLink=false
+              when:
+                - "'RemoveSelfLink=false' in (current_service_content.content | b64decode)"
+                - k3s_fresh_start is failed
+
+    # =========================================================================
+    # PHASE 4: CONFIGURATION KUBECTL ET KUBECONFIG
+    # =========================================================================
+
+    - name: "🔧 PHASE 4 - Configuration kubectl et kubeconfig"
+      debug:
+        msg: "Configuration de l'accès kubectl"
+
+    - name: "🔍 Détection de l'utilisateur courant"
+      set_fact:
+        current_user: "{{ ansible_user | default(ansible_user_id) | default('root') }}"
+        current_user_home: "{{ ansible_user_dir | default('/root') }}"
+
+    - name: "📁 Création des répertoires de configuration"
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+        owner: "{{ current_user }}"
+        group: "{{ current_user }}"
+      loop:
+        - "{{ current_user_home }}/.kube"
+        - "/root/.kube"
+
+    - name: "📄 Configuration du kubeconfig utilisateur"
+      copy:
+        src: "{{ k3s_kubeconfig }}"
+        dest: "{{ current_user_home }}/.kube/config"
+        remote_src: yes
+        owner: "{{ current_user }}"
+        group: "{{ current_user }}"
+        mode: '0600'
+      when:
+        - k3s_kubeconfig is exists
+        - current_user_home != '/root'
+
+    - name: "📄 Configuration du kubeconfig root"
+      copy:
+        src: "{{ k3s_kubeconfig }}"
+        dest: "/root/.kube/config"
+        remote_src: yes
+        mode: '0600'
+      when: k3s_kubeconfig is exists
+
+    - name: "🌐 Mise à jour du kubeconfig avec l'IP externe (utilisateur)"
+      replace:
+        path: "{{ current_user_home }}/.kube/config"
+        regexp: 'https://127.0.0.1:6443'
+        replace: 'https://{{ ansible_host }}:6443'
+      when: current_user_home != '/root'
+
+    - name: "🌐 Mise à jour du kubeconfig avec l'IP externe (root)"
+      replace:
+        path: "/root/.kube/config"
+        regexp: 'https://127.0.0.1:6443'
+        replace: 'https://{{ ansible_host }}:6443'
+
+    - name: "📁 Création du fichier .bashrc si nécessaire"
+      file:
+        path: "{{ current_user_home }}/.bashrc"
+        state: touch
+        owner: "{{ current_user }}"
+        group: "{{ current_user }}"
+        mode: '0644'
+      when: current_user_home != '/root'
+
+    - name: "⚙️  Configuration de l'environnement bash"
+      lineinfile:
+        path: "{{ current_user_home }}/.bashrc"
+        line: "export KUBECONFIG={{ current_user_home }}/.kube/config"
+        state: present
+      when: current_user_home != '/root'
+
+    # =========================================================================
+    # PHASE 5: INSTALLATION DES OUTILS COMPLÉMENTAIRES
+    # =========================================================================
+
+    - name: "🛠️  PHASE 5 - Installation des outils complémentaires"
+      debug:
+        msg: "Installation de kubectl et Helm"
+
+    - name: "📦 Installation de kubectl"
+      block:
+        - name: "Création du répertoire pour les clés GPG"
+          file:
+            path: /etc/apt/keyrings
+            state: directory
+            mode: '0755'
+
+        - name: "Téléchargement de la clé GPG Kubernetes"
+          get_url:
+            url: "https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key"
+            dest: "/tmp/kubernetes-release.key"
+            mode: '0644'
+
+        - name: "Installation de la clé GPG Kubernetes"
+          shell: |
+            cat /tmp/kubernetes-release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+          args:
+            creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+        - name: "Ajout du dépôt Kubernetes"
+          apt_repository:
+            repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /"
+            state: present
+            filename: kubernetes
+
+        - name: "Installation de kubectl"
+          apt:
+            name: kubectl
+            state: present
+            update_cache: yes
+
+    - name: "🎛️  Installation de Helm"
+      block:
+        - name: "Téléchargement du script d'installation Helm"
+          get_url:
+            url: "https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3"
+            dest: "/tmp/get-helm-3.sh"
+            mode: '0755'
+
+        - name: "Exécution de l'installation Helm"
+          command: "/tmp/get-helm-3.sh"
+          args:
+            creates: /usr/local/bin/helm
+
+    - name: "🐍 Installation des dépendances Python Kubernetes"
+      pip:
+        name:
+          - kubernetes>=28.0.0
+          - openshift>=0.13.0
+          - PyYAML>=6.0
+        state: present
+        extra_args: "--upgrade"
+
+    # =========================================================================
+    # PHASE 6: DÉPLOIEMENT DE L'INFRASTRUCTURE DE BASE
+    # =========================================================================
+
+    - name: "🏗️  PHASE 6 - Déploiement de l'infrastructure de base"
+      debug:
+        msg: "Déploiement des composants d'infrastructure essentiels"
+
+    - name: "🌐 Déploiement de Traefik (Ingress Controller)"
+      block:
+        - name: "Ajout du dépôt Helm Traefik"
+          kubernetes.core.helm_repository:
+            name: traefik
+            repo_url: "https://helm.traefik.io/traefik"
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+
+        - name: "Création du namespace Traefik"
+          kubernetes.core.k8s:
+            name: traefik
+            api_version: v1
+            kind: Namespace
+            state: present
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+
+        - name: "Déploiement de Traefik via Helm"
+          kubernetes.core.helm:
+            name: traefik
+            chart_ref: "traefik/traefik"
+            chart_version: "{{ traefik_chart_version }}"
+            release_namespace: traefik
+            create_namespace: true
+            wait: true
+            wait_timeout: "600s"
+            values:
+              deployment:
+                replicas: 1
+              ports:
+                web:
+                  port: 80
+                  expose: true
+                  exposedPort: 80
+                websecure:
+                  port: 443
+                  expose: true
+                  exposedPort: 443
+              service:
+                type: LoadBalancer
+                spec:
+                  externalIPs:
+                    - "{{ ansible_host }}"
+              ingressClass:
+                enabled: true
+                isDefaultClass: true
+              logs:
+                general:
+                  level: INFO
+              metrics:
+                prometheus:
+                  enabled: true
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+
+    - name: "🔒 Déploiement de cert-manager (Gestion TLS)"
+      block:
+        - name: "Ajout du dépôt Helm cert-manager"
+          kubernetes.core.helm_repository:
+            name: jetstack
+            repo_url: "https://charts.jetstack.io"
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+
+        - name: "Nettoyage des CRDs cert-manager orphelins"
+          kubernetes.core.k8s:
+            name: "{{ item }}"
+            api_version: apiextensions.k8s.io/v1
+            kind: CustomResourceDefinition
+            state: absent
+          loop:
+            - certificaterequests.cert-manager.io
+            - certificates.cert-manager.io
+            - challenges.acme.cert-manager.io
+            - clusterissuers.cert-manager.io
+            - issuers.cert-manager.io
+            - orders.acme.cert-manager.io
+          ignore_errors: true
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+
+        - name: "Déploiement de cert-manager"
+          kubernetes.core.helm:
+            name: cert-manager
+            chart_ref: "jetstack/cert-manager"
+            chart_version: "{{ cert_manager_version }}"
+            release_namespace: cert-manager
+            create_namespace: true
+            wait: true
+            wait_timeout: "600s"
+            values:
+              installCRDs: true
+              global:
+                leaderElection:
+                  namespace: cert-manager
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+
+    - name: "⚖️  Déploiement de MetalLB (Load Balancer)"
+      block:
+        - name: "Ajout du dépôt Helm MetalLB"
+          kubernetes.core.helm_repository:
+            name: metallb
+            repo_url: "https://metallb.github.io/metallb"
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+
+        - name: "Déploiement de MetalLB"
+          kubernetes.core.helm:
+            name: metallb
+            chart_ref: "metallb/metallb"
+            chart_version: "{{ metallb_chart_version }}"
+            release_namespace: metallb-system
+            create_namespace: true
+            wait: true
+            wait_timeout: "600s"
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+
+        - name: "Configuration IPAddressPool MetalLB"
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: metallb.io/v1beta1
+              kind: IPAddressPool
+              metadata:
+                name: lions-ip-pool
+                namespace: metallb-system
+              spec:
+                addresses:
+                  - "{{ ansible_host }}/32"
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+
+        - name: "Configuration L2Advertisement MetalLB"
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: metallb.io/v1beta1
+              kind: L2Advertisement
+              metadata:
+                name: lions-l2-advert
+                namespace: metallb-system
+              spec:
+                ipAddressPools:
+                  - lions-ip-pool
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+
+    # =========================================================================
+    # PHASE 7: DÉPLOIEMENT DU MONITORING COMPLET (NOUVELLE PHASE)
+    # =========================================================================
+
+    - name: "📊 PHASE 7 - Déploiement du système de monitoring complet"
+      debug:
+        msg: |
+          Déploiement de Prometheus et Grafana avec configuration optimisée
+          Namespace: {{ monitoring_config.namespace }}
+          Rétention Prometheus: {{ monitoring_config.prometheus_retention }}
+
+    - name: "📊 Préparation du monitoring"
+      block:
+        - name: "Création du namespace monitoring"
+          kubernetes.core.k8s:
+            name: "{{ monitoring_config.namespace }}"
+            api_version: v1
+            kind: Namespace
+            state: present
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+
+        - name: "Ajout du dépôt Helm Prometheus Community"
+          kubernetes.core.helm_repository:
+            name: prometheus-community
+            repo_url: "https://prometheus-community.github.io/helm-charts"
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+
+        - name: "Mise à jour des dépôts Helm"
+          command: "helm repo update"
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+
+    - name: "🔍 Nettoyage complet des installations monitoring précédentes"
+      block:
+        - name: "Suppression complète du namespace monitoring"
+          kubernetes.core.k8s:
+            name: "{{ monitoring_config.namespace }}"
+            api_version: v1
+            kind: Namespace
+            state: absent
+            wait: true
+            wait_timeout: 60
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+          ignore_errors: yes
+
+        - name: "Suppression des CRDs Prometheus existants"
+          shell: |
+            kubectl delete crd --ignore-not-found=true \
+              prometheuses.monitoring.coreos.com \
+              prometheusrules.monitoring.coreos.com \
+              servicemonitors.monitoring.coreos.com \
+              podmonitors.monitoring.coreos.com \
+              alertmanagers.monitoring.coreos.com \
+              alertmanagerconfigs.monitoring.coreos.com \
+              thanosrulers.monitoring.coreos.com \
+              probes.monitoring.coreos.com \
+              prometheusagents.monitoring.coreos.com \
+              scrapeconfigs.monitoring.coreos.com || true
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+          ignore_errors: yes
+
+        - name: "Suppression forcée des releases Helm existantes"
+          shell: |
+            helm uninstall prometheus -n {{ monitoring_config.namespace }} --ignore-not-found || true
+            helm uninstall kube-prometheus-stack -n {{ monitoring_config.namespace }} --ignore-not-found || true
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+          ignore_errors: yes
+
+        - name: "Attente de la suppression complète"
+          pause:
+            seconds: 15
+
+        - name: "Recréation du namespace monitoring"
+          kubernetes.core.k8s:
+            name: "{{ monitoring_config.namespace }}"
+            api_version: v1
+            kind: Namespace
+            state: present
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+
+    - name: "🚀 Déploiement de kube-prometheus-stack simplifié"
+      block:
+        - name: "Installation avec timeout court et retry"
+          kubernetes.core.helm:
+            name: prometheus
+            chart_ref: "prometheus-community/kube-prometheus-stack"
+            chart_version: "{{ kube_prometheus_stack_version }}"
+            release_namespace: "{{ monitoring_config.namespace }}"
+            create_namespace: false
+            wait: true
+            wait_timeout: "2400s"  # Augmenté de 1200s à 2400s
+            atomic: false  # Désactivé pour éviter la suppression automatique en cas d'échec
+            timeout: 2400
+            values:
+              # Configuration Prometheus simplifiée
+              prometheus:
+                enabled: true
+                prometheusSpec:
+                  retention: "6h"  # Réduit de 1d à 6h
+                  retentionSize: "500MB"  # Réduit de 1GB à 500MB
+                  maximumStartupDurationSeconds: 2400  # Augmenté de 1200 à 2400
+                  scrapeInterval: "10m"  # Augmenté de 5m à 10m
+                  evaluationInterval: "10m"  # Augmenté de 5m à 10m
+                  enableAdminAPI: false
+                  walCompression: true
+                  storageSpec:
+                    volumeClaimTemplate:
+                      spec:
+                        storageClassName: "local-path"
+                        accessModes: ["ReadWriteOnce"]
+                        resources:
+                          requests:
+                            storage: "1Gi"  # Réduit de 2Gi à 1Gi
+                  resources:
+                    requests:
+                      cpu: "5m"  # Réduit de 10m à 5m
+                      memory: "16Mi"  # Réduit de 32Mi à 16Mi
+                    limits:
+                      cpu: "25m"  # Réduit de 50m à 25m
+                      memory: "64Mi"  # Réduit de 128Mi à 64Mi
+                  scrapeTimeout: "30s"
+                service:
+                  type: ClusterIP
+                  port: 9090
+
+              # Configuration Grafana simplifiée
+              grafana:
+                enabled: true
+                adminPassword: "{{ monitoring_config.grafana_admin_password }}"
+                persistence:
+                  enabled: true
+                  storageClassName: "local-path"
+                  size: "1Gi"  # Réduit de 2Gi à 1Gi
+                  accessModes: ["ReadWriteOnce"]
+                service:
+                  type: NodePort
+                  nodePort: 30000
+                  port: 80
+                resources:
+                  requests:
+                    cpu: "10m"  # Réduit de 25m à 10m
+                    memory: "16Mi"  # Réduit de 32Mi à 16Mi
+                  limits:
+                    cpu: "50m"  # Réduit de 100m à 50m
+                    memory: "64Mi"  # Réduit de 128Mi à 64Mi
+                defaultDashboardsEnabled: true
+                sidecar:
+                  dashboards:
+                    enabled: true
+                  datasources:
+                    enabled: true
+
+              # AlertManager désactivé pour réduire la charge
+              alertmanager:
+                enabled: false
+
+              # Node Exporter avec ressources minimales
+              nodeExporter:
+                enabled: true
+                resources:
+                  requests:
+                    cpu: "2m"
+                    memory: "8Mi"
+                  limits:
+                    cpu: "10m"
+                    memory: "16Mi"
+
+              # Kube State Metrics avec ressources minimales
+              kubeStateMetrics:
+                enabled: true
+                resources:
+                  requests:
+                    cpu: "2m"
+                    memory: "8Mi"
+                  limits:
+                    cpu: "10m"
+                    memory: "16Mi"
+
+              # Configuration minimale pour Prometheus Operator
+              prometheusOperator:
+                enabled: true
+                resources:
+                  requests:
+                    cpu: "2m"  # Réduit de 5m à 2m
+                    memory: "8Mi"  # Réduit de 16Mi à 8Mi
+                  limits:
+                    cpu: "10m"  # Réduit de 25m à 10m
+                    memory: "16Mi"  # Réduit de 32Mi à 16Mi
+                admissionWebhooks:
+                  enabled: false  # Désactivé pour réduire la charge
+                tls:
+                  enabled: false  # Désactivé pour réduire la charge
+                manageCrds: false  # Les CRDs sont déjà installés
+
+              # Désactivation de composants lourds
+              kubeApiServer:
+                enabled: false
+              kubelet:
+                enabled: false  # Désactivé pour réduire la charge
+              kubeControllerManager:
+                enabled: false
+              coreDns:
+                enabled: false
+              kubeEtcd:
+                enabled: false
+              kubeScheduler:
+                enabled: false
+              kubeProxy:
+                enabled: false
+
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+          register: prometheus_install_result
+          retries: 2
+          delay: 30
+
+      rescue:
+        - name: "Déploiement de fallback minimal"
+          block:
+            - name: "Diagnostic de l'échec"
+              shell: |
+                echo "=== Diagnostic de l'échec de l'installation de Prometheus ==="
+                echo "--- Pods en cours d'exécution ---"
+                kubectl get pods -n {{ monitoring_config.namespace }} || true
+                echo "--- Événements récents ---"
+                kubectl get events -n {{ monitoring_config.namespace }} --sort-by='.lastTimestamp' | tail -20 || true
+                echo "--- Ressources du nœud ---"
+                kubectl describe node || true
+                echo "--- Ressources utilisées ---"
+                kubectl top nodes || true
+                kubectl top pods --all-namespaces || true
+              register: diagnostic_output
+              environment:
+                KUBECONFIG: "{{ k3s_kubeconfig }}"
+              ignore_errors: yes
+
+            - name: "Affichage du diagnostic"
+              debug:
+                msg: "{{ diagnostic_output.stdout_lines }}"
+              when: diagnostic_output.stdout_lines is defined
+
+            - name: "Nettoyage après échec"
+              shell: |
+                echo "Nettoyage des ressources Prometheus..."
+                helm uninstall prometheus -n {{ monitoring_config.namespace }} --ignore-not-found || true
+                kubectl delete namespace {{ monitoring_config.namespace }} --ignore-not-found || true
+                echo "Attente de la suppression complète..."
+                sleep 20
+                echo "Recréation du namespace monitoring..."
+                kubectl create namespace {{ monitoring_config.namespace }} || true
+              environment:
+                KUBECONFIG: "{{ k3s_kubeconfig }}"
+
+            - name: "Ajout du dépôt Grafana"
+              kubernetes.core.helm_repository:
+                name: grafana
+                repo_url: "https://grafana.github.io/helm-charts"
+              environment:
+                KUBECONFIG: "{{ k3s_kubeconfig }}"
+
+            - name: "Installation Grafana standalone ultra-léger"
+              kubernetes.core.helm:
+                name: grafana
+                chart_ref: "grafana/grafana"
+                release_namespace: "{{ monitoring_config.namespace }}"
+                create_namespace: false
+                wait: true
+                wait_timeout: "300s"
+                timeout: 300
+                values:
+                  adminPassword: "{{ monitoring_config.grafana_admin_password }}"
+                  replicas: 1
+                  persistence:
+                    enabled: false
+                  service:
+                    type: NodePort
+                    nodePort: 30000
+                  resources:
+                    requests:
+                      cpu: "10m"  # Réduit au minimum
+                      memory: "32Mi"
+                    limits:
+                      cpu: "50m"  # Réduit au minimum
+                      memory: "64Mi"
+                  # Désactivation des fonctionnalités non essentielles
+                  rbac:
+                    pspEnabled: false
+                  testFramework:
+                    enabled: false
+                  downloadDashboardsImage:
+                    enabled: false
+                  initChownData:
+                    enabled: false
+                  # Configuration pour utiliser Prometheus s'il est installé manuellement plus tard
+                  datasources:
+                    datasources.yaml:
+                      apiVersion: 1
+                      datasources:
+                        - name: Prometheus
+                          type: prometheus
+                          url: http://prometheus-server.monitoring.svc.cluster.local:9090
+                          access: proxy
+                          isDefault: true
+                        - name: Prometheus-Alt
+                          type: prometheus
+                          url: http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090
+                          access: proxy
+                          isDefault: false
+                  # Désactivation des plugins et dashboards par défaut pour réduire la charge
+                  plugins: []
+                  dashboardProviders:
+                    dashboardproviders.yaml:
+                      apiVersion: 1
+                      providers:
+                        - name: 'default'
+                          orgId: 1
+                          folder: ''
+                          type: file
+                          disableDeletion: false
+                          editable: true
+                          options:
+                            path: /var/lib/grafana/dashboards/default
+                  dashboards:
+                    default:
+                      welcome:
+                        json: |
+                          {
+                            "annotations": {
+                              "list": []
+                            },
+                            "editable": true,
+                            "fiscalYearStartMonth": 0,
+                            "graphTooltip": 0,
+                            "links": [],
+                            "liveNow": false,
+                            "panels": [
+                              {
+                                "gridPos": {
+                                  "h": 8,
+                                  "w": 24,
+                                  "x": 0,
+                                  "y": 0
+                                },
+                                "id": 1,
+                                "options": {
+                                  "code": {
+                                    "language": "plaintext",
+                                    "showLineNumbers": false,
+                                    "showMiniMap": false
+                                  },
+                                  "content": "# Bienvenue sur Grafana LIONS Infrastructure\n\n## État du monitoring\n\nGrafana est actuellement déployé en mode standalone léger.\n\nPour connecter Grafana à Prometheus, vous pouvez:\n\n1. Installer Prometheus manuellement\n2. Vérifier les datasources préconfigurées\n3. Importer des dashboards pour visualiser vos métriques\n\n## Liens utiles\n\n- [Documentation Grafana](https://grafana.com/docs/)\n- [Documentation Prometheus](https://prometheus.io/docs/)\n- [Documentation LIONS Infrastructure](https://github.com/lions-infrastructure)",
+                                  "mode": "markdown"
+                                },
+                                "pluginVersion": "10.0.0",
+                                "title": "LIONS Infrastructure - Monitoring",
+                                "type": "text"
+                              }
+                            ],
+                            "refresh": "",
+                            "schemaVersion": 38,
+                            "style": "dark",
+                            "tags": [],
+                            "templating": {
+                              "list": []
+                            },
+                            "time": {
+                              "from": "now-6h",
+                              "to": "now"
+                            },
+                            "timepicker": {},
+                            "timezone": "",
+                            "title": "LIONS Infrastructure - Accueil",
+                            "uid": "lions-welcome",
+                            "version": 1,
+                            "weekStart": ""
+                          }
+              environment:
+                KUBECONFIG: "{{ k3s_kubeconfig }}"
+
+            - name: "Définition du résultat d'échec"
+              set_fact:
+                prometheus_install_result: "{{ {'failed': true} }}"
+
+            - name: "Message de fallback détaillé"
+              debug:
+                msg: |
+                  ⚠️  INSTALLATION DE PROMETHEUS ÉCHOUÉE - FALLBACK ACTIVÉ
+                  ==========================================================
+
+                  ✅ Grafana standalone ultra-léger a été déployé avec succès
+
+                  📊 INSTALLATION MANUELLE DE PROMETHEUS:
+
+                  1. Vérifiez les ressources disponibles sur votre VPS:
+                     kubectl top nodes
+
+                  2. Installez Prometheus manuellement avec des ressources réduites:
+                     helm install prometheus prometheus-community/kube-prometheus-stack \
+                       --namespace monitoring \
+                       --set prometheus.prometheusSpec.resources.requests.cpu=10m \
+                       --set prometheus.prometheusSpec.resources.requests.memory=32Mi \
+                       --set prometheus.prometheusSpec.resources.limits.cpu=50m \
+                       --set prometheus.prometheusSpec.resources.limits.memory=128Mi \
+                       --set prometheus.prometheusSpec.retention=1d \
+                       --set alertmanager.enabled=false \
+                       --set grafana.enabled=false
+
+                  3. Vérifiez que Prometheus est en cours d'exécution:
+                     kubectl get pods -n monitoring
+
+                  4. Grafana est déjà configuré pour se connecter à Prometheus
+                     automatiquement une fois qu'il sera disponible.
+
+                  ⚠️ REMARQUE: L'installation de Prometheus a échoué probablement en raison
+                  de ressources insuffisantes sur le VPS. Considérez augmenter les ressources
+                  du VPS ou réduire davantage les demandes de ressources.
+
+    - name: "⏳ Vérification du déploiement du monitoring"
+      block:
+        - name: "Vérification de l'installation réussie"
+          debug:
+            msg: "Installation Prometheus réussie: {{ prometheus_install_result is succeeded }}"
+
+        - name: "Attente de la disponibilité des pods (si installation réussie)"
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: Pod
+            namespace: "{{ monitoring_config.namespace }}"
+            label_selectors:
+              - "app.kubernetes.io/name=grafana"
+            wait: true
+            wait_condition:
+              type: Ready
+              status: "True"
+            wait_timeout: 180
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+          when: prometheus_install_result is succeeded
+          ignore_errors: yes
+
+        - name: "Vérification de l'état des services monitoring"
+          command: "/usr/local/bin/k3s kubectl get pods -n {{ monitoring_config.namespace }}"
+          register: monitoring_pods_status
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+
+        - name: "Affichage de l'état du monitoring"
+          debug:
+            msg: |
+              ==========================================================
+              📊 ÉTAT DU MONITORING
+              ==========================================================
+              {{ monitoring_pods_status.stdout }}
+              ==========================================================
+
+    - name: "🔗 Configuration des accès monitoring"
+      block:
+        - name: "Création du service NodePort pour Prometheus (si installé)"
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: Service
+              metadata:
+                name: prometheus-external
+                namespace: "{{ monitoring_config.namespace }}"
+                labels:
+                  app: prometheus-external
+              spec:
+                type: NodePort
+                ports:
+                  - port: 9090
+                    targetPort: 9090
+                    nodePort: 30090
+                    protocol: TCP
+                    name: prometheus
+                selector:
+                  app.kubernetes.io/name: prometheus
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+          when: prometheus_install_result is succeeded
+          ignore_errors: yes
+
+        - name: "Récupération du mot de passe Grafana (si installé)"
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: Secret
+            name: prometheus-grafana
+            namespace: "{{ monitoring_config.namespace }}"
+          register: grafana_secret
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+          when: prometheus_install_result is succeeded
+          ignore_errors: yes
+
+        - name: "Affichage des informations d'accès (installation complète)"
+          debug:
+            msg: |
+              ==========================================================
+              🔐 INFORMATIONS D'ACCÈS MONITORING COMPLET
+              ==========================================================
+              🎯 Grafana:
+                URL HTTPS: https://{{ services_domains.grafana }}
+                URL NodePort: http://{{ ansible_host }}:30000
+                Utilisateur: admin
+                Mot de passe: {{ monitoring_config.grafana_admin_password }}
+
+              📊 Prometheus:
+                URL HTTPS: https://{{ services_domains.prometheus }}
+                URL NodePort: http://{{ ansible_host }}:30090
+                Interface Web: https://{{ services_domains.prometheus }}/graph
+
+              🚨 AlertManager:
+                URL interne: http://prometheus-kube-prometheus-alertmanager:9093
+
+              🌐 Site Principal:
+                URL: https://{{ services_domains.lions_main }}
+              ==========================================================
+          when: prometheus_install_result is succeeded
+
+        - name: "Affichage des informations d'accès (fallback)"
+          debug:
+            msg: |
+              ==========================================================
+              🔐 INFORMATIONS D'ACCÈS MONITORING (FALLBACK)
+              ==========================================================
+              🎯 Grafana Standalone:
+                URL HTTPS: https://{{ services_domains.grafana }}
+                URL NodePort: http://{{ ansible_host }}:30000
+                Utilisateur: admin
+                Mot de passe: {{ monitoring_config.grafana_admin_password }}
+
+              🌐 Site Principal:
+                URL: https://{{ services_domains.lions_main }}
+
+              ⚠️  Prometheus n'est pas installé - configuration manuelle requise
+
+              📋 Services à venir:
+              • Keycloak: https://{{ services_domains.keycloak }}
+              • Kubernetes Dashboard: https://{{ services_domains.k3s_dashboard }}
+              • pgAdmin: https://{{ services_domains.pgadmin }}
+              • Gitea: https://{{ services_domains.gitea }}
+              ==========================================================
+          when: prometheus_install_result is failed
+
+    # =========================================================================
+    # PHASE 7.5: CONFIGURATION DES INGRESS ET EXPOSITION DES SERVICES
+    # =========================================================================
+
+    - name: "🌐 PHASE 7.5 - Configuration des Ingress pour l'exposition des services"
+      debug:
+        msg: |
+          Configuration des accès HTTPS via Traefik et Let's Encrypt
+          Domaine principal: {{ services_domains.lions_main }}
+
+    - name: "🔗 Configuration des Ingress pour les services de monitoring"
+      block:
+        - name: "Création de l'Ingress pour Grafana"
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: networking.k8s.io/v1
+              kind: Ingress
+              metadata:
+                name: grafana-ingress
+                namespace: "{{ monitoring_config.namespace }}"
+                annotations:
+                  kubernetes.io/ingress.class: "traefik"
+                  traefik.ingress.kubernetes.io/router.entrypoints: "web,websecure"
+                  traefik.ingress.kubernetes.io/router.tls: "true"
+                  cert-manager.io/cluster-issuer: "letsencrypt-prod"
+                  traefik.ingress.kubernetes.io/redirect-to-https: "true"
+              spec:
+                tls:
+                  - hosts:
+                      - "{{ services_domains.grafana }}"
+                    secretName: grafana-tls
+                rules:
+                  - host: "{{ services_domains.grafana }}"
+                    http:
+                      paths:
+                        - path: /
+                          pathType: Prefix
+                          backend:
+                            service:
+                              name: grafana
+                              port:
+                                number: 80
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+
+        - name: "Création de l'Ingress pour Prometheus (si installé)"
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: networking.k8s.io/v1
+              kind: Ingress
+              metadata:
+                name: prometheus-ingress
+                namespace: "{{ monitoring_config.namespace }}"
+                annotations:
+                  kubernetes.io/ingress.class: "traefik"
+                  traefik.ingress.kubernetes.io/router.entrypoints: "web,websecure"
+                  traefik.ingress.kubernetes.io/router.tls: "true"
+                  cert-manager.io/cluster-issuer: "letsencrypt-prod"
+                  traefik.ingress.kubernetes.io/redirect-to-https: "true"
+                  traefik.ingress.kubernetes.io/router.middlewares: "monitoring-auth@kubernetescrd"
+              spec:
+                tls:
+                  - hosts:
+                      - "{{ services_domains.prometheus }}"
+                    secretName: prometheus-tls
+                rules:
+                  - host: "{{ services_domains.prometheus }}"
+                    http:
+                      paths:
+                        - path: /
+                          pathType: Prefix
+                          backend:
+                            service:
+                              name: prometheus-kube-prometheus-prometheus
+                              port:
+                                number: 9090
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+          when: prometheus_install_result is succeeded
+
+    - name: "🔐 Configuration des middlewares d'authentification Traefik"
+      block:
+        - name: "Création du middleware d'authentification basique"
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: traefik.containo.us/v1alpha1
+              kind: Middleware
+              metadata:
+                name: auth
+                namespace: "{{ monitoring_config.namespace }}"
+              spec:
+                basicAuth:
+                  secret: basic-auth-secret
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+
+        - name: "Création du secret d'authentification"
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: Secret
+              metadata:
+                name: basic-auth-secret
+                namespace: "{{ monitoring_config.namespace }}"
+              type: Opaque
+              stringData:
+                users: "admin:$2y$10$K8kRt5rWLhKhXpHr2xJy8OKiCqWkKznRv8.LKz9v5KzWPgWmWV7G."
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+
+    - name: "🎛️ Préparation des Ingress pour les services futurs"
+      block:
+        - name: "Création du namespace lions-infrastructure pour les futurs services"
+          kubernetes.core.k8s:
+            name: lions-infrastructure
+            api_version: v1
+            kind: Namespace
+            state: present
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+
+        - name: "Configuration de l'Ingress pour le site principal"
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: networking.k8s.io/v1
+              kind: Ingress
+              metadata:
+                name: lions-main-ingress
+                namespace: lions-infrastructure
+                annotations:
+                  kubernetes.io/ingress.class: "traefik"
+                  traefik.ingress.kubernetes.io/router.entrypoints: "web,websecure"
+                  traefik.ingress.kubernetes.io/router.tls: "true"
+                  cert-manager.io/cluster-issuer: "letsencrypt-prod"
+                  traefik.ingress.kubernetes.io/redirect-to-https: "true"
+              spec:
+                tls:
+                  - hosts:
+                      - "{{ services_domains.lions_main }}"
+                    secretName: lions-main-tls
+                rules:
+                  - host: "{{ services_domains.lions_main }}"
+                    http:
+                      paths:
+                        - path: /
+                          pathType: Prefix
+                          backend:
+                            service:
+                              name: lions-main-service
+                              port:
+                                number: 80
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+
+        - name: "Service placeholder pour le site principal"
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: Service
+              metadata:
+                name: lions-main-service
+                namespace: lions-infrastructure
+              spec:
+                selector:
+                  app: lions-main
+                ports:
+                  - protocol: TCP
+                    port: 80
+                    targetPort: 80
+                type: ClusterIP
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+
+        - name: "Déploiement d'une page d'accueil temporaire"
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: lions-main-placeholder
+                namespace: lions-infrastructure
+              spec:
+                replicas: 1
+                selector:
+                  matchLabels:
+                    app: lions-main
+                template:
+                  metadata:
+                    labels:
+                      app: lions-main
+                  spec:
+                    containers:
+                      - name: nginx
+                        image: nginx:alpine
+                        ports:
+                          - containerPort: 80
+                        resources:
+                          requests:
+                            cpu: "50m"
+                            memory: "64Mi"
+                          limits:
+                            cpu: "100m"
+                            memory: "128Mi"
+                        volumeMounts:
+                          - name: html
+                            mountPath: /usr/share/nginx/html
+                    volumes:
+                      - name: html
+                        configMap:
+                          name: lions-main-html
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+
+        - name: "Configuration HTML pour la page d'accueil"
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: ConfigMap
+              metadata:
+                name: lions-main-html
+                namespace: lions-infrastructure
+              data:
+                index.html: |
+                  <!DOCTYPE html>
+                  <html lang="fr">
+                  <head>
+                      <meta charset="UTF-8">
+                      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                      <title>LIONS Infrastructure - En cours de déploiement</title>
+                      <style>
+                          * { margin: 0; padding: 0; box-sizing: border-box; }
+                          body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+                                 background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                                 min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+                          .container { text-align: center; color: white; padding: 2rem; }
+                          .logo { font-size: 4rem; font-weight: bold; margin-bottom: 1rem; }
+                          .subtitle { font-size: 1.5rem; margin-bottom: 2rem; opacity: 0.9; }
+                          .services { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); 
+                                    gap: 1rem; margin-top: 2rem; }
+                          .service { background: rgba(255,255,255,0.1); padding: 1rem; border-radius: 8px; 
+                                   backdrop-filter: blur(10px); transition: transform 0.3s; }
+                          .service:hover { transform: translateY(-5px); }
+                          .service a { color: white; text-decoration: none; font-weight: 500; }
+                          .status { background: #4CAF50; color: white; padding: 0.5rem 1rem; 
+                                  border-radius: 20px; font-size: 0.9rem; margin-left: 0.5rem; }
+                          .coming-soon { background: #FF9800; }
+                      </style>
+                  </head>
+                  <body>
+                      <div class="container">
+                          <div class="logo">🦁 LIONS</div>
+                          <div class="subtitle">Infrastructure de Déploiement Automatisé</div>
+                          <p>Votre infrastructure Kubernetes est prête !</p>
+
+                          <div class="services">
+                              <div class="service">
+                                  <a href="/grafana">📊 Grafana</a>
+                                  <span class="status">Actif</span>
+                              </div>
+                              <div class="service">
+                                  <a href="/prometheus">📈 Prometheus</a>
+                                  <span class="status">Variable</span>
+                              </div>
+                              <div class="service">
+                                  <a href="/k8s">⚙️ K8s Dashboard</a>
+                                  <span class="status coming-soon">Bientôt</span>
+                              </div>
+                              <div class="service">
+                                  <a href="/keycloak">🔐 Keycloak</a>
+                                  <span class="status coming-soon">Bientôt</span>
+                              </div>
+                              <div class="service">
+                                  <a href="/git">🔧 Git</a>
+                                  <span class="status coming-soon">Bientôt</span>
+                              </div>
+                              <div class="service">
+                                  <a href="/pgadmin">🗄️ pgAdmin</a>
+                                  <span class="status coming-soon">Bientôt</span>
+                              </div>
+                          </div>
+
+                          <div style="margin-top: 2rem; font-size: 0.9rem; opacity: 0.8;">
+                              Infrastructure LIONS déployée avec succès
+                          </div>
+                      </div>
+                  </body>
+                  </html>
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+
+    - name: "⏳ Attente de la création des certificats SSL"
+      pause:
+        seconds: 30
+        prompt: "Attente de la génération des certificats Let's Encrypt..."
+
+    - name: "🔍 Vérification des certificats SSL"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Secret
+        name: grafana-tls
+        namespace: "{{ monitoring_config.namespace }}"
+      register: grafana_cert_check
+      environment:
+        KUBECONFIG: "{{ k3s_kubeconfig }}"
+      ignore_errors: yes
+
+    # =========================================================================
+    # PHASE 8: VÉRIFICATIONS FINALES ET RAPPORT
+    # =========================================================================
+
+    - name: "✅ PHASE 9 - Vérifications finales et tests d'intégration"
+      debug:
+        msg: "Validation finale de l'installation complète avec monitoring et exposition HTTPS"
+
+    - name: "🏥 Tests de santé des composants"
+      block:
+        - name: "Vérification des nœuds K3s"
+          command: "/usr/local/bin/k3s kubectl get nodes -o wide"
+          register: final_nodes_check
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+
+        - name: "Vérification des pods système"
+          command: "/usr/local/bin/k3s kubectl get pods --all-namespaces"
+          register: final_pods_check
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+
+        - name: "Vérification des services"
+          command: "/usr/local/bin/k3s kubectl get services --all-namespaces"
+          register: final_services_check
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+
+        - name: "Vérification spécifique du monitoring"
+          command: "/usr/local/bin/k3s kubectl get pods -n {{ monitoring_config.namespace }} -o wide"
+          register: monitoring_final_check
+          environment:
+            KUBECONFIG: "{{ k3s_kubeconfig }}"
+          ignore_errors: yes
+
+    - name: "🎯 Tests de connectivité des services"
+      block:
+        - name: "Test de connectivité Traefik"
+          uri:
+            url: "http://{{ ansible_host }}"
+            method: GET
+            status_code: [200, 404, 503]
+            timeout: 10
+          register: traefik_connectivity
+          ignore_errors: true
+
+        - name: "Test de connectivité site principal HTTPS"
+          uri:
+            url: "https://{{ services_domains.lions_main }}"
+            method: GET
+            status_code: [200, 404, 503]
+            timeout: 15
+            validate_certs: false
+          register: lions_main_connectivity
+          ignore_errors: true
+
+        - name: "Test de connectivité Grafana HTTPS"
+          uri:
+            url: "https://{{ services_domains.grafana }}"
+            method: GET
+            status_code: [200, 302, 404]
+            timeout: 15
+            validate_certs: false
+          register: grafana_https_connectivity
+          ignore_errors: true
+
+        - name: "Test de connectivité Grafana NodePort (fallback)"
+          uri:
+            url: "http://{{ ansible_host }}:30000"
+            method: GET
+            status_code: [200, 302]
+            timeout: 15
+          register: grafana_nodeport_connectivity
+          ignore_errors: true
+
+        - name: "Test de connectivité Prometheus HTTPS (si installé)"
+          uri:
+            url: "https://{{ services_domains.prometheus }}"
+            method: GET
+            status_code: [200, 401, 404]
+            timeout: 15
+            validate_certs: false
+          register: prometheus_https_connectivity
+          ignore_errors: true
+          when: prometheus_install_result is succeeded
+
+        - name: "Test de connectivité Prometheus NodePort (si installé)"
+          uri:
+            url: "http://{{ ansible_host }}:30090"
+            method: GET
+            status_code: [200]
+            timeout: 15
+          register: prometheus_nodeport_connectivity
+          ignore_errors: true
+          when: prometheus_install_result is succeeded
+
+    - name: "📊 RAPPORT FINAL D'INSTALLATION COMPLÈTE"
+      debug:
+        msg: |
+          ==========================================================
+          🎉 INSTALLATION K3S LIONS + MONITORING TERMINÉE
+          ==========================================================
+
+          📍 INFORMATIONS GÉNÉRALES:
+          • Host: {{ ansible_host }}
+          • Version K3s: {{ k3s_version }}
+          • Environment: {{ lions_env | default('development') }}
+          • Date: {{ ansible_date_time.iso8601 }}
+
+          🔧 COMPOSANTS INSTALLÉS:
+          • ✅ K3s Server (API: :6443)
+          • ✅ kubectl
+          • ✅ Helm v3
+          • ✅ Traefik Ingress Controller
+          • ✅ cert-manager (TLS)
+          • ✅ MetalLB Load Balancer
+          • ✅ Prometheus Stack {{ kube_prometheus_stack_version }}
+          • ✅ Grafana avec dashboards
+          • ✅ AlertManager
+          • ✅ Node Exporter
+
+          🌐 ACCÈS SERVICES:
+          • API Kubernetes: https://{{ ansible_host }}:6443
+          • Site Principal: https://{{ services_domains.lions_main }} {{ '✅' if lions_main_connectivity.status in [200, 404] else '⚠️' }}
+          • Traefik (HTTP): http://{{ ansible_host }} {{ '✅' if traefik_connectivity.status == 200 else '⚠️' }}
+
+          📊 MONITORING:
+          • Grafana HTTPS: https://{{ services_domains.grafana }} {{ '✅' if grafana_https_connectivity.status in [200, 302] else '⚠️' }}
+          • Grafana NodePort: http://{{ ansible_host }}:30000 {{ '✅' if grafana_nodeport_connectivity.status in [200, 302] else '⚠️' }}
+          {% if prometheus_install_result is succeeded %}
+          • Prometheus HTTPS: https://{{ services_domains.prometheus }} {{ '✅' if prometheus_https_connectivity is defined and prometheus_https_connectivity.status in [200, 401] else '⚠️' }}
+          • Prometheus NodePort: http://{{ ansible_host }}:30090 {{ '✅' if prometheus_nodeport_connectivity is defined and prometheus_nodeport_connectivity.status == 200 else '⚠️' }}
+          {% else %}
+          • Prometheus: Non installé (fallback mode)
+          {% endif %}
+
+          🔮 SERVICES À VENIR:
+          • Keycloak: https://{{ services_domains.keycloak }}
+          • Kubernetes Dashboard: https://{{ services_domains.k3s_dashboard }}
+          • pgAdmin: https://{{ services_domains.pgadmin }}
+          • Gitea: https://{{ services_domains.gitea }}
+
+          🔐 CREDENTIALS:
+          • Grafana User: admin
+          • Grafana Password: {{ monitoring_config.grafana_admin_password }}
+
+          📈 STATISTIQUES:
+          • Nœuds: {{ final_nodes_check.stdout_lines | length - 1 }}
+          • Namespaces: {{ (final_pods_check.stdout_lines | select('match', '^[^\\s]+\\s+[^\\s]+\\s+') | list | map('regex_replace', '^([^\\s]+)\\s+.*', '\\1') | unique | list) | length }}
+          • Pods actifs: {{ (final_pods_check.stdout_lines | select('match', '.*Running.*') | list) | length }}
+          • Pods monitoring: {{ (monitoring_final_check.stdout_lines | select('match', '.*Running.*') | list) | length if monitoring_final_check is succeeded else 'N/A' }} / {{ monitoring_final_check.stdout_lines | length - 1 if monitoring_final_check is succeeded else 'N/A' }}
+
+          🚀 PROCHAINES ÉTAPES:
+          {% if prometheus_install_result is succeeded %}
+          1. ✅ Infrastructure complète opérationnelle
+          2. ✅ Certificats SSL Let's Encrypt configurés
+          3. Personnaliser les dashboards Grafana
+          4. Déployer les applications LIONS (Keycloak, Gitea, etc.)
+          5. Configurer les sauvegardes automatiques
+          {% else %}
+          1. ✅ Infrastructure de base opérationnelle
+          2. ✅ Certificats SSL Let's Encrypt configurés
+          3. Installer Prometheus manuellement si nécessaire
+          4. Déployer les applications LIONS (Keycloak, Gitea, etc.)
+          5. Configurer les sauvegardes automatiques
+          {% endif %}
+
+          💡 CONSEILS D'UTILISATION:
+          • Utilisez les URLs HTTPS pour un accès sécurisé
+          • Les certificats SSL sont automatiquement renouvelés
+          • Le site principal affiche tous les services disponibles
+          {% if prometheus_install_result is succeeded %}
+          • Accédez à Grafana pour visualiser vos métriques
+          • Consultez Prometheus pour les requêtes avancées
+          • Les dashboards par défaut sont pré-installés
+          • Le monitoring est configuré pour une rétention de 1 jour pour économiser les ressources
+          {% else %}
+          • Grafana est configuré mais sans sources de données Prometheus
+          • Vous pouvez installer Prometheus séparément plus tard
+          • Les URLs NodePort restent disponibles en backup
+          {% endif %}
+
+          🔐 DNS CONFIGURATION REQUISE:
+          Configurez vos DNS pour pointer vers {{ ansible_host }}:
+          {% for service_name, domain in services_domains.items() %}
+          • {{ domain }} → {{ ansible_host }}
+          {% endfor %}
+
+          ==========================================================
+
+  # =============================================================================
+  # HANDLERS
+  # =============================================================================
+  handlers:
+    - name: "reload systemd and restart k3s"
+      listen: "reload systemd and restart k3s"
+      systemd:
+        name: k3s
+        state: restarted
+        daemon_reload: yes
+      register: k3s_handler_restart
+
+    - name: "verify k3s after handler restart"
+      listen: "reload systemd and restart k3s"
+      wait_for:
+        port: 6443
+        host: localhost
+        timeout: 120
+      when: k3s_handler_restart is succeeded

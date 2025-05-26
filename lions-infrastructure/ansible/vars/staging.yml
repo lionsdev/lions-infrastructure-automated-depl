@@ -1,0 +1,75 @@
+---
+# Staging environment variables for LIONS Infrastructure
+# These variables override common.yml for the staging environment
+# Author: LIONS Infrastructure Team
+# Date: 2025-05-24
+# Version: 1.0.0
+
+# Environment settings
+lions_env: "staging"
+lions_domain: "staging.lions.dev"
+
+# Resource settings - moderate for staging environment
+lions_cpu_request: "300m"
+lions_cpu_limit: "1000m"
+lions_memory_request: "512Mi"
+lions_memory_limit: "1.5Gi"
+
+# Monitoring configuration - moderate for staging environment
+monitoring_config:
+  namespace: "monitoring"
+  grafana_admin_password: "{{ lookup('env', 'LIONS_STAGING_GRAFANA_PASSWORD') | default('StrongStaging@Pwd123!', true) }}"
+  prometheus_retention: "7d"   # Moderate retention for staging
+  prometheus_storage: "10Gi"   # Moderate storage for staging
+  grafana_storage: "5Gi"       # Moderate storage for staging
+  resource_limits:
+    prometheus_cpu: "750m"     # Moderate CPU for staging
+    prometheus_memory: "1.5Gi" # Moderate memory for staging
+    grafana_cpu: "300m"        # Moderate CPU for staging
+    grafana_memory: "512Mi"    # Moderate memory for staging
+
+# Staging-specific component enablement
+# Enable most components for staging
+lions_monitoring_enabled: true
+lions_registry_enabled: true
+lions_postgres_enabled: true
+lions_keycloak_enabled: true
+lions_gitea_enabled: true
+lions_ollama_enabled: true
+lions_vault_enabled: true
+
+# Staging-specific credentials
+# Using stronger passwords for staging
+default_credentials:
+  postgres:
+    username: "postgres"
+    password: "{{ lookup('env', 'LIONS_STAGING_POSTGRES_PASSWORD') | default('StrongPg@Staging123!', true) }}"
+  keycloak:
+    admin_username: "admin"
+    admin_password: "{{ lookup('env', 'LIONS_STAGING_KEYCLOAK_PASSWORD') | default('StrongKc@Staging123!', true) }}"
+  gitea:
+    admin_username: "gitea_admin"
+    admin_password: "{{ lookup('env', 'LIONS_STAGING_GITEA_PASSWORD') | default('StrongGitea@Staging123!', true) }}"
+  registry:
+    username: "registry_admin"
+    password: "{{ lookup('env', 'LIONS_STAGING_REGISTRY_PASSWORD') | default('StrongReg@Staging123!', true) }}"
+
+# Backup configuration - moderate for staging
+backup_config:
+  schedule: "0 2 * * *"   # Daily at 2 AM
+  storage_location: "/var/backups/lions"
+  retention_days: 14      # Keep 14 days of backups in staging
+  components:
+    - postgres
+    - gitea
+    - keycloak
+    - kubernetes_resources
+
+# Logging configuration - balanced for staging
+logging_config:
+  log_level: "INFO"       # Standard logging for staging
+  retention_days: 14      # Keep 14 days of logs in staging
+  max_size: "100Mi"       # Standard log size for staging
+
+# Security settings - enhanced for staging
+lions_network_policy_enabled: true

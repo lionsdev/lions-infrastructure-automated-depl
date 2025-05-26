@@ -1,0 +1,323 @@
+#!/bin/bash
+# =============================================================================
+# LIONS Infrastructure - Script de récupération automatique K3s
+# =============================================================================
+# Titre: Script de récupération automatique pour les nœuds K3s
+# Description: Surveille l'état des nœuds K3s et prend des mesures correctives
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-25
+# Version: 1.0.0
+# =============================================================================
+
+# Configuration
+KUBECONFIG="{{ k3s_kubeconfig }}"
+LOG_FILE="/var/log/k3s-recovery.log"
+ALERT_FILE="/var/run/k3s-health-alert"
+RECOVERY_LOCK="/var/run/k3s-recovery.lock"
+RECOVERY_HISTORY="/var/log/k3s-recovery-history.log"
+NODE_NAME="$(hostname)"
+API_SERVER="https://{{ k3s_api_lb_host }}:{{ k3s_api_lb_port }}"
+MAX_RECOVERY_ATTEMPTS=3
+RECOVERY_ATTEMPT_FILE="/var/run/k3s-recovery-attempts"
+RECOVERY_INTERVAL=300  # 5 minutes entre les tentatives de récupération
+{% if inventory_hostname in groups['k3s_servers'] %}
+NODE_TYPE="server"
+{% else %}
+NODE_TYPE="agent"
+{% endif %}
+
+# Fonction de logging
+log() {
+    local level="$1"
+    local message="$2"
+    local timestamp
+    timestamp="$(date +"%Y-%m-%d %H:%M:%S")"
+    
+    echo "[${timestamp}] [${level}] ${message}" >> "${LOG_FILE}"
+    
+    # Affichage sur la console si le niveau est ERROR, ALERT ou RECOVERY
+    if [[ "${level}" == "ERROR" || "${level}" == "ALERT" || "${level}" == "RECOVERY" ]]; then
+        echo "[${timestamp}] [${level}] ${message}" >&2
+    fi
+    
+    # Ajout au journal d'historique si c'est une action de récupération
+    if [[ "${level}" == "RECOVERY" ]]; then
+        echo "[${timestamp}] ${message}" >> "${RECOVERY_HISTORY}"
+    fi
+}
+
+# Fonction pour vérifier si une récupération est déjà en cours
+is_recovery_in_progress() {
+    if [[ -f "${RECOVERY_LOCK}" ]]; then
+        local lock_time
+        lock_time=$(stat -c %Y "${RECOVERY_LOCK}" 2>/dev/null)
+        local current_time
+        current_time=$(date +%s)
+        local elapsed_time=$((current_time - lock_time))
+        
+        # Si le verrou existe depuis plus d'une heure, on considère qu'il est obsolète
+        if [[ ${elapsed_time} -gt 3600 ]]; then
+            log "WARNING" "Verrou de récupération obsolète détecté (${elapsed_time}s), suppression"
+            rm -f "${RECOVERY_LOCK}"
+            return 1
+        fi
+        
+        return 0
+    fi
+    
+    return 1
+}
+
+# Fonction pour créer un verrou de récupération
+create_recovery_lock() {
+    touch "${RECOVERY_LOCK}"
+}
+
+# Fonction pour supprimer le verrou de récupération
+remove_recovery_lock() {
+    rm -f "${RECOVERY_LOCK}"
+}
+
+# Fonction pour incrémenter le compteur de tentatives de récupération
+increment_recovery_attempts() {
+    if [[ -f "${RECOVERY_ATTEMPT_FILE}" ]]; then
+        local count
+        count=$(cat "${RECOVERY_ATTEMPT_FILE}")
+        count=$((count + 1))
+        echo "${count}" > "${RECOVERY_ATTEMPT_FILE}"
+    else
+        echo "1" > "${RECOVERY_ATTEMPT_FILE}"
+    fi
+}
+
+# Fonction pour réinitialiser le compteur de tentatives de récupération
+reset_recovery_attempts() {
+    echo "0" > "${RECOVERY_ATTEMPT_FILE}"
+}
+
+# Fonction pour vérifier si le nombre de tentatives dépasse le seuil
+check_recovery_threshold() {
+    if [[ -f "${RECOVERY_ATTEMPT_FILE}" ]]; then
+        local count
+        count=$(cat "${RECOVERY_ATTEMPT_FILE}")
+        if [[ "${count}" -ge "${MAX_RECOVERY_ATTEMPTS}" ]]; then
+            return 0  # Seuil dépassé
+        fi
+    fi
+    return 1  # Seuil non dépassé
+}
+
+# Fonction pour vérifier si une alerte est active
+is_alert_active() {
+    [[ -f "${ALERT_FILE}" ]]
+}
+
+# Fonction pour obtenir la raison de l'alerte
+get_alert_reason() {
+    if [[ -f "${ALERT_FILE}" ]]; then
+        cat "${ALERT_FILE}"
+    else
+        echo "Raison inconnue"
+    fi
+}
+
+# Fonction pour vérifier l'état du service K3s
+check_k3s_service() {
+    systemctl is-active --quiet k3s{% if NODE_TYPE == "agent" %}-agent{% endif %}
+    return $?
+}
+
+# Fonction pour redémarrer le service K3s
+restart_k3s_service() {
+    log "RECOVERY" "Redémarrage du service K3s{% if NODE_TYPE == "agent" %}-agent{% endif %}"
+    systemctl restart k3s{% if NODE_TYPE == "agent" %}-agent{% endif %}
+    sleep 30  # Attente pour que le service démarre
+    
+    if check_k3s_service; then
+        log "RECOVERY" "Service K3s{% if NODE_TYPE == "agent" %}-agent{% endif %} redémarré avec succès"
+        return 0
+    else
+        log "ERROR" "Échec du redémarrage du service K3s{% if NODE_TYPE == "agent" %}-agent{% endif %}"
+        return 1
+    fi
+}
+
+# Fonction pour vérifier l'état du nœud dans le cluster
+check_node_status() {
+    local node_status
+    node_status=$(kubectl --kubeconfig="${KUBECONFIG}" get node "${NODE_NAME}" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+    
+    if [[ "${node_status}" == "True" ]]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Fonction pour nettoyer les ressources du nœud
+clean_node_resources() {
+    log "RECOVERY" "Nettoyage des ressources du nœud"
+    
+    # Nettoyage du cache containerd
+    if [[ -d /var/lib/rancher/k3s/agent/containerd ]]; then
+        log "RECOVERY" "Nettoyage du cache containerd"
+        systemctl stop k3s{% if NODE_TYPE == "agent" %}-agent{% endif %}
+        rm -rf /var/lib/rancher/k3s/agent/containerd/io.containerd.content.v1.content/ingest/*
+        systemctl start k3s{% if NODE_TYPE == "agent" %}-agent{% endif %}
+    fi
+    
+    # Nettoyage des journaux
+    log "RECOVERY" "Rotation des journaux"
+    journalctl --vacuum-time=1d
+    
+    # Nettoyage des fichiers temporaires
+    log "RECOVERY" "Nettoyage des fichiers temporaires"
+    find /tmp -type f -atime +7 -delete
+    
+    return 0
+}
+
+# Fonction pour réinitialiser le nœud (mesure drastique)
+reset_node() {
+    log "RECOVERY" "Réinitialisation du nœud (mesure drastique)"
+    
+    # Sauvegarde des fichiers importants
+    log "RECOVERY" "Sauvegarde des fichiers importants"
+    mkdir -p /var/backups/k3s
+    cp "${KUBECONFIG}" /var/backups/k3s/
+    
+    # Arrêt du service K3s
+    log "RECOVERY" "Arrêt du service K3s{% if NODE_TYPE == "agent" %}-agent{% endif %}"
+    systemctl stop k3s{% if NODE_TYPE == "agent" %}-agent{% endif %}
+    
+    # Suppression des données K3s
+    log "RECOVERY" "Suppression des données K3s"
+    rm -rf /var/lib/rancher/k3s/agent/containerd
+    
+    # Redémarrage du service K3s
+    log "RECOVERY" "Redémarrage du service K3s{% if NODE_TYPE == "agent" %}-agent{% endif %}"
+    systemctl start k3s{% if NODE_TYPE == "agent" %}-agent{% endif %}
+    
+    return 0
+}
+
+# Fonction pour notifier les administrateurs
+notify_administrators() {
+    local reason="$1"
+    local attempts="$2"
+    
+    log "ALERT" "Notification des administrateurs: ${reason} (tentatives: ${attempts})"
+    
+    # Envoi d'un e-mail (si configuré)
+    if command -v mail &>/dev/null; then
+        echo "Alerte K3s sur le nœud ${NODE_NAME} (${NODE_TYPE})
+
+Raison: ${reason}
+Tentatives de récupération: ${attempts}/${MAX_RECOVERY_ATTEMPTS}
+Horodatage: $(date)
+
+Consultez les journaux pour plus de détails:
+- Journal de santé: ${LOG_FILE}
+- Journal de récupération: ${RECOVERY_HISTORY}
+" | mail -s "ALERTE K3s: ${NODE_NAME}" {{ lookup('env', 'LIONS_ADMIN_EMAIL') | default('admin@example.com') }}
+    fi
+    
+    return 0
+}
+
+# Fonction pour effectuer la récupération
+perform_recovery() {
+    local reason="$1"
+    
+    log "RECOVERY" "Début de la procédure de récupération pour le nœud ${NODE_NAME} (${NODE_TYPE})"
+    log "RECOVERY" "Raison: ${reason}"
+    
+    # Vérification du nombre de tentatives
+    increment_recovery_attempts
+    local attempts
+    attempts=$(cat "${RECOVERY_ATTEMPT_FILE}")
+    
+    log "RECOVERY" "Tentative de récupération ${attempts}/${MAX_RECOVERY_ATTEMPTS}"
+    
+    # Stratégie de récupération progressive
+    case ${attempts} in
+        1)
+            # Première tentative: redémarrage simple du service
+            log "RECOVERY" "Stratégie: redémarrage du service"
+            restart_k3s_service
+            ;;
+        2)
+            # Deuxième tentative: nettoyage des ressources et redémarrage
+            log "RECOVERY" "Stratégie: nettoyage des ressources et redémarrage"
+            clean_node_resources
+            restart_k3s_service
+            ;;
+        3)
+            # Troisième tentative: réinitialisation du nœud
+            log "RECOVERY" "Stratégie: réinitialisation du nœud"
+            reset_node
+            ;;
+        *)
+            # Tentatives supplémentaires: notification des administrateurs
+            log "ERROR" "Nombre maximum de tentatives atteint, intervention manuelle requise"
+            notify_administrators "${reason}" "${attempts}"
+            return 1
+            ;;
+    esac
+    
+    # Vérification du résultat de la récupération
+    sleep 60  # Attente pour que les changements prennent effet
+    
+    if check_k3s_service && check_node_status; then
+        log "RECOVERY" "Récupération réussie pour le nœud ${NODE_NAME}"
+        reset_recovery_attempts
+        rm -f "${ALERT_FILE}"
+        return 0
+    else
+        log "ERROR" "Échec de la récupération pour le nœud ${NODE_NAME}"
+        
+        # Si le seuil est dépassé, notification des administrateurs
+        if check_recovery_threshold; then
+            notify_administrators "${reason}" "${attempts}"
+        fi
+        
+        return 1
+    fi
+}
+
+# Fonction principale
+main() {
+    # Vérification si une récupération est déjà en cours
+    if is_recovery_in_progress; then
+        log "INFO" "Une procédure de récupération est déjà en cours, sortie"
+        return 0
+    fi
+    
+    # Vérification si une alerte est active
+    if ! is_alert_active; then
+        # Pas d'alerte, rien à faire
+        return 0
+    fi
+    
+    # Création du verrou de récupération
+    create_recovery_lock
+    
+    # Récupération de la raison de l'alerte
+    local reason
+    reason=$(get_alert_reason)
+    
+    # Exécution de la procédure de récupération
+    perform_recovery "${reason}"
+    local recovery_result=$?
+    
+    # Suppression du verrou de récupération
+    remove_recovery_lock
+    
+    return ${recovery_result}
+}
+
+# Boucle principale du service
+while true; do
+    main
+    sleep ${RECOVERY_INTERVAL}
+done

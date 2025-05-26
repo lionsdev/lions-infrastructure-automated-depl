@@ -1,0 +1,181 @@
+# =============================================================================
+# LIONS Infrastructure - Configuration Alertmanager
+# =============================================================================
+# Titre: Configuration Alertmanager pour la gestion des alertes Prometheus
+# Description: Définit les routes, les groupes et les récepteurs pour les alertes
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-25
+# Version: 1.0.0
+# =============================================================================
+
+global:
+  # Délai avant de résoudre une alerte si elle n'est plus active
+  resolve_timeout: 5m
+  
+  # Configuration SMTP pour les notifications par e-mail
+  smtp_from: "alertmanager@lions.dev"
+  smtp_smarthost: "smtp.lions.dev:587"
+  smtp_auth_username: "alertmanager"
+  smtp_auth_password: "${SMTP_PASSWORD}"
+  smtp_require_tls: true
+  
+  # Configuration Slack pour les notifications
+  slack_api_url: "${SLACK_API_URL}"
+  
+  # Personnalisation des templates de notification
+  templates:
+    - "/etc/alertmanager/templates/*.tmpl"
+
+# Configuration des routes d'alertes
+route:
+  # Regroupement des alertes similaires
+  group_by: ['alertname', 'cluster', 'service']
+  
+  # Intervalle entre les notifications pour un même groupe
+  group_wait: 30s
+  
+  # Intervalle entre les notifications pour un groupe qui a déjà été notifié
+  group_interval: 5m
+  
+  # Intervalle entre les notifications pour une alerte qui persiste
+  repeat_interval: 4h
+  
+  # Récepteur par défaut
+  receiver: 'team-lions-email'
+  
+  # Routes spécifiques pour différents types d'alertes
+  routes:
+    # Alertes critiques
+    - match:
+        severity: critical
+      receiver: 'team-lions-pager'
+      repeat_interval: 1h
+      continue: true
+    
+    # Alertes pour l'infrastructure K3s
+    - match:
+        service: k3s
+      receiver: 'team-infrastructure'
+      group_wait: 10s
+      continue: true
+    
+    # Alertes pour les applications
+    - match_re:
+        service: ^(app|api|web).*
+      receiver: 'team-applications'
+      continue: true
+    
+    # Alertes pour la base de données
+    - match:
+        service: database
+      receiver: 'team-database'
+      continue: true
+    
+    # Alertes de monitoring
+    - match:
+        service: monitoring
+      receiver: 'team-monitoring'
+      continue: true
+
+# Configuration des inhibitions (suppression d'alertes moins importantes)
+inhibit_rules:
+  # Inhiber les alertes warning si une alerte critical existe pour le même service
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['alertname', 'cluster', 'service']
+  
+  # Inhiber les alertes info si une alerte warning existe pour le même service
+  - source_match:
+      severity: 'warning'
+    target_match:
+      severity: 'info'
+    equal: ['alertname', 'cluster', 'service']
+
+# Configuration des récepteurs d'alertes
+receivers:
+  # Équipe principale - E-mail
+  - name: 'team-lions-email'
+    email_configs:
+      - to: 'team@lions.dev'
+        send_resolved: true
+        html: '{{ template "email.lions.html" . }}'
+        headers:
+          subject: '{{ template "email.lions.subject" . }}'
+    
+  # Équipe principale - Pager (pour les alertes critiques)
+  - name: 'team-lions-pager'
+    email_configs:
+      - to: 'oncall@lions.dev'
+        send_resolved: true
+        html: '{{ template "email.lions.html" . }}'
+        headers:
+          subject: '[CRITIQUE] {{ template "email.lions.subject" . }}'
+    slack_configs:
+      - channel: '#alerts-critical'
+        send_resolved: true
+        title: '{{ template "slack.lions.title" . }}'
+        text: '{{ template "slack.lions.text" . }}'
+        title_link: '{{ template "slack.lions.link" . }}'
+        icon_emoji: ':rotating_light:'
+    
+  # Équipe infrastructure
+  - name: 'team-infrastructure'
+    email_configs:
+      - to: 'infrastructure@lions.dev'
+        send_resolved: true
+        html: '{{ template "email.lions.html" . }}'
+        headers:
+          subject: '[INFRA] {{ template "email.lions.subject" . }}'
+    slack_configs:
+      - channel: '#alerts-infrastructure'
+        send_resolved: true
+        title: '{{ template "slack.lions.title" . }}'
+        text: '{{ template "slack.lions.text" . }}'
+        title_link: '{{ template "slack.lions.link" . }}'
+    
+  # Équipe applications
+  - name: 'team-applications'
+    email_configs:
+      - to: 'applications@lions.dev'
+        send_resolved: true
+        html: '{{ template "email.lions.html" . }}'
+        headers:
+          subject: '[APP] {{ template "email.lions.subject" . }}'
+    slack_configs:
+      - channel: '#alerts-applications'
+        send_resolved: true
+        title: '{{ template "slack.lions.title" . }}'
+        text: '{{ template "slack.lions.text" . }}'
+        title_link: '{{ template "slack.lions.link" . }}'
+    
+  # Équipe base de données
+  - name: 'team-database'
+    email_configs:
+      - to: 'database@lions.dev'
+        send_resolved: true
+        html: '{{ template "email.lions.html" . }}'
+        headers:
+          subject: '[DB] {{ template "email.lions.subject" . }}'
+    slack_configs:
+      - channel: '#alerts-database'
+        send_resolved: true
+        title: '{{ template "slack.lions.title" . }}'
+        text: '{{ template "slack.lions.text" . }}'
+        title_link: '{{ template "slack.lions.link" . }}'
+    
+  # Équipe monitoring
+  - name: 'team-monitoring'
+    email_configs:
+      - to: 'monitoring@lions.dev'
+        send_resolved: true
+        html: '{{ template "email.lions.html" . }}'
+        headers:
+          subject: '[MONITORING] {{ template "email.lions.subject" . }}'
+    slack_configs:
+      - channel: '#alerts-monitoring'
+        send_resolved: true
+        title: '{{ template "slack.lions.title" . }}'
+        text: '{{ template "slack.lions.text" . }}'
+        title_link: '{{ template "slack.lions.link" . }}'

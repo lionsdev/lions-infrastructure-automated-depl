@@ -1,0 +1,132 @@
+---
+# Titre: Validation post-déploiement pour le service de notification
+# Description: Effectue des validations après le déploiement du service de notification
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-08
+# Version: 1.0.0
+
+- name: Vérification de l'état des pods du service de notification
+  k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: "{{ app_namespace }}"
+    label_selectors:
+      - "app={{ app_name }}"
+  register: pods_status
+  until: pods_status.resources | length > 0 and pods_status.resources | map(attribute='status.phase') | list | unique | first == "Running"
+  retries: 10
+  delay: 10
+
+- name: Vérification de l'état du service
+  k8s_info:
+    api_version: v1
+    kind: Service
+    namespace: "{{ app_namespace }}"
+    name: "{{ app_name }}"
+  register: service_status
+  failed_when: service_status.resources | length == 0
+
+- name: Vérification de l'état de l'ingress
+  k8s_info:
+    api_version: networking.k8s.io/v1
+    kind: Ingress
+    namespace: "{{ app_namespace }}"
+    name: "{{ app_name }}"
+  register: ingress_status
+  failed_when: ingress_status.resources | length == 0
+
+- name: Vérification de la connectivité du service de notification
+  shell: "kubectl exec -n {{ app_namespace }} {{ pods_status.resources[0].metadata.name }} -- curl -s http://localhost:{{ notification_default_port }}{{ notification_health_path }}"
+  register: health_check
+  ignore_errors: yes
+  changed_when: false
+
+- name: Affichage du résultat de la connectivité
+  debug:
+    msg: "Connectivité du service de notification: {{ 'OK' if health_check is succeeded else 'ÉCHEC' }}"
+
+- name: Vérification des métriques Prometheus (si activé)
+  shell: "kubectl exec -n {{ app_namespace }} {{ pods_status.resources[0].metadata.name }} -- curl -s http://localhost:{{ notification_prometheus_port | default(8080) }}{{ notification_prometheus_path | default('/metrics') }} | head -10"
+  register: metrics_check
+  ignore_errors: yes
+  changed_when: false
+  when: notification_prometheus_scrape | default(true) | bool
+
+- name: Affichage des métriques Prometheus
+  debug:
+    msg: "Métriques Prometheus: {{ metrics_check.stdout_lines if metrics_check is succeeded else 'Non disponibles' }}"
+  when: notification_prometheus_scrape | default(true) | bool
+
+- name: Vérification des canaux de notification
+  shell: "kubectl exec -n {{ app_namespace }} {{ pods_status.resources[0].metadata.name }} -- curl -s http://localhost:{{ notification_default_port }}/actuator/health/channels"
+  register: channels_check
+  ignore_errors: yes
+  changed_when: false
+
+- name: Affichage de l'état des canaux de notification
+  debug:
+    msg: "État des canaux de notification: {{ channels_check.stdout if channels_check is succeeded else 'Non disponible' }}"
+
+- name: Vérification des ressources utilisées
+  shell: "kubectl top pod -n {{ app_namespace }} {{ pods_status.resources[0].metadata.name }}"
+  register: resources_check
+  ignore_errors: yes
+  changed_when: false
+
+- name: Affichage des ressources utilisées
+  debug:
+    msg: "Ressources utilisées: {{ resources_check.stdout if resources_check is succeeded else 'Non disponibles' }}"
+
+- name: Vérification des logs pour les erreurs
+  shell: "kubectl logs -n {{ app_namespace }} {{ pods_status.resources[0].metadata.name }} --tail=50 | grep -i error | wc -l"
+  register: error_count
+  ignore_errors: yes
+  changed_when: false
+
+- name: Avertissement si des erreurs sont détectées dans les logs
+  debug:
+    msg: "AVERTISSEMENT: {{ error_count.stdout }} erreurs détectées dans les logs du service de notification."
+  when: error_count is succeeded and error_count.stdout | int > 0
+
+- name: Vérification de l'accessibilité externe
+  uri:
+    url: "https://{{ app_name }}.{{ app_environment }}.lions.dev/health"
+    validate_certs: no
+    follow_redirects: yes
+    status_code: 200
+  register: external_access
+  ignore_errors: yes
+  when: app_environment != 'development'
+
+- name: Affichage du résultat de l'accessibilité externe
+  debug:
+    msg: "Accessibilité externe: {{ 'OK' if external_access is succeeded else 'ÉCHEC ou non vérifiée en environnement de développement' }}"
+
+- name: Résumé du déploiement
+  debug:
+    msg: |
+      =====================================================
+      RÉSUMÉ DU DÉPLOIEMENT DU SERVICE DE NOTIFICATION
+      =====================================================
+      Nom: {{ app_name }}
+      Namespace: {{ app_namespace }}
+      Environnement: {{ app_environment }}
+      Version: {{ app_version }}
+      Pods en cours d'exécution: {{ pods_status.resources | length }}
+      Service disponible: {{ 'Oui' if service_status.resources | length > 0 else 'Non' }}
+      Ingress configuré: {{ 'Oui' if ingress_status.resources | length > 0 else 'Non' }}
+      Connectivité: {{ 'OK' if health_check is succeeded else 'ÉCHEC' }}
+      Monitoring: {{ 'Activé' if notification_prometheus_scrape | default(true) | bool else 'Désactivé' }}
+      Canaux de notification:
+        Email: {{ 'Activé' if notification_channels.email.enabled | default(true) | bool else 'Désactivé' }}
+        Slack: {{ 'Activé' if notification_channels.slack.enabled | default(true) | bool else 'Désactivé' }}
+        SMS: {{ 'Activé' if notification_channels.sms.enabled | default(false) | bool else 'Désactivé' }}
+      URL d'accès: https://{{ app_name }}.{{ app_environment }}.lions.dev
+      =====================================================
+      STATUT FINAL: {{ 'SUCCÈS' if health_check is succeeded and service_status.resources | length > 0 and pods_status.resources | length > 0 else 'ÉCHEC' }}
+      =====================================================
+
+- name: Échec si la validation échoue
+  fail:
+    msg: "La validation du déploiement du service de notification a échoué. Veuillez vérifier les logs pour plus d'informations."
+  when: health_check is failed or service_status.resources | length == 0 or pods_status.resources | length == 0

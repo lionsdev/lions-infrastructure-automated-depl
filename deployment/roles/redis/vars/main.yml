@@ -1,0 +1,96 @@
+---
+# Titre: Variables pour le déploiement de Redis
+# Description: Variables spécifiques à Redis
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-08
+# Version: 1.0.0
+
+# Configuration par défaut pour Redis
+redis_version: "7.0"
+redis_default_port: 6379
+redis_health_path: "/healthz"
+redis_metrics_path: "/metrics"
+redis_password_enabled: true
+redis_password_secret: "redis-password"
+
+# Configuration des sondes de santé
+redis_readiness_probe:
+  exec:
+    command:
+      - /bin/sh
+      - -c
+      - redis-cli ping
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+redis_liveness_probe:
+  exec:
+    command:
+      - /bin/sh
+      - -c
+      - redis-cli ping
+  initialDelaySeconds: 60
+  periodSeconds: 20
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# Configuration du monitoring
+redis_prometheus_port: 9121
+redis_prometheus_path: "/metrics"
+redis_prometheus_scrape: true
+redis_init_delay: 30
+
+# Configuration des ressources par environnement
+redis_resources:
+  development:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+  staging:
+    requests:
+      cpu: "200m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+  production:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "2000m"
+      memory: "2Gi"
+
+# Configuration des réplicas par environnement (pour les déploiements en mode HA)
+redis_replicas:
+  development: 1
+  staging: 1
+  production: 3
+
+# Configuration de la persistance
+redis_persistent_storage: true
+redis_storage_size: "10Gi"
+redis_storage_class: "local-path"
+
+# Configuration de Redis
+redis_maxmemory: "512mb"
+redis_maxmemory_policy: "allkeys-lru"
+redis_appendonly: "yes"
+redis_appendfsync: "everysec"
+redis_databases: 16
+redis_tcp_keepalive: 300
+
+# Configuration du cluster Redis
+redis_cluster_enabled: "{{ app_environment == 'production' }}"
+redis_cluster_replicas: 1
+
+# Configuration de la sécurité
+redis_tls_enabled: false
+redis_tls_secret: "redis-tls"
+redis_protected_mode: true
+redis_bind_all: false

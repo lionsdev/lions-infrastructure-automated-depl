@@ -1,0 +1,21 @@
+---
+# Titre: Tâches pour le déploiement du service de notification
+# Description: Déploie le service de notification sur Kubernetes
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-08
+# Version: 1.0.0
+
+- name: Vérification des prérequis pour le service de notification
+  include_tasks: prerequisites.yml
+
+- name: Préparation des ressources Kubernetes
+  include_tasks: prepare.yml
+
+- name: Déploiement du service de notification
+  include_tasks: deploy.yml
+
+- name: Configuration du monitoring pour le service de notification
+  include_tasks: monitoring.yml
+
+- name: Validation post-déploiement
+  include_tasks: validate.yml

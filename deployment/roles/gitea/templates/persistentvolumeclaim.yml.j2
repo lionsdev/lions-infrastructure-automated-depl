@@ -1,0 +1,26 @@
+---
+# Titre: Template de PersistentVolumeClaim Kubernetes pour Gitea
+# Description: Définit le PersistentVolumeClaim Kubernetes pour Gitea
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-07
+# Version: 1.0.0
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: "{{ app_name }}-pvc"
+  namespace: "{{ app_namespace }}"
+  labels:
+    app: "{{ app_name }}"
+    version: "{{ app_version }}"
+    environment: "{{ app_environment }}"
+    technology: "gitea"
+  annotations:
+    description: "PersistentVolumeClaim pour Gitea {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: "{{ gitea_storage_class }}"
+  resources:
+    requests:
+      storage: "{{ gitea_storage_size }}"

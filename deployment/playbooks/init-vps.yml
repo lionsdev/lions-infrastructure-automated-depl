@@ -1,0 +1,466 @@
+---
+# Titre: Playbook d'initialisation du VPS
+# Description: Prépare le VPS pour l'installation de K3s et le déploiement de l'infrastructure LIONS
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2023-05-15
+# Version: 1.0.0
+
+- name: Initialisation du VPS Contabo
+  hosts: vps
+  become: yes
+
+  vars:
+    swap_size: 4G
+    timezone: "Europe/Paris"
+
+  tasks:
+    - name: Suppression du dépôt Kubernetes obsolète (kubernetes-xenial)
+      file:
+        path: /etc/apt/sources.list.d/kubernetes.list
+        state: absent
+      ignore_errors: yes
+
+    - name: Suppression des entrées kubernetes-xenial dans sources.list
+      lineinfile:
+        path: /etc/apt/sources.list
+        regexp: '.*apt.kubernetes.io.*xenial.*'
+        state: absent
+      ignore_errors: yes
+
+    - name: Création du répertoire pour les clés GPG
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+
+    - name: Téléchargement de la clé GPG de Kubernetes
+      get_url:
+        url: https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key
+        dest: /tmp/k8s-release.key
+        mode: '0644'
+      ignore_errors: yes
+
+    - name: Ajout de la clé GPG de Kubernetes
+      shell: |
+        cat /tmp/k8s-release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+      args:
+        creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+      ignore_errors: yes
+
+    - name: Ajout du dépôt Kubernetes
+      apt_repository:
+        repo: deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /
+        state: present
+        filename: kubernetes
+      ignore_errors: yes
+
+    - name: Mise à jour du cache APT
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+        force_apt_get: yes
+      register: apt_update_result
+      ignore_errors: yes
+
+    - name: Mise à jour du cache APT avec options de contournement (si échec précédent)
+      shell: apt-get update -o Acquire::AllowInsecureRepositories=true -o Acquire::AllowDowngradeToInsecureRepositories=true
+      when: apt_update_result is failed
+      ignore_errors: yes
+
+    - name: Mise à jour du système
+      apt:
+        upgrade: dist
+        force_apt_get: yes
+      register: system_updated
+      ignore_errors: yes
+
+    - name: Mise à jour du système avec options de contournement (si échec précédent)
+      shell: DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" -o Acquire::AllowInsecureRepositories=true
+      when: system_updated is failed
+      register: system_updated_fallback
+      ignore_errors: yes
+
+    - name: Mise à jour du statut de mise à jour système
+      set_fact:
+        system_updated: 
+          changed: "{{ system_updated.changed | default(false) or (system_updated_fallback is defined and system_updated_fallback.rc is defined and system_updated_fallback.rc == 0) }}"
+
+    - name: Redémarrage si nécessaire après mise à jour (connexion distante)
+      reboot:
+        reboot_timeout: 600
+      when: system_updated.changed and ansible_connection != 'local'
+
+    - name: Notification de redémarrage manuel nécessaire (connexion locale)
+      debug:
+        msg: "Des mises à jour système ont été appliquées. Un redémarrage manuel du serveur est recommandé après la fin de l'installation."
+      when: system_updated.changed and ansible_connection == 'local'
+
+    - name: Installation des paquets essentiels
+      apt:
+        name:
+          - fail2ban
+          - ufw
+          - python3-pip
+          - git
+          - curl
+          - wget
+          - vim
+          - htop
+          - iotop
+          - net-tools
+          - dnsutils
+          - jq
+          - unzip
+          - ca-certificates
+          - gnupg
+          - lsb-release
+          - apt-transport-https
+        state: present
+
+    # Configuration de UFW pour utiliser les valeurs par défaut
+    - name: Restauration de la configuration par défaut de UFW
+      copy:
+        src: /etc/default/ufw
+        dest: /etc/default/ufw.backup
+        remote_src: yes
+        backup: yes
+      ignore_errors: yes
+
+    - name: Restauration de la configuration par défaut de UFW (sysctl)
+      copy:
+        src: /etc/ufw/sysctl.conf
+        dest: /etc/ufw/sysctl.conf.backup
+        remote_src: yes
+        backup: yes
+      ignore_errors: yes
+
+    # Suppression des modifications précédentes qui causaient des erreurs
+    - name: Vérification de l'existence des fichiers de règles UFW
+      stat:
+        path: "{{ item }}"
+      register: ufw_rules_files
+      with_items:
+        - /etc/ufw/before.rules
+        - /etc/ufw/after.rules
+        - /etc/ufw/user.rules
+        - /etc/ufw/user6.rules
+        - /etc/ufw/before6.rules
+        - /etc/ufw/after6.rules
+
+    - name: Sauvegarde des fichiers de règles UFW
+      copy:
+        src: "{{ item.item }}"
+        dest: "{{ item.item }}.bak"
+        remote_src: yes
+      when: item.stat.exists
+      with_items: "{{ ufw_rules_files.results }}"
+
+    - name: Arrêt de UFW avant réinitialisation des règles iptables
+      service:
+        name: ufw
+        state: stopped
+      ignore_errors: yes
+
+    - name: Réinitialisation des règles iptables avant configuration UFW
+      shell: |
+        iptables -F
+        iptables -X
+        iptables -t nat -F
+        iptables -t nat -X
+        iptables -t mangle -F
+        iptables -t mangle -X
+        iptables -P INPUT ACCEPT
+        iptables -P FORWARD ACCEPT
+        iptables -P OUTPUT ACCEPT
+      ignore_errors: yes
+
+    - name: Configuration du fuseau horaire
+      timezone:
+        name: "{{ timezone }}"
+
+    - name: Configuration de Fail2ban pour SSH
+      copy:
+        dest: /etc/fail2ban/jail.local
+        content: |
+          [sshd]
+          enabled = true
+          port = {{ ansible_port }}
+          filter = sshd
+          logpath = /var/log/auth.log
+          maxretry = 3
+          bantime = 3600
+      notify: restart fail2ban
+
+    - name: Configuration du pare-feu UFW - SSH
+      ufw:
+        rule: allow
+        port: "{{ ansible_port }}"
+        proto: tcp
+      register: ufw_ssh
+      failed_when: false
+
+    - name: Configuration alternative du pare-feu UFW - SSH (si la méthode précédente a échoué)
+      command: "ufw allow {{ ansible_port }}/tcp"
+      when: ufw_ssh is defined and ufw_ssh.failed
+      failed_when: false
+
+    - name: Configuration du pare-feu UFW - HTTP
+      ufw:
+        rule: allow
+        port: 80
+        proto: tcp
+
+    - name: Configuration du pare-feu UFW - HTTPS
+      ufw:
+        rule: allow
+        port: 443
+        proto: tcp
+
+    - name: Configuration du pare-feu UFW - K3s API
+      ufw:
+        rule: allow
+        port: 6443
+        proto: tcp
+
+    - name: Configuration du pare-feu UFW - SSH standard
+      ufw:
+        rule: allow
+        port: 22
+        proto: tcp
+      register: ufw_ssh_standard
+      failed_when: false
+
+    - name: Vérification de la configuration SSH standard
+      debug:
+        msg: "Configuration SSH standard (port 22) {{ 'réussie' if not ufw_ssh_standard.failed else 'échouée mais ignorée' }}"
+
+    - name: Configuration alternative du pare-feu UFW - SSH standard (si la méthode précédente a échoué)
+      command: ufw allow 22/tcp
+      when: ufw_ssh_standard is defined and ufw_ssh_standard.failed
+      register: ufw_ssh_standard_alt
+      failed_when: false
+
+    - name: Configuration du pare-feu UFW - Kubernetes Dashboard
+      ufw:
+        rule: allow
+        port: 30001
+        proto: tcp
+
+    - name: Configuration du pare-feu UFW - NodePort 30000
+      ufw:
+        rule: allow
+        port: 30000
+        proto: tcp
+
+    - name: Configuration du pare-feu UFW - K3s kubelet
+      ufw:
+        rule: allow
+        port: 10250
+        proto: tcp
+
+    - name: Configuration du pare-feu UFW - K3s kube-scheduler
+      ufw:
+        rule: allow
+        port: 10251
+        proto: tcp
+
+    - name: Configuration du pare-feu UFW - K3s kube-controller
+      ufw:
+        rule: allow
+        port: 10252
+        proto: tcp
+
+    # Configuration pour que UFW utilise l'option -w avec iptables
+    - name: Création du répertoire /etc/ufw/conf.d si nécessaire
+      file:
+        path: /etc/ufw/conf.d
+        state: directory
+        mode: '0755'
+
+    - name: Configuration de UFW pour utiliser l'option -w avec iptables
+      copy:
+        dest: /etc/ufw/conf.d/iptables-wait.conf
+        content: |
+          # Configuration pour que iptables attende la libération du verrou
+          IPTABLES_WAIT="-w"
+        mode: '0644'
+      register: ufw_wait_config
+
+    - name: Redémarrage de UFW si la configuration a changé
+      service:
+        name: ufw
+        state: restarted
+      when: ufw_wait_config.changed
+
+    - name: Configuration du pare-feu UFW - K3s flannel VXLAN
+      ufw:
+        rule: allow
+        port: 8472
+        proto: udp
+
+    - name: Configuration du pare-feu UFW - K3s flannel VXLAN (alternative)
+      ufw:
+        rule: allow
+        port: 4789
+        proto: udp
+
+    - name: Configuration du pare-feu UFW - K3s Wireguard
+      ufw:
+        rule: allow
+        port: 51820
+        proto: udp
+
+    - name: Configuration du pare-feu UFW - K3s Wireguard (alternative)
+      ufw:
+        rule: allow
+        port: 51821
+        proto: udp
+
+    # Désactivation de IPv6 dans UFW pour éviter les problèmes
+    - name: Modification du fichier /etc/default/ufw pour désactiver l'utilisation de IPv6
+      lineinfile:
+        path: /etc/default/ufw
+        regexp: '^IPV6='
+        line: 'IPV6=no'
+        state: present
+
+    - name: Activation du pare-feu UFW avec force
+      command: echo 'y' | ufw --force enable
+      register: ufw_enable_result
+      changed_when: "'Firewall is active and enabled on system startup' in ufw_enable_result.stdout"
+      failed_when: false
+
+    - name: Vérification que UFW est bien actif
+      shell: |
+        ufw status | grep -q "Status: active" || (echo 'y' | ufw --force enable)
+      register: ufw_status_check
+      changed_when: false
+      failed_when: false
+
+
+    - name: Vérification de l'état de UFW
+      command: ufw status
+      register: ufw_status
+      changed_when: false
+
+    - name: Affichage de l'état de UFW
+      debug:
+        var: ufw_status.stdout_lines
+
+    - name: Vérification de l'existence du fichier swap
+      stat:
+        path: /swapfile
+      register: swap_file_check
+
+    - name: Configuration du swap
+      block:
+        - name: Création du fichier swap
+          command: fallocate -l {{ swap_size }} /swapfile
+          args:
+            creates: /swapfile
+
+        - name: Attribution des permissions au fichier swap
+          file:
+            path: /swapfile
+            mode: 0600
+
+        - name: Formatage du fichier swap
+          command: mkswap /swapfile
+          args:
+            creates: /proc/swaps
+          register: swap_created
+
+        - name: Activation du swap
+          command: swapon /swapfile
+          when: swap_created.changed
+
+        - name: Configuration permanente du swap dans fstab
+          lineinfile:
+            path: /etc/fstab
+            line: '/swapfile none swap sw 0 0'
+            state: present
+      when: not swap_file_check.stat.exists
+
+    - name: Optimisation de la mémoire - swappiness
+      sysctl:
+        name: vm.swappiness
+        value: '10'
+        state: present
+        reload: yes
+
+    - name: Optimisation de la mémoire - cache pressure
+      sysctl:
+        name: vm.vfs_cache_pressure
+        value: '50'
+        state: present
+        reload: yes
+
+    - name: Création du répertoire pour les logs LIONS
+      file:
+        path: /var/log/lions
+        state: directory
+        mode: 0755
+        owner: root
+        group: root
+
+    - name: Création des sous-répertoires pour les logs
+      file:
+        path: "/var/log/lions/{{ item }}"
+        state: directory
+        mode: 0755
+        owner: root
+        group: root
+      loop:
+        - deployments
+        - maintenance
+        - applications
+        - infrastructure
+        - security
+
+    - name: Configuration des permissions pour les répertoires de sauvegarde
+      block:
+        - name: Vérification de l'existence de l'utilisateur
+          shell: id -u {{ ansible_user }} || echo "user_not_found"
+          register: user_check
+          changed_when: false
+          failed_when: false
+
+        - name: Création de l'utilisateur si nécessaire
+          user:
+            name: "{{ ansible_user }}"
+            shell: /bin/bash
+            createhome: yes
+          when: user_check.stdout == "user_not_found"
+
+        - name: Création du répertoire .kube s'il n'existe pas
+          file:
+            path: "/home/{{ ansible_user }}/.kube"
+            state: directory
+            mode: 0755
+            owner: "{{ ansible_user }}"
+            group: "{{ ansible_user }}"
+
+        - name: Ajout de l'utilisateur au groupe sudo
+          user:
+            name: "{{ ansible_user }}"
+            groups: sudo
+            append: yes
+
+        - name: Configuration de sudo sans mot de passe pour les commandes de sauvegarde
+          lineinfile:
+            path: /etc/sudoers.d/lions-backup
+            line: "{{ ansible_user }} ALL=(ALL) NOPASSWD: /bin/tar, /bin/rm, /bin/chmod, /bin/chown, /bin/mkdir, /bin/touch"
+            state: present
+            create: yes
+            mode: 0440
+            validate: 'visudo -cf %s'
+
+    - name: Vérification de l'état du système après initialisation
+      debug:
+        msg: "Le VPS a été initialisé avec succès et est prêt pour l'installation de K3s."
+
+  handlers:
+    - name: restart fail2ban
+      service:
+        name: fail2ban
+        state: restarted

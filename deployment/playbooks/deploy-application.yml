@@ -1,0 +1,128 @@
+---
+# Titre: Playbook de Déploiement d'Applications
+# Description: Déploie une application sur l'infrastructure LIONS
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-07
+# Version: 1.0.0
+
+- name: Déploiement d'une application
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  vars:
+    application_name: "{{ application_name }}"
+    environment: "{{ environment }}"
+    technology: "{{ technology }}"
+    version: "{{ version | default('latest') }}"
+    config_file: "{{ config_file | default('./application.yaml') }}"
+    extra_params: "{{ extra_params | default({}) }}"
+    deployment_timestamp: "{{ deployment_timestamp | default(lookup('pipe', 'date +%Y%m%d%H%M%S')) }}"
+    deployment_user: "{{ deployment_user | default(lookup('env', 'USER')) }}"
+
+    # Variables dérivées
+    namespace: "{{ application_name }}-{{ environment }}"
+    image_name: "registry.{{ environment }}.lions.dev/{{ application_name }}:{{ version }}"
+
+    # Variables spécifiques à l'environnement
+    domain_suffix:
+      production: "lions.dev"
+      staging: "staging.lions.dev"
+      development: "dev.lions.dev"
+
+    # Ressources par défaut
+    default_resources:
+      requests:
+        cpu: "100m"
+        memory: "256Mi"
+      limits:
+        cpu: "500m"
+        memory: "512Mi"
+
+  tasks:
+    - name: Affichage des informations de déploiement
+      debug:
+        msg: 
+          - "Application: {{ application_name }}"
+          - "Environnement: {{ environment }}"
+          - "Technologie: {{ technology }}"
+          - "Version: {{ version }}"
+          - "Namespace: {{ namespace }}"
+          - "Image: {{ image_name }}"
+
+    - name: Vérification de l'existence de l'image Docker
+      shell: "kubectl exec -n registry -l app=registry -- /bin/sh -c 'curl -s -f http://localhost:5000/v2/{{ application_name }}/tags/list | grep {{ version }}'"
+      register: image_check
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Échec si l'image n'existe pas
+      fail:
+        msg: "L'image {{ image_name }} n'existe pas dans le registre. Veuillez construire et pousser l'image avant le déploiement."
+      when: image_check.rc != 0 and version != 'latest'
+
+    - name: Création du namespace si nécessaire
+      k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ namespace }}"
+            labels:
+              name: "{{ namespace }}"
+              environment: "{{ environment }}"
+              technology: "{{ technology }}"
+              app: "{{ application_name }}"
+
+    - name: Chargement de la configuration spécifique à la technologie
+      include_vars:
+        file: "{{ playbook_dir }}/../roles/{{ technology }}/vars/main.yml"
+      ignore_errors: yes
+
+    - name: Inclusion du rôle spécifique à la technologie
+      include_role:
+        name: "{{ technology }}"
+      vars:
+        app_name: "{{ application_name }}"
+        app_namespace: "{{ namespace }}"
+        app_version: "{{ version }}"
+        app_environment: "{{ environment }}"
+        app_domain: "{{ application_name }}.{{ domain_suffix[environment] }}"
+        app_resources: "{{ extra_params.resources | default(default_resources) }}"
+        app_replicas: "{{ extra_params.replicas | default(1) }}"
+
+    - name: Vérification du déploiement
+      k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        namespace: "{{ namespace }}"
+        name: "{{ application_name }}"
+      register: deployment_status
+      until: deployment_status.resources[0].status.availableReplicas is defined and deployment_status.resources[0].status.availableReplicas == deployment_status.resources[0].spec.replicas
+      retries: 30
+      delay: 10
+      ignore_errors: yes
+
+    - name: Affichage du statut du déploiement
+      debug:
+        msg: "Déploiement terminé avec succès. L'application est accessible à l'adresse: https://{{ application_name }}.{{ domain_suffix[environment] }}"
+      when: deployment_status is succeeded
+
+    - name: Échec si le déploiement a échoué
+      fail:
+        msg: "Le déploiement a échoué. Veuillez vérifier les logs pour plus d'informations."
+      when: deployment_status is failed
+
+    - name: Enregistrement du déploiement dans l'historique
+      copy:
+        content: |
+          Application: {{ application_name }}
+          Environnement: {{ environment }}
+          Technologie: {{ technology }}
+          Version: {{ version }}
+          Déployé par: {{ deployment_user }}
+          Date: {{ deployment_timestamp }}
+          Statut: Succès
+        dest: "/var/log/lions/deployments/history/{{ application_name }}-{{ environment }}-{{ deployment_timestamp }}.log"
+        mode: '0644'
+      ignore_errors: yes

@@ -1,0 +1,118 @@
+---
+# Common variables for LIONS Infrastructure
+# These variables are used across multiple playbooks and roles
+# Author: LIONS Infrastructure Team
+# Date: 2025-05-24
+# Version: 1.0.0
+
+# Environment settings
+lions_env: "{{ lookup('env', 'LIONS_ENV') | default('development', true) }}"
+lions_domain: "{{ lookup('env', 'LIONS_DOMAIN') | default('dev.lions.dev', true) }}"
+
+# VPS settings
+lions_vps_host: "{{ lookup('env', 'LIONS_VPS_HOST') | default('127.0.0.1', true) }}"
+lions_vps_port: "{{ lookup('env', 'LIONS_VPS_PORT') | default('22', true) }}"
+lions_vps_user: "{{ lookup('env', 'LIONS_VPS_USER') | default('root', true) }}"
+
+# Kubernetes settings
+k3s_version: "v1.28.6+k3s2"
+k3s_server_args: >-
+  server
+  --disable=traefik
+  --disable=servicelb
+  --write-kubeconfig-mode=644
+  --kubelet-arg=cgroup-driver=systemd
+  --kubelet-arg=feature-gates=GracefulNodeShutdown=false
+
+# Component versions
+traefik_chart_version: "25.0.0"
+metallb_chart_version: "0.13.12"
+cert_manager_version: "v1.13.3"
+kube_prometheus_stack_version: "55.5.0"
+vault_version: "1.15.2"
+gitea_version: "1.21.0"
+keycloak_version: "23.0.3"
+postgres_version: "16.1"
+redis_version: "7.2.3"
+ollama_version: "0.1.27"
+
+# Resource settings
+lions_cpu_request: "{{ lookup('env', 'LIONS_CPU_REQUEST') | default('200m', true) }}"
+lions_cpu_limit: "{{ lookup('env', 'LIONS_CPU_LIMIT') | default('800m', true) }}"
+lions_memory_request: "{{ lookup('env', 'LIONS_MEMORY_REQUEST') | default('512Mi', true) }}"
+lions_memory_limit: "{{ lookup('env', 'LIONS_MEMORY_LIMIT') | default('1Gi', true) }}"
+
+# Storage settings
+lions_storage_class: "{{ lookup('env', 'LIONS_STORAGE_CLASS') | default('standard', true) }}"
+lions_backup_retention_days: "{{ lookup('env', 'LIONS_BACKUP_RETENTION_DAYS') | default('7', true) }}"
+
+# Security settings
+lions_tls_enabled: "{{ lookup('env', 'LIONS_TLS_ENABLED') | default('true', true) | bool }}"
+lions_network_policy_enabled: "{{ lookup('env', 'LIONS_NETWORK_POLICY_ENABLED') | default('true', true) | bool }}"
+
+# Component enablement
+lions_monitoring_enabled: "{{ lookup('env', 'LIONS_MONITORING_ENABLED') | default('true', true) | bool }}"
+lions_registry_enabled: "{{ lookup('env', 'LIONS_REGISTRY_ENABLED') | default('true', true) | bool }}"
+lions_postgres_enabled: "{{ lookup('env', 'LIONS_POSTGRES_ENABLED') | default('true', true) | bool }}"
+lions_keycloak_enabled: "{{ lookup('env', 'LIONS_KEYCLOAK_ENABLED') | default('true', true) | bool }}"
+lions_gitea_enabled: "{{ lookup('env', 'LIONS_GITEA_ENABLED') | default('true', true) | bool }}"
+lions_ollama_enabled: "{{ lookup('env', 'LIONS_OLLAMA_ENABLED') | default('true', true) | bool }}"
+lions_vault_enabled: "{{ lookup('env', 'LIONS_VAULT_ENABLED') | default('true', true) | bool }}"
+
+# Monitoring configuration
+monitoring_config:
+  namespace: "monitoring"
+  grafana_admin_password: "{{ lookup('env', 'LIONS_GRAFANA_PASSWORD') | default('admin123!', true) }}"
+  prometheus_retention: "15d"
+  prometheus_storage: "10Gi"
+  grafana_storage: "5Gi"
+  resource_limits:
+    prometheus_cpu: "1000m"
+    prometheus_memory: "2Gi"
+    grafana_cpu: "500m"
+    grafana_memory: "512Mi"
+
+# Service domains
+services_domains:
+  lions_main: "{{ lions_domain }}"
+  grafana: "grafana.{{ lions_domain }}"
+  prometheus: "prometheus.{{ lions_domain }}"
+  k3s_dashboard: "k3s.{{ lions_domain }}"
+  keycloak: "keycloak.{{ lions_domain }}"
+  pgadmin: "pgadmin.{{ lions_domain }}"
+  gitea: "git.{{ lions_domain }}"
+  vault: "vault.{{ lions_domain }}"
+  ollama: "ollama.{{ lions_domain }}"
+  registry: "registry.{{ lions_domain }}"
+
+# Default credentials (override these in environment-specific vars)
+default_credentials:
+  postgres:
+    username: "postgres"
+    password: "{{ lookup('env', 'LIONS_POSTGRES_PASSWORD') | default('postgres123!', true) }}"
+  keycloak:
+    admin_username: "admin"
+    admin_password: "{{ lookup('env', 'LIONS_KEYCLOAK_PASSWORD') | default('admin123!', true) }}"
+  gitea:
+    admin_username: "gitea_admin"
+    admin_password: "{{ lookup('env', 'LIONS_GITEA_PASSWORD') | default('gitea123!', true) }}"
+  registry:
+    username: "registry_admin"
+    password: "{{ lookup('env', 'LIONS_REGISTRY_PASSWORD') | default('registry123!', true) }}"
+
+# Backup configuration
+backup_config:
+  schedule: "0 2 * * *"  # Daily at 2 AM
+  storage_location: "/var/backups/lions"
+  retention_days: "{{ lions_backup_retention_days }}"
+  components:
+    - postgres
+    - gitea
+    - keycloak
+    - kubernetes_resources
+
+# Logging configuration
+logging_config:
+  log_level: "{{ lookup('env', 'LIONS_LOG_LEVEL') | default('INFO', true) }}"
+  retention_days: 30
+  max_size: "100Mi"

@@ -1,0 +1,395 @@
+---
+# =============================================================================
+# LIONS Infrastructure - Playbook d'Installation K3s Haute Disponibilité
+# =============================================================================
+# Titre: Playbook d'installation K3s en mode haute disponibilité
+# Description: Installe et configure K3s sur plusieurs nœuds avec failover automatique
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-25
+# Version: 1.0.0
+# =============================================================================
+
+- name: "LIONS K3s Installation - Configuration Haute Disponibilité"
+  hosts: k3s_cluster
+  become: yes
+  gather_facts: yes
+
+  # =============================================================================
+  # VARIABLES DE CONFIGURATION
+  # =============================================================================
+  vars:
+    # Version K3s - Version LTS stable recommandée (mise à jour 2025)
+    k3s_version: "v1.30.2+k3s1"
+
+    # Configuration du datastore externe (requis pour la HA)
+    k3s_datastore_endpoint: "{{ lookup('env', 'LIONS_DATASTORE_ENDPOINT') | default('mysql://username:password@tcp(database.example.com:3306)/k3s') }}"
+    k3s_datastore_cafile: "{{ lookup('env', 'LIONS_DATASTORE_CAFILE') | default('') }}"
+    k3s_datastore_certfile: "{{ lookup('env', 'LIONS_DATASTORE_CERTFILE') | default('') }}"
+    k3s_datastore_keyfile: "{{ lookup('env', 'LIONS_DATASTORE_KEYFILE') | default('') }}"
+
+    # Configuration du load balancer pour les serveurs K3s
+    k3s_api_lb_host: "{{ lookup('env', 'LIONS_K3S_API_LB') | default('k3s-api.lions.dev') }}"
+    k3s_api_lb_port: "{{ lookup('env', 'LIONS_K3S_API_PORT') | default('6443') }}"
+
+    # Configuration K3s optimisée pour les serveurs
+    k3s_server_args: >-
+      server
+      --disable=traefik
+      --disable=servicelb
+      --write-kubeconfig-mode=600
+      --kubelet-arg=cgroup-driver=systemd
+      --kubelet-arg=feature-gates=GracefulNodeShutdown=true
+      --kube-apiserver-arg=encryption-provider-config=/etc/rancher/k3s/encryption-config.yaml
+      --kube-apiserver-arg=audit-log-path=/var/log/k3s-audit.log
+      --kube-apiserver-arg=audit-log-maxage=30
+      --kube-apiserver-arg=audit-log-maxbackup=10
+      --kube-apiserver-arg=audit-log-maxsize=100
+      --kube-controller-manager-arg=terminated-pod-gc-threshold=100
+      --kubelet-arg=eviction-hard=memory.available<5%,nodefs.available<10%
+      --kubelet-arg=image-gc-high-threshold=85
+      --kubelet-arg=image-gc-low-threshold=80
+      --datastore-endpoint={{ k3s_datastore_endpoint }}
+      {% if k3s_datastore_cafile != '' %}
+      --datastore-cafile={{ k3s_datastore_cafile }}
+      {% endif %}
+      {% if k3s_datastore_certfile != '' %}
+      --datastore-certfile={{ k3s_datastore_certfile }}
+      {% endif %}
+      {% if k3s_datastore_keyfile != '' %}
+      --datastore-keyfile={{ k3s_datastore_keyfile }}
+      {% endif %}
+      --tls-san={{ k3s_api_lb_host }}
+      --node-taint CriticalAddonsOnly=true:NoExecute
+
+    # Configuration K3s pour les agents
+    k3s_agent_args: >-
+      agent
+      --kubelet-arg=cgroup-driver=systemd
+      --kubelet-arg=feature-gates=GracefulNodeShutdown=true
+      --kubelet-arg=eviction-hard=memory.available<5%,nodefs.available<10%
+      --kubelet-arg=image-gc-high-threshold=85
+      --kubelet-arg=image-gc-low-threshold=80
+
+    # Chemins et configurations
+    kubeconfig_local_path: "~/.kube/config"
+    k3s_service_file: "/etc/systemd/system/k3s.service"
+    k3s_kubeconfig: "/etc/rancher/k3s/k3s.yaml"
+    k3s_encryption_config: "/etc/rancher/k3s/encryption-config.yaml"
+    k3s_token_file: "/var/lib/rancher/k3s/server/node-token"
+    k3s_first_server_ip: "{{ hostvars[groups['k3s_servers'][0]]['ansible_host'] }}"
+
+    # Versions des composants (mises à jour 2025)
+    traefik_chart_version: "28.0.0"
+    metallb_chart_version: "0.14.3"
+    cert_manager_version: "v1.14.2"
+    kube_prometheus_stack_version: "59.0.0"
+
+  # =============================================================================
+  # TÂCHES PRINCIPALES
+  # =============================================================================
+  tasks:
+    # =========================================================================
+    # PHASE 1: VÉRIFICATIONS PRÉLIMINAIRES
+    # =========================================================================
+
+    - name: "🔍 PHASE 1 - Vérifications préliminaires"
+      debug:
+        msg: "Démarrage des vérifications préliminaires pour l'installation K3s HA"
+
+    - name: "Vérification des prérequis système"
+      include_tasks: "../tasks/check-prerequisites.yml"
+
+    - name: "Vérification de la connectivité entre les nœuds"
+      command: "ping -c 1 {{ item }}"
+      with_items: "{{ groups['k3s_cluster'] | map('extract', hostvars, ['ansible_host']) | list }}"
+      changed_when: false
+      when: inventory_hostname == groups['k3s_servers'][0]
+
+    - name: "Vérification de la connectivité au datastore externe"
+      uri:
+        url: "{{ k3s_datastore_endpoint | regex_replace('^mysql://.*@tcp\\((.*)\\)/.*$', '\\1') | regex_replace('^postgres://.*@(.*)/.+$', '\\1') }}"
+        method: GET
+        status_code: 200, 401, 403, 404
+      register: datastore_check
+      ignore_errors: yes
+      when: inventory_hostname == groups['k3s_servers'][0]
+
+    - name: "Rapport de vérification du datastore"
+      debug:
+        msg: "Connectivité au datastore: {{ 'OK' if datastore_check.status is defined else 'NON VÉRIFIÉE' }}"
+      when: inventory_hostname == groups['k3s_servers'][0]
+
+    # =========================================================================
+    # PHASE 2: INSTALLATION DES SERVEURS K3S
+    # =========================================================================
+
+    - name: "🚀 PHASE 2 - Installation des serveurs K3s"
+      debug:
+        msg: "Démarrage de l'installation des serveurs K3s"
+      when: inventory_hostname in groups['k3s_servers']
+
+    - name: "🔒 Création du répertoire pour la configuration de chiffrement"
+      file:
+        path: "/etc/rancher/k3s"
+        state: directory
+        mode: '0700'
+        owner: root
+        group: root
+      when: inventory_hostname in groups['k3s_servers']
+
+    - name: "🔒 Création du fichier de configuration de chiffrement"
+      template:
+        src: "{{ playbook_dir }}/../templates/encryption-config.yaml.j2"
+        dest: "{{ k3s_encryption_config }}"
+        mode: '0600'
+        owner: root
+        group: root
+      when: inventory_hostname in groups['k3s_servers']
+
+    - name: "📥 Téléchargement du script d'installation K3s"
+      get_url:
+        url: "https://get.k3s.io"
+        dest: "/tmp/k3s-install.sh"
+        mode: '0755'
+        timeout: 30
+      register: k3s_script_download
+      retries: 3
+      delay: 5
+
+    # Installation du premier serveur K3s
+    - name: "⚙️ Installation du premier serveur K3s"
+      command: "/tmp/k3s-install.sh"
+      environment:
+        INSTALL_K3S_VERSION: "{{ k3s_version }}"
+        INSTALL_K3S_EXEC: "{{ k3s_server_args }}"
+        K3S_TOKEN: "{{ lookup('password', '/dev/null chars=ascii_letters,digits length=64') }}"
+      register: k3s_first_server_install
+      when: inventory_hostname == groups['k3s_servers'][0]
+
+    - name: "⏳ Attente de la disponibilité de l'API K3s sur le premier serveur"
+      wait_for:
+        port: 6443
+        host: "{{ ansible_host }}"
+        delay: 10
+        timeout: 300
+      when: inventory_hostname == groups['k3s_servers'][0]
+
+    - name: "🔑 Récupération du token du nœud"
+      slurp:
+        src: "{{ k3s_token_file }}"
+      register: node_token_b64
+      when: inventory_hostname == groups['k3s_servers'][0]
+
+    - name: "🔄 Partage du token avec les autres nœuds"
+      set_fact:
+        k3s_node_token: "{{ hostvars[groups['k3s_servers'][0]]['node_token_b64']['content'] | b64decode | trim }}"
+      when: inventory_hostname != groups['k3s_servers'][0]
+
+    # Installation des serveurs K3s supplémentaires
+    - name: "⚙️ Installation des serveurs K3s supplémentaires"
+      command: "/tmp/k3s-install.sh"
+      environment:
+        INSTALL_K3S_VERSION: "{{ k3s_version }}"
+        INSTALL_K3S_EXEC: "{{ k3s_server_args }}"
+        K3S_TOKEN: "{{ k3s_node_token }}"
+        K3S_URL: "https://{{ k3s_first_server_ip }}:6443"
+      register: k3s_additional_servers_install
+      when: inventory_hostname in groups['k3s_servers'] and inventory_hostname != groups['k3s_servers'][0]
+
+    # =========================================================================
+    # PHASE 3: INSTALLATION DES AGENTS K3S
+    # =========================================================================
+
+    - name: "🚀 PHASE 3 - Installation des agents K3s"
+      debug:
+        msg: "Démarrage de l'installation des agents K3s"
+      when: inventory_hostname in groups['k3s_agents']
+
+    - name: "⚙️ Installation des agents K3s"
+      command: "/tmp/k3s-install.sh"
+      environment:
+        INSTALL_K3S_VERSION: "{{ k3s_version }}"
+        INSTALL_K3S_EXEC: "{{ k3s_agent_args }}"
+        K3S_URL: "https://{{ k3s_api_lb_host }}:{{ k3s_api_lb_port }}"
+        K3S_TOKEN: "{{ hostvars[groups['k3s_servers'][0]]['node_token_b64']['content'] | b64decode | trim }}"
+      register: k3s_agents_install
+      when: inventory_hostname in groups['k3s_agents']
+
+    # =========================================================================
+    # PHASE 4: CONFIGURATION DU LOAD BALANCER
+    # =========================================================================
+
+    - name: "🚀 PHASE 4 - Configuration du load balancer"
+      debug:
+        msg: "Configuration du load balancer pour les serveurs K3s"
+      when: inventory_hostname in groups['k3s_loadbalancers']
+
+    - name: "📝 Création du fichier de configuration HAProxy"
+      template:
+        src: "{{ playbook_dir }}/../templates/haproxy-k3s.cfg.j2"
+        dest: "/etc/haproxy/haproxy.cfg"
+        mode: '0644'
+        owner: root
+        group: root
+      register: haproxy_config
+      when: inventory_hostname in groups['k3s_loadbalancers']
+
+    - name: "🔄 Redémarrage de HAProxy"
+      systemd:
+        name: haproxy
+        state: restarted
+        enabled: yes
+      when: inventory_hostname in groups['k3s_loadbalancers'] and haproxy_config.changed
+
+    # =========================================================================
+    # PHASE 5: VÉRIFICATIONS POST-INSTALLATION
+    # =========================================================================
+
+    - name: "✅ PHASE 5 - Vérifications post-installation"
+      debug:
+        msg: "Vérification de l'installation K3s HA"
+      when: inventory_hostname == groups['k3s_servers'][0]
+
+    - name: "⏳ Attente de la disponibilité de l'API K3s via le load balancer"
+      wait_for:
+        host: "{{ k3s_api_lb_host }}"
+        port: "{{ k3s_api_lb_port }}"
+        delay: 10
+        timeout: 300
+      when: inventory_hostname == groups['k3s_servers'][0]
+
+    - name: "🔍 Vérification des nœuds du cluster"
+      shell: "kubectl --kubeconfig={{ k3s_kubeconfig }} get nodes -o wide"
+      register: k3s_nodes
+      changed_when: false
+      when: inventory_hostname == groups['k3s_servers'][0]
+
+    - name: "📊 Rapport d'état du cluster K3s HA"
+      debug:
+        msg: |
+          ==========================================================
+          ✅ K3S INSTALLATION HAUTE DISPONIBILITÉ RÉUSSIE
+          ==========================================================
+          Serveurs K3s: {{ groups['k3s_servers'] | length }} serveur(s)
+          Agents K3s: {{ groups['k3s_agents'] | length }} agent(s)
+          Load Balancers: {{ groups['k3s_loadbalancers'] | length }} load balancer(s)
+          API Endpoint: https://{{ k3s_api_lb_host }}:{{ k3s_api_lb_port }}
+          ==========================================================
+          Nœuds du cluster:
+          {{ k3s_nodes.stdout }}
+          ==========================================================
+      when: inventory_hostname == groups['k3s_servers'][0]
+
+    # =========================================================================
+    # PHASE 6: INSTALLATION DES COMPOSANTS ADDITIONNELS
+    # =========================================================================
+
+    - name: "🚀 PHASE 6 - Installation des composants additionnels"
+      debug:
+        msg: "Installation des composants additionnels pour K3s HA"
+      when: inventory_hostname == groups['k3s_servers'][0]
+
+    - name: "📥 Installation de Helm"
+      include_tasks: "../tasks/install-helm.yml"
+      when: inventory_hostname == groups['k3s_servers'][0]
+
+    - name: "📥 Installation de Traefik"
+      include_tasks: "../tasks/install-traefik.yml"
+      vars:
+        traefik_version: "{{ traefik_chart_version }}"
+      when: inventory_hostname == groups['k3s_servers'][0]
+
+    - name: "📥 Installation de MetalLB"
+      include_tasks: "../tasks/install-metallb.yml"
+      vars:
+        metallb_version: "{{ metallb_chart_version }}"
+      when: inventory_hostname == groups['k3s_servers'][0]
+
+    - name: "📥 Installation de Cert-Manager"
+      include_tasks: "../tasks/install-cert-manager.yml"
+      vars:
+        cert_manager_version: "{{ cert_manager_version }}"
+      when: inventory_hostname == groups['k3s_servers'][0]
+
+    - name: "📥 Installation de Prometheus/Grafana"
+      include_tasks: "../tasks/install-monitoring.yml"
+      vars:
+        prometheus_stack_version: "{{ kube_prometheus_stack_version }}"
+      when: inventory_hostname == groups['k3s_servers'][0]
+
+    # =========================================================================
+    # PHASE 7: CONFIGURATION DE LA RÉCUPÉRATION AUTOMATIQUE
+    # =========================================================================
+
+    - name: "🚀 PHASE 7 - Configuration de la récupération automatique"
+      debug:
+        msg: "Configuration de la récupération automatique pour K3s HA"
+      when: inventory_hostname == groups['k3s_servers'][0]
+
+    - name: "📝 Création du script de vérification de santé"
+      template:
+        src: "{{ playbook_dir }}/../templates/k3s-health-check.sh.j2"
+        dest: "/usr/local/bin/k3s-health-check.sh"
+        mode: '0755'
+        owner: root
+        group: root
+      when: inventory_hostname in groups['k3s_cluster']
+
+    - name: "⏰ Configuration du cron pour la vérification de santé"
+      cron:
+        name: "K3s health check"
+        job: "/usr/local/bin/k3s-health-check.sh >> /var/log/k3s-health.log 2>&1"
+        minute: "*/5"
+        user: root
+      when: inventory_hostname in groups['k3s_cluster']
+
+    - name: "📝 Création du script de récupération automatique"
+      template:
+        src: "{{ playbook_dir }}/../templates/k3s-auto-recovery.sh.j2"
+        dest: "/usr/local/bin/k3s-auto-recovery.sh"
+        mode: '0755'
+        owner: root
+        group: root
+      when: inventory_hostname in groups['k3s_cluster']
+
+    - name: "⏰ Configuration du service systemd pour la récupération automatique"
+      template:
+        src: "{{ playbook_dir }}/../templates/k3s-auto-recovery.service.j2"
+        dest: "/etc/systemd/system/k3s-auto-recovery.service"
+        mode: '0644'
+        owner: root
+        group: root
+      when: inventory_hostname in groups['k3s_cluster']
+
+    - name: "🔄 Activation du service de récupération automatique"
+      systemd:
+        name: k3s-auto-recovery
+        state: started
+        enabled: yes
+        daemon_reload: yes
+      when: inventory_hostname in groups['k3s_cluster']
+
+    # =========================================================================
+    # PHASE 8: FINALISATION
+    # =========================================================================
+
+    - name: "✅ PHASE 8 - Finalisation"
+      debug:
+        msg: |
+          ==========================================================
+          ✅ INSTALLATION K3S HAUTE DISPONIBILITÉ TERMINÉE
+          ==========================================================
+          Le cluster K3s est maintenant configuré en haute disponibilité avec:
+          - {{ groups['k3s_servers'] | length }} serveurs K3s
+          - {{ groups['k3s_agents'] | length }} agents K3s
+          - {{ groups['k3s_loadbalancers'] | length }} load balancers
+          - Récupération automatique en cas de défaillance
+          - Composants additionnels installés (Traefik, MetalLB, Cert-Manager, Prometheus/Grafana)
+          
+          Pour utiliser le cluster, configurez votre kubeconfig:
+          export KUBECONFIG={{ kubeconfig_local_path }}
+          
+          Ou utilisez directement:
+          kubectl --kubeconfig={{ k3s_kubeconfig }} get nodes
+          ==========================================================
+      when: inventory_hostname == groups['k3s_servers'][0]

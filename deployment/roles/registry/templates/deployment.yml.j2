@@ -1,0 +1,123 @@
+---
+# Titre: Template de déploiement Kubernetes pour la registry de conteneurs
+# Description: Définit le déploiement Kubernetes pour la registry de conteneurs Docker
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-10
+# Version: 1.0.0
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "{{ app_name | default('registry') }}"
+  namespace: "{{ app_namespace | default('registry') }}"
+  labels:
+    app: "{{ app_name | default('registry') }}"
+    version: "{{ app_version | default('latest') }}"
+    environment: "{{ app_environment | default('development') }}"
+    technology: "registry"
+  annotations:
+    description: "Déploiement de la registry {{ app_name | default('registry') }} ({{ app_version | default('latest') }}) en environnement {{ app_environment | default('development') }}"
+spec:
+  replicas: {{ registry_replicas[app_environment | default('development')] | default(1) }}
+  selector:
+    matchLabels:
+      app: "{{ app_name | default('registry') }}"
+      technology: "registry"
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: "{{ app_name | default('registry') }}"
+        version: "{{ app_version | default('latest') }}"
+        environment: "{{ app_environment | default('development') }}"
+        technology: "registry"
+      annotations:
+        prometheus.io/scrape: "{{ registry_prometheus_scrape | default(true) | string | lower }}"
+        prometheus.io/path: "{{ registry_prometheus_path | default('/metrics') }}"
+        prometheus.io/port: "{{ registry_prometheus_port | default(5000) | string }}"
+    spec:
+      serviceAccountName: "{{ app_name | default('registry') }}"
+      containers:
+      - name: "{{ app_name | default('registry') }}"
+        image: "registry:{{ app_version | default('2.8.2') }}"
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: {{ registry_default_port | default(5000) }}
+          protocol: TCP
+        env:
+        - name: REGISTRY_HTTP_ADDR
+          value: ":{{ registry_default_port | default(5000) }}"
+        - name: REGISTRY_HTTP_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: "{{ registry_auth_secret | default('registry-auth') }}"
+              key: REGISTRY_HTTP_SECRET
+        - name: REGISTRY_AUTH
+          value: "htpasswd"
+        - name: REGISTRY_AUTH_HTPASSWD_PATH
+          valueFrom:
+            secretKeyRef:
+              name: "{{ registry_auth_secret | default('registry-auth') }}"
+              key: REGISTRY_AUTH_HTPASSWD_PATH
+        - name: REGISTRY_AUTH_HTPASSWD_REALM
+          valueFrom:
+            secretKeyRef:
+              name: "{{ registry_auth_secret | default('registry-auth') }}"
+              key: REGISTRY_AUTH_HTPASSWD_REALM
+        - name: REGISTRY_STORAGE_DELETE_ENABLED
+          value: "true"
+        - name: REGISTRY_LOG_LEVEL
+          value: "{{ registry_log_level | default('info') }}"
+        - name: REGISTRY_LOG_FORMATTER
+          value: "json"
+        resources:
+          requests:
+            cpu: "{{ registry_resources[app_environment | default('development')].requests.cpu | default('100m') }}"
+            memory: "{{ registry_resources[app_environment | default('development')].requests.memory | default('256Mi') }}"
+          limits:
+            cpu: "{{ registry_resources[app_environment | default('development')].limits.cpu | default('500m') }}"
+            memory: "{{ registry_resources[app_environment | default('development')].limits.memory | default('512Mi') }}"
+        readinessProbe:
+          tcpSocket:
+            port: http
+          initialDelaySeconds: 10
+          timeoutSeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          tcpSocket:
+            port: http
+          initialDelaySeconds: 20
+          timeoutSeconds: 5
+          periodSeconds: 10
+        volumeMounts:
+        - name: registry-data
+          mountPath: /var/lib/registry
+        - name: registry-config
+          mountPath: /etc/docker/registry/config.yml
+          subPath: config.yml
+        - name: auth
+          mountPath: /auth
+          readOnly: true
+      volumes:
+      - name: registry-config
+        configMap:
+          name: "{{ app_name | default('registry') }}-config"
+      - name: auth
+        secret:
+          secretName: "{{ registry_auth_secret | default('registry-auth') }}"
+          items:
+            - key: htpasswd
+              path: htpasswd
+{% if registry_persistent_storage | default(true) | bool %}
+      - name: registry-data
+        persistentVolumeClaim:
+          claimName: "{{ app_name | default('registry') }}-data"
+{% else %}
+      - name: registry-data
+        emptyDir: {}
+{% endif %}

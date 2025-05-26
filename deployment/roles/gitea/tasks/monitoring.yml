@@ -1,0 +1,413 @@
+---
+# Titre: Configuration du monitoring pour Gitea
+# Description: Configure le monitoring pour Gitea
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-07
+# Version: 1.0.0
+
+- name: Vérification de l'existence de Prometheus Operator
+  k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: servicemonitors.monitoring.coreos.com
+  register: prometheus_operator_check
+  ignore_errors: yes
+
+- name: Création du ServiceMonitor pour Prometheus
+  k8s:
+    state: present
+    src: "{{ temp_dir.path }}/servicemonitor.yml"
+  register: servicemonitor_result
+  when: 
+    - prometheus_operator_check is succeeded
+    - prometheus_operator_check.resources | length > 0
+    - gitea_prometheus_scrape | bool
+
+- name: Avertissement si Prometheus Operator n'est pas installé
+  debug:
+    msg: "AVERTISSEMENT: Prometheus Operator n'est pas installé. Le monitoring automatique ne sera pas configuré."
+  when: prometheus_operator_check is failed or prometheus_operator_check.resources | length == 0
+
+- name: Configuration des règles d'alerte pour Gitea
+  k8s:
+    state: present
+    definition:
+      apiVersion: monitoring.coreos.com/v1
+      kind: PrometheusRule
+      metadata:
+        name: "{{ app_name }}-alerts"
+        namespace: "{{ app_namespace }}"
+        labels:
+          app: "{{ app_name }}"
+          prometheus: k8s
+          role: alert-rules
+      spec:
+        groups:
+          - name: "{{ app_name }}.rules"
+            rules:
+              - alert: GiteaInstanceDown
+                expr: up{job="{{ app_name }}"} == 0
+                for: 5m
+                labels:
+                  severity: critical
+                annotations:
+                  summary: "Instance Gitea {{ app_name }} down"
+                  description: "L'instance Gitea {{ app_name }} est indisponible depuis plus de 5 minutes."
+              - alert: GiteaHighMemoryUsage
+                expr: container_memory_usage_bytes{pod=~"{{ app_name }}.*"} / container_spec_memory_limit_bytes{pod=~"{{ app_name }}.*"} > 0.85
+                for: 10m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: "Utilisation mémoire élevée pour Gitea {{ app_name }}"
+                  description: "Gitea {{ app_name }} utilise plus de 85% de sa limite mémoire depuis plus de 10 minutes."
+              - alert: GiteaHighCPUUsage
+                expr: container_cpu_usage_seconds_total{pod=~"{{ app_name }}.*"} / container_spec_cpu_quota{pod=~"{{ app_name }}.*"} > 0.85
+                for: 10m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: "Utilisation CPU élevée pour Gitea {{ app_name }}"
+                  description: "Gitea {{ app_name }} utilise plus de 85% de sa limite CPU depuis plus de 10 minutes."
+              - alert: GiteaHighResponseTime
+                expr: http_request_duration_seconds{service="{{ app_name }}"} > 2
+                for: 5m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: "Temps de réponse élevé pour Gitea {{ app_name }}"
+                  description: "Gitea {{ app_name }} a un temps de réponse élevé (>2s) depuis plus de 5 minutes."
+              - alert: GiteaHighErrorRate
+                expr: sum(rate(http_requests_total{service="{{ app_name }}", status=~"5.."}[5m])) / sum(rate(http_requests_total{service="{{ app_name }}"}[5m])) > 0.05
+                for: 5m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: "Taux d'erreur élevé pour Gitea {{ app_name }}"
+                  description: "Gitea {{ app_name }} a un taux d'erreur supérieur à 5% depuis plus de 5 minutes."
+              - alert: GiteaDatabaseConnectionFailure
+                expr: gitea_database_connections == 0
+                for: 5m
+                labels:
+                  severity: critical
+                annotations:
+                  summary: "Échec de connexion à la base de données pour Gitea {{ app_name }}"
+                  description: "Gitea {{ app_name }} ne peut pas se connecter à la base de données depuis plus de 5 minutes."
+  when: 
+    - prometheus_operator_check is succeeded
+    - prometheus_operator_check.resources | length > 0
+    - gitea_prometheus_scrape | bool
+
+- name: Configuration de Grafana Dashboard pour Gitea
+  k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ app_name }}-dashboard"
+        namespace: monitoring
+        labels:
+          grafana_dashboard: "1"
+      data:
+        "{{ app_name }}-dashboard.json": |
+          {
+            "annotations": {
+              "list": [
+                {
+                  "builtIn": 1,
+                  "datasource": "-- Grafana --",
+                  "enable": true,
+                  "hide": true,
+                  "iconColor": "rgba(0, 211, 255, 1)",
+                  "name": "Annotations & Alerts",
+                  "type": "dashboard"
+                }
+              ]
+            },
+            "editable": true,
+            "gnetId": null,
+            "graphTooltip": 0,
+            "id": null,
+            "links": [],
+            "panels": [
+              {
+                "aliasColors": {},
+                "bars": false,
+                "dashLength": 10,
+                "dashes": false,
+                "datasource": "Prometheus",
+                "fill": 1,
+                "fillGradient": 0,
+                "gridPos": {
+                  "h": 8,
+                  "w": 12,
+                  "x": 0,
+                  "y": 0
+                },
+                "hiddenSeries": false,
+                "id": 2,
+                "legend": {
+                  "avg": false,
+                  "current": true,
+                  "max": false,
+                  "min": false,
+                  "show": true,
+                  "total": false,
+                  "values": true
+                },
+                "lines": true,
+                "linewidth": 1,
+                "nullPointMode": "null",
+                "options": {
+                  "dataLinks": []
+                },
+                "percentage": false,
+                "pointradius": 2,
+                "points": false,
+                "renderer": "flot",
+                "seriesOverrides": [],
+                "spaceLength": 10,
+                "stack": false,
+                "steppedLine": false,
+                "targets": [
+                  {
+                    "expr": "container_memory_usage_bytes{pod=~\"{{ app_name }}.*\"}",
+                    "refId": "A"
+                  }
+                ],
+                "thresholds": [],
+                "timeFrom": null,
+                "timeRegions": [],
+                "timeShift": null,
+                "title": "Utilisation Mémoire",
+                "tooltip": {
+                  "shared": true,
+                  "sort": 0,
+                  "value_type": "individual"
+                },
+                "type": "graph",
+                "xaxis": {
+                  "buckets": null,
+                  "mode": "time",
+                  "name": null,
+                  "show": true,
+                  "values": []
+                },
+                "yaxes": [
+                  {
+                    "format": "bytes",
+                    "label": null,
+                    "logBase": 1,
+                    "max": null,
+                    "min": null,
+                    "show": true
+                  },
+                  {
+                    "format": "short",
+                    "label": null,
+                    "logBase": 1,
+                    "max": null,
+                    "min": null,
+                    "show": true
+                  }
+                ],
+                "yaxis": {
+                  "align": false,
+                  "alignLevel": null
+                }
+              },
+              {
+                "aliasColors": {},
+                "bars": false,
+                "dashLength": 10,
+                "dashes": false,
+                "datasource": "Prometheus",
+                "fill": 1,
+                "fillGradient": 0,
+                "gridPos": {
+                  "h": 8,
+                  "w": 12,
+                  "x": 12,
+                  "y": 0
+                },
+                "hiddenSeries": false,
+                "id": 3,
+                "legend": {
+                  "avg": false,
+                  "current": true,
+                  "max": false,
+                  "min": false,
+                  "show": true,
+                  "total": false,
+                  "values": true
+                },
+                "lines": true,
+                "linewidth": 1,
+                "nullPointMode": "null",
+                "options": {
+                  "dataLinks": []
+                },
+                "percentage": false,
+                "pointradius": 2,
+                "points": false,
+                "renderer": "flot",
+                "seriesOverrides": [],
+                "spaceLength": 10,
+                "stack": false,
+                "steppedLine": false,
+                "targets": [
+                  {
+                    "expr": "rate(container_cpu_usage_seconds_total{pod=~\"{{ app_name }}.*\"}[5m])",
+                    "refId": "A"
+                  }
+                ],
+                "thresholds": [],
+                "timeFrom": null,
+                "timeRegions": [],
+                "timeShift": null,
+                "title": "Utilisation CPU",
+                "tooltip": {
+                  "shared": true,
+                  "sort": 0,
+                  "value_type": "individual"
+                },
+                "type": "graph",
+                "xaxis": {
+                  "buckets": null,
+                  "mode": "time",
+                  "name": null,
+                  "show": true,
+                  "values": []
+                },
+                "yaxes": [
+                  {
+                    "format": "short",
+                    "label": null,
+                    "logBase": 1,
+                    "max": null,
+                    "min": null,
+                    "show": true
+                  },
+                  {
+                    "format": "short",
+                    "label": null,
+                    "logBase": 1,
+                    "max": null,
+                    "min": null,
+                    "show": true
+                  }
+                ],
+                "yaxis": {
+                  "align": false,
+                  "alignLevel": null
+                }
+              },
+              {
+                "aliasColors": {},
+                "bars": false,
+                "dashLength": 10,
+                "dashes": false,
+                "datasource": "Prometheus",
+                "fill": 1,
+                "fillGradient": 0,
+                "gridPos": {
+                  "h": 8,
+                  "w": 12,
+                  "x": 0,
+                  "y": 8
+                },
+                "hiddenSeries": false,
+                "id": 4,
+                "legend": {
+                  "avg": false,
+                  "current": true,
+                  "max": false,
+                  "min": false,
+                  "show": true,
+                  "total": false,
+                  "values": true
+                },
+                "lines": true,
+                "linewidth": 1,
+                "nullPointMode": "null",
+                "options": {
+                  "dataLinks": []
+                },
+                "percentage": false,
+                "pointradius": 2,
+                "points": false,
+                "renderer": "flot",
+                "seriesOverrides": [],
+                "spaceLength": 10,
+                "stack": false,
+                "steppedLine": false,
+                "targets": [
+                  {
+                    "expr": "rate(http_requests_total{service=\"{{ app_name }}\"}[5m])",
+                    "refId": "A"
+                  }
+                ],
+                "thresholds": [],
+                "timeFrom": null,
+                "timeRegions": [],
+                "timeShift": null,
+                "title": "Taux de Requêtes",
+                "tooltip": {
+                  "shared": true,
+                  "sort": 0,
+                  "value_type": "individual"
+                },
+                "type": "graph",
+                "xaxis": {
+                  "buckets": null,
+                  "mode": "time",
+                  "name": null,
+                  "show": true,
+                  "values": []
+                },
+                "yaxes": [
+                  {
+                    "format": "short",
+                    "label": null,
+                    "logBase": 1,
+                    "max": null,
+                    "min": null,
+                    "show": true
+                  },
+                  {
+                    "format": "short",
+                    "label": null,
+                    "logBase": 1,
+                    "max": null,
+                    "min": null,
+                    "show": true
+                  }
+                ],
+                "yaxis": {
+                  "align": false,
+                  "alignLevel": null
+                }
+              }
+            ],
+            "schemaVersion": 22,
+            "style": "dark",
+            "tags": ["gitea", "git"],
+            "templating": {
+              "list": []
+            },
+            "time": {
+              "from": "now-6h",
+              "to": "now"
+            },
+            "timepicker": {},
+            "timezone": "",
+            "title": "Gitea - {{ app_name }} Dashboard",
+            "uid": "{{ app_name }}-gitea-dashboard",
+            "version": 1
+          }
+  when: 
+    - prometheus_operator_check is succeeded
+    - prometheus_operator_check.resources | length > 0
+    - gitea_prometheus_scrape | bool
+  ignore_errors: yes

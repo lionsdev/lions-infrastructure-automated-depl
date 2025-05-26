@@ -1,0 +1,37 @@
+---
+# Titre: Template de ConfigMap Kubernetes pour Quarkus
+# Description: Définit la ConfigMap Kubernetes pour une application Quarkus
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-07
+# Version: 1.0.0
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: "{{ app_name }}-config"
+  namespace: "{{ app_namespace }}"
+  labels:
+    app: "{{ app_name }}"
+    version: "{{ app_version }}"
+    environment: "{{ app_environment }}"
+    technology: "quarkus"
+  annotations:
+    description: "ConfigMap pour l'application {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+data:
+  # Variables d'environnement pour l'application
+  QUARKUS_PROFILE: "{{ app_environment }}"
+  QUARKUS_HTTP_PORT: "{{ quarkus_default_port }}"
+  QUARKUS_APPLICATION_NAME: "{{ app_name }}"
+  QUARKUS_APPLICATION_VERSION: "{{ app_version }}"
+
+  # Variables spécifiques à l'environnement
+  QUARKUS_LOG_LEVEL: "{% if app_environment == 'production' %}WARN{% elif app_environment == 'staging' %}INFO{% else %}DEBUG{% endif %}"
+  QUARKUS_SWAGGER_UI_ENABLED: "{% if app_environment == 'production' %}false{% else %}true{% endif %}"
+
+  # Variables pour le monitoring
+  QUARKUS_MICROMETER_EXPORT_PROMETHEUS_ENABLED: "true"
+  QUARKUS_MICROMETER_EXPORT_PROMETHEUS_PATH: "{{ quarkus_prometheus_path }}"
+
+  # Variables pour la santé
+  QUARKUS_HEALTH_EXTENSIONS_ENABLED: "true"
+  QUARKUS_HEALTH_OPENAPI_INCLUDED: "true"

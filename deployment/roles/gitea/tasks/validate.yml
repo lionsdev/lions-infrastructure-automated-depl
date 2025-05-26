@@ -1,0 +1,155 @@
+---
+# Titre: Validation post-déploiement pour Gitea
+# Description: Valide le déploiement de Gitea
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-07
+# Version: 1.0.0
+
+- name: Attente que Gitea soit prêt
+  uri:
+    url: "http://{{ app_name }}.{{ app_namespace }}.svc.cluster.local:{{ gitea_default_port }}{{ gitea_health_path }}"
+    method: GET
+    status_code: 200
+    validate_certs: no
+  register: health_check
+  until: health_check.status == 200
+  retries: 30
+  delay: 10
+  ignore_errors: yes
+
+- name: Vérification de l'état de santé de Gitea
+  debug:
+    msg: "Gitea {{ app_name }} est en bonne santé et prêt à recevoir des requêtes."
+  when: health_check is succeeded
+
+- name: Avertissement si Gitea n'est pas en bonne santé
+  debug:
+    msg: "AVERTISSEMENT: Gitea {{ app_name }} n'est pas en bonne santé. Vérifiez les logs pour plus d'informations."
+  when: health_check is failed
+
+- name: Récupération de l'URL d'accès
+  set_fact:
+    app_url: "https://{{ app_domain }}"
+  when: app_environment != 'development' or (extra_params.create_ingress | default(true) | bool)
+
+- name: Affichage de l'URL d'accès
+  debug:
+    msg: "Gitea {{ app_name }} est accessible à l'adresse: {{ app_url }}"
+  when: app_url is defined
+
+- name: Vérification de l'accessibilité externe (si ingress est configuré)
+  uri:
+    url: "{{ app_url }}"
+    method: GET
+    status_code: 200, 301, 302, 307, 308
+    validate_certs: no
+    follow_redirects: no
+  register: external_check
+  ignore_errors: yes
+  when: app_url is defined
+
+- name: Affichage du résultat de la vérification externe
+  debug:
+    msg: "Gitea {{ app_name }} est accessible depuis l'extérieur."
+  when: external_check is defined and external_check is succeeded
+
+- name: Avertissement si Gitea n'est pas accessible depuis l'extérieur
+  debug:
+    msg: "AVERTISSEMENT: Gitea {{ app_name }} n'est pas accessible depuis l'extérieur. Vérifiez la configuration de l'ingress."
+  when: external_check is defined and external_check is failed
+
+- name: Vérification de l'API Gitea
+  uri:
+    url: "http://{{ app_name }}.{{ app_namespace }}.svc.cluster.local:{{ gitea_default_port }}/api/v1/version"
+    method: GET
+    status_code: 200
+    validate_certs: no
+  register: api_check
+  ignore_errors: yes
+
+- name: Affichage du résultat de la vérification de l'API
+  debug:
+    msg: "L'API de Gitea est accessible."
+  when: api_check is succeeded
+
+- name: Avertissement si l'API n'est pas accessible
+  debug:
+    msg: "AVERTISSEMENT: L'API de Gitea n'est pas accessible. Vérifiez la configuration."
+  when: api_check is failed
+
+- name: Vérification des métriques Prometheus
+  uri:
+    url: "http://{{ app_name }}.{{ app_namespace }}.svc.cluster.local:{{ gitea_prometheus_port }}{{ gitea_prometheus_path }}"
+    status_code: 200
+    validate_certs: no
+  register: metrics_check
+  ignore_errors: yes
+  when: gitea_prometheus_scrape | bool
+
+- name: Affichage du résultat de la vérification des métriques
+  debug:
+    msg: "Les métriques Prometheus sont disponibles pour Gitea {{ app_name }}."
+  when: metrics_check is defined and metrics_check is succeeded
+
+- name: Avertissement si les métriques ne sont pas disponibles
+  debug:
+    msg: "AVERTISSEMENT: Les métriques Prometheus ne sont pas disponibles pour Gitea {{ app_name }}."
+  when: metrics_check is defined and metrics_check is failed
+
+- name: Vérification de la connexion SSH
+  shell: "kubectl exec -n {{ app_namespace }} {{ pods_info_after_init.resources[0].metadata.name }} -- netstat -tulpn | grep {{ gitea_ssh_port }}"
+  register: ssh_check
+  ignore_errors: yes
+  changed_when: false
+
+- name: Affichage du résultat de la vérification SSH
+  debug:
+    msg: "Le service SSH de Gitea est actif sur le port {{ gitea_ssh_port }}."
+  when: ssh_check is succeeded
+
+- name: Avertissement si le service SSH n'est pas actif
+  debug:
+    msg: "AVERTISSEMENT: Le service SSH de Gitea n'est pas actif. Vérifiez la configuration."
+  when: ssh_check is failed
+
+- name: Enregistrement des informations de déploiement
+  copy:
+    content: |
+      Application: {{ app_name }}
+      Version: {{ app_version }}
+      Environnement: {{ app_environment }}
+      Namespace: {{ app_namespace }}
+      URL: {{ app_url | default('Non disponible') }}
+      Date de déploiement: {{ ansible_date_time.iso8601 }}
+      Statut: {{ 'Succès' if health_check is succeeded else 'Avertissement' }}
+      
+      Ressources:
+        Replicas: {{ app_replicas }}
+        CPU Requests: {{ app_resources.requests.cpu }}
+        Memory Requests: {{ app_resources.requests.memory }}
+        CPU Limits: {{ app_resources.limits.cpu }}
+        Memory Limits: {{ app_resources.limits.memory }}
+      
+      Monitoring:
+        Prometheus: {{ 'Activé' if gitea_prometheus_scrape | bool else 'Désactivé' }}
+        Métriques: {{ 'Disponibles' if metrics_check is defined and metrics_check is succeeded else 'Non disponibles' }}
+      
+      API:
+        Accès: {{ 'Fonctionnel' if api_check is succeeded else 'Non fonctionnel' }}
+      
+      SSH:
+        Accès: {{ 'Fonctionnel' if ssh_check is succeeded else 'Non fonctionnel' }}
+      
+      Notes:
+      - Vérifiez les logs de Gitea pour plus d'informations.
+      - Pour les problèmes, contactez l'équipe d'infrastructure.
+    dest: "/var/log/lions/deployments/{{ app_name }}-{{ app_environment }}-{{ ansible_date_time.date }}.log"
+    mode: '0644'
+  ignore_errors: yes
+
+- name: Nettoyage des fichiers temporaires
+  file:
+    path: "{{ temp_dir.path }}"
+    state: absent
+  changed_when: false
+  ignore_errors: yes

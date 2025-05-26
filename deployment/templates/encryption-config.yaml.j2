@@ -1,0 +1,24 @@
+# =============================================================================
+# LIONS Infrastructure - Configuration de chiffrement K3s
+# =============================================================================
+# Titre: Configuration de chiffrement des secrets Kubernetes
+# Description: Définit la configuration pour le chiffrement des secrets au repos
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-24
+# Version: 1.0.0
+# =============================================================================
+
+apiVersion: apiserver.config.k8s.io/v1
+kind: EncryptionConfiguration
+resources:
+  - resources:
+      - secrets
+    providers:
+      # Utilise AESCBC pour le chiffrement des secrets
+      - aescbc:
+          keys:
+            - name: key1
+              # Génère une clé aléatoire unique pour chaque installation
+              secret: "{{ lookup('password', '/dev/null chars=hexdigits length=32') | b64encode }}"
+      # Conserve l'identité pour la compatibilité descendante
+      - identity: {}

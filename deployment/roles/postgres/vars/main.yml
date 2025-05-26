@@ -1,0 +1,97 @@
+---
+# Titre: Variables pour le déploiement de PostgreSQL
+# Description: Variables spécifiques à PostgreSQL
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-07
+# Version: 1.0.0
+
+# Configuration par défaut pour PostgreSQL
+postgres_version: "14"
+postgres_default_port: 5432
+postgres_health_path: "/healthz"
+postgres_metrics_path: "/metrics"
+postgres_admin_user: "postgres"
+postgres_admin_password_secret: "postgres-admin-password"
+
+# Configuration des sondes de santé
+postgres_readiness_probe:
+  exec:
+    command:
+      - /bin/sh
+      - -c
+      - pg_isready -U postgres -h 127.0.0.1 -p 5432
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+postgres_liveness_probe:
+  exec:
+    command:
+      - /bin/sh
+      - -c
+      - pg_isready -U postgres -h 127.0.0.1 -p 5432
+  initialDelaySeconds: 60
+  periodSeconds: 20
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# Configuration du monitoring
+postgres_prometheus_port: 9187
+postgres_prometheus_path: "/metrics"
+postgres_prometheus_scrape: true
+postgres_init_delay: 30
+
+# Configuration des ressources par environnement
+postgres_resources:
+  development:
+    requests:
+      cpu: "200m"
+      memory: "512Mi"
+    limits:
+      cpu: "800m"
+      memory: "1Gi"
+  staging:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "2000m"
+      memory: "2Gi"
+  production:
+    requests:
+      cpu: "1000m"
+      memory: "2Gi"
+    limits:
+      cpu: "4000m"
+      memory: "4Gi"
+
+# Configuration des réplicas par environnement (pour les déploiements en mode HA)
+postgres_replicas:
+  development: 1
+  staging: 1
+  production: 3
+
+# Configuration de la persistance
+postgres_persistent_storage: true
+postgres_storage_size: "20Gi"
+postgres_storage_class: "standard"
+
+# Configuration de PostgreSQL
+postgres_max_connections: 100
+postgres_shared_buffers: "256MB"
+postgres_effective_cache_size: "1GB"
+postgres_maintenance_work_mem: "64MB"
+postgres_checkpoint_completion_target: 0.9
+postgres_wal_buffers: "16MB"
+postgres_default_statistics_target: 100
+postgres_random_page_cost: 4
+postgres_effective_io_concurrency: 2
+postgres_work_mem: "4MB"
+postgres_min_wal_size: "1GB"
+postgres_max_wal_size: "4GB"
+
+# Configuration de la haute disponibilité
+postgres_ha_enabled: "{{ app_environment == 'production' }}"
+postgres_ha_replication_user: "replicator"
+postgres_ha_replication_password_secret: "postgres-replication-password"

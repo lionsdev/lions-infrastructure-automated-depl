@@ -1,9 +1,17 @@
 #!/bin/bash
+# =============================================================================
+# LIONS Infrastructure - Script d'installation principal
+# =============================================================================
 # Titre: Script d'installation de l'infrastructure LIONS sur VPS
 # Description: Orchestre l'installation complète de l'infrastructure LIONS sur un VPS
 # Auteur: Équipe LIONS Infrastructure
-# Date: 2023-05-15
-# Version: 1.2.0
+# Date: 2025-05-24
+# Version: 2.0.0
+# =============================================================================
+# Changelog:
+# - 2.0.0 (2025-05-24): Mise à jour majeure avec support K3s 1.30, sécurité renforcée
+# - 1.2.0 (2023-05-15): Version initiale stable
+# =============================================================================
 
 # Chargement des variables d'environnement
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -374,11 +382,14 @@ EOF
     return 0
 }
 
-# Fonction de gestion des erreurs
+# Fonction de gestion des erreurs améliorée
 function handle_error() {
     local exit_code=$?
     local line_number=$1
     local command_name=$2
+    local timestamp=$(date +"%Y-%m-%d %H:%M:%S")
+    local hostname=$(hostname)
+    local user=$(whoami)
 
     # Désactivation du mode strict pour la gestion des erreurs
     set +euo pipefail
@@ -402,12 +413,57 @@ function handle_error() {
 
     log "ERROR" "Détails de l'erreur: ${error_details}"
 
+    # Collecte d'informations système pour le diagnostic
+    local memory_info=$(free -h | grep Mem)
+    local disk_info=$(df -h / | tail -n 1)
+    local load_avg=$(cat /proc/loadavg)
+    local process_count=$(ps aux | wc -l)
+
+    # Vérification des processus consommant beaucoup de ressources
+    local top_processes=$(ps aux --sort=-%cpu | head -n 5)
+
     # Enregistrement de l'erreur avec plus de détails
     LAST_ERROR="Erreur à la ligne ${line_number} (code ${exit_code}): ${LAST_COMMAND} - ${error_details}"
+
+    # Création d'un rapport d'erreur détaillé
+    local error_report="${BACKUP_DIR}/error-report-$(date +%Y%m%d-%H%M%S).log"
+    {
+        echo "=== RAPPORT D'ERREUR LIONS INFRASTRUCTURE ==="
+        echo "Date/Heure: ${timestamp}"
+        echo "Hôte: ${hostname}"
+        echo "Utilisateur: ${user}"
+        echo "Étape d'installation: ${INSTALLATION_STEP}"
+        echo "Ligne: ${line_number}"
+        echo "Code d'erreur: ${exit_code}"
+        echo "Commande: ${LAST_COMMAND}"
+        echo "Détails: ${error_details}"
+        echo ""
+        echo "=== INFORMATIONS SYSTÈME ==="
+        echo "Mémoire: ${memory_info}"
+        echo "Disque: ${disk_info}"
+        echo "Charge système: ${load_avg}"
+        echo "Nombre de processus: ${process_count}"
+        echo ""
+        echo "=== PROCESSUS PRINCIPAUX ==="
+        echo "${top_processes}"
+        echo ""
+        echo "=== DERNIÈRES LIGNES DU LOG ==="
+        tail -n 50 "${LOG_FILE}"
+    } > "${error_report}"
+
+    log "INFO" "Rapport d'erreur détaillé créé: ${error_report}"
 
     # Sauvegarde de l'état actuel et des logs pour analyse
     echo "${INSTALLATION_STEP}" > "${STATE_FILE}"
     cp "${LOG_FILE}" "${BACKUP_DIR}/error-log-$(date +%Y%m%d-%H%M%S).log"
+
+    # Vérification de sécurité - recherche de signes de compromission
+    log "INFO" "Vérification de sécurité en cours..."
+    if [[ -f "/var/log/auth.log" ]]; then
+        if grep -E "Failed password|Invalid user|authentication failure" /var/log/auth.log | tail -n 20 > "${BACKUP_DIR}/security-check-$(date +%Y%m%d-%H%M%S).log"; then
+            log "WARNING" "Tentatives d'authentification suspectes détectées - voir le rapport de sécurité"
+        fi
+    fi
 
     # Vérification de l'état du système avant de tenter une reprise
     log "INFO" "Vérification de l'état du système avant reprise..."
@@ -427,10 +483,76 @@ function handle_error() {
         exit 1
     fi
 
+    # Analyse de l'erreur pour déterminer la stratégie de reprise
+    local retry_strategy="standard"
+    local retry_delay=10
+    local retry_possible=true
+
+    # Détermination de la stratégie de reprise en fonction du code d'erreur et du contexte
+    case ${exit_code} in
+        137)  # Out of memory
+            retry_strategy="memory_optimization"
+            retry_delay=30
+            log "WARNING" "Erreur de mémoire détectée, application de la stratégie d'optimisation mémoire"
+            ;;
+        130)  # Ctrl+C
+            retry_possible=false
+            log "WARNING" "Interruption manuelle détectée, reprise automatique désactivée"
+            ;;
+        126|127)  # Problèmes de permissions ou commande non trouvée
+            retry_strategy="permission_fix"
+            log "WARNING" "Problème de permissions détecté, tentative de correction"
+            ;;
+        *)
+            # Analyse du message d'erreur pour des cas spécifiques
+            if [[ "${LAST_COMMAND}" == *"timeout"* || "${LAST_COMMAND}" == *"connection refused"* ]]; then
+                retry_strategy="network_retry"
+                retry_delay=20
+                log "WARNING" "Problème réseau détecté, application de la stratégie réseau"
+            elif [[ "${LAST_COMMAND}" == *"disk"* || "${LAST_COMMAND}" == *"space"* ]]; then
+                retry_strategy="disk_cleanup"
+                log "WARNING" "Problème d'espace disque détecté, tentative de nettoyage"
+            fi
+            ;;
+    esac
+
     # Tentative de reprise si possible
-    if [[ ${RETRY_COUNT} -lt ${MAX_RETRIES} ]]; then
+    if [[ ${retry_possible} == true && ${RETRY_COUNT} -lt ${MAX_RETRIES} ]]; then
         RETRY_COUNT=$((RETRY_COUNT + 1))
-        log "WARNING" "Tentative de reprise (${RETRY_COUNT}/${MAX_RETRIES})..."
+        log "WARNING" "Tentative de reprise (${RETRY_COUNT}/${MAX_RETRIES}) - Stratégie: ${retry_strategy}"
+
+        # Actions spécifiques selon la stratégie de reprise
+        case ${retry_strategy} in
+            "memory_optimization")
+                log "INFO" "Nettoyage de la mémoire avant reprise..."
+                sync
+                echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
+                killall -9 java 2>/dev/null || true  # Arrêt des processus Java gourmands en mémoire
+                ;;
+            "permission_fix")
+                log "INFO" "Correction des permissions..."
+                if [[ -n "${LAST_COMMAND}" && "${LAST_COMMAND}" == *" "* ]]; then
+                    local cmd_path=$(echo "${LAST_COMMAND}" | awk '{print $1}')
+                    if [[ -f "${cmd_path}" ]]; then
+                        log "INFO" "Correction des permissions pour ${cmd_path}"
+                        chmod +x "${cmd_path}" 2>/dev/null || sudo chmod +x "${cmd_path}" 2>/dev/null || true
+                    fi
+                fi
+                ;;
+            "disk_cleanup")
+                log "INFO" "Nettoyage de l'espace disque..."
+                rm -rf /tmp/* 2>/dev/null || true
+                docker system prune -f 2>/dev/null || true
+                journalctl --vacuum-time=1d 2>/dev/null || true
+                ;;
+            "network_retry")
+                log "INFO" "Optimisation réseau avant reprise..."
+                # Attente plus longue pour les problèmes réseau
+                retry_delay=30
+                # Tentative de redémarrage du service réseau
+                systemctl restart networking 2>/dev/null || true
+                ;;
+        esac
 
         # Suppression du fichier de verrouillage avant la reprise
         if [[ -f "${LOCK_FILE}" ]]; then
@@ -448,8 +570,8 @@ function handle_error() {
         fi
 
         # Attente avant la reprise pour permettre au système de se stabiliser
-        log "INFO" "Attente de 10 secondes avant reprise..."
-        sleep 10
+        log "INFO" "Attente de ${retry_delay} secondes avant reprise..."
+        sleep ${retry_delay}
 
         # Reprise en fonction de l'étape avec gestion spécifique selon la commande qui a échoué
         case "${INSTALLATION_STEP}" in
@@ -5569,9 +5691,178 @@ function check_fix_k3s() {
     fi
 }
 
+function installer_vault() {
+    log "INFO" "Installation de HashiCorp Vault..."
+    INSTALLATION_STEP="install_vault"
+
+    # Vérification si Vault est activé
+    if [[ "${LIONS_VAULT_ENABLED:-false}" != "true" ]]; then
+        log "INFO" "Installation de Vault ignorée (LIONS_VAULT_ENABLED n'est pas défini à 'true')"
+        return 0
+    fi
+
+    # Sauvegarde de l'état actuel
+    echo "${INSTALLATION_STEP}" > "${STATE_FILE}"
+
+    # Sauvegarde de l'état du VPS avant modification (optionnelle)
+    backup_state "pre-install-vault" "true"
+
+    # Construction de la commande Ansible
+    # Utilisation de chemins absolus pour éviter les problèmes de résolution de chemin
+    local inventory_path="${ANSIBLE_DIR}/${inventory_file}"
+    local playbook_path="${ANSIBLE_DIR}/playbooks/install-vault.yml"
+
+    # Vérification que les fichiers existent
+    if [[ ! -f "${inventory_path}" ]]; then
+        log "ERROR" "Fichier d'inventaire non trouvé: ${inventory_path}"
+        log "ERROR" "Vérifiez que le chemin est correct et que le fichier existe"
+        return 1
+    fi
+
+    if [[ ! -f "${playbook_path}" ]]; then
+        log "ERROR" "Fichier de playbook non trouvé: ${playbook_path}"
+        log "ERROR" "Vérifiez que le chemin est correct et que le fichier existe"
+        return 1
+    fi
+
+    # Détection du système d'exploitation pour le formatage des chemins
+    local os_name
+    os_name=$(uname -s)
+    if [[ "${os_name}" == *"MINGW"* || "${os_name}" == *"MSYS"* || "${os_name}" == *"CYGWIN"* || "${os_name}" == *"Windows"* ]]; then
+        # Windows: convertir les chemins Unix en chemins Windows
+        log "DEBUG" "Système Windows détecté, conversion des chemins"
+
+        # Vérifier si les chemins contiennent déjà des backslashes
+        if [[ "${inventory_path}" != *"\\"* ]]; then
+            # Remplacer les slashes par des backslashes pour Windows
+            inventory_path=$(echo "${inventory_path}" | tr '/' '\\')
+            log "DEBUG" "Chemin d'inventaire converti: ${inventory_path}"
+        fi
+
+        if [[ "${playbook_path}" != *"\\"* ]]; then
+            # Remplacer les slashes par des backslashes pour Windows
+            playbook_path=$(echo "${playbook_path}" | tr '/' '\\')
+            log "DEBUG" "Chemin de playbook converti: ${playbook_path}"
+        fi
+
+        # Vérifier si les chemins existent après conversion
+        if [[ ! -f "${inventory_path}" ]]; then
+            log "WARNING" "Le chemin d'inventaire converti n'existe pas: ${inventory_path}"
+            log "DEBUG" "Tentative d'utilisation du chemin original"
+            inventory_path="${ANSIBLE_DIR}/${inventory_file}"
+        fi
+
+        if [[ ! -f "${playbook_path}" ]]; then
+            log "WARNING" "Le chemin de playbook converti n'existe pas: ${playbook_path}"
+            log "DEBUG" "Tentative d'utilisation du chemin original"
+            playbook_path="${ANSIBLE_DIR}/playbooks/install-vault.yml"
+        fi
+    fi
+
+    local ansible_cmd="ansible-playbook -i \"${inventory_path}\" \"${playbook_path}\" --ask-become-pass"
+
+    if [[ "${debug_mode}" == "true" ]]; then
+        ansible_cmd="${ansible_cmd} -vvv"
+    fi
+
+    log "INFO" "Exécution de la commande: ${ansible_cmd}"
+    LAST_COMMAND="${ansible_cmd}"
+
+    # Exécution de la commande avec timeout
+    if run_with_timeout "${ansible_cmd}" 1800 "ansible_playbook"; then  # Timeout de 30 minutes pour l'installation de Vault
+        log "SUCCESS" "Installation de HashiCorp Vault terminée avec succès"
+
+        # Vérification de l'installation de Vault
+        local vault_active=false
+        if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+            # Exécution locale
+            sudo systemctl is-active --quiet vault &>/dev/null && vault_active=true
+        else
+            # Exécution distante
+            ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl is-active --quiet vault" &>/dev/null && vault_active=true
+        fi
+
+        if [[ "${vault_active}" != "true" ]]; then
+            log "WARNING" "Le service Vault ne semble pas être actif après l'installation"
+            log "WARNING" "Vérifiez manuellement l'état du service sur le VPS"
+            return 1
+        else
+            log "INFO" "Service Vault actif et fonctionnel"
+            return 0
+        fi
+    else
+        log "ERROR" "Échec de l'installation de HashiCorp Vault"
+        log "ERROR" "Dernière erreur: ${LAST_ERROR}"
+        return 1
+    fi
+}
+
 function installer_k3s() {
     log "INFO" "Installation de K3s..."
     INSTALLATION_STEP="install_k3s"
+
+    # Vérification de Vault si activé
+    if [[ "${LIONS_VAULT_ENABLED:-false}" == "true" ]]; then
+        log "INFO" "Vault est activé, vérification de son état avant l'installation de K3s..."
+
+        # Vérification que Vault est installé et accessible
+        local vault_accessible=false
+        local vault_initialized=false
+        local vault_unsealed=false
+        local vault_api_addr="${LIONS_VAULT_ADDR:-https://127.0.0.1:8200}"
+
+        # Vérification que le service Vault est actif
+        if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+            # Exécution locale
+            sudo systemctl is-active --quiet vault &>/dev/null && vault_accessible=true
+        else
+            # Exécution distante
+            ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo systemctl is-active --quiet vault" &>/dev/null && vault_accessible=true
+        fi
+
+        if [[ "${vault_accessible}" != "true" ]]; then
+            log "WARNING" "Le service Vault n'est pas actif ou accessible"
+            log "WARNING" "L'installation de K3s pourrait échouer si elle dépend de secrets stockés dans Vault"
+
+            # Demander à l'utilisateur s'il souhaite continuer
+            read -p "Souhaitez-vous continuer l'installation de K3s sans Vault actif? (O/n): " continue_response
+            if [[ "${continue_response}" =~ ^[Nn] ]]; then
+                log "INFO" "Installation de K3s annulée par l'utilisateur"
+                return 1
+            fi
+
+            log "INFO" "Continuation de l'installation sans Vault actif"
+        else
+            # Vérification que Vault est initialisé et déverrouillé
+            local vault_status_output
+            if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+                # Exécution locale
+                vault_status_output=$(VAULT_ADDR="${vault_api_addr}" VAULT_SKIP_VERIFY=true vault status -format=json 2>/dev/null)
+            else
+                # Exécution distante
+                vault_status_output=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "VAULT_ADDR='${vault_api_addr}' VAULT_SKIP_VERIFY=true vault status -format=json" 2>/dev/null)
+            fi
+
+            if [[ -n "${vault_status_output}" ]]; then
+                vault_initialized=$(echo "${vault_status_output}" | jq -r '.initialized')
+                vault_unsealed=$(echo "${vault_status_output}" | jq -r '.sealed')
+                vault_unsealed=$([ "${vault_unsealed}" == "false" ] && echo "true" || echo "false")
+
+                if [[ "${vault_initialized}" != "true" ]]; then
+                    log "WARNING" "Vault n'est pas initialisé"
+                    log "WARNING" "L'installation de K3s pourrait échouer si elle dépend de secrets stockés dans Vault"
+                elif [[ "${vault_unsealed}" != "true" ]]; then
+                    log "WARNING" "Vault est scellé (sealed) et inaccessible"
+                    log "WARNING" "L'installation de K3s pourrait échouer si elle dépend de secrets stockés dans Vault"
+                else
+                    log "INFO" "Vault est correctement initialisé, déverrouillé et accessible"
+                fi
+            else
+                log "WARNING" "Impossible d'obtenir le statut de Vault"
+                log "WARNING" "L'installation de K3s pourrait échouer si elle dépend de secrets stockés dans Vault"
+            fi
+        fi
+    fi
 
     # Sauvegarde de l'état actuel
     echo "${INSTALLATION_STEP}" > "${STATE_FILE}"
@@ -7385,6 +7676,26 @@ fi
 
 # Sauvegarde de l'état après installation de K3s (optionnelle)
 backup_state "post-k3s" "true"
+
+# Installation de HashiCorp Vault
+if ! installer_vault; then
+    log "WARNING" "Échec de l'installation de HashiCorp Vault"
+    log "WARNING" "L'installation peut continuer sans Vault, mais certaines fonctionnalités de gestion des secrets ne seront pas disponibles"
+
+    # Demander à l'utilisateur s'il souhaite continuer sans Vault
+    if [[ "${LIONS_VAULT_ENABLED:-false}" == "true" ]]; then
+        local continue_response
+        read -p "Souhaitez-vous continuer l'installation sans Vault? (O/n): " continue_response
+
+        if [[ "${continue_response}" =~ ^[nN]$ ]]; then
+            log "INFO" "Installation annulée par l'utilisateur"
+            cleanup
+            exit 1
+        else
+            log "INFO" "Continuation de l'installation sans Vault"
+        fi
+    fi
+fi
 
 # Déploiement de l'infrastructure de base
 if ! deployer_infrastructure_base; then

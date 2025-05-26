@@ -1,0 +1,124 @@
+---
+# Production environment variables for LIONS Infrastructure
+# These variables override common.yml for the production environment
+# Author: LIONS Infrastructure Team
+# Date: 2025-05-24
+# Version: 1.0.0
+
+# Environment settings
+lions_env: "production"
+lions_domain: "lions.dev"
+
+# Resource settings - optimized for production environment
+lions_cpu_request: "500m"
+lions_cpu_limit: "2000m"
+lions_memory_request: "1Gi"
+lions_memory_limit: "4Gi"
+
+# Monitoring configuration - robust for production environment
+monitoring_config:
+  namespace: "monitoring"
+  grafana_admin_password: "{{ lookup('env', 'LIONS_PROD_GRAFANA_PASSWORD') | default('CHANGE_ME_IN_PRODUCTION', true) }}"
+  prometheus_retention: "30d"   # Extended retention for production
+  prometheus_storage: "50Gi"    # Increased storage for production
+  grafana_storage: "10Gi"       # Increased storage for production
+  resource_limits:
+    prometheus_cpu: "1500m"     # Increased CPU for production
+    prometheus_memory: "4Gi"    # Increased memory for production
+    grafana_cpu: "500m"         # Increased CPU for production
+    grafana_memory: "1Gi"       # Increased memory for production
+
+# Production-specific component enablement
+# Enable all components for production
+lions_monitoring_enabled: true
+lions_registry_enabled: true
+lions_postgres_enabled: true
+lions_keycloak_enabled: true
+lions_gitea_enabled: true
+lions_ollama_enabled: true
+lions_vault_enabled: true
+
+# Production-specific credentials
+# Using environment variables for production (no defaults)
+default_credentials:
+  postgres:
+    username: "postgres"
+    password: "{{ lookup('env', 'LIONS_PROD_POSTGRES_PASSWORD') }}"
+  keycloak:
+    admin_username: "admin"
+    admin_password: "{{ lookup('env', 'LIONS_PROD_KEYCLOAK_PASSWORD') }}"
+  gitea:
+    admin_username: "gitea_admin"
+    admin_password: "{{ lookup('env', 'LIONS_PROD_GITEA_PASSWORD') }}"
+  registry:
+    username: "registry_admin"
+    password: "{{ lookup('env', 'LIONS_PROD_REGISTRY_PASSWORD') }}"
+
+# Backup configuration - comprehensive for production
+backup_config:
+  schedule: "0 1 * * *"    # Daily at 1 AM
+  storage_location: "/var/backups/lions"
+  retention_days: 90       # Keep 90 days of backups in production
+  components:
+    - postgres
+    - gitea
+    - keycloak
+    - kubernetes_resources
+    - vault
+    - registry
+
+# Logging configuration - optimized for production
+logging_config:
+  log_level: "INFO"        # Standard logging for production
+  retention_days: 90       # Keep 90 days of logs in production
+  max_size: "500Mi"        # Larger log size for production
+
+# Security settings - maximum for production
+lions_tls_enabled: true
+lions_network_policy_enabled: true
+
+# High availability settings - enabled for production
+ha_settings:
+  enabled: true
+  replicas:
+    postgres: 3
+    keycloak: 2
+    gitea: 2
+    registry: 2
+    monitoring: 2
+  backup_strategy:
+    type: "scheduled_and_pre_upgrade"
+    offsite_copy: true
+    encryption_enabled: true
+
+# Performance settings - optimized for production
+performance_settings:
+  postgres:
+    max_connections: 200
+    shared_buffers: "1GB"
+    work_mem: "64MB"
+  keycloak:
+    cache_owners: 2
+    worker_threads: 8
+  ingress:
+    max_connections: 10000
+    timeouts:
+      read: "300s"
+      write: "300s"
+      idle: "60s"
+
+# Alerting configuration - comprehensive for production
+alerting_config:
+  enabled: true
+  notification_channels:
+    - type: "email"
+      name: "admin-alerts"
+      address: "{{ lookup('env', 'LIONS_PROD_ALERT_EMAIL') }}"
+    - type: "slack"
+      name: "ops-alerts"
+      webhook: "{{ lookup('env', 'LIONS_PROD_SLACK_WEBHOOK') }}"
+  severity_levels:
+    - critical
+    - warning
+    - info
+  silence_during_maintenance: true

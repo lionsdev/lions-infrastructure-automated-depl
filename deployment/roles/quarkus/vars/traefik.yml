@@ -1,0 +1,19 @@
+---
+# Titre: Variables pour le déploiement d'applications Quarkus avec Traefik
+# Description: Variables spécifiques aux applications Quarkus pour l'ingress Traefik
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-16
+# Version: 1.0.0
+
+# Configuration de l'ingress Traefik
+quarkus_ingress_annotations:
+  cert-manager.io/cluster-issuer: "letsencrypt-prod"
+  traefik.ingress.kubernetes.io/router.entrypoints: "websecure"
+  traefik.ingress.kubernetes.io/router.tls: "true"
+  traefik.ingress.kubernetes.io/ssl-redirect: "true"
+  traefik.ingress.kubernetes.io/ssl-permanent-redirect: "true"
+  traefik.ingress.kubernetes.io/request-timeout: "300"
+  traefik.ingress.kubernetes.io/compress: "true"
+  traefik.ingress.kubernetes.io/headers-customrequestheaders: "X-Forwarded-Proto:https||X-Forwarded-Port:443"
+  traefik.ingress.kubernetes.io/headers-customresponseheaders: "X-Content-Type-Options:nosniff||X-Frame-Options:SAMEORIGIN||X-XSS-Protection:1; mode=block"
+  traefik.ingress.kubernetes.io/proxy-body-size: "10m"

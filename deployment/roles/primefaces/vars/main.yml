@@ -1,0 +1,95 @@
+---
+# Titre: Variables pour le déploiement d'applications PrimeFaces
+# Description: Variables spécifiques aux applications PrimeFaces
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-07
+# Version: 1.0.0
+
+# Configuration par défaut pour PrimeFaces
+primefaces_default_port: 8080
+primefaces_health_path: "/health"
+primefaces_profile: "{{ app_environment }}"
+primefaces_persistent_storage: true
+
+# Configuration des sondes de santé
+primefaces_readiness_probe:
+  httpGet:
+    path: "{{ primefaces_health_path }}"
+    port: http
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+primefaces_liveness_probe:
+  httpGet:
+    path: "{{ primefaces_health_path }}"
+    port: http
+  initialDelaySeconds: 60
+  periodSeconds: 20
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# Configuration du monitoring
+primefaces_prometheus_port: 8080
+primefaces_prometheus_path: "/metrics"
+primefaces_prometheus_scrape: true
+primefaces_init_delay: 45
+
+# Configuration des ressources par environnement
+primefaces_resources:
+  development:
+    requests:
+      cpu: "200m"
+      memory: "512Mi"
+    limits:
+      cpu: "500m"
+      memory: "1Gi"
+  staging:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "1000m"
+      memory: "2Gi"
+  production:
+    requests:
+      cpu: "1000m"
+      memory: "2Gi"
+    limits:
+      cpu: "2000m"
+      memory: "4Gi"
+
+# Configuration des réplicas par environnement
+primefaces_replicas:
+  development: 1
+  staging: 2
+  production: 3
+
+# Configuration de l'ingress
+primefaces_ingress_annotations:
+  kubernetes.io/ingress.class: "nginx"
+  cert-manager.io/cluster-issuer: "letsencrypt-prod"
+  nginx.ingress.kubernetes.io/ssl-redirect: "true"
+  nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+  nginx.ingress.kubernetes.io/proxy-connect-timeout: "300"
+  nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+  nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+
+# Configuration de la base de données
+primefaces_database_service: "{{ app_name }}-db"
+primefaces_database_port: 5432
+primefaces_database_name: "{{ app_name }}"
+primefaces_database_user: "{{ app_name }}"
+
+# Configuration du stockage persistant
+primefaces_storage_size: "10Gi"
+primefaces_storage_class: "local-path"
+
+# Configuration JVM
+primefaces_java_opts: "-Xms512m -Xmx1024m -XX:+UseG1GC -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0"
+
+# Configuration spécifique à PrimeFaces
+primefaces_theme: "saga"
+primefaces_fontawesome: true
+primefaces_responsive: true

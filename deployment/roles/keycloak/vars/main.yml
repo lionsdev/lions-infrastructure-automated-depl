@@ -1,0 +1,95 @@
+---
+# Titre: Variables pour le déploiement de Keycloak
+# Description: Variables spécifiques à Keycloak
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-07
+# Version: 1.0.0
+
+# Configuration par défaut pour Keycloak
+keycloak_default_port: 8080
+keycloak_health_path: "/health"
+keycloak_metrics_path: "/metrics"
+keycloak_admin_user: "admin"
+keycloak_admin_password_secret: "keycloak-admin-password"
+keycloak_database_service: "postgres"
+keycloak_database_name: "keycloak"
+keycloak_database_user: "keycloak"
+keycloak_database_password_secret: "keycloak-db-password"
+keycloak_database_namespace: "{{ app_namespace }}"
+
+# Configuration des sondes de santé
+keycloak_readiness_probe:
+  httpGet:
+    path: "{{ keycloak_health_path }}/ready"
+    port: http
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+keycloak_liveness_probe:
+  httpGet:
+    path: "{{ keycloak_health_path }}/live"
+    port: http
+  initialDelaySeconds: 60
+  periodSeconds: 20
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# Configuration du monitoring
+keycloak_prometheus_port: 8080
+keycloak_prometheus_path: "/metrics"
+keycloak_prometheus_scrape: true
+keycloak_init_delay: 60
+
+# Configuration des ressources par environnement
+keycloak_resources:
+  development:
+    requests:
+      cpu: "200m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+  staging:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "1500m"
+      memory: "2Gi"
+  production:
+    requests:
+      cpu: "1000m"
+      memory: "2Gi"
+    limits:
+      cpu: "2000m"
+      memory: "4Gi"
+
+# Configuration des réplicas par environnement
+keycloak_replicas:
+  development: 1
+  staging: 2
+  production: 3
+
+# Configuration de l'ingress
+keycloak_ingress_annotations:
+  cert-manager.io/cluster-issuer: "letsencrypt-prod"
+  traefik.ingress.kubernetes.io/router.entrypoints: "websecure"
+  traefik.ingress.kubernetes.io/router.tls: "true"
+  traefik.ingress.kubernetes.io/ssl-redirect: "true"
+  traefik.ingress.kubernetes.io/ssl-permanent-redirect: "true"
+  traefik.ingress.kubernetes.io/request-timeout: "300"
+  traefik.ingress.kubernetes.io/compress: "true"
+  traefik.ingress.kubernetes.io/headers-customrequestheaders: "X-Forwarded-Proto:https||X-Forwarded-Port:443"
+  traefik.ingress.kubernetes.io/headers-customresponseheaders: "X-Content-Type-Options:nosniff||X-Frame-Options:SAMEORIGIN||X-XSS-Protection:1; mode=block"
+
+# Configuration de la persistance
+keycloak_persistent_storage: true
+keycloak_storage_size: "1Gi"
+keycloak_storage_class: "local-path"
+
+# Configuration de Keycloak
+keycloak_realm: "lions"
+keycloak_frontend_url: "https://{{ app_domain }}/auth"
+keycloak_proxy_address_forwarding: true

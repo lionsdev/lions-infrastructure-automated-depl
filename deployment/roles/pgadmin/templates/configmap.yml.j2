@@ -1,0 +1,48 @@
+---
+# Titre: Template de ConfigMap Kubernetes pour pgAdmin
+# Description: Définit la ConfigMap Kubernetes pour pgAdmin
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-10
+# Version: 1.0.0
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: "{{ app_name }}-config"
+  namespace: "{{ app_namespace }}"
+  labels:
+    app: "{{ app_name }}"
+    version: "{{ app_version }}"
+    environment: "{{ app_environment }}"
+    technology: "pgadmin"
+  annotations:
+    description: "ConfigMap pour pgAdmin {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+data:
+  # Configuration personnalisée pour pgAdmin
+  config_local.py: |
+    # -*- coding: utf-8 -*-
+
+    ##########################################################################
+    # Configuration personnalisée pour pgAdmin dans l'infrastructure LIONS
+    ##########################################################################
+
+    # Paramètres de sécurité
+    MASTER_PASSWORD_REQUIRED = False
+    ENHANCED_COOKIE_PROTECTION = True
+    ALLOW_SAVE_PASSWORD = True
+
+    # Paramètres d'interface
+    SERVER_MODE = True
+    CONSOLE_LOG_LEVEL = 10
+
+    # Paramètres d'authentification
+    AUTHENTICATION_SOURCES = ['internal']
+
+    # Paramètres de stockage
+    STORAGE_DIR = '/var/lib/pgadmin/storage'
+    SESSION_DB_PATH = '/var/lib/pgadmin/sessions'
+    SQLITE_PATH = '/var/lib/pgadmin/pgadmin4.db'
+
+    # Paramètres de monitoring
+    ENABLE_PSQL = True
+    ENABLE_DASHBOARD = True

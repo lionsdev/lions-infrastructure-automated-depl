@@ -1,0 +1,57 @@
+---
+# Titre: Template de ServiceMonitor Kubernetes pour pgAdmin
+# Description: Définit le ServiceMonitor Kubernetes pour pgAdmin
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-10
+# Version: 1.0.0
+
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: "{{ app_name }}"
+  namespace: monitoring
+  labels:
+    app: "{{ app_name }}"
+    version: "{{ app_version }}"
+    environment: "{{ app_environment }}"
+    technology: "pgadmin"
+    release: prometheus
+  annotations:
+    description: "ServiceMonitor pour pgAdmin {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+spec:
+  selector:
+    matchLabels:
+      app: "{{ app_name }}"
+      technology: "pgadmin"
+  namespaceSelector:
+    matchNames:
+      - "{{ app_namespace }}"
+  endpoints:
+    - port: http
+      path: "{{ pgadmin_prometheus_path | default('/metrics') }}"
+      interval: 30s
+      scrapeTimeout: 10s
+      honorLabels: true
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          action: replace
+          targetLabel: pod
+        - sourceLabels: [__meta_kubernetes_namespace]
+          action: replace
+          targetLabel: namespace
+        - sourceLabels: [__meta_kubernetes_service_name]
+          action: replace
+          targetLabel: service
+        - sourceLabels: [__meta_kubernetes_service_label_app]
+          action: replace
+          targetLabel: app
+        - sourceLabels: [__meta_kubernetes_service_label_version]
+          action: replace
+          targetLabel: version
+        - sourceLabels: [__meta_kubernetes_service_label_environment]
+          action: replace
+          targetLabel: environment
+      metricRelabelings:
+        - sourceLabels: [__name__]
+          regex: 'pgadmin_.*'
+          action: keep

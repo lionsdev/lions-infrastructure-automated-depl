@@ -1,0 +1,102 @@
+---
+# Titre: Template de ConfigMap Kubernetes pour Redis
+# Description: Définit la ConfigMap Kubernetes pour Redis
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-08
+# Version: 1.0.0
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: "{{ app_name }}-config"
+  namespace: "{{ app_namespace }}"
+  labels:
+    app: "{{ app_name }}"
+    version: "{{ app_version }}"
+    environment: "{{ app_environment }}"
+    technology: "redis"
+  annotations:
+    description: "ConfigMap pour Redis {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+data:
+  # Variables d'environnement pour Redis
+  REDIS_PORT: "{{ redis_default_port }}"
+  REDIS_APPLICATION_NAME: "{{ app_name }}"
+  REDIS_APPLICATION_VERSION: "{{ app_version }}"
+  
+  # Configuration de Redis
+  REDIS_MAXMEMORY: "{{ redis_maxmemory }}"
+  REDIS_MAXMEMORY_POLICY: "{{ redis_maxmemory_policy }}"
+  REDIS_APPENDONLY: "{{ redis_appendonly }}"
+  REDIS_APPENDFSYNC: "{{ redis_appendfsync }}"
+  REDIS_DATABASES: "{{ redis_databases }}"
+  REDIS_TCP_KEEPALIVE: "{{ redis_tcp_keepalive }}"
+  
+  # Configuration du cluster Redis
+  REDIS_CLUSTER_ENABLED: "{{ redis_cluster_enabled | string | lower }}"
+{% if redis_cluster_enabled | bool %}
+  REDIS_CLUSTER_REPLICAS: "{{ redis_cluster_replicas }}"
+{% endif %}
+  
+  # Configuration de la sécurité
+  REDIS_TLS_ENABLED: "{{ redis_tls_enabled | string | lower }}"
+  REDIS_PROTECTED_MODE: "{{ redis_protected_mode | string | lower }}"
+  REDIS_BIND_ALL: "{{ redis_bind_all | string | lower }}"
+  
+  # Configuration du monitoring
+  REDIS_PROMETHEUS_SCRAPE: "{{ redis_prometheus_scrape | string | lower }}"
+  REDIS_PROMETHEUS_PORT: "{{ redis_prometheus_port }}"
+  REDIS_PROMETHEUS_PATH: "{{ redis_prometheus_path }}"
+  
+  # Fichier de configuration Redis (redis.conf)
+  redis.conf: |
+    # Configuration Redis générée par LIONS Infrastructure
+    
+    # Paramètres réseau
+    port {{ redis_default_port }}
+    bind {% if redis_bind_all %}0.0.0.0{% else %}127.0.0.1{% endif %}
+    protected-mode {{ "yes" if redis_protected_mode else "no" }}
+    tcp-keepalive {{ redis_tcp_keepalive }}
+    
+    # Paramètres de base
+    daemonize no
+    supervised no
+    pidfile /var/run/redis/redis-server.pid
+    loglevel {% if app_environment == 'production' %}notice{% elif app_environment == 'staging' %}notice{% else %}verbose{% endif %}
+    logfile ""
+    databases {{ redis_databases }}
+    
+    # Paramètres de persistance
+    dir /data
+    appendonly {{ redis_appendonly }}
+    appendfsync {{ redis_appendfsync }}
+    
+    # Paramètres de mémoire
+    maxmemory {{ redis_maxmemory }}
+    maxmemory-policy {{ redis_maxmemory_policy }}
+    
+    # Paramètres de sécurité
+{% if redis_password_enabled | bool %}
+    requirepass ${REDIS_PASSWORD}
+{% endif %}
+{% if redis_tls_enabled | bool %}
+    tls-port {{ redis_default_port }}
+    tls-cert-file /etc/redis/tls/tls.crt
+    tls-key-file /etc/redis/tls/tls.key
+    tls-ca-cert-file /etc/redis/tls/ca.crt
+    tls-auth-clients yes
+{% endif %}
+    
+    # Paramètres de cluster
+{% if redis_cluster_enabled | bool %}
+    cluster-enabled yes
+    cluster-config-file /data/nodes.conf
+    cluster-node-timeout 5000
+    cluster-replica-validity-factor 10
+    cluster-migration-barrier 1
+    cluster-require-full-coverage yes
+    cluster-replica-no-failover no
+{% endif %}
+    
+    # Paramètres de performance
+    io-threads 4
+    io-threads-do-reads yes

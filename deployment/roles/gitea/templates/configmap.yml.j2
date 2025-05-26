@@ -1,0 +1,72 @@
+---
+# Titre: Template de ConfigMap Kubernetes pour Gitea
+# Description: Définit la ConfigMap Kubernetes pour Gitea
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-07
+# Version: 1.0.0
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: "{{ app_name }}-config"
+  namespace: "{{ app_namespace }}"
+  labels:
+    app: "{{ app_name }}"
+    version: "{{ app_version }}"
+    environment: "{{ app_environment }}"
+    technology: "gitea"
+  annotations:
+    description: "ConfigMap pour Gitea {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+data:
+  # Variables d'environnement pour Gitea
+  GITEA__log__LEVEL: "{% if app_environment == 'production' %}warn{% elif app_environment == 'staging' %}info{% else %}debug{% endif %}"
+  GITEA__log__MODE: "console"
+  
+  # Configuration du serveur
+  GITEA__server__PROTOCOL: "http"
+  GITEA__server__HTTP_PORT: "{{ gitea_default_port | string }}"
+  GITEA__server__OFFLINE_MODE: "false"
+  GITEA__server__LANDING_PAGE: "home"
+  
+  # Configuration de la base de données
+  GITEA__database__SSL_MODE: "disable"
+  GITEA__database__CHARSET: "utf8"
+  GITEA__database__PATH: "/data/gitea/gitea.db"
+  
+  # Configuration de la sécurité
+  GITEA__security__INTERNAL_TOKEN_URI: "file:/data/gitea/internal/token"
+  GITEA__security__PASSWORD_HASH_ALGO: "pbkdf2"
+  GITEA__security__MIN_PASSWORD_LENGTH: "8"
+  
+  # Configuration des métriques
+  GITEA__metrics__ENABLED: "{{ gitea_prometheus_scrape | string | lower }}"
+  GITEA__metrics__TOKEN: ""
+  
+  # Configuration des sessions
+  GITEA__session__PROVIDER: "memory"
+  GITEA__session__COOKIE_SECURE: "{% if app_environment == 'production' %}true{% else %}false{% endif %}"
+  
+  # Configuration du cache
+  GITEA__cache__ADAPTER: "memory"
+  GITEA__cache__INTERVAL: "60"
+  
+  # Configuration du service
+  GITEA__service__ENABLE_NOTIFY_MAIL: "false"
+  GITEA__service__REGISTER_EMAIL_CONFIRM: "{% if app_environment == 'production' %}true{% else %}false{% endif %}"
+  GITEA__service__ENABLE_CAPTCHA: "{% if app_environment == 'production' %}true{% else %}false{% endif %}"
+  
+  # Configuration des webhooks
+  GITEA__webhook__ALLOWED_HOST_LIST: "*"
+  GITEA__webhook__SKIP_TLS_VERIFY: "false"
+  
+  # Configuration des repositories
+  GITEA__repository__ROOT: "/data/git/repositories"
+  GITEA__repository__DEFAULT_BRANCH: "main"
+  GITEA__repository__MAX_CREATION_LIMIT: "50"
+  
+  # Configuration des actions
+  GITEA__actions__ENABLED: "true"
+  
+  # Configuration de l'interface
+  GITEA__ui__DEFAULT_THEME: "auto"
+  GITEA__ui__THEMES: "auto,gitea,arc-green,dark-blue"

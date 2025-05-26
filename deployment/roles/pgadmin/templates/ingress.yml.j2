@@ -1,0 +1,72 @@
+---
+# Titre: Template d'Ingress Kubernetes pour pgAdmin
+# Description: Définit l'Ingress Kubernetes pour pgAdmin avec Traefik
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-10
+# Version: 1.0.0
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: "{{ app_name }}"
+  namespace: "{{ app_namespace }}"
+  labels:
+    app: "{{ app_name }}"
+    version: "{{ app_version }}"
+    environment: "{{ app_environment }}"
+    technology: "pgadmin"
+  annotations:
+    description: "Ingress pour pgAdmin {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    # Annotations pour Let's Encrypt
+    {% if app_environment == 'production' %}
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    {% else %}
+    cert-manager.io/cluster-issuer: "letsencrypt-staging"
+    {% endif %}
+    # Annotations spécifiques à Traefik
+    traefik.ingress.kubernetes.io/router.entrypoints: "websecure"
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.middlewares: "{{ app_namespace }}-{{ app_name }}-strip-prefix@kubernetescrd"
+    # Annotations de sécurité
+    traefik.ingress.kubernetes.io/ssl-redirect: "true"
+    traefik.ingress.kubernetes.io/ssl-permanent-redirect: "true"
+    # Annotations pour les en-têtes de sécurité
+    traefik.ingress.kubernetes.io/headers-customrequestheaders: "X-Forwarded-Proto:https||X-Forwarded-Port:443"
+    traefik.ingress.kubernetes.io/headers-customresponseheaders: "X-Content-Type-Options:nosniff||X-Frame-Options:SAMEORIGIN||X-XSS-Protection:1; mode=block"
+    # Annotations pour la compression
+    traefik.ingress.kubernetes.io/compress: "true"
+    # Annotations pour les timeouts
+    traefik.ingress.kubernetes.io/request-timeout: "300"
+spec:
+  ingressClassName: traefik
+  tls:
+  - hosts:
+    - "{{ app_name }}.{{ app_environment }}.lions.dev"
+    secretName: "{{ app_name }}-tls"
+  rules:
+  - host: "{{ app_name }}.{{ app_environment }}.lions.dev"
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: "{{ app_name }}"
+            port:
+              number: {{ pgadmin_default_port | default(80) }}
+---
+# Middleware pour supprimer le préfixe de l'URL
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: "{{ app_name }}-strip-prefix"
+  namespace: "{{ app_namespace }}"
+  labels:
+    app: "{{ app_name }}"
+    version: "{{ app_version }}"
+    environment: "{{ app_environment }}"
+    technology: "pgadmin"
+spec:
+  stripPrefix:
+    prefixes:
+      - "/{{ app_name }}"

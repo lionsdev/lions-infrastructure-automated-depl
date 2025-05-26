@@ -1,0 +1,49 @@
+---
+# Titre: Template d'Ingress Kubernetes pour la registry de conteneurs
+# Description: Définit l'Ingress Kubernetes pour la registry de conteneurs Docker avec Traefik
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-10
+# Version: 1.0.0
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: "{{ app_name | default('registry') }}"
+  namespace: "{{ app_namespace | default('registry') }}"
+  labels:
+    app: "{{ app_name | default('registry') }}"
+    version: "{{ app_version | default('latest') }}"
+    environment: "{{ app_environment | default('development') }}"
+    technology: "registry"
+  annotations:
+    description: "Ingress pour la registry {{ app_name | default('registry') }} ({{ app_version | default('latest') }}) en environnement {{ app_environment | default('development') }}"
+    # Annotations spécifiques à Traefik
+    traefik.ingress.kubernetes.io/router.entrypoints: "websecure"
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    # Annotations de sécurité
+    traefik.ingress.kubernetes.io/ssl-redirect: "true"
+    traefik.ingress.kubernetes.io/ssl-permanent-redirect: "true"
+    # Annotations pour les en-têtes de sécurité
+    traefik.ingress.kubernetes.io/headers-customrequestheaders: "X-Forwarded-Proto:https||X-Forwarded-Port:443"
+    traefik.ingress.kubernetes.io/headers-customresponseheaders: "X-Content-Type-Options:nosniff||X-Frame-Options:SAMEORIGIN||X-XSS-Protection:1; mode=block"
+    # Annotations pour la compression
+    traefik.ingress.kubernetes.io/compress: "true"
+    # Annotations pour les timeouts
+    traefik.ingress.kubernetes.io/request-timeout: "300"
+spec:
+  ingressClassName: traefik
+  tls:
+  - hosts:
+    - "{{ app_name | default('registry') }}.{{ app_environment | default('development') }}.lions.dev"
+    secretName: "{{ app_name | default('registry') }}-tls"
+  rules:
+  - host: "{{ app_name | default('registry') }}.{{ app_environment | default('development') }}.lions.dev"
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: "{{ app_name | default('registry') }}"
+            port:
+              number: {{ registry_default_port | default(5000) }}

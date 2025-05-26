@@ -1,0 +1,35 @@
+---
+# Titre: Tâches de préparation pour Ollama
+# Description: Préparation de l'environnement pour Ollama
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-14
+# Version: 1.0.0
+
+- name: "[Ollama] Afficher les variables de déploiement"
+  debug:
+    msg:
+      - "Application: {{ app_name }}"
+      - "Version: {{ app_version }}"
+      - "Environnement: {{ app_environment }}"
+      - "Namespace: {{ app_namespace }}"
+      - "Domaine: {{ app_domain }}"
+
+- name: "[Ollama] Créer le namespace si nécessaire"
+  kubernetes.core.k8s:
+    name: "{{ app_namespace }}"
+    api_version: v1
+    kind: Namespace
+    state: present
+
+- name: "[Ollama] Définir les labels du namespace"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ app_namespace }}"
+        labels:
+          name: "{{ app_namespace }}"
+          environment: "{{ app_environment }}"
+          managed-by: "ansible"

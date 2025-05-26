@@ -1,0 +1,115 @@
+---
+# Titre: Playbook de Déploiement des Services d'Infrastructure
+# Description: Déploie les services d'infrastructure (PostgreSQL, PgAdmin, Gitea, Keycloak)
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-10
+# Version: 1.0.0
+
+- name: Déploiement des Services d'Infrastructure
+  hosts: vps
+  become: yes
+  gather_facts: yes
+  vars:
+    deploy_environment: "{{ target_env | default('development') }}"
+    roles_path: "{{ playbook_dir }}/../roles"
+
+  pre_tasks:
+    - name: Installation des dépendances Python requises
+      pip:
+        name:
+          - kubernetes
+          - PyYAML
+          - jsonpatch
+        state: present
+      become: yes
+
+  tasks:
+    - name: Affichage des informations de déploiement
+      debug:
+        msg: 
+          - "Environnement: {{ deploy_environment }}"
+          - "Services à déployer: Registry, PostgreSQL, PgAdmin, Gitea, Keycloak, Ollama"
+
+    # Registry
+    - name: Déploiement de la Registry Docker
+      include_role:
+        name: "{{ roles_path }}/registry"
+      vars:
+        app_name: registry
+        app_namespace: "registry"
+        app_environment: "{{ deploy_environment }}"
+        app_domain: "registry.{{ deploy_environment }}.lions.dev"
+        app_version: "latest"
+        app_replicas: "{{ registry_replicas[deploy_environment] | default(1) }}"
+        registry_persistent_storage: true
+        registry_storage_size: "10Gi"
+
+    # PostgreSQL
+    - name: Déploiement de PostgreSQL
+      include_role:
+        name: "{{ roles_path }}/postgres"
+      vars:
+        app_name: postgres
+        app_namespace: "postgres-{{ deploy_environment }}"
+        app_environment: "{{ deploy_environment }}"
+        app_domain: "postgres.{{ deploy_environment }}.lions.dev"
+        app_version: "latest"
+        app_replicas: 1
+
+    # PgAdmin
+    - name: Déploiement de PgAdmin
+      include_role:
+        name: "{{ roles_path }}/pgadmin"
+      vars:
+        app_name: pgadmin
+        app_namespace: "pgadmin-{{ deploy_environment }}"
+        app_environment: "{{ deploy_environment }}"
+        app_domain: "pgadmin.{{ deploy_environment }}.lions.dev"
+        app_version: "latest"
+        app_replicas: 1
+        postgres_host: "postgres.postgres-{{ deploy_environment }}.svc.cluster.local"
+        postgres_port: 5432
+
+    # Gitea
+    - name: Déploiement de Gitea
+      include_role:
+        name: "{{ roles_path }}/gitea"
+      vars:
+        app_name: gitea
+        app_namespace: "gitea-{{ deploy_environment }}"
+        app_environment: "{{ deploy_environment }}"
+        app_domain: "gitea.{{ deploy_environment }}.lions.dev"
+        app_version: "latest"
+        app_replicas: 1
+        postgres_host: "postgres.postgres-{{ deploy_environment }}.svc.cluster.local"
+        postgres_port: 5432
+
+    # Keycloak
+    - name: Déploiement de Keycloak
+      include_role:
+        name: "{{ roles_path }}/keycloak"
+      vars:
+        app_name: keycloak
+        app_namespace: "keycloak-{{ deploy_environment }}"
+        app_environment: "{{ deploy_environment }}"
+        app_domain: "keycloak.{{ deploy_environment }}.lions.dev"
+        app_version: "latest"
+        app_replicas: 1
+        postgres_host: "postgres.postgres-{{ deploy_environment }}.svc.cluster.local"
+        postgres_port: 5432
+
+    # Ollama
+    - name: Déploiement d'Ollama
+      include_role:
+        name: "{{ roles_path }}/ollama"
+      vars:
+        app_name: ollama
+        app_namespace: "ollama-{{ deploy_environment }}"
+        app_environment: "{{ deploy_environment }}"
+        app_domain: "ollama.{{ deploy_environment }}.lions.dev"
+        app_version: "latest"
+        app_replicas: 1
+
+    - name: Vérification du déploiement des services
+      debug:
+        msg: "Tous les services d'infrastructure ont été déployés avec succès"

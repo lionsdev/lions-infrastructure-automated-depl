@@ -17,8 +17,8 @@
 # - Application des meilleures pratiques DevOps
 # =============================================================================
 
-- name: "LIONS K3s Installation - Production Ready Deployment with Monitoring"
-  hosts: vps
+- name: "LIONS K3s Installation - High Availability Production Ready Deployment with Monitoring"
+  hosts: kubernetes
   become: yes
   gather_facts: yes
 
@@ -26,28 +26,57 @@
   # VARIABLES DE CONFIGURATION
   # =============================================================================
   vars:
-    # Version K3s - Version LTS stable recommandée
-    k3s_version: "v1.28.6+k3s2"
+    # Version K3s - Version LTS stable recommandée (mise à jour 2025)
+    k3s_version: "v1.30.2+k3s1"
 
-    # Configuration K3s optimisée (FLAGS CORRIGÉS)
+    # Configuration de haute disponibilité
+    k3s_ha_enabled: "{{ groups['k3s_agent'] | length > 0 }}"
+    k3s_token: "{{ lookup('hashi_vault', 'secret=kv/data/lions/k3s:token', errors='ignore') | default('lions-k3s-token-' + ansible_date_time.date | hash('sha256')) }}"
+    k3s_datastore_endpoint: "{{ lookup('hashi_vault', 'secret=kv/data/lions/k3s:datastore_endpoint', errors='ignore') | default('sqlite:///var/lib/rancher/k3s/server/db/state.db') }}"
+    k3s_server_url: "https://{{ hostvars[groups['k3s_server'][0]]['ansible_host'] }}:6443"
+
+    # Configuration K3s optimisée (FLAGS CORRIGÉS ET SÉCURISÉS)
     k3s_server_args: >-
       server
       --disable=traefik
       --disable=servicelb
-      --write-kubeconfig-mode=644
+      --write-kubeconfig-mode=600
       --kubelet-arg=cgroup-driver=systemd
-      --kubelet-arg=feature-gates=GracefulNodeShutdown=false
+      --kubelet-arg=feature-gates=GracefulNodeShutdown=true
+      --kube-apiserver-arg=encryption-provider-config=/etc/rancher/k3s/encryption-config.yaml
+      --kube-apiserver-arg=audit-log-path=/var/log/k3s-audit.log
+      --kube-apiserver-arg=audit-log-maxage=30
+      --kube-apiserver-arg=audit-log-maxbackup=10
+      --kube-apiserver-arg=audit-log-maxsize=100
+      --kube-controller-manager-arg=terminated-pod-gc-threshold=100
+      --kubelet-arg=eviction-hard=memory.available<5%,nodefs.available<10%
+      --kubelet-arg=image-gc-high-threshold=85
+      --kubelet-arg=image-gc-low-threshold=80
+      --token={{ k3s_token }}
+      {% if k3s_ha_enabled %}--datastore-endpoint={{ k3s_datastore_endpoint }}{% endif %}
+
+    # Configuration des arguments pour les nœuds agent
+    k3s_agent_args: >-
+      agent
+      --server={{ k3s_server_url }}
+      --token={{ k3s_token }}
+      --kubelet-arg=cgroup-driver=systemd
+      --kubelet-arg=feature-gates=GracefulNodeShutdown=true
+      --kubelet-arg=eviction-hard=memory.available<5%,nodefs.available<10%
+      --kubelet-arg=image-gc-high-threshold=85
+      --kubelet-arg=image-gc-low-threshold=80
 
     # Chemins et configurations
     kubeconfig_local_path: "~/.kube/config"
     k3s_service_file: "/etc/systemd/system/k3s.service"
     k3s_kubeconfig: "/etc/rancher/k3s/k3s.yaml"
+    k3s_encryption_config: "/etc/rancher/k3s/encryption-config.yaml"
 
-    # Versions des composants
-    traefik_chart_version: "25.0.0"
-    metallb_chart_version: "0.13.12"
-    cert_manager_version: "v1.13.3"
-    kube_prometheus_stack_version: "55.5.0"
+    # Versions des composants (mises à jour 2025)
+    traefik_chart_version: "28.0.0"
+    metallb_chart_version: "0.14.3"
+    cert_manager_version: "v1.14.2"
+    kube_prometheus_stack_version: "59.0.0"
 
     # Flags dépréciés à supprimer automatiquement
     deprecated_flags:
@@ -62,7 +91,7 @@
     monitoring_config:
       namespace: "monitoring"
       domain: "{{ lions_domain | default('dev.lions.dev') }}"
-      grafana_admin_password: "{{ lions_grafana_password | default('admin123!') }}"
+      grafana_admin_password: "{{ lookup('hashi_vault', 'secret=kv/data/lions/monitoring:grafana_password', errors='ignore') | default(lions_grafana_password | default('admin123!')) }}"
       prometheus_retention: "15d"
       prometheus_storage: "10Gi"
       grafana_storage: "5Gi"
@@ -227,6 +256,23 @@
       debug:
         msg: "Démarrage de l'installation K3s avec la configuration corrigée"
 
+    - name: "🔒 Création du répertoire pour la configuration de chiffrement"
+      file:
+        path: "/etc/rancher/k3s"
+        state: directory
+        mode: '0700'
+        owner: root
+        group: root
+
+    - name: "🔒 Création du fichier de configuration de chiffrement"
+      template:
+        src: "{{ playbook_dir }}/../templates/encryption-config.yaml.j2"
+        dest: "{{ k3s_encryption_config }}"
+        mode: '0600'
+        owner: root
+        group: root
+      register: encryption_config
+
     - name: "📥 Téléchargement du script d'installation K3s"
       get_url:
         url: "https://get.k3s.io"
@@ -237,14 +283,37 @@
       retries: 3
       delay: 5
 
-    - name: "⚙️  Installation K3s avec configuration optimisée"
+    - name: "⚙️  Installation K3s Server avec configuration optimisée"
       command: "/tmp/k3s-install.sh"
       environment:
         INSTALL_K3S_VERSION: "{{ k3s_version }}"
         INSTALL_K3S_EXEC: "{{ k3s_server_args }}"
         K3S_KUBECONFIG_MODE: "644"
-      register: k3s_installation
-      when: not k3s_binary_exists.stat.exists or (deprecated_flags_found is defined and deprecated_flags_found | length > 0)
+        K3S_TOKEN: "{{ k3s_token }}"
+      register: k3s_server_installation
+      when: 
+        - inventory_hostname in groups['k3s_server']
+        - not k3s_binary_exists.stat.exists or (deprecated_flags_found is defined and deprecated_flags_found | length > 0)
+
+    - name: "⏳ Attente que le serveur K3s soit prêt avant d'installer les agents"
+      wait_for:
+        host: "{{ hostvars[groups['k3s_server'][0]]['ansible_host'] }}"
+        port: 6443
+        delay: 10
+        timeout: 300
+      when: inventory_hostname in groups['k3s_agent']
+
+    - name: "⚙️  Installation K3s Agent avec configuration optimisée"
+      command: "/tmp/k3s-install.sh"
+      environment:
+        INSTALL_K3S_VERSION: "{{ k3s_version }}"
+        INSTALL_K3S_EXEC: "{{ k3s_agent_args }}"
+        K3S_URL: "{{ k3s_server_url }}"
+        K3S_TOKEN: "{{ k3s_token }}"
+      register: k3s_agent_installation
+      when: 
+        - inventory_hostname in groups['k3s_agent']
+        - not k3s_binary_exists.stat.exists or (deprecated_flags_found is defined and deprecated_flags_found | length > 0)
 
     - name: "🔄 Démarrage et activation du service K3s"
       systemd:
@@ -279,31 +348,53 @@
 
     - name: "📊 Validation de l'installation K3s"
       block:
-        - name: "Test de connectivité kubectl"
+        - name: "Test de connectivité kubectl (serveur uniquement)"
           command: "/usr/local/bin/k3s kubectl get nodes"
           register: k3s_nodes_check
           changed_when: false
           environment:
             KUBECONFIG: "{{ k3s_kubeconfig }}"
+          when: inventory_hostname in groups['k3s_server']
 
-        - name: "Vérification des pods système"
+        - name: "Vérification des pods système (serveur uniquement)"
           command: "/usr/local/bin/k3s kubectl get pods -n kube-system"
           register: k3s_system_pods
           changed_when: false
           environment:
             KUBECONFIG: "{{ k3s_kubeconfig }}"
+          when: inventory_hostname in groups['k3s_server']
 
-        - name: "📈 Rapport d'état K3s"
+        - name: "Vérification de la connectivité au serveur (agent uniquement)"
+          command: "/usr/local/bin/k3s agent --version"
+          register: k3s_agent_version
+          changed_when: false
+          when: inventory_hostname in groups['k3s_agent']
+
+        - name: "📈 Rapport d'état K3s (serveur)"
           debug:
             msg: |
               ==========================================================
-              ✅ K3S INSTALLATION RÉUSSIE
+              ✅ K3S SERVER INSTALLATION RÉUSSIE
               ==========================================================
               Service Status: {{ k3s_final_status.status.ActiveState }}
               API Port: ✅ Accessible sur :6443
               Nodes: {{ k3s_nodes_check.stdout_lines | length }} nœud(s) détecté(s)
               System Pods: {{ k3s_system_pods.stdout_lines | length - 1 }} pod(s) système
+              Haute Disponibilité: {{ 'Activée' if k3s_ha_enabled else 'Non configurée' }}
               ==========================================================
+          when: inventory_hostname in groups['k3s_server']
+
+        - name: "📈 Rapport d'état K3s (agent)"
+          debug:
+            msg: |
+              ==========================================================
+              ✅ K3S AGENT INSTALLATION RÉUSSIE
+              ==========================================================
+              Service Status: {{ k3s_final_status.status.ActiveState }}
+              Agent Version: {{ k3s_agent_version.stdout | default('Non disponible') }}
+              Connecté au serveur: {{ k3s_server_url }}
+              ==========================================================
+          when: inventory_hostname in groups['k3s_agent']
 
       rescue:
         - name: "🔧 Diagnostic en cas d'échec"
@@ -385,6 +476,73 @@
               when:
                 - "'RemoveSelfLink=false' in (current_service_content.content | b64decode)"
                 - k3s_fresh_start is failed
+
+    # =========================================================================
+    # PHASE 3.5: CONFIGURATION DE LA HAUTE DISPONIBILITÉ ET FAILOVER
+    # =========================================================================
+
+    - name: "🔄 PHASE 3.5 - Configuration de la haute disponibilité"
+      debug:
+        msg: "Configuration des mécanismes de haute disponibilité et failover pour K3s"
+      when: k3s_ha_enabled
+
+    - name: "🔄 Configuration du service keepalived pour la haute disponibilité (serveur uniquement)"
+      block:
+        - name: "Installation de keepalived"
+          apt:
+            name: keepalived
+            state: present
+            update_cache: yes
+          when: inventory_hostname in groups['k3s_server']
+
+        - name: "Création du fichier de configuration keepalived"
+          template:
+            src: "{{ playbook_dir }}/../templates/keepalived.conf.j2"
+            dest: "/etc/keepalived/keepalived.conf"
+            mode: '0644'
+            owner: root
+            group: root
+          when: inventory_hostname in groups['k3s_server']
+          notify: "restart keepalived"
+
+        - name: "Création du script de vérification K3s"
+          template:
+            src: "{{ playbook_dir }}/../templates/check_k3s.sh.j2"
+            dest: "/usr/local/bin/check_k3s.sh"
+            mode: '0755'
+            owner: root
+            group: root
+          when: inventory_hostname in groups['k3s_server']
+
+        - name: "Création du script de notification K3s HA"
+          template:
+            src: "{{ playbook_dir }}/../templates/k3s-ha-notify.sh.j2"
+            dest: "/usr/local/bin/k3s-ha-notify.sh"
+            mode: '0755'
+            owner: root
+            group: root
+          when: inventory_hostname in groups['k3s_server']
+
+        - name: "Création des fichiers de log pour la haute disponibilité"
+          file:
+            path: "{{ item }}"
+            state: touch
+            mode: '0644'
+            owner: root
+            group: root
+          loop:
+            - "/var/log/k3s-ha-check.log"
+            - "/var/log/k3s-ha-notify.log"
+          when: inventory_hostname in groups['k3s_server']
+
+        - name: "Activation et démarrage du service keepalived"
+          systemd:
+            name: keepalived
+            state: started
+            enabled: yes
+          when: inventory_hostname in groups['k3s_server']
+
+      when: k3s_ha_enabled
 
     # =========================================================================
     # PHASE 4: CONFIGURATION KUBECTL ET KUBECONFIG
@@ -1753,3 +1911,9 @@
         host: localhost
         timeout: 120
       when: k3s_handler_restart is succeeded
+
+    - name: "restart keepalived"
+      systemd:
+        name: keepalived
+        state: restarted
+      when: inventory_hostname in groups['k3s_server']

@@ -1,0 +1,60 @@
+---
+# Titre: Template d'ingress Kubernetes pour Quarkus avec Traefik
+# Description: Définit l'ingress Kubernetes pour une application Quarkus avec Traefik
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-16
+# Version: 1.0.0
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: "{{ app_name }}"
+  namespace: "{{ app_namespace }}"
+  labels:
+    app: "{{ app_name }}"
+    version: "{{ app_version }}"
+    environment: "{{ app_environment }}"
+    technology: "quarkus"
+  annotations:
+    description: "Ingress pour l'application {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    {% for key, value in quarkus_ingress_annotations.items() %}
+    {{ key }}: "{{ value }}"
+    {% endfor %}
+    {% if app_path is defined %}
+    traefik.ingress.kubernetes.io/router.middlewares: "{{ app_namespace }}-{{ app_name }}-strip-prefix@kubernetescrd"
+    {% endif %}
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - "{{ app_domain }}"
+      secretName: "{{ app_name }}-tls"
+  rules:
+    - host: "{{ app_domain }}"
+      http:
+        paths:
+          - path: "{{ app_path | default('/') }}"
+            pathType: Prefix
+            backend:
+              service:
+                name: "{{ app_name }}"
+                port:
+                  name: http
+
+{% if app_path is defined %}
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: "{{ app_name }}-strip-prefix"
+  namespace: "{{ app_namespace }}"
+  labels:
+    app: "{{ app_name }}"
+    version: "{{ app_version }}"
+    environment: "{{ app_environment }}"
+    technology: "quarkus"
+spec:
+  stripPrefix:
+    prefixes:
+      - "{{ app_path }}"
+{% endif %}

@@ -1,0 +1,166 @@
+---
+# Titre: Déploiement de PostgreSQL
+# Description: Déploie PostgreSQL sur Kubernetes
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-07
+# Version: 1.0.0
+
+- name: Déploiement de PostgreSQL via StatefulSet
+  k8s:
+    state: present
+    src: "{{ temp_dir.path }}/statefulset.yml"
+  register: statefulset_result
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+
+- name: Création du service pour PostgreSQL
+  k8s:
+    state: present
+    src: "{{ temp_dir.path }}/service.yml"
+  register: service_result
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+
+- name: Attente du déploiement
+  k8s_info:
+    api_version: apps/v1
+    kind: StatefulSet
+    namespace: "{{ app_namespace }}"
+    name: "{{ app_name }}"
+  register: statefulset_status
+  until: statefulset_status.resources[0].status.readyReplicas is defined and statefulset_status.resources[0].status.readyReplicas == statefulset_status.resources[0].spec.replicas
+  retries: 30
+  delay: 10
+  ignore_errors: yes
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+
+- name: Vérification du statut du déploiement
+  fail:
+    msg: "Le déploiement de PostgreSQL a échoué. Veuillez vérifier les logs pour plus d'informations."
+  when: statefulset_status is failed or statefulset_status.resources | length == 0
+
+- name: Récupération des informations sur les pods
+  k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: "{{ app_namespace }}"
+    label_selectors:
+      - "app={{ app_name }}"
+  register: pods_info
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+
+- name: Affichage des informations sur les pods
+  debug:
+    msg: "Pod {{ item.metadata.name }} est dans l'état {{ item.status.phase }}"
+  loop: "{{ pods_info.resources }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+
+- name: Attente de l'initialisation de PostgreSQL
+  pause:
+    seconds: "{{ postgres_init_delay | default(30) }}"
+  when: statefulset_status is succeeded
+
+- name: Vérification de l'état des pods après initialisation
+  k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: "{{ app_namespace }}"
+    label_selectors:
+      - "app={{ app_name }}"
+  register: pods_info_after_init
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+
+- name: Affichage des informations sur les pods après initialisation
+  debug:
+    msg: "Pod {{ item.metadata.name }} est dans l'état {{ item.status.phase }} après initialisation"
+  loop: "{{ pods_info_after_init.resources }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+
+- name: Vérification des logs des pods pour détecter des erreurs
+  shell: "kubectl logs -n {{ app_namespace }} {{ item.metadata.name }} | grep -i error | tail -10"
+  loop: "{{ pods_info_after_init.resources }}"
+  register: pod_logs
+  ignore_errors: yes
+  changed_when: false
+  loop_control:
+    label: "{{ item.metadata.name }}"
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+
+- name: Affichage des erreurs dans les logs (si présentes)
+  debug:
+    msg: "Erreurs détectées dans les logs de {{ item.item.metadata.name }}: {{ item.stdout }}"
+  loop: "{{ pod_logs.results }}"
+  when: item.stdout != ""
+  loop_control:
+    label: "{{ item.item.metadata.name }}"
+
+- name: Vérification de la disponibilité de PostgreSQL
+  shell: "kubectl exec -n {{ app_namespace }} {{ pods_info_after_init.resources[0].metadata.name }} -- pg_isready -U {{ postgres_admin_user }} -h localhost -p {{ postgres_default_port }}"
+  register: pg_ready_check
+  ignore_errors: yes
+  retries: 5
+  delay: 10
+  until: pg_ready_check.rc == 0
+  changed_when: false
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+
+- name: Avertissement si PostgreSQL n'est pas disponible
+  debug:
+    msg: "AVERTISSEMENT: PostgreSQL n'est pas disponible. Vérifiez les logs pour plus d'informations."
+  when: pg_ready_check is failed
+
+- name: Vérification de la réplication (si HA activé)
+  shell: "kubectl exec -n {{ app_namespace }} {{ pods_info_after_init.resources[0].metadata.name }} -- psql -U {{ postgres_admin_user }} -c 'SELECT * FROM pg_stat_replication;'"
+  register: replication_check
+  ignore_errors: yes
+  when: postgres_ha_enabled | bool and pods_info_after_init.resources | length > 1
+  changed_when: false
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+
+- name: Affichage du statut de la réplication
+  debug:
+    msg: "Statut de la réplication PostgreSQL: {{ replication_check.stdout }}"
+  when: replication_check is defined and replication_check.stdout is defined
+
+- name: Avertissement si la réplication n'est pas configurée correctement
+  debug:
+    msg: "AVERTISSEMENT: La réplication PostgreSQL n'est pas configurée correctement. Vérifiez les logs pour plus d'informations."
+  when: postgres_ha_enabled | bool and pods_info_after_init.resources | length > 1 and replication_check is defined and replication_check is failed
+
+- name: Vérification de l'existence des bases de données
+  shell: "kubectl exec -n {{ app_namespace }} {{ pods_info_after_init.resources[0].metadata.name }} -- psql -U {{ postgres_admin_user }} -lqt | cut -d \\| -f 1 | grep -qw {{ item }}"
+  loop:
+    - "keycloak"
+    - "gitea"
+  register: db_exists_check
+  ignore_errors: yes
+  changed_when: false
+  when: pg_ready_check is succeeded
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+
+- name: Création des bases de données si elles n'existent pas
+  shell: "kubectl exec -n {{ app_namespace }} {{ pods_info_after_init.resources[0].metadata.name }} -- psql -U {{ postgres_admin_user }} -c \"CREATE DATABASE {{ item.item }}\""
+  loop: "{{ db_exists_check.results }}"
+  when: pg_ready_check is succeeded and item.rc != 0
+  register: create_db_result
+  ignore_errors: yes
+  changed_when: false
+  environment:
+    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+
+- name: Affichage du résultat de la création des bases de données
+  debug:
+    msg: "Création de la base de données {{ item.item.item }}: {{ 'Succès' if item.rc is defined and item.rc == 0 else 'Échec ou déjà existante' }}"
+  loop: "{{ create_db_result.results }}"
+  when: create_db_result is succeeded
+  loop_control:
+    label: "{{ item.item.item }}"

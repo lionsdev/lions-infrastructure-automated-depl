@@ -1,0 +1,77 @@
+---
+# Titre: Vérification des prérequis pour le service de notification
+# Description: Vérifie que tous les prérequis sont satisfaits pour déployer le service de notification
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-08
+# Version: 1.0.0
+
+- name: Vérification de l'existence du namespace
+  k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: "{{ app_namespace }}"
+  register: namespace_info
+  failed_when: namespace_info.resources | length == 0
+
+- name: Vérification des droits d'accès
+  k8s_info:
+    api_version: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    namespace: "{{ app_namespace }}"
+  register: rolebinding_info
+  ignore_errors: yes
+
+- name: Vérification de la disponibilité des ressources
+  k8s_info:
+    api_version: v1
+    kind: ResourceQuota
+    namespace: "{{ app_namespace }}"
+  register: resourcequota_info
+  ignore_errors: yes
+
+- name: Vérification de la version de Kubernetes
+  shell: "kubectl version --short | grep Server"
+  register: k8s_version
+  changed_when: false
+  ignore_errors: yes
+
+- name: Affichage de la version de Kubernetes
+  debug:
+    msg: "Version de Kubernetes: {{ k8s_version.stdout }}"
+  when: k8s_version is succeeded
+
+- name: Vérification de l'existence des secrets pour les canaux de notification
+  k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: "{{ app_namespace }}"
+    name: "{{ item }}"
+  loop:
+    - "{{ notification_admin_password_secret }}"
+    - "{{ notification_channels.email.smtp_user_secret }}"
+    - "{{ notification_channels.email.smtp_password_secret }}"
+    - "{{ notification_channels.slack.webhook_url_secret }}"
+  register: notification_secrets_info
+  ignore_errors: yes
+  when: notification_channels.email.enabled | default(true) | bool or notification_channels.slack.enabled | default(true) | bool
+
+- name: Avertissement si les secrets ne sont pas trouvés
+  debug:
+    msg: "AVERTISSEMENT: Le secret {{ item.item }} n'existe pas. Veuillez le créer avant de déployer le service de notification."
+  loop: "{{ notification_secrets_info.results }}"
+  when: item is failed or item.resources | length == 0
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Vérification de l'existence de cert-manager
+  k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: certificates.cert-manager.io
+  register: cert_manager_check
+  ignore_errors: yes
+
+- name: Avertissement si cert-manager n'est pas installé
+  debug:
+    msg: "AVERTISSEMENT: cert-manager n'est pas installé. Les certificats TLS ne seront pas générés automatiquement."
+  when: cert_manager_check is failed or cert_manager_check.resources | length == 0

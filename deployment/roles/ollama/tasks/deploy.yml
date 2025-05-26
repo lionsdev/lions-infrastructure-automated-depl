@@ -1,0 +1,63 @@
+---
+# Titre: Tâches de déploiement pour Ollama
+# Description: Déploiement d'Ollama sur Kubernetes
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-14
+# Version: 1.0.0
+
+- name: "[Ollama] Déployer le ServiceAccount"
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'serviceaccount.yml.j2') | from_yaml }}"
+
+- name: "[Ollama] Déployer la ConfigMap"
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'configmap.yml.j2') | from_yaml }}"
+
+- name: "[Ollama] Déployer le PersistentVolumeClaim"
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'persistentvolumeclaim.yml.j2') | from_yaml }}"
+  when: ollama_persistent_storage | bool
+
+- name: "[Ollama] Déployer le Service"
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'service.yml.j2') | from_yaml }}"
+
+- name: "[Ollama] Déployer l'application"
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'deployment.yml.j2') | from_yaml }}"
+
+- name: "[Ollama] Attendre que le déploiement soit prêt"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: "{{ app_name }}"
+    namespace: "{{ app_namespace }}"
+    wait: true
+    wait_condition:
+      type: Available
+      status: "True"
+    wait_timeout: 300
+
+- name: "[Ollama] Déployer l'Ingress"
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'ingress.yml.j2') | from_yaml }}"
+
+- name: "[Ollama] Pré-télécharger les modèles"
+  kubernetes.core.k8s_exec:
+    namespace: "{{ app_namespace }}"
+    pod: "{{ item.metadata.name }}"
+    command: "ollama pull {{ model }}"
+  loop: "{{ ollama_models }}"
+  loop_control:
+    loop_var: model
+  with_items: "{{ pods.resources }}"
+  vars:
+    pods: "{{ lookup('kubernetes.core.k8s', api_version='v1', kind='Pod', namespace=app_namespace, label_selector='app=' + app_name) }}"
+  when: ollama_models is defined and ollama_models | length > 0
+  ignore_errors: yes

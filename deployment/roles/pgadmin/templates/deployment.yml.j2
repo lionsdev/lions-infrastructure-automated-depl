@@ -1,0 +1,121 @@
+---
+# Titre: Template de déploiement Kubernetes pour pgAdmin
+# Description: Définit le déploiement Kubernetes pour pgAdmin
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-10
+# Version: 1.0.0
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "{{ app_name }}"
+  namespace: "{{ app_namespace }}"
+  labels:
+    app: "{{ app_name }}"
+    version: "{{ app_version }}"
+    environment: "{{ app_environment }}"
+    technology: "pgadmin"
+  annotations:
+    description: "Déploiement de pgAdmin {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+spec:
+  replicas: {{ pgadmin_replicas[app_environment] | default(1) }}
+  selector:
+    matchLabels:
+      app: "{{ app_name }}"
+      technology: "pgadmin"
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: "{{ app_name }}"
+        version: "{{ app_version }}"
+        environment: "{{ app_environment }}"
+        technology: "pgadmin"
+      annotations:
+        prometheus.io/scrape: "{{ pgadmin_prometheus_scrape | default(true) | string | lower }}"
+        prometheus.io/path: "{{ pgadmin_prometheus_path | default('/metrics') }}"
+        prometheus.io/port: "{{ pgadmin_prometheus_port | default(80) | string }}"
+    spec:
+      serviceAccountName: "{{ app_name }}"
+      containers:
+      - name: "{{ app_name }}"
+        image: "dpage/pgadmin4:{{ app_version }}"
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: {{ pgadmin_default_port | default(80) }}
+          protocol: TCP
+        env:
+        - name: PGADMIN_DEFAULT_EMAIL
+          valueFrom:
+            secretKeyRef:
+              name: "{{ pgadmin_admin_password_secret }}"
+              key: PGADMIN_DEFAULT_EMAIL
+        - name: PGADMIN_DEFAULT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: "{{ pgadmin_admin_password_secret }}"
+              key: PGADMIN_DEFAULT_PASSWORD
+        - name: PGADMIN_CONFIG_SERVER_MODE
+          value: "True"
+        - name: PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED
+          value: "False"
+        - name: PGADMIN_CONFIG_ENHANCED_COOKIE_PROTECTION
+          value: "True"
+        - name: PGADMIN_CONFIG_LOGIN_BANNER
+          value: "Bienvenue sur pgAdmin pour l'infrastructure LIONS"
+        - name: PGADMIN_CONFIG_CONSOLE_LOG_LEVEL
+          value: "{{ pgadmin_log_level | default(10) }}"
+        resources:
+          requests:
+            cpu: "{{ pgadmin_resources[app_environment].requests.cpu | default('100m') }}"
+            memory: "{{ pgadmin_resources[app_environment].requests.memory | default('256Mi') }}"
+          limits:
+            cpu: "{{ pgadmin_resources[app_environment].limits.cpu | default('500m') }}"
+            memory: "{{ pgadmin_resources[app_environment].limits.memory | default('512Mi') }}"
+        readinessProbe:
+          {{- pgadmin_readiness_probe | default({
+            "httpGet": {
+              "path": "/",
+              "port": pgadmin_default_port | default(80)
+            },
+            "initialDelaySeconds": 30,
+            "timeoutSeconds": 5,
+            "periodSeconds": 10,
+            "successThreshold": 1,
+            "failureThreshold": 3
+          }) | to_nice_yaml(indent=2) | indent(10) }}
+        livenessProbe:
+          {{- pgadmin_liveness_probe | default({
+            "httpGet": {
+              "path": "/",
+              "port": pgadmin_default_port | default(80)
+            },
+            "initialDelaySeconds": 60,
+            "timeoutSeconds": 5,
+            "periodSeconds": 10,
+            "successThreshold": 1,
+            "failureThreshold": 3
+          }) | to_nice_yaml(indent=2) | indent(10) }}
+        volumeMounts:
+        - name: pgadmin-data
+          mountPath: /var/lib/pgadmin
+        - name: pgadmin-config
+          mountPath: /pgadmin4/config_local.py
+          subPath: config_local.py
+      volumes:
+      - name: pgadmin-config
+        configMap:
+          name: "{{ app_name }}-config"
+      {% if pgadmin_persistent_storage | default(true) | bool %}
+      - name: pgadmin-data
+        persistentVolumeClaim:
+          claimName: "{{ app_name }}-data"
+      {% else %}
+      - name: pgadmin-data
+        emptyDir: {}
+      {% endif %}

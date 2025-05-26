@@ -1,0 +1,71 @@
+---
+# Development environment variables for LIONS Infrastructure
+# These variables override common.yml for the development environment
+# Author: LIONS Infrastructure Team
+# Date: 2025-05-24
+# Version: 1.0.0
+
+# Environment settings
+lions_env: "development"
+lions_domain: "dev.lions.dev"
+
+# Resource settings - reduced for development environment
+lions_cpu_request: "100m"
+lions_cpu_limit: "500m"
+lions_memory_request: "256Mi"
+lions_memory_limit: "512Mi"
+
+# Monitoring configuration - reduced for development environment
+monitoring_config:
+  namespace: "monitoring"
+  grafana_admin_password: "admin123!"
+  prometheus_retention: "1d"  # Reduced retention for development
+  prometheus_storage: "5Gi"   # Reduced storage for development
+  grafana_storage: "2Gi"      # Reduced storage for development
+  resource_limits:
+    prometheus_cpu: "500m"    # Reduced CPU for development
+    prometheus_memory: "1Gi"  # Reduced memory for development
+    grafana_cpu: "200m"       # Reduced CPU for development
+    grafana_memory: "256Mi"   # Reduced memory for development
+
+# Development-specific component enablement
+# Enable only necessary components for development
+lions_monitoring_enabled: true
+lions_registry_enabled: true
+lions_postgres_enabled: true
+lions_keycloak_enabled: true
+lions_gitea_enabled: true
+lions_ollama_enabled: true
+lions_vault_enabled: false  # Disabled for development to save resources
+
+# Development-specific credentials
+# Using simpler passwords for development
+default_credentials:
+  postgres:
+    username: "postgres"
+    password: "postgres_dev"
+  keycloak:
+    admin_username: "admin"
+    admin_password: "admin_dev"
+  gitea:
+    admin_username: "gitea_admin"
+    admin_password: "gitea_dev"
+  registry:
+    username: "registry_admin"
+    password: "registry_dev"
+
+# Backup configuration - reduced for development
+backup_config:
+  schedule: "0 2 * * 0"  # Weekly on Sunday at 2 AM
+  storage_location: "/var/backups/lions"
+  retention_days: 3      # Keep only 3 days of backups in development
+  components:
+    - postgres
+    - gitea
+    - kubernetes_resources
+
+# Logging configuration - more verbose for development
+logging_config:
+  log_level: "DEBUG"     # More detailed logging for development
+  retention_days: 7      # Keep only 7 days of logs in development
+  max_size: "50Mi"       # Smaller log size for development

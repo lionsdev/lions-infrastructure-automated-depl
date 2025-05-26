@@ -1,0 +1,80 @@
+---
+# Titre: Vérification des prérequis pour pgAdmin
+# Description: Vérifie que tous les prérequis sont satisfaits pour déployer pgAdmin
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-10
+# Version: 1.0.0
+
+- name: Vérification de l'existence du namespace
+  k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: "{{ app_namespace }}"
+  register: namespace_info
+
+- name: Création du namespace si nécessaire
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ app_namespace }}"
+        labels:
+          app: "{{ app_name | string }}"
+          env: "{{ app_environment | string }}"
+  when: namespace_info.resources | length == 0
+
+- name: Vérification des droits d'accès
+  k8s_info:
+    api_version: rbac.authorization.k8s.io/v1
+    kind: Role
+    name: "{{ app_name }}-role"
+    namespace: "{{ app_namespace }}"
+  register: role_info
+  failed_when: false
+
+- name: Avertissement si les droits d'accès ne sont pas configurés
+  debug:
+    msg: "AVERTISSEMENT: Les droits d'accès pour pgAdmin ne sont pas configurés. Certaines fonctionnalités pourraient ne pas fonctionner correctement."
+  when: role_info.resources | length == 0
+
+- name: Vérification de l'existence du contrôleur d'ingress (Traefik)
+  k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: kube-system
+    label_selectors:
+      - app=traefik
+  register: ingress_info
+  failed_when: false
+
+- name: Avertissement si le contrôleur d'ingress n'est pas trouvé
+  debug:
+    msg: "AVERTISSEMENT: Le contrôleur d'ingress Traefik n'a pas été trouvé. L'interface web de pgAdmin ne sera pas accessible depuis l'extérieur."
+  when: ingress_info.resources | length == 0
+
+- name: Vérification de l'existence de Postgres
+  k8s_info:
+    api_version: v1
+    kind: Service
+    namespace: "{{ app_namespace }}"
+    name: "{{ pgadmin_database_service | default('postgres') }}"
+  register: postgres_info
+  failed_when: false
+
+- name: Avertissement si Postgres n'est pas trouvé
+  debug:
+    msg: "AVERTISSEMENT: Le service PostgreSQL n'a pas été trouvé. pgAdmin nécessite une base de données PostgreSQL pour fonctionner correctement."
+  when: postgres_info.resources | length == 0
+
+- name: Vérification des ressources disponibles sur les nœuds
+  k8s_info:
+    api_version: v1
+    kind: Node
+  register: nodes_info
+
+- name: Avertissement sur les ressources
+  debug:
+    msg: "AVERTISSEMENT: Vérifiez que les nœuds disposent de suffisamment de ressources pour pgAdmin. Ressources recommandées: 1 CPU, 1Gi mémoire."
+  when: nodes_info.resources | length > 0

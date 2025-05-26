@@ -1,0 +1,184 @@
+---
+# Titre: Règles d'alerte pour la haute disponibilité K3s
+# Description: Définit les règles d'alerte spécifiques à la haute disponibilité de K3s
+# Auteur: Équipe LIONS Infrastructure
+# Date: 2025-05-25
+# Version: 1.0.0
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: k3s-ha-alerts
+  namespace: monitoring
+  labels:
+    prometheus: k8s
+    role: alert-rules
+    service: k3s
+spec:
+  groups:
+    - name: k3s.ha.rules
+      rules:
+        - alert: K3sServerDown
+          expr: up{job="k3s-server"} == 0
+          for: 5m
+          labels:
+            severity: critical
+            service: k3s
+          annotations:
+            summary: "Serveur K3s indisponible"
+            description: "Le serveur K3s {{ $labels.instance }} est indisponible depuis plus de 5 minutes."
+            runbook_url: "https://docs.lions.dev/runbooks/k3s-server-down"
+
+        - alert: K3sMultipleServersDown
+          expr: count(up{job="k3s-server"} == 0) > 1
+          for: 1m
+          labels:
+            severity: critical
+            service: k3s
+          annotations:
+            summary: "Plusieurs serveurs K3s indisponibles"
+            description: "{{ $value }} serveurs K3s sont indisponibles. La haute disponibilité du cluster est compromise."
+            runbook_url: "https://docs.lions.dev/runbooks/k3s-multiple-servers-down"
+
+        - alert: K3sAgentDown
+          expr: up{job="k3s-agent"} == 0
+          for: 5m
+          labels:
+            severity: warning
+            service: k3s
+          annotations:
+            summary: "Agent K3s indisponible"
+            description: "L'agent K3s {{ $labels.instance }} est indisponible depuis plus de 5 minutes."
+            runbook_url: "https://docs.lions.dev/runbooks/k3s-agent-down"
+
+        - alert: K3sMultipleAgentsDown
+          expr: count(up{job="k3s-agent"} == 0) / count(up{job="k3s-agent"}) > 0.3
+          for: 5m
+          labels:
+            severity: critical
+            service: k3s
+          annotations:
+            summary: "Plusieurs agents K3s indisponibles"
+            description: "Plus de 30% des agents K3s sont indisponibles. La capacité du cluster est compromise."
+            runbook_url: "https://docs.lions.dev/runbooks/k3s-multiple-agents-down"
+
+        - alert: K3sApiServerLatencyHigh
+          expr: histogram_quantile(0.99, sum(rate(apiserver_request_duration_seconds_bucket{job="k3s-server"}[5m])) by (le, instance)) > 1
+          for: 10m
+          labels:
+            severity: warning
+            service: k3s
+          annotations:
+            summary: "Latence élevée de l'API K3s"
+            description: "L'API server K3s sur {{ $labels.instance }} a une latence P99 supérieure à 1 seconde depuis plus de 10 minutes."
+            runbook_url: "https://docs.lions.dev/runbooks/k3s-api-latency-high"
+
+        - alert: K3sApiServerErrorsHigh
+          expr: sum(rate(apiserver_request_total{job="k3s-server",code=~"5.."}[5m])) / sum(rate(apiserver_request_total{job="k3s-server"}[5m])) > 0.05
+          for: 5m
+          labels:
+            severity: critical
+            service: k3s
+          annotations:
+            summary: "Taux d'erreur élevé de l'API K3s"
+            description: "L'API server K3s a un taux d'erreur supérieur à 5% depuis plus de 5 minutes."
+            runbook_url: "https://docs.lions.dev/runbooks/k3s-api-errors-high"
+
+        - alert: K3sEtcdLeaderChanges
+          expr: rate(etcd_server_leader_changes_seen_total{job="k3s-server"}[15m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+            service: k3s
+          annotations:
+            summary: "Changements fréquents de leader etcd"
+            description: "Des changements fréquents de leader etcd ont été détectés sur {{ $labels.instance }}. Cela peut indiquer des problèmes de réseau ou de stabilité."
+            runbook_url: "https://docs.lions.dev/runbooks/k3s-etcd-leader-changes"
+
+        - alert: K3sEtcdHighCommitDurations
+          expr: histogram_quantile(0.99, rate(etcd_disk_backend_commit_duration_seconds_bucket{job="k3s-server"}[5m])) > 0.25
+          for: 10m
+          labels:
+            severity: warning
+            service: k3s
+          annotations:
+            summary: "Durées de commit etcd élevées"
+            description: "Les durées de commit etcd sur {{ $labels.instance }} sont élevées. Cela peut indiquer des problèmes de performance du disque."
+            runbook_url: "https://docs.lions.dev/runbooks/k3s-etcd-high-commit-durations"
+
+        - alert: K3sLoadBalancerDown
+          expr: up{job="haproxy-k3s"} == 0
+          for: 5m
+          labels:
+            severity: critical
+            service: k3s
+          annotations:
+            summary: "Load balancer K3s indisponible"
+            description: "Le load balancer K3s {{ $labels.instance }} est indisponible depuis plus de 5 minutes."
+            runbook_url: "https://docs.lions.dev/runbooks/k3s-loadbalancer-down"
+
+        - alert: K3sLoadBalancerHighErrorRate
+          expr: sum(rate(haproxy_server_http_errors_total{backend=~"k3s.*"}[5m])) / sum(rate(haproxy_server_http_requests_total{backend=~"k3s.*"}[5m])) > 0.05
+          for: 5m
+          labels:
+            severity: warning
+            service: k3s
+          annotations:
+            summary: "Taux d'erreur élevé du load balancer K3s"
+            description: "Le load balancer K3s a un taux d'erreur supérieur à 5% depuis plus de 5 minutes."
+            runbook_url: "https://docs.lions.dev/runbooks/k3s-loadbalancer-high-error-rate"
+
+        - alert: K3sNodeNotReady
+          expr: kube_node_status_condition{condition="Ready",status="false"} == 1
+          for: 5m
+          labels:
+            severity: critical
+            service: k3s
+          annotations:
+            summary: "Nœud K3s non prêt"
+            description: "Le nœud K3s {{ $labels.node }} n'est pas prêt depuis plus de 5 minutes."
+            runbook_url: "https://docs.lions.dev/runbooks/k3s-node-not-ready"
+
+        - alert: K3sNodeDiskPressure
+          expr: kube_node_status_condition{condition="DiskPressure",status="true"} == 1
+          for: 5m
+          labels:
+            severity: warning
+            service: k3s
+          annotations:
+            summary: "Pression disque sur un nœud K3s"
+            description: "Le nœud K3s {{ $labels.node }} est sous pression disque depuis plus de 5 minutes."
+            runbook_url: "https://docs.lions.dev/runbooks/k3s-node-disk-pressure"
+
+        - alert: K3sNodeMemoryPressure
+          expr: kube_node_status_condition{condition="MemoryPressure",status="true"} == 1
+          for: 5m
+          labels:
+            severity: warning
+            service: k3s
+          annotations:
+            summary: "Pression mémoire sur un nœud K3s"
+            description: "Le nœud K3s {{ $labels.node }} est sous pression mémoire depuis plus de 5 minutes."
+            runbook_url: "https://docs.lions.dev/runbooks/k3s-node-memory-pressure"
+
+        - alert: K3sAutoRecoveryServiceDown
+          expr: node_systemd_unit_state{name="k3s-auto-recovery.service",state="active"} != 1
+          for: 5m
+          labels:
+            severity: warning
+            service: k3s
+          annotations:
+            summary: "Service de récupération automatique K3s inactif"
+            description: "Le service de récupération automatique K3s sur {{ $labels.instance }} n'est pas actif depuis plus de 5 minutes."
+            runbook_url: "https://docs.lions.dev/runbooks/k3s-auto-recovery-service-down"
+
+        - alert: K3sRecoveryAttemptsFailed
+          expr: k3s_recovery_attempts > 2
+          for: 1h
+          labels:
+            severity: critical
+            service: k3s
+          annotations:
+            summary: "Échec des tentatives de récupération K3s"
+            description: "Le nœud K3s {{ $labels.instance }} a échoué plusieurs tentatives de récupération. Une intervention manuelle est requise."
+            runbook_url: "https://docs.lions.dev/runbooks/k3s-recovery-attempts-failed"
