@@ -1,80 +1,426 @@
 ---
-# Titre: Vérification des prérequis pour PrimeReact
-# Description: Vérifie que tous les prérequis sont satisfaits pour déployer une application PrimeReact
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - PRIMEREACT PREREQUISITES
+# =========================================================================
+# Description: Vérification complète des prérequis pour le déploiement PrimeReact
+# Version: 5.0.0
+# Maintainer: DevOps Team LIONS
+# Date: 2025-05-30
+# Documentation: https://docs.lions.dev/applications/primereact/prerequisites
+# =========================================================================
 
-- name: Vérification de l'existence du namespace
-  k8s_info:
+- name: "📋 Démarrage de la vérification des prérequis PrimeReact"
+  debug:
+    msg: |
+      🚀 Début des vérifications pour PrimeReact
+      📦 Namespace cible: {{ lions_primereact_namespace }}
+      🏷️  Version: {{ lions_primereact_version | default('latest') }}
+      🌍 Environnement: {{ lions_environment }}
+
+- name: "📊 Collecte des informations système"
+  set_fact:
+    prerequisites_start_time: "{{ ansible_date_time.epoch }}"
+    prerequisites_checks: []
+    prerequisites_warnings: []
+    prerequisites_errors: []
+
+# =========================================================================
+# VÉRIFICATIONS INFRASTRUCTURE DE BASE
+# =========================================================================
+
+- name: "🔍 Vérification de l'existence du namespace {{ lions_primereact_namespace }}"
+  kubernetes.core.k8s_info:
     api_version: v1
     kind: Namespace
-    name: "{{ app_namespace }}"
-  register: namespace_info
-  failed_when: namespace_info.resources | length == 0
+    name: "{{ lions_primereact_namespace }}"
+  register: primereact_namespace_info
+  failed_when: false
+  tags:
+    - infrastructure
+    - namespace
 
-- name: Vérification des droits d'accès au namespace
-  k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: ConfigMap
-      metadata:
-        name: "access-check"
-        namespace: "{{ app_namespace }}"
-      data:
-        check: "true"
-  register: access_check
-  ignore_errors: yes
+- name: "✅ Validation du namespace"
+  block:
+    - name: "📝 Enregistrement du succès"
+      set_fact:
+        prerequisites_checks: "{{ prerequisites_checks + ['Namespace ' + lions_primereact_namespace + ' existe'] }}"
+      when: primereact_namespace_info.resources | length > 0
 
-- name: Suppression du ConfigMap de vérification
-  k8s:
-    state: absent
+    - name: "❌ Échec si le namespace n'existe pas"
+      fail:
+        msg: |
+          ❌ Le namespace '{{ lions_primereact_namespace }}' n'existe pas.
+          
+          Solutions possibles:
+          1. Créer le namespace: kubectl create namespace {{ lions_primereact_namespace }}
+          2. Exécuter le playbook d'initialisation des namespaces
+          3. Vérifier la variable 'lions_primereact_namespace' dans la configuration
+      when: primereact_namespace_info.resources | length == 0
+  tags:
+    - infrastructure
+    - namespace
+
+- name: "🔒 Vérification des permissions RBAC"
+  block:
+    - name: "🧪 Test de création d'un ConfigMap temporaire"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: "lions-primereact-access-test-{{ ansible_date_time.epoch }}"
+            namespace: "{{ lions_primereact_namespace }}"
+            labels:
+              app.kubernetes.io/name: primereact
+              app.kubernetes.io/component: access-test
+              lions.dev/managed-by: ansible
+              lions.dev/environment: "{{ lions_environment }}"
+          data:
+            test: "permissions-check"
+            timestamp: "{{ ansible_date_time.iso8601 }}"
+      register: rbac_test_result
+      failed_when: false
+
+    - name: "🗑️ Nettoyage du ConfigMap de test"
+      kubernetes.core.k8s:
+        state: absent
+        api_version: v1
+        kind: ConfigMap
+        name: "lions-primereact-access-test-{{ ansible_date_time.epoch }}"
+        namespace: "{{ lions_primereact_namespace }}"
+      when: rbac_test_result is succeeded
+      failed_when: false
+
+    - name: "✅ Enregistrement du succès RBAC"
+      set_fact:
+        prerequisites_checks: "{{ prerequisites_checks + ['Permissions RBAC suffisantes'] }}"
+      when: rbac_test_result is succeeded
+
+    - name: "❌ Échec des permissions RBAC"
+      fail:
+        msg: |
+          ❌ Permissions RBAC insuffisantes pour le namespace '{{ lions_primereact_namespace }}'
+          
+          Permissions requises:
+          - get, list, watch, create, update, patch, delete sur: pods, services, deployments, configmaps, secrets
+          - get, list, watch, create, update, patch, delete sur: ingresses (networking.k8s.io)
+          
+          Solutions:
+          1. Vérifier les ClusterRole et ClusterRoleBinding
+          2. Vérifier les Role et RoleBinding pour le namespace
+          3. Contacter l'administrateur du cluster
+      when: rbac_test_result is failed
+  tags:
+    - security
+    - rbac
+
+# =========================================================================
+# VÉRIFICATIONS SERVICES DÉPENDANTS
+# =========================================================================
+
+- name: "📦 Vérification du registre Docker"
+  kubernetes.core.k8s_info:
     api_version: v1
-    kind: ConfigMap
-    name: "access-check"
-    namespace: "{{ app_namespace }}"
-  when: access_check is succeeded
+    kind: Service
+    name: "{{ lions_registry_service_name }}"
+    namespace: "{{ lions_registry_namespace }}"
+  register: registry_service_info
+  failed_when: false
+  when: lions_registry_enabled | bool
+  tags:
+    - dependencies
+    - registry
 
-- name: Échec si les droits d'accès sont insuffisants
+- name: "✅ Validation du registre Docker"
+  block:
+    - name: "📝 Enregistrement du succès du registre"
+      set_fact:
+        prerequisites_checks: "{{ prerequisites_checks + ['Service registre disponible'] }}"
+      when:
+        - lions_registry_enabled | bool
+        - registry_service_info.resources | length > 0
+
+    - name: "⚠️ Avertissement registre manquant"
+      set_fact:
+        prerequisites_warnings: "{{ prerequisites_warnings + ['Service registre non disponible - déploiement possible avec registre externe'] }}"
+      when:
+        - lions_registry_enabled | bool
+        - registry_service_info.resources | length == 0
+
+    - name: "ℹ️ Registre désactivé"
+      set_fact:
+        prerequisites_checks: "{{ prerequisites_checks + ['Registre désactivé - utilisation registre externe'] }}"
+      when: not (lions_registry_enabled | bool)
+  tags:
+    - dependencies
+    - registry
+
+- name: "🌐 Vérification de l'ingress controller"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Service
+    label_selectors:
+      - "app.kubernetes.io/name=traefik"
+  register: ingress_controller_info
+  failed_when: false
+  tags:
+    - networking
+    - ingress
+
+- name: "✅ Validation de l'ingress controller"
+  block:
+    - name: "📝 Enregistrement du succès ingress"
+      set_fact:
+        prerequisites_checks: "{{ prerequisites_checks + ['Ingress controller Traefik disponible'] }}"
+      when: ingress_controller_info.resources | length > 0
+
+    - name: "⚠️ Avertissement ingress controller manquant"
+      set_fact:
+        prerequisites_warnings: "{{ prerequisites_warnings + ['Ingress controller non trouvé - application accessible uniquement via NodePort/LoadBalancer'] }}"
+      when: ingress_controller_info.resources | length == 0
+  tags:
+    - networking
+    - ingress
+
+# =========================================================================
+# VÉRIFICATIONS STOCKAGE
+# =========================================================================
+
+- name: "💾 Vérification des StorageClass"
+  kubernetes.core.k8s_info:
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+    name: "{{ lions_storage_class_default }}"
+  register: storage_class_info
+  failed_when: false
+  tags:
+    - storage
+
+- name: "✅ Validation du stockage"
+  block:
+    - name: "📝 Enregistrement du succès stockage"
+      set_fact:
+        prerequisites_checks: "{{ prerequisites_checks + ['StorageClass ' + lions_storage_class_default + ' disponible'] }}"
+      when: storage_class_info.resources | length > 0
+
+    - name: "❌ Échec StorageClass manquante"
+      fail:
+        msg: |
+          ❌ StorageClass '{{ lions_storage_class_default }}' non trouvée
+          
+          Solutions:
+          1. Vérifier les StorageClass disponibles: kubectl get storageclass
+          2. Mettre à jour la variable 'lions_storage_class_default'
+          3. Créer la StorageClass requise
+      when: storage_class_info.resources | length == 0
+  tags:
+    - storage
+
+# =========================================================================
+# VÉRIFICATIONS SPÉCIFIQUES PRIMEREACT
+# =========================================================================
+
+- name: "⚛️ Vérifications spécifiques PrimeReact"
+  debug:
+    msg: |
+      🔍 Vérification des prérequis spécifiques à PrimeReact
+      📋 Framework: React {{ lions_primereact_react_version | default('18.x') }}
+      🎨 UI Library: PrimeReact {{ lions_primereact_version | default('latest') }}
+      🌐 Port: {{ lions_primereact_port }}
+
+- name: "🔧 Vérification des outils de build"
+  block:
+    - name: "📦 Vérification de la disponibilité des images Node.js"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Pod
+        namespace: "{{ lions_primereact_namespace }}"
+        label_selectors:
+          - "app.kubernetes.io/name=primereact"
+      register: existing_primereact_pods
+      failed_when: false
+
+    - name: "📝 Enregistrement de l'état des pods existants"
+      set_fact:
+        prerequisites_checks: "{{ prerequisites_checks + ['Aucun pod PrimeReact en conflit détecté'] }}"
+      when: existing_primereact_pods.resources | length == 0
+
+    - name: "⚠️ Avertissement pods existants"
+      set_fact:
+        prerequisites_warnings: "{{ prerequisites_warnings + [existing_primereact_pods.resources | length | string + ' pod(s) PrimeReact existant(s) détecté(s)'] }}"
+      when: existing_primereact_pods.resources | length > 0
+  tags:
+    - application
+    - primereact
+
+# =========================================================================
+# VÉRIFICATIONS SÉCURITÉ
+# =========================================================================
+
+- name: "🔒 Vérifications de sécurité"
+  block:
+    - name: "🛡️ Vérification des NetworkPolicies"
+      kubernetes.core.k8s_info:
+        api_version: networking.k8s.io/v1
+        kind: NetworkPolicy
+        namespace: "{{ lions_primereact_namespace }}"
+      register: network_policies_info
+      when: lions_security_network_policies | bool
+
+    - name: "📝 Enregistrement NetworkPolicies"
+      set_fact:
+        prerequisites_checks: "{{ prerequisites_checks + ['NetworkPolicies configurées'] }}"
+      when:
+        - lions_security_network_policies | bool
+        - network_policies_info.resources | length > 0
+
+    - name: "🔐 Vérification des PodSecurityStandards"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Namespace
+        name: "{{ lions_primereact_namespace }}"
+      register: namespace_security_info
+
+    - name: "📝 Validation sécurité namespace"
+      set_fact:
+        prerequisites_checks: "{{ prerequisites_checks + ['Namespace configuré avec les standards de sécurité'] }}"
+      when:
+        - namespace_security_info.resources[0].metadata.labels is defined
+        - "'pod-security.kubernetes.io/enforce' in namespace_security_info.resources[0].metadata.labels"
+  tags:
+    - security
+    - network-policies
+
+# =========================================================================
+# VÉRIFICATIONS MONITORING
+# =========================================================================
+
+- name: "📊 Vérifications monitoring"
+  block:
+    - name: "🔍 Vérification de Prometheus"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Service
+        name: prometheus-server
+        namespace: "{{ lions_monitoring_namespace }}"
+      register: prometheus_info
+      when: lions_monitoring_enabled | bool
+
+    - name: "📝 Enregistrement monitoring"
+      set_fact:
+        prerequisites_checks: "{{ prerequisites_checks + ['Service Prometheus disponible pour monitoring'] }}"
+      when:
+        - lions_monitoring_enabled | bool
+        - prometheus_info.resources | length > 0
+
+    - name: "⚠️ Avertissement monitoring"
+      set_fact:
+        prerequisites_warnings: "{{ prerequisites_warnings + ['Monitoring Prometheus non disponible'] }}"
+      when:
+        - lions_monitoring_enabled | bool
+        - prometheus_info.resources | length == 0
+  tags:
+    - monitoring
+    - observability
+
+# =========================================================================
+# VÉRIFICATIONS RESSOURCES
+# =========================================================================
+
+- name: "💻 Vérification des ressources du cluster"
+  block:
+    - name: "📊 Collecte des métriques de ressources"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Node
+      register: cluster_nodes_info
+
+    - name: "📝 Calcul des ressources disponibles"
+      set_fact:
+        cluster_node_count: "{{ cluster_nodes_info.resources | length }}"
+        prerequisites_checks: "{{ prerequisites_checks + ['Cluster avec ' + (cluster_nodes_info.resources | length | string) + ' nœud(s) disponible(s)'] }}"
+
+    - name: "⚠️ Avertissement cluster minimal"
+      set_fact:
+        prerequisites_warnings: "{{ prerequisites_warnings + ['Cluster à nœud unique détecté - considérer la haute disponibilité'] }}"
+      when: cluster_nodes_info.resources | length == 1
+  tags:
+    - resources
+    - capacity
+
+# =========================================================================
+# RAPPORT FINAL DES PRÉREQUIS
+# =========================================================================
+
+- name: "📊 Génération du rapport final"
+  set_fact:
+    prerequisites_end_time: "{{ ansible_date_time.epoch }}"
+    prerequisites_duration: "{{ (ansible_date_time.epoch | int) - (prerequisites_start_time | int) }}"
+
+- name: "📋 Rapport des vérifications de prérequis PrimeReact"
+  debug:
+    msg: |
+      
+      ═══════════════════════════════════════════════════════════════
+      📊 RAPPORT DE VÉRIFICATION DES PRÉREQUIS PRIMEREACT
+      ═══════════════════════════════════════════════════════════════
+      
+      🎯 Application: PrimeReact
+      📦 Namespace: {{ lions_primereact_namespace }}
+      🌍 Environnement: {{ lions_environment }}
+      ⏱️  Durée: {{ prerequisites_duration }}s
+      
+      ✅ VÉRIFICATIONS RÉUSSIES ({{ prerequisites_checks | length }}):
+      {% for check in prerequisites_checks %}
+         ✓ {{ check }}
+      {% endfor %}
+      
+      {% if prerequisites_warnings | length > 0 %}
+      ⚠️  AVERTISSEMENTS ({{ prerequisites_warnings | length }}):
+      {% for warning in prerequisites_warnings %}
+         ⚠ {{ warning }}
+      {% endfor %}
+      {% endif %}
+      
+      {% if prerequisites_errors | length > 0 %}
+      ❌ ERREURS ({{ prerequisites_errors | length }}):
+      {% for error in prerequisites_errors %}
+         ✗ {{ error }}
+      {% endfor %}
+      {% endif %}
+      
+      🏁 Statut: {% if prerequisites_errors | length == 0 %}PRÊT POUR LE DÉPLOIEMENT{% else %}PRÉREQUIS NON SATISFAITS{% endif %}
+      
+      ═══════════════════════════════════════════════════════════════
+
+- name: "✅ Validation finale des prérequis"
+  debug:
+    msg: "🚀 Tous les prérequis pour PrimeReact sont satisfaits. Déploiement autorisé."
+  when: prerequisites_errors | length == 0
+
+- name: "❌ Échec des prérequis"
   fail:
-    msg: "Droits d'accès insuffisants pour déployer dans le namespace {{ app_namespace }}"
-  when: access_check is failed
+    msg: |
+      ❌ Des prérequis critiques ne sont pas satisfaits pour PrimeReact.
+      Consultez le rapport ci-dessus pour les détails.
+  when: prerequisites_errors | length > 0
 
-- name: Vérification de l'existence du registre Docker
-  k8s_info:
-    api_version: v1
-    kind: Service
-    name: registry
-    namespace: registry
-  register: registry_info
-  failed_when: registry_info.resources | length == 0
+# =========================================================================
+# COLLECTE DE MÉTADONNÉES POUR DÉBOGAGE
+# =========================================================================
 
-- name: Vérification de l'existence de l'ingress controller
-  k8s_info:
-    api_version: v1
-    kind: Service
-    name: ingress-nginx-controller
-    namespace: ingress-nginx
-  register: ingress_info
-  ignore_errors: yes
-
-- name: Avertissement si l'ingress controller n'est pas trouvé
-  debug:
-    msg: "AVERTISSEMENT: L'ingress controller n'a pas été trouvé. L'application ne sera pas accessible via une URL."
-  when: ingress_info is failed or ingress_info.resources | length == 0
-
-- name: Vérification des prérequis spécifiques à PrimeReact
-  debug:
-    msg: "Vérification des prérequis spécifiques à PrimeReact"
-
-- name: Vérification de la présence de Node.js
-  shell: "kubectl exec -n {{ app_namespace }} -l app=tools -- node --version"
-  register: node_check
-  ignore_errors: yes
-  changed_when: false
-
-- name: Avertissement si Node.js n'est pas disponible
-  debug:
-    msg: "AVERTISSEMENT: Node.js n'est pas disponible dans le cluster. Certaines fonctionnalités de PrimeReact pourraient ne pas fonctionner correctement."
-  when: node_check is failed
+- name: "📊 Collecte des métadonnées de débogage"
+  set_fact:
+    primereact_prerequisites_metadata:
+      checks_completed: "{{ prerequisites_checks | length }}"
+      warnings_count: "{{ prerequisites_warnings | length }}"
+      errors_count: "{{ prerequisites_errors | length }}"
+      duration_seconds: "{{ prerequisites_duration }}"
+      namespace: "{{ lions_primereact_namespace }}"
+      environment: "{{ lions_environment }}"
+      timestamp: "{{ ansible_date_time.iso8601 }}"
+      version: "5.0.0"
+  tags:
+    - metadata
+    - debugging

@@ -1,32 +1,149 @@
 ---
-# Titre: Template de service Kubernetes pour la registry de conteneurs
-# Description: Définit le service Kubernetes pour la registry de conteneurs Docker
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-10
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - REGISTRY SERVICE TEMPLATE
+# =========================================================================
+# Description: Template Kubernetes Service pour la Registry de conteneurs Docker
+# Component: Registry Service
+# Version: 5.0.0
+# Maintainer: DevOps Team LIONS
+# Documentation: https://docs.lions.dev/infrastructure/registry
+# =========================================================================
 
 apiVersion: v1
 kind: Service
 metadata:
-  name: "{{ app_name | default('registry') }}"
-  namespace: "{{ app_namespace | default('registry') }}"
+  name: "{{ lions_registry_service_name | default(lookup('env', 'LIONS_REGISTRY_SERVICE_NAME') | default('registry', true)) }}"
+  namespace: "{{ lions_registry_namespace | default(lookup('env', 'LIONS_REGISTRY_NAMESPACE') | default('development', true)) }}"
   labels:
-    app: "{{ app_name | default('registry') }}"
-    version: "{{ app_version | default('latest') }}"
-    environment: "{{ app_environment | default('development') }}"
-    technology: "registry"
+    # Labels standards LIONS
+    app.kubernetes.io/name: "{{ lions_registry_service_name | default(lookup('env', 'LIONS_REGISTRY_SERVICE_NAME') | default('registry', true)) }}"
+    app.kubernetes.io/instance: "{{ lions_registry_service_name | default(lookup('env', 'LIONS_REGISTRY_SERVICE_NAME') | default('registry', true)) }}-{{ lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT') | default('development', true)) }}"
+    app.kubernetes.io/version: "{{ lions_registry_version | default(lookup('env', 'LIONS_REGISTRY_VERSION') | default('2.8', true)) }}"
+    app.kubernetes.io/component: "registry"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+
+    # Labels métier LIONS
+    lions.dev/environment: "{{ lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT') | default('development', true)) }}"
+    lions.dev/service-type: "infrastructure"
+    lions.dev/data-classification: "internal"
+    lions.dev/backup-required: "{{ lions_registry_backup_enabled | default('true') | string | lower }}"
+    lions.dev/monitoring-enabled: "{{ lions_monitoring_enabled | default(lookup('env', 'LIONS_MONITORING_ENABLED') | default('true', true)) | string | lower }}"
+
+    # Labels techniques
+    technology: "docker-registry"
+    tier: "infrastructure"
+
+    # Labels de versioning pour le rollback
+    deployment.lions.dev/config-version: "{{ lions_config_version | default(lookup('env', 'LIONS_CONFIG_VERSION') | default('5.0.0', true)) }}"
+    deployment.lions.dev/deployment-timestamp: "{{ ansible_date_time.epoch }}"
+
   annotations:
-    description: "Service pour la registry {{ app_name | default('registry') }} ({{ app_version | default('latest') }}) en environnement {{ app_environment | default('development') }}"
-    prometheus.io/scrape: "{{ registry_prometheus_scrape | default(true) | string | lower }}"
-    prometheus.io/path: "{{ registry_prometheus_path | default('/metrics') }}"
-    prometheus.io/port: "{{ registry_prometheus_port | default(5000) | string }}"
+    # Annotations de documentation
+    description: "Service Registry Docker pour l'environnement {{ lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT') | default('development', true)) }}"
+    lions.dev/service-description: "Registry privée pour stocker et distribuer les images de conteneurs"
+    lions.dev/service-owner: "{{ lions_service_owner | default('devops@lions.dev') }}"
+    lions.dev/runbook-url: "https://docs.lions.dev/runbooks/registry"
+    lions.dev/dashboard-url: "https://grafana.{{ lions_dns_full_domain | default(lookup('env', 'LIONS_DNS_FULL_DOMAIN')) }}/d/registry"
+
+    # Annotations de monitoring Prometheus
+    prometheus.io/scrape: "{{ lions_registry_prometheus_scrape | default('true') | string | lower }}"
+    prometheus.io/path: "{{ lions_registry_prometheus_path | default('/metrics') }}"
+    prometheus.io/port: "{{ lions_registry_prometheus_port | default(lookup('env', 'LIONS_REGISTRY_PORT') | default('5000', true)) }}"
+    prometheus.io/interval: "{{ lions_registry_prometheus_interval | default('30s') }}"
+    prometheus.io/timeout: "{{ lions_registry_prometheus_timeout | default('10s') }}"
+
+    # Annotations de configuration réseau et cloud provider
+    {% if lions_registry_service_type | default('ClusterIP') == 'LoadBalancer' %}
+    # Annotations AWS
+    {% if lions_cloud_provider | default('') == 'aws' %}
+    service.beta.kubernetes.io/aws-load-balancer-type: "{{ lions_registry_aws_lb_type | default('nlb') }}"
+    service.beta.kubernetes.io/aws-load-balancer-internal: "{{ lions_registry_internal_lb | default('true') | string | lower }}"
+    {% if lions_registry_load_balancer_ip is defined %}
+    service.beta.kubernetes.io/aws-load-balancer-eip-allocations: "{{ lions_registry_load_balancer_ip }}"
+    {% endif %}
+    {% endif %}
+
+    # Annotations Azure
+    {% if lions_cloud_provider | default('') == 'azure' %}
+    service.beta.kubernetes.io/azure-load-balancer-internal: "{{ lions_registry_internal_lb | default('true') | string | lower }}"
+    {% if lions_registry_load_balancer_ip is defined %}
+    service.beta.kubernetes.io/azure-load-balancer-internal-subnet: "{{ lions_registry_azure_subnet | default('default') }}"
+    {% endif %}
+    {% endif %}
+
+    # Annotations GCP
+    {% if lions_cloud_provider | default('') == 'gcp' %}
+    cloud.google.com/load-balancer-type: "{{ lions_registry_gcp_lb_type | default('Internal') }}"
+    {% if lions_registry_load_balancer_ip is defined %}
+    cloud.google.com/load-balancer-ip-addresses: "{{ lions_registry_load_balancer_ip }}"
+    {% endif %}
+    {% endif %}
+    {% endif %}
+
+    # Annotations de sécurité
+    {% if lions_security_network_policies | default(lookup('env', 'LIONS_SECURITY_NETWORK_POLICIES') | default('true', true)) | bool %}
+    networking.lions.dev/allow-ingress: "true"
+    networking.lions.dev/allow-monitoring: "true"
+    networking.lions.dev/allow-internal: "true"
+    {% endif %}
+
+    # Annotations de configuration
+    config.lions.dev/last-updated: "{{ ansible_date_time.iso8601 }}"
+    config.lions.dev/applied-by: "{{ ansible_user_id | default('ansible') }}"
+    config.lions.dev/config-checksum: "{{ (lions_registry_config | default({}) | to_json | hash('sha256'))[:8] }}"
+
 spec:
-  type: ClusterIP
-  ports:
-  - name: http
-    port: {{ registry_default_port | default(5000) }}
-    targetPort: http
-    protocol: TCP
+  type: "{{ lions_registry_service_type | default('ClusterIP') }}"
+
+  # Configuration du sélecteur de service
   selector:
-    app: "{{ app_name | default('registry') }}"
-    technology: "registry"
+    app.kubernetes.io/name: "{{ lions_registry_service_name | default(lookup('env', 'LIONS_REGISTRY_SERVICE_NAME') | default('registry', true)) }}"
+    app.kubernetes.io/component: "registry"
+
+  # Configuration des ports
+  ports:
+    - name: http
+      port: {{ lions_registry_port | default(lookup('env', 'LIONS_REGISTRY_PORT') | default('5000', true)) | int }}
+      targetPort: registry-http
+      protocol: TCP
+    {% if lions_registry_service_type | default('ClusterIP') == 'NodePort' %}
+      nodePort: {{ lions_registry_nodeport | default(30500) | int }}
+    {% endif %}
+
+    # Configuration du port de debug (si activé)
+  {% if lions_registry_debug_enabled | default(false) | bool %}
+    - name: debug
+      port: {{ lions_registry_debug_port | default(5001) | int }}
+      targetPort: registry-debug
+      protocol: TCP
+  {% endif %}
+
+  # Configuration de l'affinité de session (si nécessaire)
+  {% if lions_registry_session_affinity | default('None') != 'None' %}
+  sessionAffinity: "{{ lions_registry_session_affinity }}"
+  {% if lions_registry_session_affinity == 'ClientIP' %}
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: {{ lions_registry_session_timeout | default(10800) | int }}
+  {% endif %}
+  {% endif %}
+
+  # Configuration pour LoadBalancer (si applicable)
+  {% if lions_registry_service_type | default('ClusterIP') == 'LoadBalancer' %}
+  {% if lions_registry_load_balancer_source_ranges is defined %}
+  loadBalancerSourceRanges:
+  {% for range in lions_registry_load_balancer_source_ranges %}
+    - "{{ range }}"
+  {% endfor %}
+  {% endif %}
+  {% endif %}
+
+  # Configuration avancée pour les environnements de production
+  {% if lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT') | default('development', true)) == 'production' %}
+  # Politique de trafic pour la production
+  externalTrafficPolicy: "{{ lions_registry_external_traffic_policy | default('Local') }}"
+  {% if lions_registry_service_type | default('ClusterIP') == 'LoadBalancer' %}
+  healthCheckNodePort: {{ lions_registry_health_check_port | default(30100) | int }}
+  {% endif %}
+  {% endif %}

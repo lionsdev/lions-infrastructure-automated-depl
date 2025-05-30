@@ -1,118 +1,643 @@
 ---
-# Common variables for LIONS Infrastructure
-# These variables are used across multiple playbooks and roles
-# Author: LIONS Infrastructure Team
-# Date: 2025-05-24
-# Version: 1.0.0
+# ===============================================================================
+# LIONS INFRASTRUCTURE - COMMON VARIABLES v5.0
+# ===============================================================================
+# Description: Variables communes pour l'infrastructure LIONS DevOps
+# Version: 5.0.0
+# Date: 26/05/2025
+# Author: LIONS DevOps Team
+#
+# Ce fichier utilise strictement les variables d'environnement pour une
+# flexibilité maximale selon les environnements (dev/staging/prod)
+# ===============================================================================
 
-# Environment settings
-lions_env: "{{ lookup('env', 'LIONS_ENV') | default('development', true) }}"
-lions_domain: "{{ lookup('env', 'LIONS_DOMAIN') | default('dev.lions.dev', true) }}"
+# ===============================================================================
+# CORE ENVIRONMENT CONFIGURATION
+# ===============================================================================
 
-# VPS settings
+# Environnement et métadonnées de base
+lions_environment: "{{ lookup('env', 'LIONS_ENVIRONMENT') | default('development', true) }}"
+lions_version: "{{ lookup('env', 'LIONS_VERSION') | default('5.0.0', true) }}"
+lions_build_number: "{{ lookup('env', 'LIONS_BUILD_NUMBER') | default(ansible_date_time.epoch, true) }}"
+lions_deployment_id: "{{ lookup('env', 'LIONS_DEPLOYMENT_ID') | default(ansible_hostname + '-' + ansible_date_time.epoch, true) }}"
+
+# Projet et organisation
+lions_project_name: "{{ lookup('env', 'LIONS_PROJECT_NAME') | default('lions-infrastructure', true) }}"
+lions_organization: "{{ lookup('env', 'LIONS_ORGANIZATION') | default('lions-dev', true) }}"
+lions_cluster_name: "{{ lookup('env', 'LIONS_CLUSTER_NAME') | default('lions-k3s-cluster', true) }}"
+
+# ===============================================================================
+# NETWORK & CONNECTIVITY CONFIGURATION
+# ===============================================================================
+
+# Configuration VPS principale
 lions_vps_host: "{{ lookup('env', 'LIONS_VPS_HOST') | default('127.0.0.1', true) }}"
-lions_vps_port: "{{ lookup('env', 'LIONS_VPS_PORT') | default('22', true) }}"
-lions_vps_user: "{{ lookup('env', 'LIONS_VPS_USER') | default('root', true) }}"
+lions_vps_port: "{{ lookup('env', 'LIONS_VPS_PORT') | default('22', true) | int }}"
+lions_vps_user: "{{ lookup('env', 'LIONS_VPS_USER') | default('lions-admin', true) }}"
+lions_vps_ssh_key_path: "{{ lookup('env', 'LIONS_VPS_SSH_KEY_PATH') | default('~/.ssh/lions_rsa', true) }}"
 
-# Kubernetes settings
-k3s_version: "v1.28.6+k3s2"
+# Configuration des domaines
+lions_base_domain: "{{ lookup('env', 'LIONS_BASE_DOMAIN') | default('lions.dev', true) }}"
+lions_env_domain: "{{ lookup('env', 'LIONS_ENV_DOMAIN') | default(lions_environment + '.' + lions_base_domain, true) }}"
+lions_api_domain: "{{ lookup('env', 'LIONS_API_DOMAIN') | default('api.' + lions_env_domain, true) }}"
+lions_registry_domain: "{{ lookup('env', 'LIONS_REGISTRY_DOMAIN') | default('registry.' + lions_env_domain, true) }}"
+lions_monitoring_domain: "{{ lookup('env', 'LIONS_MONITORING_DOMAIN') | default('monitoring.' + lions_env_domain, true) }}"
+
+# Configuration Haute Disponibilité
+lions_ha_enabled: "{{ lookup('env', 'LIONS_HA_ENABLED') | default('false', true) | bool }}"
+lions_load_balancer_vip: "{{ lookup('env', 'LIONS_LOAD_BALANCER_VIP') | default('', true) }}"
+lions_keepalived_priority: "{{ lookup('env', 'LIONS_KEEPALIVED_PRIORITY') | default('100', true) | int }}"
+
+# ===============================================================================
+# KUBERNETES CLUSTER CONFIGURATION
+# ===============================================================================
+
+# Configuration K3s principale
+k3s_version: "{{ lookup('env', 'LIONS_K3S_VERSION') | default('v1.30.2+k3s1', true) }}"
+k3s_channel: "{{ lookup('env', 'LIONS_K3S_CHANNEL') | default('stable', true) }}"
+k3s_token: "{{ lookup('env', 'LIONS_K3S_TOKEN') | default('', true) }}"
+k3s_disable_components: "{{ lookup('env', 'LIONS_K3S_DISABLE_COMPONENTS') | default('traefik,local-storage', true) }}"
+
+# Arguments du serveur K3s avec configuration avancée
 k3s_server_args: >-
   server
-  --disable=traefik
-  --disable=servicelb
+  --disable={{ k3s_disable_components }}
   --write-kubeconfig-mode=644
   --kubelet-arg=cgroup-driver=systemd
-  --kubelet-arg=feature-gates=GracefulNodeShutdown=false
+  --kubelet-arg=feature-gates=GracefulNodeShutdown=true
+  --cluster-cidr={{ lions_cluster_cidr }}
+  --service-cidr={{ lions_service_cidr }}
+  --cluster-dns={{ lions_cluster_dns }}
+  {% if lions_tls_enabled %}--tls-san={{ lions_vps_host }}{% endif %}
+  {% if lions_secrets_encryption_enabled %}--secrets-encryption{% endif %}
+  {% if lions_audit_enabled %}--audit-log-path=/var/log/k3s-audit.log{% endif %}
+  {% if lions_audit_enabled %}--audit-policy-file=/etc/rancher/k3s/audit-policy.yaml{% endif %}
+  --node-label environment={{ lions_environment }}
+  --node-label cluster={{ lions_cluster_name }}
 
-# Component versions
-traefik_chart_version: "25.0.0"
-metallb_chart_version: "0.13.12"
-cert_manager_version: "v1.13.3"
-kube_prometheus_stack_version: "55.5.0"
-vault_version: "1.15.2"
-gitea_version: "1.21.0"
-keycloak_version: "23.0.3"
-postgres_version: "16.1"
-redis_version: "7.2.3"
-ollama_version: "0.1.27"
+# Configuration réseau du cluster
+lions_cluster_cidr: "{{ lookup('env', 'LIONS_CLUSTER_CIDR') | default('10.42.0.0/16', true) }}"
+lions_service_cidr: "{{ lookup('env', 'LIONS_SERVICE_CIDR') | default('10.43.0.0/16', true) }}"
+lions_cluster_dns: "{{ lookup('env', 'LIONS_CLUSTER_DNS') | default('10.43.0.10', true) }}"
 
-# Resource settings
-lions_cpu_request: "{{ lookup('env', 'LIONS_CPU_REQUEST') | default('200m', true) }}"
-lions_cpu_limit: "{{ lookup('env', 'LIONS_CPU_LIMIT') | default('800m', true) }}"
-lions_memory_request: "{{ lookup('env', 'LIONS_MEMORY_REQUEST') | default('512Mi', true) }}"
-lions_memory_limit: "{{ lookup('env', 'LIONS_MEMORY_LIMIT') | default('1Gi', true) }}"
+# ===============================================================================
+# SECURITY & ENCRYPTION CONFIGURATION
+# ===============================================================================
 
-# Storage settings
-lions_storage_class: "{{ lookup('env', 'LIONS_STORAGE_CLASS') | default('standard', true) }}"
-lions_backup_retention_days: "{{ lookup('env', 'LIONS_BACKUP_RETENTION_DAYS') | default('7', true) }}"
-
-# Security settings
+# Configuration TLS et certificats
 lions_tls_enabled: "{{ lookup('env', 'LIONS_TLS_ENABLED') | default('true', true) | bool }}"
+lions_cert_manager_enabled: "{{ lookup('env', 'LIONS_CERT_MANAGER_ENABLED') | default('true', true) | bool }}"
+lions_cert_manager_version: "{{ lookup('env', 'LIONS_CERT_MANAGER_VERSION') | default('v1.14.0', true) }}"
+lions_letsencrypt_email: "{{ lookup('env', 'LIONS_LETSENCRYPT_EMAIL') | default('admin@' + lions_base_domain, true) }}"
+lions_acme_server: "{{ lookup('env', 'LIONS_ACME_SERVER') | default('https://acme-v02.api.letsencrypt.org/directory', true) }}"
+
+# Configuration de sécurité réseau
 lions_network_policy_enabled: "{{ lookup('env', 'LIONS_NETWORK_POLICY_ENABLED') | default('true', true) | bool }}"
+lions_pod_security_standards: "{{ lookup('env', 'LIONS_POD_SECURITY_STANDARDS') | default('restricted', true) }}"
+lions_admission_controllers: "{{ lookup('env', 'LIONS_ADMISSION_CONTROLLERS') | default('NamespaceLifecycle,LimitRanger,ServiceAccount,ResourceQuota,PodSecurityPolicy', true) }}"
 
-# Component enablement
-lions_monitoring_enabled: "{{ lookup('env', 'LIONS_MONITORING_ENABLED') | default('true', true) | bool }}"
-lions_registry_enabled: "{{ lookup('env', 'LIONS_REGISTRY_ENABLED') | default('true', true) | bool }}"
-lions_postgres_enabled: "{{ lookup('env', 'LIONS_POSTGRES_ENABLED') | default('true', true) | bool }}"
-lions_keycloak_enabled: "{{ lookup('env', 'LIONS_KEYCLOAK_ENABLED') | default('true', true) | bool }}"
-lions_gitea_enabled: "{{ lookup('env', 'LIONS_GITEA_ENABLED') | default('true', true) | bool }}"
-lions_ollama_enabled: "{{ lookup('env', 'LIONS_OLLAMA_ENABLED') | default('true', true) | bool }}"
+# Configuration du chiffrement des secrets
+lions_secrets_encryption_enabled: "{{ lookup('env', 'LIONS_SECRETS_ENCRYPTION_ENABLED') | default('true', true) | bool }}"
+lions_encryption_provider: "{{ lookup('env', 'LIONS_ENCRYPTION_PROVIDER') | default('aescbc', true) }}"
+
+# Configuration de l'audit
+lions_audit_enabled: "{{ lookup('env', 'LIONS_AUDIT_ENABLED') | default('true', true) | bool }}"
+lions_audit_log_level: "{{ lookup('env', 'LIONS_AUDIT_LOG_LEVEL') | default('Request', true) }}"
+lions_audit_log_retention: "{{ lookup('env', 'LIONS_AUDIT_LOG_RETENTION') | default('90d', true) }}"
+
+# ===============================================================================
+# HASHICORP VAULT CONFIGURATION
+# ===============================================================================
+
+# Configuration Vault principale
 lions_vault_enabled: "{{ lookup('env', 'LIONS_VAULT_ENABLED') | default('true', true) | bool }}"
+vault_version: "{{ lookup('env', 'LIONS_VAULT_VERSION') | default('1.15.2', true) }}"
+vault_port: "{{ lookup('env', 'LIONS_VAULT_PORT') | default('8200', true) | int }}"
+vault_addr: "{{ lookup('env', 'LIONS_VAULT_ADDR') | default('https://vault.' + lions_env_domain, true) }}"
+vault_namespace: "{{ lookup('env', 'LIONS_VAULT_NAMESPACE') | default('vault-system', true) }}"
 
-# Monitoring configuration
+# Configuration de stockage et backend Vault
+vault_storage_type: "{{ lookup('env', 'LIONS_VAULT_STORAGE_TYPE') | default('file', true) }}"
+vault_storage_path: "{{ lookup('env', 'LIONS_VAULT_STORAGE_PATH') | default('/vault/data', true) }}"
+vault_log_level: "{{ lookup('env', 'LIONS_VAULT_LOG_LEVEL') | default('INFO', true) }}"
+vault_log_format: "{{ lookup('env', 'LIONS_VAULT_LOG_FORMAT') | default('json', true) }}"
+
+# Configuration de sécurité Vault
+vault_tls_disable: "{{ lookup('env', 'LIONS_VAULT_TLS_DISABLE') | default('false', true) | bool }}"
+vault_auto_unseal: "{{ lookup('env', 'LIONS_VAULT_AUTO_UNSEAL') | default('false', true) | bool }}"
+vault_seal_type: "{{ lookup('env', 'LIONS_VAULT_SEAL_TYPE') | default('shamir', true) }}"
+
+# ===============================================================================
+# DATABASE CONFIGURATION
+# ===============================================================================
+
+# Configuration PostgreSQL
+lions_postgres_enabled: "{{ lookup('env', 'LIONS_POSTGRES_ENABLED') | default('true', true) | bool }}"
+postgres_version: "{{ lookup('env', 'LIONS_POSTGRES_VERSION') | default('15.4', true) }}"
+postgres_port: "{{ lookup('env', 'LIONS_POSTGRES_PORT') | default('5432', true) | int }}"
+postgres_database: "{{ lookup('env', 'LIONS_POSTGRES_DATABASE') | default('lions_db', true) }}"
+postgres_username: "{{ lookup('env', 'LIONS_POSTGRES_USERNAME') | default('lions_user', true) }}"
+postgres_password: "{{ lookup('env', 'LIONS_POSTGRES_PASSWORD') | default('', true) }}"
+postgres_admin_password: "{{ lookup('env', 'LIONS_POSTGRES_ADMIN_PASSWORD') | default('', true) }}"
+
+# Configuration de performance PostgreSQL
+postgres_shared_buffers: "{{ lookup('env', 'LIONS_POSTGRES_SHARED_BUFFERS') | default('256MB', true) }}"
+postgres_max_connections: "{{ lookup('env', 'LIONS_POSTGRES_MAX_CONNECTIONS') | default('200', true) | int }}"
+postgres_effective_cache_size: "{{ lookup('env', 'LIONS_POSTGRES_EFFECTIVE_CACHE_SIZE') | default('1GB', true) }}"
+
+# Configuration Redis
+lions_redis_enabled: "{{ lookup('env', 'LIONS_REDIS_ENABLED') | default('true', true) | bool }}"
+redis_version: "{{ lookup('env', 'LIONS_REDIS_VERSION') | default('7.2.0', true) }}"
+redis_port: "{{ lookup('env', 'LIONS_REDIS_PORT') | default('6379', true) | int }}"
+redis_password: "{{ lookup('env', 'LIONS_REDIS_PASSWORD') | default('', true) }}"
+redis_max_memory: "{{ lookup('env', 'LIONS_REDIS_MAX_MEMORY') | default('512mb', true) }}"
+
+# ===============================================================================
+# APPLICATION SERVICES CONFIGURATION
+# ===============================================================================
+
+# Configuration Keycloak
+lions_keycloak_enabled: "{{ lookup('env', 'LIONS_KEYCLOAK_ENABLED') | default('true', true) | bool }}"
+keycloak_version: "{{ lookup('env', 'LIONS_KEYCLOAK_VERSION') | default('23.0.0', true) }}"
+keycloak_port: "{{ lookup('env', 'LIONS_KEYCLOAK_PORT') | default('8080', true) | int }}"
+keycloak_admin_user: "{{ lookup('env', 'LIONS_KEYCLOAK_ADMIN_USER') | default('admin', true) }}"
+keycloak_admin_password: "{{ lookup('env', 'LIONS_KEYCLOAK_ADMIN_PASSWORD') | default('', true) }}"
+keycloak_realm: "{{ lookup('env', 'LIONS_KEYCLOAK_REALM') | default('lions', true) }}"
+
+# Configuration OAuth2 et OIDC
+oauth2_client_id: "{{ lookup('env', 'LIONS_OAUTH2_CLIENT_ID') | default('lions-client', true) }}"
+oauth2_client_secret: "{{ lookup('env', 'LIONS_OAUTH2_CLIENT_SECRET') | default('', true) }}"
+oidc_issuer_url: "{{ lookup('env', 'LIONS_OIDC_ISSUER_URL') | default('https://keycloak.' + lions_env_domain + '/realms/' + keycloak_realm, true) }}"
+
+# Configuration Gitea
+lions_gitea_enabled: "{{ lookup('env', 'LIONS_GITEA_ENABLED') | default('true', true) | bool }}"
+gitea_version: "{{ lookup('env', 'LIONS_GITEA_VERSION') | default('1.21.0', true) }}"
+gitea_port: "{{ lookup('env', 'LIONS_GITEA_PORT') | default('3000', true) | int }}"
+gitea_ssh_port: "{{ lookup('env', 'LIONS_GITEA_SSH_PORT') | default('2222', true) | int }}"
+gitea_admin_user: "{{ lookup('env', 'LIONS_GITEA_ADMIN_USER') | default('gitadmin', true) }}"
+gitea_admin_password: "{{ lookup('env', 'LIONS_GITEA_ADMIN_PASSWORD') | default('', true) }}"
+
+# Configuration Ollama AI
+lions_ollama_enabled: "{{ lookup('env', 'LIONS_OLLAMA_ENABLED') | default('true', true) | bool }}"
+ollama_version: "{{ lookup('env', 'LIONS_OLLAMA_VERSION') | default('latest', true) }}"
+ollama_port: "{{ lookup('env', 'LIONS_OLLAMA_PORT') | default('11434', true) | int }}"
+ollama_gpu_enabled: "{{ lookup('env', 'LIONS_OLLAMA_GPU_ENABLED') | default('false', true) | bool }}"
+ollama_models: "{{ lookup('env', 'LIONS_OLLAMA_MODELS') | default('llama2,codellama', true) }}"
+
+# Configuration du registre de conteneur
+lions_registry_enabled: "{{ lookup('env', 'LIONS_REGISTRY_ENABLED') | default('true', true) | bool }}"
+registry_version: "{{ lookup('env', 'LIONS_REGISTRY_VERSION') | default('2.8.3', true) }}"
+registry_port: "{{ lookup('env', 'LIONS_REGISTRY_PORT') | default('5000', true) | int }}"
+registry_username: "{{ lookup('env', 'LIONS_REGISTRY_USERNAME') | default('registry', true) }}"
+registry_password: "{{ lookup('env', 'LIONS_REGISTRY_PASSWORD') | default('', true) }}"
+
+# Configuration PgAdmin
+lions_pgadmin_enabled: "{{ lookup('env', 'LIONS_PGADMIN_ENABLED') | default('true', true) | bool }}"
+pgadmin_version: "{{ lookup('env', 'LIONS_PGADMIN_VERSION') | default('7.8', true) }}"
+pgadmin_port: "{{ lookup('env', 'LIONS_PGADMIN_PORT') | default('5050', true) | int }}"
+pgadmin_email: "{{ lookup('env', 'LIONS_PGADMIN_EMAIL') | default('admin@' + lions_base_domain, true) }}"
+pgadmin_password: "{{ lookup('env', 'LIONS_PGADMIN_PASSWORD') | default('', true) }}"
+
+# ===============================================================================
+# APPLICATION FRAMEWORK CONFIGURATION
+# ===============================================================================
+
+# Configuration Quarkus
+lions_quarkus_enabled: "{{ lookup('env', 'LIONS_QUARKUS_ENABLED') | default('true', true) | bool }}"
+quarkus_version: "{{ lookup('env', 'LIONS_QUARKUS_VERSION') | default('3.8.0', true) }}"
+quarkus_port: "{{ lookup('env', 'LIONS_QUARKUS_PORT') | default('8080', true) | int }}"
+quarkus_profile: "{{ lookup('env', 'LIONS_QUARKUS_PROFILE') | default(lions_environment, true) }}"
+
+# Configuration PrimeFaces
+lions_primefaces_enabled: "{{ lookup('env', 'LIONS_PRIMEFACES_ENABLED') | default('true', true) | bool }}"
+primefaces_version: "{{ lookup('env', 'LIONS_PRIMEFACES_VERSION') | default('13.0.0', true) }}"
+primefaces_port: "{{ lookup('env', 'LIONS_PRIMEFACES_PORT') | default('8080', true) | int }}"
+
+# Configuration PrimeReact
+lions_primereact_enabled: "{{ lookup('env', 'LIONS_PRIMEREACT_ENABLED') | default('true', true) | bool }}"
+primereact_version: "{{ lookup('env', 'LIONS_PRIMEREACT_VERSION') | default('10.2.0', true) }}"
+primereact_port: "{{ lookup('env', 'LIONS_PRIMEREACT_PORT') | default('3000', true) | int }}"
+
+# Configuration du service de notification
+lions_notification_enabled: "{{ lookup('env', 'LIONS_NOTIFICATION_ENABLED') | default('true', true) | bool }}"
+notification_service_version: "{{ lookup('env', 'LIONS_NOTIFICATION_VERSION') | default('latest', true) }}"
+notification_service_port: "{{ lookup('env', 'LIONS_NOTIFICATION_PORT') | default('8081', true) | int }}"
+
+# ===============================================================================
+# MONITORING & OBSERVABILITY CONFIGURATION
+# ===============================================================================
+
+# Configuration de la stack de monitoring
+lions_monitoring_enabled: "{{ lookup('env', 'LIONS_MONITORING_ENABLED') | default('true', true) | bool }}"
+lions_prometheus_enabled: "{{ lookup('env', 'LIONS_PROMETHEUS_ENABLED') | default('true', true) | bool }}"
+lions_grafana_enabled: "{{ lookup('env', 'LIONS_GRAFANA_ENABLED') | default('true', true) | bool }}"
+lions_alertmanager_enabled: "{{ lookup('env', 'LIONS_ALERTMANAGER_ENABLED') | default('true', true) | bool }}"
+
+# Versions des composants de monitoring
+prometheus_version: "{{ lookup('env', 'LIONS_PROMETHEUS_VERSION') | default('v2.48.0', true) }}"
+grafana_version: "{{ lookup('env', 'LIONS_GRAFANA_VERSION') | default('10.2.0', true) }}"
+alertmanager_version: "{{ lookup('env', 'LIONS_ALERTMANAGER_VERSION') | default('v0.26.0', true) }}"
+
+# Configuration avancée de Prometheus
+prometheus_retention: "{{ lookup('env', 'LIONS_PROMETHEUS_RETENTION') | default('15d', true) }}"
+prometheus_storage: "{{ lookup('env', 'LIONS_PROMETHEUS_STORAGE') | default('10Gi', true) }}"
+prometheus_scrape_interval: "{{ lookup('env', 'LIONS_PROMETHEUS_SCRAPE_INTERVAL') | default('30s', true) }}"
+
+# Configuration Grafana
+grafana_admin_password: "{{ lookup('env', 'LIONS_GRAFANA_ADMIN_PASSWORD') | default('admin123!', true) }}"
+grafana_storage: "{{ lookup('env', 'LIONS_GRAFANA_STORAGE') | default('5Gi', true) }}"
+
+# Configuration Loki (logging)
+lions_loki_enabled: "{{ lookup('env', 'LIONS_LOKI_ENABLED') | default('true', true) | bool }}"
+loki_version: "{{ lookup('env', 'LIONS_LOKI_VERSION') | default('2.9.0', true) }}"
+loki_retention: "{{ lookup('env', 'LIONS_LOKI_RETENTION') | default('720h', true) }}"
+
+# Configuration Jaeger (tracing)
+lions_jaeger_enabled: "{{ lookup('env', 'LIONS_JAEGER_ENABLED') | default('true', true) | bool }}"
+jaeger_version: "{{ lookup('env', 'LIONS_JAEGER_VERSION') | default('1.51.0', true) }}"
+
+# ===============================================================================
+# RESOURCE MANAGEMENT & SCALING
+# ===============================================================================
+
+# Ressources par défaut
+lions_default_cpu_request: "{{ lookup('env', 'LIONS_DEFAULT_CPU_REQUEST') | default('100m', true) }}"
+lions_default_cpu_limit: "{{ lookup('env', 'LIONS_DEFAULT_CPU_LIMIT') | default('500m', true) }}"
+lions_default_memory_request: "{{ lookup('env', 'LIONS_DEFAULT_MEMORY_REQUEST') | default('256Mi', true) }}"
+lions_default_memory_limit: "{{ lookup('env', 'LIONS_DEFAULT_MEMORY_LIMIT') | default('512Mi', true) }}"
+
+# Ressources spécifiques aux applications
+postgres_cpu_request: "{{ lookup('env', 'LIONS_POSTGRES_CPU_REQUEST') | default('250m', true) }}"
+postgres_cpu_limit: "{{ lookup('env', 'LIONS_POSTGRES_CPU_LIMIT') | default('1000m', true) }}"
+postgres_memory_request: "{{ lookup('env', 'LIONS_POSTGRES_MEMORY_REQUEST') | default('512Mi', true) }}"
+postgres_memory_limit: "{{ lookup('env', 'LIONS_POSTGRES_MEMORY_LIMIT') | default('2Gi', true) }}"
+
+keycloak_cpu_request: "{{ lookup('env', 'LIONS_KEYCLOAK_CPU_REQUEST') | default('200m', true) }}"
+keycloak_cpu_limit: "{{ lookup('env', 'LIONS_KEYCLOAK_CPU_LIMIT') | default('800m', true) }}"
+keycloak_memory_request: "{{ lookup('env', 'LIONS_KEYCLOAK_MEMORY_REQUEST') | default('512Mi', true) }}"
+keycloak_memory_limit: "{{ lookup('env', 'LIONS_KEYCLOAK_MEMORY_LIMIT') | default('1Gi', true) }}"
+
+# Configuration HPA (Horizontal Pod Autoscaler)
+lions_hpa_enabled: "{{ lookup('env', 'LIONS_HPA_ENABLED') | default('true', true) | bool }}"
+lions_hpa_min_replicas: "{{ lookup('env', 'LIONS_HPA_MIN_REPLICAS') | default('1', true) | int }}"
+lions_hpa_max_replicas: "{{ lookup('env', 'LIONS_HPA_MAX_REPLICAS') | default('5', true) | int }}"
+lions_hpa_cpu_target: "{{ lookup('env', 'LIONS_HPA_CPU_TARGET') | default('70', true) | int }}"
+lions_hpa_memory_target: "{{ lookup('env', 'LIONS_HPA_MEMORY_TARGET') | default('80', true) | int }}"
+
+# ===============================================================================
+# STORAGE CONFIGURATION
+# ===============================================================================
+
+# Configuration du stockage
+lions_storage_class: "{{ lookup('env', 'LIONS_STORAGE_CLASS') | default('local-path', true) }}"
+lions_storage_provisioner: "{{ lookup('env', 'LIONS_STORAGE_PROVISIONER') | default('rancher.io/local-path', true) }}"
+lions_default_storage_size: "{{ lookup('env', 'LIONS_DEFAULT_STORAGE_SIZE') | default('10Gi', true) }}"
+
+# Configuration des sauvegardes
+lions_backup_enabled: "{{ lookup('env', 'LIONS_BACKUP_ENABLED') | default('true', true) | bool }}"
+lions_backup_schedule: "{{ lookup('env', 'LIONS_BACKUP_SCHEDULE') | default('0 2 * * *', true) }}"
+lions_backup_retention_days: "{{ lookup('env', 'LIONS_BACKUP_RETENTION_DAYS') | default('30', true) | int }}"
+lions_backup_storage_class: "{{ lookup('env', 'LIONS_BACKUP_STORAGE_CLASS') | default(lions_storage_class, true) }}"
+
+# Configuration S3 pour les sauvegardes
+lions_backup_s3_enabled: "{{ lookup('env', 'LIONS_BACKUP_S3_ENABLED') | default('false', true) | bool }}"
+lions_backup_s3_bucket: "{{ lookup('env', 'LIONS_BACKUP_S3_BUCKET') | default('', true) }}"
+lions_backup_s3_region: "{{ lookup('env', 'LIONS_BACKUP_S3_REGION') | default('', true) }}"
+
+# ===============================================================================
+# CI/CD & DEPLOYMENT CONFIGURATION
+# ===============================================================================
+
+# Configuration CI/CD
+lions_cicd_enabled: "{{ lookup('env', 'LIONS_CICD_ENABLED') | default('true', true) | bool }}"
+lions_gitops_enabled: "{{ lookup('env', 'LIONS_GITOPS_ENABLED') | default('true', true) | bool }}"
+flux_version: "{{ lookup('env', 'LIONS_FLUX_VERSION') | default('v2.2.0', true) }}"
+lions_argocd_enabled: "{{ lookup('env', 'LIONS_ARGOCD_ENABLED') | default('false', true) | bool }}"
+
+# Stratégie de déploiement
+lions_deployment_strategy: "{{ lookup('env', 'LIONS_DEPLOYMENT_STRATEGY') | default('RollingUpdate', true) }}"
+lions_rolling_update_max_surge: "{{ lookup('env', 'LIONS_ROLLING_UPDATE_MAX_SURGE') | default('25%', true) }}"
+lions_rolling_update_max_unavailable: "{{ lookup('env', 'LIONS_ROLLING_UPDATE_MAX_UNAVAILABLE') | default('25%', true) }}"
+
+# Configuration des images
+lions_image_pull_policy: "{{ lookup('env', 'LIONS_IMAGE_PULL_POLICY') | default('IfNotPresent', true) }}"
+lions_image_pull_secrets: "{{ lookup('env', 'LIONS_IMAGE_PULL_SECRETS') | default('lions-registry-secret', true) }}"
+
+# ===============================================================================
+# LOGGING & AUDIT CONFIGURATION
+# ===============================================================================
+
+# Configuration des logs
+lions_log_level: "{{ lookup('env', 'LIONS_LOG_LEVEL') | default('INFO', true) }}"
+lions_log_format: "{{ lookup('env', 'LIONS_LOG_FORMAT') | default('json', true) }}"
+lions_log_retention_days: "{{ lookup('env', 'LIONS_LOG_RETENTION_DAYS') | default('30', true) | int }}"
+
+# Configuration des logs applicatifs
+lions_app_log_level: "{{ lookup('env', 'LIONS_APP_LOG_LEVEL') | default(lions_log_level, true) }}"
+lions_access_log_enabled: "{{ lookup('env', 'LIONS_ACCESS_LOG_ENABLED') | default('true', true) | bool }}"
+
+# ===============================================================================
+# NOTIFICATION & ALERTING CONFIGURATION
+# ===============================================================================
+
+# Configuration email
+lions_smtp_enabled: "{{ lookup('env', 'LIONS_SMTP_ENABLED') | default('false', true) | bool }}"
+lions_smtp_host: "{{ lookup('env', 'LIONS_SMTP_HOST') | default('', true) }}"
+lions_smtp_port: "{{ lookup('env', 'LIONS_SMTP_PORT') | default('587', true) | int }}"
+lions_smtp_username: "{{ lookup('env', 'LIONS_SMTP_USERNAME') | default('', true) }}"
+lions_smtp_password: "{{ lookup('env', 'LIONS_SMTP_PASSWORD') | default('', true) }}"
+lions_smtp_from: "{{ lookup('env', 'LIONS_SMTP_FROM') | default('noreply@' + lions_base_domain, true) }}"
+
+# Configuration Slack
+lions_slack_enabled: "{{ lookup('env', 'LIONS_SLACK_ENABLED') | default('false', true) | bool }}"
+lions_slack_webhook_url: "{{ lookup('env', 'LIONS_SLACK_WEBHOOK_URL') | default('', true) }}"
+lions_slack_channel: "{{ lookup('env', 'LIONS_SLACK_CHANNEL') | default('#lions-alerts', true) }}"
+
+# Configuration Teams
+lions_teams_enabled: "{{ lookup('env', 'LIONS_TEAMS_ENABLED') | default('false', true) | bool }}"
+lions_teams_webhook_url: "{{ lookup('env', 'LIONS_TEAMS_WEBHOOK_URL') | default('', true) }}"
+
+# ===============================================================================
+# COMPONENT VERSIONS MATRIX
+# ===============================================================================
+
+# Matrice des versions des composants selon l'environnement
+component_versions_matrix:
+  development:
+    traefik_chart_version: "{{ lookup('env', 'LIONS_TRAEFIK_VERSION_DEV') | default('25.0.0', true) }}"
+    metallb_chart_version: "{{ lookup('env', 'LIONS_METALLB_VERSION_DEV') | default('0.13.12', true) }}"
+    kube_prometheus_stack_version: "{{ lookup('env', 'LIONS_PROMETHEUS_STACK_VERSION_DEV') | default('55.5.0', true) }}"
+  staging:
+    traefik_chart_version: "{{ lookup('env', 'LIONS_TRAEFIK_VERSION_STAGING') | default('25.0.0', true) }}"
+    metallb_chart_version: "{{ lookup('env', 'LIONS_METALLB_VERSION_STAGING') | default('0.13.12', true) }}"
+    kube_prometheus_stack_version: "{{ lookup('env', 'LIONS_PROMETHEUS_STACK_VERSION_STAGING') | default('55.5.0', true) }}"
+  production:
+    traefik_chart_version: "{{ lookup('env', 'LIONS_TRAEFIK_VERSION_PROD') | default('25.0.0', true) }}"
+    metallb_chart_version: "{{ lookup('env', 'LIONS_METALLB_VERSION_PROD') | default('0.13.12', true) }}"
+    kube_prometheus_stack_version: "{{ lookup('env', 'LIONS_PROMETHEUS_STACK_VERSION_PROD') | default('55.5.0', true) }}"
+
+# Versions actuelles selon l'environnement
+traefik_chart_version: "{{ component_versions_matrix[lions_environment]['traefik_chart_version'] }}"
+metallb_chart_version: "{{ component_versions_matrix[lions_environment]['metallb_chart_version'] }}"
+kube_prometheus_stack_version: "{{ component_versions_matrix[lions_environment]['kube_prometheus_stack_version'] }}"
+
+# ===============================================================================
+# ADVANCED MONITORING CONFIGURATION
+# ===============================================================================
+
+# Configuration avancée du monitoring
 monitoring_config:
-  namespace: "monitoring"
-  grafana_admin_password: "{{ lookup('env', 'LIONS_GRAFANA_PASSWORD') | default('admin123!', true) }}"
-  prometheus_retention: "15d"
-  prometheus_storage: "10Gi"
-  grafana_storage: "5Gi"
+  namespace: "{{ lookup('env', 'LIONS_MONITORING_NAMESPACE') | default('monitoring', true) }}"
+  grafana_admin_password: "{{ grafana_admin_password }}"
+  prometheus_retention: "{{ prometheus_retention }}"
+  prometheus_storage: "{{ prometheus_storage }}"
+  grafana_storage: "{{ grafana_storage }}"
+
+  # Ressources adaptatives selon l'environnement
   resource_limits:
-    prometheus_cpu: "1000m"
-    prometheus_memory: "2Gi"
-    grafana_cpu: "500m"
-    grafana_memory: "512Mi"
+    prometheus_cpu: "{{ lookup('env', 'LIONS_PROMETHEUS_CPU_LIMIT') | default('1000m', true) }}"
+    prometheus_memory: "{{ lookup('env', 'LIONS_PROMETHEUS_MEMORY_LIMIT') | default('2Gi', true) }}"
+    grafana_cpu: "{{ lookup('env', 'LIONS_GRAFANA_CPU_LIMIT') | default('500m', true) }}"
+    grafana_memory: "{{ lookup('env', 'LIONS_GRAFANA_MEMORY_LIMIT') | default('512Mi', true) }}"
 
-# Service domains
+  # Requests adaptatifs selon l'environnement
+  resource_requests:
+    prometheus_cpu: "{{ lookup('env', 'LIONS_PROMETHEUS_CPU_REQUEST') | default('500m', true) }}"
+    prometheus_memory: "{{ lookup('env', 'LIONS_PROMETHEUS_MEMORY_REQUEST') | default('1Gi', true) }}"
+    grafana_cpu: "{{ lookup('env', 'LIONS_GRAFANA_CPU_REQUEST') | default('200m', true) }}"
+    grafana_memory: "{{ lookup('env', 'LIONS_GRAFANA_MEMORY_REQUEST') | default('256Mi', true) }}"
+
+# ===============================================================================
+# SERVICE DOMAINS CONFIGURATION
+# ===============================================================================
+
+# Configuration des domaines de service avec template avancé
 services_domains:
-  lions_main: "{{ lions_domain }}"
-  grafana: "grafana.{{ lions_domain }}"
-  prometheus: "prometheus.{{ lions_domain }}"
-  k3s_dashboard: "k3s.{{ lions_domain }}"
-  keycloak: "keycloak.{{ lions_domain }}"
-  pgadmin: "pgadmin.{{ lions_domain }}"
-  gitea: "git.{{ lions_domain }}"
-  vault: "vault.{{ lions_domain }}"
-  ollama: "ollama.{{ lions_domain }}"
-  registry: "registry.{{ lions_domain }}"
+  lions_main: "{{ lions_env_domain }}"
+  grafana: "{{ lookup('env', 'LIONS_GRAFANA_DOMAIN') | default('grafana.' + lions_env_domain, true) }}"
+  prometheus: "{{ lookup('env', 'LIONS_PROMETHEUS_DOMAIN') | default('prometheus.' + lions_env_domain, true) }}"
+  alertmanager: "{{ lookup('env', 'LIONS_ALERTMANAGER_DOMAIN') | default('alertmanager.' + lions_env_domain, true) }}"
+  k3s_dashboard: "{{ lookup('env', 'LIONS_K3S_DASHBOARD_DOMAIN') | default('k3s.' + lions_env_domain, true) }}"
+  keycloak: "{{ lookup('env', 'LIONS_KEYCLOAK_DOMAIN') | default('keycloak.' + lions_env_domain, true) }}"
+  pgadmin: "{{ lookup('env', 'LIONS_PGADMIN_DOMAIN') | default('pgadmin.' + lions_env_domain, true) }}"
+  gitea: "{{ lookup('env', 'LIONS_GITEA_DOMAIN') | default('git.' + lions_env_domain, true) }}"
+  vault: "{{ lookup('env', 'LIONS_VAULT_DOMAIN') | default('vault.' + lions_env_domain, true) }}"
+  ollama: "{{ lookup('env', 'LIONS_OLLAMA_DOMAIN') | default('ollama.' + lions_env_domain, true) }}"
+  registry: "{{ lookup('env', 'LIONS_REGISTRY_DOMAIN') | default('registry.' + lions_env_domain, true) }}"
+  quarkus: "{{ lookup('env', 'LIONS_QUARKUS_DOMAIN') | default('quarkus.' + lions_env_domain, true) }}"
+  primefaces: "{{ lookup('env', 'LIONS_PRIMEFACES_DOMAIN') | default('primefaces.' + lions_env_domain, true) }}"
+  primereact: "{{ lookup('env', 'LIONS_PRIMEREACT_DOMAIN') | default('primereact.' + lions_env_domain, true) }}"
 
-# Default credentials (override these in environment-specific vars)
+# ===============================================================================
+# ADVANCED CREDENTIALS CONFIGURATION
+# ===============================================================================
+
+# Configuration avancée des identifiants avec gestion sécurisée des secrets
 default_credentials:
   postgres:
-    username: "postgres"
-    password: "{{ lookup('env', 'LIONS_POSTGRES_PASSWORD') | default('postgres123!', true) }}"
+    username: "{{ lookup('env', 'LIONS_POSTGRES_USERNAME') | default('postgres', true) }}"
+    password: "{{ lookup('env', 'LIONS_POSTGRES_PASSWORD') | default('', true) }}"
+    admin_password: "{{ lookup('env', 'LIONS_POSTGRES_ADMIN_PASSWORD') | default('', true) }}"
+
   keycloak:
-    admin_username: "admin"
-    admin_password: "{{ lookup('env', 'LIONS_KEYCLOAK_PASSWORD') | default('admin123!', true) }}"
+    admin_username: "{{ lookup('env', 'LIONS_KEYCLOAK_ADMIN_USER') | default('admin', true) }}"
+    admin_password: "{{ lookup('env', 'LIONS_KEYCLOAK_ADMIN_PASSWORD') | default('', true) }}"
+    db_username: "{{ lookup('env', 'LIONS_KEYCLOAK_DB_USERNAME') | default('keycloak', true) }}"
+    db_password: "{{ lookup('env', 'LIONS_KEYCLOAK_DB_PASSWORD') | default('', true) }}"
+
   gitea:
-    admin_username: "gitea_admin"
-    admin_password: "{{ lookup('env', 'LIONS_GITEA_PASSWORD') | default('gitea123!', true) }}"
+    admin_username: "{{ lookup('env', 'LIONS_GITEA_ADMIN_USER') | default('gitadmin', true) }}"
+    admin_password: "{{ lookup('env', 'LIONS_GITEA_ADMIN_PASSWORD') | default('', true) }}"
+    db_username: "{{ lookup('env', 'LIONS_GITEA_DB_USERNAME') | default('gitea', true) }}"
+    db_password: "{{ lookup('env', 'LIONS_GITEA_DB_PASSWORD') | default('', true) }}"
+
   registry:
-    username: "registry_admin"
-    password: "{{ lookup('env', 'LIONS_REGISTRY_PASSWORD') | default('registry123!', true) }}"
+    username: "{{ lookup('env', 'LIONS_REGISTRY_USERNAME') | default('registry', true) }}"
+    password: "{{ lookup('env', 'LIONS_REGISTRY_PASSWORD') | default('', true) }}"
 
-# Backup configuration
+  pgadmin:
+    email: "{{ lookup('env', 'LIONS_PGADMIN_EMAIL') | default('admin@' + lions_base_domain, true) }}"
+    password: "{{ lookup('env', 'LIONS_PGADMIN_PASSWORD') | default('', true) }}"
+
+# ===============================================================================
+# ADVANCED BACKUP CONFIGURATION
+# ===============================================================================
+
+# Configuration avancée des sauvegardes avec stratégies par composant
 backup_config:
-  schedule: "0 2 * * *"  # Daily at 2 AM
-  storage_location: "/var/backups/lions"
+  enabled: "{{ lions_backup_enabled }}"
+  schedule: "{{ lions_backup_schedule }}"
+  storage_location: "{{ lookup('env', 'LIONS_BACKUP_STORAGE_LOCATION') | default('/var/backups/lions', true) }}"
   retention_days: "{{ lions_backup_retention_days }}"
-  components:
-    - postgres
-    - gitea
-    - keycloak
-    - kubernetes_resources
 
-# Logging configuration
+  # Stratégies de sauvegarde par composant
+  components:
+    postgres:
+      enabled: "{{ lions_postgres_enabled }}"
+      method: "{{ lookup('env', 'LIONS_BACKUP_POSTGRES_METHOD') | default('pg_dump', true) }}"
+      schedule: "{{ lookup('env', 'LIONS_BACKUP_POSTGRES_SCHEDULE') | default(lions_backup_schedule, true) }}"
+      retention: "{{ lookup('env', 'LIONS_BACKUP_POSTGRES_RETENTION') | default(lions_backup_retention_days, true) | int }}"
+
+    gitea:
+      enabled: "{{ lions_gitea_enabled }}"
+      method: "{{ lookup('env', 'LIONS_BACKUP_GITEA_METHOD') | default('gitea_dump', true) }}"
+      schedule: "{{ lookup('env', 'LIONS_BACKUP_GITEA_SCHEDULE') | default(lions_backup_schedule, true) }}"
+      retention: "{{ lookup('env', 'LIONS_BACKUP_GITEA_RETENTION') | default(lions_backup_retention_days, true) | int }}"
+
+    keycloak:
+      enabled: "{{ lions_keycloak_enabled }}"
+      method: "{{ lookup('env', 'LIONS_BACKUP_KEYCLOAK_METHOD') | default('export', true) }}"
+      schedule: "{{ lookup('env', 'LIONS_BACKUP_KEYCLOAK_SCHEDULE') | default(lions_backup_schedule, true) }}"
+      retention: "{{ lookup('env', 'LIONS_BACKUP_KEYCLOAK_RETENTION') | default(lions_backup_retention_days, true) | int }}"
+
+    kubernetes_resources:
+      enabled: true
+      method: "{{ lookup('env', 'LIONS_BACKUP_K8S_METHOD') | default('yaml_export', true) }}"
+      schedule: "{{ lookup('env', 'LIONS_BACKUP_K8S_SCHEDULE') | default(lions_backup_schedule, true) }}"
+      retention: "{{ lookup('env', 'LIONS_BACKUP_K8S_RETENTION') | default(lions_backup_retention_days, true) | int }}"
+
+    vault:
+      enabled: "{{ lions_vault_enabled }}"
+      method: "{{ lookup('env', 'LIONS_BACKUP_VAULT_METHOD') | default('snapshot', true) }}"
+      schedule: "{{ lookup('env', 'LIONS_BACKUP_VAULT_SCHEDULE') | default(lions_backup_schedule, true) }}"
+      retention: "{{ lookup('env', 'LIONS_BACKUP_VAULT_RETENTION') | default(lions_backup_retention_days, true) | int }}"
+
+# ===============================================================================
+# ADVANCED LOGGING CONFIGURATION
+# ===============================================================================
+
+# Configuration avancée des logs avec gestion par composant
 logging_config:
-  log_level: "{{ lookup('env', 'LIONS_LOG_LEVEL') | default('INFO', true) }}"
-  retention_days: 30
-  max_size: "100Mi"
+  log_level: "{{ lions_log_level }}"
+  log_format: "{{ lions_log_format }}"
+  retention_days: "{{ lions_log_retention_days }}"
+  max_size: "{{ lookup('env', 'LIONS_LOG_MAX_SIZE') | default('100Mi', true) }}"
+
+  # Configuration par composant
+  components:
+    k3s:
+      level: "{{ lookup('env', 'LIONS_LOG_LEVEL_K3S') | default(lions_log_level, true) }}"
+      rotation: "{{ lookup('env', 'LIONS_LOG_ROTATION_K3S') | default('daily', true) }}"
+      max_files: "{{ lookup('env', 'LIONS_LOG_MAX_FILES_K3S') | default('7', true) | int }}"
+
+    postgres:
+      level: "{{ lookup('env', 'LIONS_LOG_LEVEL_POSTGRES') | default('info', true) }}"
+      slow_query_log: "{{ lookup('env', 'LIONS_POSTGRES_SLOW_QUERY_LOG') | default('true', true) | bool }}"
+      slow_query_threshold: "{{ lookup('env', 'LIONS_POSTGRES_SLOW_QUERY_THRESHOLD') | default('1000ms', true) }}"
+
+    applications:
+      level: "{{ lions_app_log_level }}"
+      access_log: "{{ lions_access_log_enabled }}"
+      error_log: "{{ lookup('env', 'LIONS_ERROR_LOG_ENABLED') | default('true', true) | bool }}"
+
+# ===============================================================================
+# FEATURE FLAGS CONFIGURATION
+# ===============================================================================
+
+# Configuration des feature flags pour un déploiement progressif
+feature_flags:
+  analytics: "{{ lookup('env', 'LIONS_FEATURE_ANALYTICS') | default('true', true) | bool }}"
+  telemetry: "{{ lookup('env', 'LIONS_FEATURE_TELEMETRY') | default('true', true) | bool }}"
+  advanced_monitoring: "{{ lookup('env', 'LIONS_FEATURE_ADVANCED_MONITORING') | default('true', true) | bool }}"
+  auto_scaling: "{{ lookup('env', 'LIONS_FEATURE_AUTO_SCALING') | default('true', true) | bool }}"
+  gpu_support: "{{ lookup('env', 'LIONS_FEATURE_GPU_SUPPORT') | default('false', true) | bool }}"
+  multi_cluster: "{{ lookup('env', 'LIONS_FEATURE_MULTI_CLUSTER') | default('false', true) | bool }}"
+  service_mesh: "{{ lookup('env', 'LIONS_FEATURE_SERVICE_MESH') | default('false', true) | bool }}"
+  disaster_recovery: "{{ lookup('env', 'LIONS_FEATURE_DISASTER_RECOVERY') | default('false', true) | bool }}"
+
+# ===============================================================================
+# PERFORMANCE TUNING CONFIGURATION
+# ===============================================================================
+
+# Configuration de performance avec tuning adaptatif
+performance_tuning:
+  # JVM Configuration pour les applications Java
+  jvm:
+    xms: "{{ lookup('env', 'LIONS_JVM_XMS') | default('512m', true) }}"
+    xmx: "{{ lookup('env', 'LIONS_JVM_XMX') | default('1g', true) }}"
+    metaspace: "{{ lookup('env', 'LIONS_JVM_METASPACE') | default('256m', true) }}"
+    gc_algorithm: "{{ lookup('env', 'LIONS_JVM_GC') | default('G1GC', true) }}"
+
+  # Configuration des pools de connexion
+  connection_pools:
+    db_pool_size: "{{ lookup('env', 'LIONS_DB_POOL_SIZE') | default('20', true) | int }}"
+    db_pool_max_idle: "{{ lookup('env', 'LIONS_DB_POOL_MAX_IDLE') | default('10', true) | int }}"
+    db_pool_min_idle: "{{ lookup('env', 'LIONS_DB_POOL_MIN_IDLE') | default('5', true) | int }}"
+
+  # Configuration du cache
+  cache:
+    enabled: "{{ lookup('env', 'LIONS_CACHE_ENABLED') | default('true', true) | bool }}"
+    ttl: "{{ lookup('env', 'LIONS_CACHE_TTL') | default('3600', true) | int }}"
+    size: "{{ lookup('env', 'LIONS_CACHE_SIZE') | default('1000', true) | int }}"
+    type: "{{ lookup('env', 'LIONS_CACHE_TYPE') | default('redis', true) }}"
+
+# ===============================================================================
+# COMPLIANCE & GOVERNANCE CONFIGURATION
+# ===============================================================================
+
+# Configuration de conformité et gouvernance
+compliance:
+  # Protection des données et confidentialité
+  gdpr_enabled: "{{ lookup('env', 'LIONS_GDPR_ENABLED') | default('true', true) | bool }}"
+  data_retention_policy: "{{ lookup('env', 'LIONS_DATA_RETENTION_POLICY') | default('2y', true) }}"
+  personal_data_encryption: "{{ lookup('env', 'LIONS_PERSONAL_DATA_ENCRYPTION') | default('true', true) | bool }}"
+
+  # Standards de conformité
+  compliance_mode: "{{ lookup('env', 'LIONS_COMPLIANCE_MODE') | default('standard', true) }}"
+  soc2_compliance: "{{ lookup('env', 'LIONS_SOC2_COMPLIANCE') | default('false', true) | bool }}"
+  iso27001_compliance: "{{ lookup('env', 'LIONS_ISO27001_COMPLIANCE') | default('false', true) | bool }}"
+
+  # Audit et traçabilité
+  audit_trail_enabled: "{{ lookup('env', 'LIONS_AUDIT_TRAIL_ENABLED') | default('true', true) | bool }}"
+  audit_retention: "{{ lookup('env', 'LIONS_AUDIT_RETENTION') | default('7y', true) }}"
+
+# ===============================================================================
+# COMPUTED VARIABLES & HELPERS
+# ===============================================================================
+
+# Variables calculées et helpers pour simplifier les templates
+computed_vars:
+  # Prefixes et identifiants
+  namespace_prefix: "{{ lions_project_name }}-{{ lions_environment }}"
+  resource_prefix: "{{ lions_project_name }}-{{ lions_environment }}"
+  config_map_name: "{{ computed_vars.resource_prefix }}-config"
+  secret_name: "{{ computed_vars.resource_prefix }}-secrets"
+
+  # URLs complètes des services
+  service_urls:
+    grafana_url: "{{ 'https' if lions_tls_enabled else 'http' }}://{{ services_domains.grafana }}"
+    prometheus_url: "{{ 'https' if lions_tls_enabled else 'http' }}://{{ services_domains.prometheus }}"
+    keycloak_url: "{{ 'https' if lions_tls_enabled else 'http' }}://{{ services_domains.keycloak }}"
+    vault_url: "{{ vault_addr }}"
+
+  # Labels communes pour tous les objets Kubernetes
+  common_labels:
+    app.kubernetes.io/name: "{{ lions_project_name }}"
+    app.kubernetes.io/version: "{{ lions_version }}"
+    app.kubernetes.io/component: "infrastructure"
+    app.kubernetes.io/part-of: "{{ lions_project_name }}"
+    app.kubernetes.io/managed-by: "ansible"
+    environment: "{{ lions_environment }}"
+    organization: "{{ lions_organization }}"
+
+  # Annotations communes
+  common_annotations:
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/version: "{{ lions_version }}"
+    lions.dev/build-number: "{{ lions_build_number }}"
+    lions.dev/deployment-id: "{{ lions_deployment_id }}"
+
+# ===============================================================================
+# ENVIRONMENT-SPECIFIC OVERRIDES
+# ===============================================================================
+
+# Cette section permet de surcharger des variables spécifiques selon l'environnement
+# Les fichiers environment-specific peuvent importer et étendre ce fichier
+
+# Variable pour indiquer que les overrides ont été chargés
+common_vars_loaded: true
+common_vars_version: "5.0.0"
+
+# ===============================================================================
+# END OF CONFIGURATION
+# ===============================================================================

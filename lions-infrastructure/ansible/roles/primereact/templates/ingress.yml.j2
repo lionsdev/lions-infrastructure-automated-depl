@@ -1,39 +1,310 @@
 ---
-# Titre: Template d'ingress Kubernetes pour PrimeReact
-# Description: Définit l'ingress Kubernetes pour une application PrimeReact
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - TEMPLATE INGRESS PRIMEREACT
+# =========================================================================
+# Description: Template d'ingress Kubernetes optimisé pour applications PrimeReact
+# Version: 5.0.0
+# Date: {{ ansible_date_time.date }}
+# Maintainer: {{ lions_config.maintainer | default('devops@lions.dev') }}
+# Environment: {{ lions_environment }}
+# Documentation: https://docs.lions.dev/infrastructure/ingress/primereact
+# =========================================================================
 
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: "{{ app_name }}"
-  namespace: "{{ app_namespace }}"
+  name: "{{ lions_primereact.service_name | default('primereact') }}"
+  namespace: "{{ lions_primereact.namespace | default(lions_primereact_namespace) }}"
+
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "primereact"
+    # Labels standards LIONS
+    app.kubernetes.io/name: "{{ lions_primereact.service_name | default('primereact') }}"
+    app.kubernetes.io/instance: "{{ lions_primereact.service_name | default('primereact') }}-{{ lions_environment }}"
+    app.kubernetes.io/version: "{{ lions_primereact.version | default('latest') }}"
+    app.kubernetes.io/component: "frontend"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+
+    # Labels LIONS spécifiques
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/technology: "primereact"
+    lions.dev/tier: "frontend"
+    lions.dev/deployment-mode: "{{ lions_deployment_mode | default('single') }}"
+    lions.dev/config-version: "{{ lions_config_version | default('5.0.0') }}"
+
+    # Labels pour monitoring et observabilité
+    monitoring.lions.dev/enabled: "{{ lions_monitoring_enabled | string | lower }}"
+    backup.lions.dev/enabled: "{{ lions_backup_enabled | string | lower }}"
+
+{% if lions_debug_mode | default(false) %}
+    # Labels de debug (uniquement en mode debug)
+    debug.lions.dev/template-version: "5.0.0"
+    debug.lions.dev/generated-at: "{{ ansible_date_time.iso8601 }}"
+{% endif %}
+
   annotations:
-    description: "Ingress pour l'application {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
-    {% for key, value in primereact_ingress_annotations.items() %}
-    {{ key }}: "{{ value }}"
-    {% endfor %}
+    # Annotations de description
+    description: "Ingress pour l'application PrimeReact {{ lions_primereact.service_name | default('primereact') }} (v{{ lions_primereact.version | default('latest') }}) - Environnement {{ lions_environment }}"
+    lions.dev/documentation: "https://docs.lions.dev/applications/primereact"
+
+    # Configuration Ingress Controller
+{% if lions_k8s_traefik_enabled | default(true) %}
+    # Configuration Traefik
+    kubernetes.io/ingress.class: "traefik"
+    traefik.ingress.kubernetes.io/router.entrypoints: "{% if lions_security_tls_enabled | default(true) %}websecure{% else %}web{% endif %}"
+
+    # Middleware Traefik pour sécurité
+    traefik.ingress.kubernetes.io/router.middlewares: >-
+      {{ lions_primereact.namespace | default(lions_primereact_namespace) }}-security-headers@kubernetescrd,
+      {{ lions_primereact.namespace | default(lions_primereact_namespace) }}-rate-limit@kubernetescrd
+{% if lions_environment == 'production' %}
+        ,{{ lions_primereact.namespace | default(lions_primereact_namespace) }}-compression@kubernetescrd
+{% endif %}
+
+{% if lions_security_tls_enabled | default(true) %}
+    # Configuration TLS Traefik
+    traefik.ingress.kubernetes.io/router.tls: "true"
+{% if lions_security_tls_provider == 'letsencrypt' %}
+    traefik.ingress.kubernetes.io/router.tls.certresolver: "letsencrypt"
+{% endif %}
+{% endif %}
+
+{% else %}
+    # Configuration NGINX Ingress Controller
+    kubernetes.io/ingress.class: "nginx"
+    nginx.ingress.kubernetes.io/ssl-redirect: "{{ lions_security_tls_enabled | string | lower }}"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "{{ lions_security_tls_enabled | string | lower }}"
+{% endif %}
+
+    # Annotations de sécurité
+{% if lions_security_tls_enabled | default(true) %}
+    nginx.ingress.kubernetes.io/ssl-protocols: "TLSv1.2 TLSv1.3"
+    nginx.ingress.kubernetes.io/ssl-ciphers: "ECDHE-ECDSA-AES128-GCM-SHA256,ECDHE-RSA-AES128-GCM-SHA256,ECDHE-ECDSA-AES256-GCM-SHA384,ECDHE-RSA-AES256-GCM-SHA384"
+{% endif %}
+
+    # Headers de sécurité pour applications SPA
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header X-Frame-Options "SAMEORIGIN" always;
+      add_header X-Content-Type-Options "nosniff" always;
+      add_header X-XSS-Protection "1; mode=block" always;
+      add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+      add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' {{ lions_primereact.api_endpoints | default('*') }};" always;
+
+    # Configuration spécifique aux applications React/SPA
+    nginx.ingress.kubernetes.io/rewrite-target: "/"
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "{{ lions_primereact.max_upload_size | default('10m') }}"
+
+    # Timeout et buffer pour applications interactives
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "{{ lions_timeout_default | default('60') }}"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "{{ lions_timeout_default | default('60') }}"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "{{ lions_timeout_default | default('60') }}"
+    nginx.ingress.kubernetes.io/proxy-buffer-size: "4k"
+
+{% if lions_environment == 'production' %}
+    # Optimisations pour la production
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "DNT,Keep-Alive,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Authorization"
+    nginx.ingress.kubernetes.io/cors-max-age: "86400"
+
+    # Compression et cache
+    nginx.ingress.kubernetes.io/enable-brotli: "true"
+    nginx.ingress.kubernetes.io/proxy-buffering: "on"
+{% endif %}
+
+    # Rate limiting selon l'environnement
+{% if lions_environment == 'production' %}
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+{% elif lions_environment == 'staging' %}
+    nginx.ingress.kubernetes.io/rate-limit: "50"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+{% else %}
+    nginx.ingress.kubernetes.io/rate-limit: "20"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+{% endif %}
+
+    # Annotations pour monitoring et observabilité
+{% if lions_monitoring_enabled | default(true) %}
+    prometheus.io/scrape: "true"
+    prometheus.io/path: "/metrics"
+    prometheus.io/port: "{{ lions_primereact.metrics_port | default('9090') }}"
+{% endif %}
+
+    # Annotations de backup et restore
+{% if lions_backup_enabled | default(true) %}
+    backup.lions.dev/schedule: "{{ lions_backup_schedule | default('0 2 * * *') }}"
+    backup.lions.dev/retention: "{{ lions_backup_retention_days | default('7') }}d"
+{% endif %}
+
+    # Annotations personnalisées par environnement
+{% for annotation_key, annotation_value in lions_primereact.custom_annotations | default({}).items() %}
+    {{ annotation_key }}: "{{ annotation_value }}"
+{% endfor %}
+
 spec:
-  ingressClassName: nginx
+  # Classe d'ingress selon la configuration
+{% if lions_k8s_traefik_enabled | default(true) %}
+  ingressClassName: "traefik"
+{% else %}
+  ingressClassName: "nginx"
+{% endif %}
+
+  # Configuration TLS
+{% if lions_security_tls_enabled | default(true) %}
   tls:
     - hosts:
-        - "{{ app_domain }}"
-      secretName: "{{ app_name }}-tls"
+{% for domain in lions_primereact.domains | default([lions_primereact.domain | default(lions_primereact.service_name + '.' + lions_dns_full_domain)]) %}
+        - "{{ domain }}"
+{% endfor %}
+      secretName: "{{ lions_primereact.service_name | default('primereact') }}-tls-{{ lions_environment }}"
+{% if lions_primereact.additional_tls_configs | default([]) %}
+{% for tls_config in lions_primereact.additional_tls_configs %}
+    - hosts:
+{% for host in tls_config.hosts %}
+        - "{{ host }}"
+{% endfor %}
+      secretName: "{{ tls_config.secret_name }}"
+{% endfor %}
+{% endif %}
+{% endif %}
+
+  # Règles de routage
   rules:
-    - host: "{{ app_domain }}"
+{% for domain in lions_primereact.domains | default([lions_primereact.domain | default(lions_primereact.service_name + '.' + lions_dns_full_domain)]) %}
+    - host: "{{ domain }}"
       http:
         paths:
+          # Route principale pour l'application SPA
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: "{{ app_name }}"
+                name: "{{ lions_primereact.service_name | default('primereact') }}"
                 port:
-                  name: http
+                  number: {{ lions_primereact.port | default(lions_primereact_port) | default(3000) }}
+
+          # Route pour les assets statiques avec cache optimisé
+          - path: /static
+            pathType: Prefix
+            backend:
+              service:
+                name: "{{ lions_primereact.service_name | default('primereact') }}"
+                port:
+                  number: {{ lions_primereact.port | default(lions_primereact_port) | default(3000) }}
+
+          # Route pour les API si l'application les expose
+{% if lions_primereact.api_enabled | default(false) %}
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: "{{ lions_primereact.api_service_name | default(lions_primereact.service_name + '-api') }}"
+                port:
+                  number: {{ lions_primereact.api_port | default(8080) }}
+{% endif %}
+
+          # Routes pour health checks et métriques
+{% if lions_monitoring_enabled | default(true) %}
+          - path: /health
+            pathType: Exact
+            backend:
+              service:
+                name: "{{ lions_primereact.service_name | default('primereact') }}"
+                port:
+                  number: {{ lions_primereact.port | default(lions_primereact_port) | default(3000) }}
+
+          - path: /metrics
+            pathType: Exact
+            backend:
+              service:
+                name: "{{ lions_primereact.service_name | default('primereact') }}"
+                port:
+                  number: {{ lions_primereact.metrics_port | default(9090) }}
+{% endif %}
+
+{% if lions_primereact.custom_paths | default([]) %}
+          # Chemins personnalisés
+{% for custom_path in lions_primereact.custom_paths %}
+          - path: {{ custom_path.path }}
+            pathType: {{ custom_path.pathType | default('Prefix') }}
+            backend:
+              service:
+                name: "{{ custom_path.service_name | default(lions_primereact.service_name) }}"
+                port:
+                  number: {{ custom_path.port | default(lions_primereact.port) }}
+{% endfor %}
+{% endif %}
+
+{% endfor %}
+
+---
+{% if lions_k8s_traefik_enabled | default(true) and lions_environment == 'production' %}
+# =========================================================================
+# MIDDLEWARE TRAEFIK POUR SÉCURITÉ (PRODUCTION)
+# =========================================================================
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: security-headers
+  namespace: "{{ lions_primereact.namespace | default(lions_primereact_namespace) }}"
+  labels:
+    app.kubernetes.io/name: "{{ lions_primereact.service_name | default('primereact') }}"
+    app.kubernetes.io/component: "middleware"
+    lions.dev/environment: "{{ lions_environment }}"
+spec:
+  headers:
+    customRequestHeaders:
+      X-Forwarded-Proto: "https"
+    customResponseHeaders:
+      X-Frame-Options: "SAMEORIGIN"
+      X-Content-Type-Options: "nosniff"
+      X-XSS-Protection: "1; mode=block"
+      Referrer-Policy: "strict-origin-when-cross-origin"
+      Permissions-Policy: "geolocation=(), microphone=(), camera=()"
+    contentSecurityPolicy: "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' {{ lions_primereact.api_endpoints | default('*') }};"
+
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: rate-limit
+  namespace: "{{ lions_primereact.namespace | default(lions_primereact_namespace) }}"
+  labels:
+    app.kubernetes.io/name: "{{ lions_primereact.service_name | default('primereact') }}"
+    app.kubernetes.io/component: "middleware"
+    lions.dev/environment: "{{ lions_environment }}"
+spec:
+  rateLimit:
+    burst: {{ lions_primereact.rate_limit_burst | default('20') }}
+    average: {{ lions_primereact.rate_limit_average | default('10') }}
+
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: compression
+  namespace: "{{ lions_primereact.namespace | default(lions_primereact_namespace) }}"
+  labels:
+    app.kubernetes.io/name: "{{ lions_primereact.service_name | default('primereact') }}"
+    app.kubernetes.io/component: "middleware"
+    lions.dev/environment: "{{ lions_environment }}"
+spec:
+  compress:
+    excludedContentTypes:
+      - "text/event-stream"
+      - "application/grpc"
+    minResponseBodyBytes: 1024
+{% endif %}
+
+# =========================================================================
+# VALIDATION DE CONFIGURATION
+# =========================================================================
+{% if lions_debug_mode | default(false) %}
+# Configuration générée pour {{ lions_environment }} le {{ ansible_date_time.iso8601 }}
+# Domain principal: {{ lions_primereact.domain | default(lions_primereact.service_name + '.' + lions_dns_full_domain) }}
+# TLS activé: {{ lions_security_tls_enabled | default(true) }}
+# Monitoring activé: {{ lions_monitoring_enabled | default(true) }}
+# Ingress Controller: {% if lions_k8s_traefik_enabled | default(true) %}Traefik{% else %}NGINX{% endif %}
+{% endif %}

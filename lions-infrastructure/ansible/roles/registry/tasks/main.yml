@@ -1,36 +1,424 @@
 ---
-# Titre: Tâches pour le déploiement de la registry de conteneurs
-# Description: Déploie la registry de conteneurs Docker sur Kubernetes
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-10
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - RÔLE REGISTRY
+# =========================================================================
+# Description: Orchestrateur principal pour le déploiement de la registry de conteneurs
+# Version: 5.0.0
+# Maintainer: DevOps Team <devops@lions.dev>
+# Documentation: https://docs.lions.dev/infrastructure/services/registry
+# =========================================================================
 
-- name: Vérification des prérequis pour la registry
-  import_tasks: prerequisites.yml
+# =========================================================================
+# MÉTADONNÉES ET CONFIGURATION
+# =========================================================================
+- name: "Registry | Initialisation des métadonnées de déploiement"
+  set_fact:
+    registry_deployment_metadata:
+      role_name: "registry"
+      role_version: "5.0.0"
+      deployment_id: "{{ ansible_date_time.epoch }}"
+      environment: "{{ lions_environment | default('development') }}"
+      namespace: "{{ lions_registry_namespace | default('registry') }}"
+      started_at: "{{ ansible_date_time.iso8601 }}"
+      started_by: "{{ ansible_user_id | default('system') }}"
+    registry_deployment_config:
+      dry_run: "{{ lions_dry_run | default(false) | bool }}"
+      debug_mode: "{{ lions_debug_mode | default(false) | bool }}"
+      skip_validation: "{{ registry_skip_validation | default(false) | bool }}"
+      force_recreate: "{{ registry_force_recreate | default(false) | bool }}"
+  tags:
+    - registry
+    - metadata
+    - always
+
+- name: "Registry | Affichage des informations de déploiement"
+  debug:
+    msg:
+      - "🚀 Démarrage du déploiement Registry"
+      - "📊 Environnement: {{ registry_deployment_metadata.environment }}"
+      - "🏷️  Namespace: {{ registry_deployment_metadata.namespace }}"
+      - "🆔 ID de déploiement: {{ registry_deployment_metadata.deployment_id }}"
+      - "⏰ Démarré le: {{ registry_deployment_metadata.started_at }}"
+      - "👤 Initié par: {{ registry_deployment_metadata.started_by }}"
+      - "🔧 Mode debug: {{ registry_deployment_config.debug_mode }}"
+      - "🧪 Dry run: {{ registry_deployment_config.dry_run }}"
+  when: registry_deployment_config.debug_mode | bool
+  tags:
+    - registry
+    - debug
+    - always
+
+# =========================================================================
+# GESTION DES ERREURS ET ROLLBACK
+# =========================================================================
+- name: "Registry | Configuration de la gestion d'erreurs"
+  set_fact:
+    registry_error_handling:
+      max_retries: "{{ registry_max_retries | default(3) }}"
+      retry_delay: "{{ registry_retry_delay | default(10) }}"
+      rollback_on_failure: "{{ registry_rollback_on_failure | default(true) | bool }}"
+      error_log_file: "/tmp/registry-deployment-{{ registry_deployment_metadata.deployment_id }}.log"
+  tags:
+    - registry
+    - error-handling
+    - always
+
+# =========================================================================
+# VÉRIFICATIONS PRÉALABLES CRITIQUES
+# =========================================================================
+- name: "Registry | Vérification de l'état de l'environnement"
+  block:
+    - name: "Registry | Vérification de l'accessibilité du cluster Kubernetes"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Namespace
+        name: "{{ registry_deployment_metadata.namespace }}"
+      register: registry_namespace_check
+      failed_when: false
+
+    - name: "Registry | Vérification des variables d'environnement critiques"
+      assert:
+        that:
+          - lions_registry_enabled is defined
+          - lions_registry_enabled | bool
+          - lions_registry_version is defined
+          - lions_registry_version | length > 0
+          - registry_deployment_metadata.namespace is defined
+        fail_msg: "Variables d'environnement Registry manquantes ou incorrectes"
+        success_msg: "Variables d'environnement Registry validées"
+
+  rescue:
+    - name: "Registry | Gestion d'erreur - Vérifications préalables"
+      fail:
+        msg: "❌ Échec des vérifications préalables Registry: {{ ansible_failed_result.msg | default('Erreur inconnue') }}"
+
+  tags:
+    - registry
+    - preflight
+    - validation
+
+# =========================================================================
+# PHASE 1: PRÉREQUIS ET DÉPENDANCES
+# =========================================================================
+- name: "Registry | Phase 1 - Vérification des prérequis"
+  block:
+    - name: "Registry | Inclusion des tâches de prérequis"
+      include_tasks: prerequisites.yml
+      vars:
+        current_phase: "prerequisites"
+        phase_description: "Vérification des prérequis système et Kubernetes"
+
+  rescue:
+    - name: "Registry | Échec Phase 1 - Prérequis"
+      set_fact:
+        registry_deployment_failed: true
+        registry_failure_phase: "prerequisites"
+        registry_failure_reason: "{{ ansible_failed_result.msg | default('Échec des prérequis') }}"
+
+    - name: "Registry | Log d'erreur Phase 1"
+      lineinfile:
+        path: "{{ registry_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] ERREUR Phase 1 (Prérequis): {{ registry_failure_reason }}"
+        create: yes
+
+    - name: "Registry | Arrêt du déploiement - Phase 1"
+      fail:
+        msg: "❌ Déploiement Registry interrompu en Phase 1 (Prérequis): {{ registry_failure_reason }}"
+
   tags:
     - registry
     - prerequisites
+    - phase-1
 
-- name: Préparation des ressources pour la registry
-  import_tasks: prepare.yml
+# =========================================================================
+# PHASE 2: PRÉPARATION DES RESSOURCES
+# =========================================================================
+- name: "Registry | Phase 2 - Préparation des ressources"
+  block:
+    - name: "Registry | Inclusion des tâches de préparation"
+      include_tasks: prepare.yml
+      vars:
+        current_phase: "preparation"
+        phase_description: "Création des ressources Kubernetes de base"
+
+  rescue:
+    - name: "Registry | Échec Phase 2 - Préparation"
+      set_fact:
+        registry_deployment_failed: true
+        registry_failure_phase: "preparation"
+        registry_failure_reason: "{{ ansible_failed_result.msg | default('Échec de la préparation') }}"
+
+    - name: "Registry | Log d'erreur Phase 2"
+      lineinfile:
+        path: "{{ registry_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] ERREUR Phase 2 (Préparation): {{ registry_failure_reason }}"
+        create: yes
+
+    - name: "Registry | Nettoyage partiel après échec Phase 2"
+      include_tasks: cleanup.yml
+      vars:
+        cleanup_scope: "preparation"
+      when: registry_error_handling.rollback_on_failure | bool
+
+    - name: "Registry | Arrêt du déploiement - Phase 2"
+      fail:
+        msg: "❌ Déploiement Registry interrompu en Phase 2 (Préparation): {{ registry_failure_reason }}"
+
+  when: registry_deployment_failed is not defined
   tags:
     - registry
-    - prepare
+    - preparation
+    - phase-2
 
-- name: Déploiement de la registry
-  import_tasks: deploy.yml
+# =========================================================================
+# PHASE 3: DÉPLOIEMENT PRINCIPAL
+# =========================================================================
+- name: "Registry | Phase 3 - Déploiement principal"
+  block:
+    - name: "Registry | Inclusion des tâches de déploiement"
+      include_tasks: deploy.yml
+      vars:
+        current_phase: "deployment"
+        phase_description: "Déploiement des composants Registry"
+
+  rescue:
+    - name: "Registry | Échec Phase 3 - Déploiement"
+      set_fact:
+        registry_deployment_failed: true
+        registry_failure_phase: "deployment"
+        registry_failure_reason: "{{ ansible_failed_result.msg | default('Échec du déploiement') }}"
+
+    - name: "Registry | Log d'erreur Phase 3"
+      lineinfile:
+        path: "{{ registry_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] ERREUR Phase 3 (Déploiement): {{ registry_failure_reason }}"
+        create: yes
+
+    - name: "Registry | Rollback complet après échec Phase 3"
+      include_tasks: rollback.yml
+      vars:
+        rollback_reason: "Échec du déploiement principal"
+      when: registry_error_handling.rollback_on_failure | bool
+
+    - name: "Registry | Arrêt du déploiement - Phase 3"
+      fail:
+        msg: "❌ Déploiement Registry interrompu en Phase 3 (Déploiement): {{ registry_failure_reason }}"
+
+  when: registry_deployment_failed is not defined
   tags:
     - registry
-    - deploy
+    - deployment
+    - phase-3
 
-- name: Configuration du monitoring pour la registry
-  import_tasks: monitoring.yml
+# =========================================================================
+# PHASE 4: CONFIGURATION DU MONITORING
+# =========================================================================
+- name: "Registry | Phase 4 - Configuration du monitoring"
+  block:
+    - name: "Registry | Inclusion des tâches de monitoring"
+      include_tasks: monitoring.yml
+      vars:
+        current_phase: "monitoring"
+        phase_description: "Configuration des métriques et alertes Registry"
+
+  rescue:
+    - name: "Registry | Avertissement Phase 4 - Monitoring"
+      debug:
+        msg:
+          - "⚠️  Échec de la configuration du monitoring Registry"
+          - "ℹ️  Le déploiement principal a réussi, mais les métriques peuvent être indisponibles"
+          - "🔍 Erreur: {{ ansible_failed_result.msg | default('Erreur de monitoring inconnue') }}"
+
+    - name: "Registry | Log d'avertissement Phase 4"
+      lineinfile:
+        path: "{{ registry_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] AVERTISSEMENT Phase 4 (Monitoring): {{ ansible_failed_result.msg | default('Erreur de monitoring') }}"
+        create: yes
+
+    - name: "Registry | Marquage du monitoring comme défaillant"
+      set_fact:
+        registry_monitoring_failed: true
+
+  when:
+    - registry_deployment_failed is not defined
+    - lions_monitoring_enabled | default(true) | bool
   tags:
     - registry
     - monitoring
+    - phase-4
 
-- name: Validation du déploiement de la registry
-  import_tasks: validate.yml
+# =========================================================================
+# PHASE 5: VALIDATION POST-DÉPLOIEMENT
+# =========================================================================
+- name: "Registry | Phase 5 - Validation post-déploiement"
+  block:
+    - name: "Registry | Inclusion des tâches de validation"
+      include_tasks: validate.yml
+      vars:
+        current_phase: "validation"
+        phase_description: "Validation de l'état et des fonctionnalités Registry"
+
+  rescue:
+    - name: "Registry | Échec Phase 5 - Validation"
+      set_fact:
+        registry_deployment_failed: true
+        registry_failure_phase: "validation"
+        registry_failure_reason: "{{ ansible_failed_result.msg | default('Échec de la validation') }}"
+
+    - name: "Registry | Log d'erreur Phase 5"
+      lineinfile:
+        path: "{{ registry_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] ERREUR Phase 5 (Validation): {{ registry_failure_reason }}"
+        create: yes
+
+    - name: "Registry | Décision sur le rollback après validation"
+      debug:
+        msg: "⚠️  Validation échouée mais Registry peut être partiellement fonctionnel"
+
+    - name: "Registry | Arrêt avec avertissement - Phase 5"
+      fail:
+        msg: "⚠️  Déploiement Registry terminé avec des erreurs de validation: {{ registry_failure_reason }}"
+
+  when:
+    - registry_deployment_failed is not defined
+    - not registry_deployment_config.skip_validation | bool
   tags:
     - registry
-    - validate
+    - validation
+    - phase-5
+
+# =========================================================================
+# PHASE 6: CONFIGURATION DE LA SAUVEGARDE
+# =========================================================================
+- name: "Registry | Phase 6 - Configuration de la sauvegarde"
+  block:
+    - name: "Registry | Inclusion des tâches de sauvegarde"
+      include_tasks: backup.yml
+      vars:
+        current_phase: "backup"
+        phase_description: "Configuration des stratégies de sauvegarde Registry"
+
+  rescue:
+    - name: "Registry | Avertissement Phase 6 - Sauvegarde"
+      debug:
+        msg:
+          - "⚠️  Échec de la configuration de sauvegarde Registry"
+          - "ℹ️  Registry fonctionne mais les sauvegardes automatiques sont désactivées"
+          - "🔍 Erreur: {{ ansible_failed_result.msg | default('Erreur de sauvegarde inconnue') }}"
+
+    - name: "Registry | Log d'avertissement Phase 6"
+      lineinfile:
+        path: "{{ registry_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] AVERTISSEMENT Phase 6 (Sauvegarde): {{ ansible_failed_result.msg | default('Erreur de sauvegarde') }}"
+        create: yes
+
+    - name: "Registry | Marquage de la sauvegarde comme défaillante"
+      set_fact:
+        registry_backup_failed: true
+
+  when:
+    - registry_deployment_failed is not defined
+    - lions_backup_enabled | default(true) | bool
+    - lions_registry_backup_enabled | default(true) | bool
+  tags:
+    - registry
+    - backup
+    - phase-6
+
+# =========================================================================
+# FINALISATION ET RAPPORT DE DÉPLOIEMENT
+# =========================================================================
+- name: "Registry | Génération du rapport de déploiement"
+  set_fact:
+    registry_deployment_report:
+      status: "{{ 'FAILED' if registry_deployment_failed | default(false) else 'SUCCESS' }}"
+      environment: "{{ registry_deployment_metadata.environment }}"
+      namespace: "{{ registry_deployment_metadata.namespace }}"
+      deployment_id: "{{ registry_deployment_metadata.deployment_id }}"
+      started_at: "{{ registry_deployment_metadata.started_at }}"
+      completed_at: "{{ ansible_date_time.iso8601 }}"
+      duration: "{{ (ansible_date_time.epoch | int) - (registry_deployment_metadata.deployment_id | int) }}"
+      failed_phase: "{{ registry_failure_phase | default('N/A') }}"
+      failure_reason: "{{ registry_failure_reason | default('N/A') }}"
+      monitoring_status: "{{ 'FAILED' if registry_monitoring_failed | default(false) else 'OK' }}"
+      backup_status: "{{ 'FAILED' if registry_backup_failed | default(false) else 'OK' }}"
+      registry_version: "{{ lions_registry_version }}"
+      registry_service_name: "{{ lions_registry_service_name | default('registry') }}"
+      registry_endpoint: "{{ lions_registry_service_name | default('registry') }}.{{ registry_deployment_metadata.namespace }}.svc.cluster.local:{{ lions_registry_port | default(5000) }}"
+  tags:
+    - registry
+    - report
+    - always
+
+- name: "Registry | Affichage du rapport de déploiement"
+  debug:
+    msg:
+      - "=============================================="
+      - "📊 RAPPORT DE DÉPLOIEMENT REGISTRY"
+      - "=============================================="
+      - "📈 Statut: {{ registry_deployment_report.status }}"
+      - "🌍 Environnement: {{ registry_deployment_report.environment }}"
+      - "🏷️  Namespace: {{ registry_deployment_report.namespace }}"
+      - "🆔 ID de déploiement: {{ registry_deployment_report.deployment_id }}"
+      - "⏰ Durée: {{ registry_deployment_report.duration }}s"
+      - "🐳 Version Registry: {{ registry_deployment_report.registry_version }}"
+      - "🔗 Point de connexion: {{ registry_deployment_report.registry_endpoint }}"
+      - "📊 Monitoring: {{ registry_deployment_report.monitoring_status }}"
+      - "💾 Sauvegarde: {{ registry_deployment_report.backup_status }}"
+      - "{{ '❌ Phase d\'échec: ' + registry_deployment_report.failed_phase if registry_deployment_report.status == 'FAILED' else '✅ Déploiement réussi' }}"
+      - "{{ '🔍 Raison: ' + registry_deployment_report.failure_reason if registry_deployment_report.status == 'FAILED' else '' }}"
+      - "=============================================="
+  tags:
+    - registry
+    - report
+    - always
+
+- name: "Registry | Sauvegarde du rapport de déploiement"
+  copy:
+    content: "{{ registry_deployment_report | to_nice_json }}"
+    dest: "/tmp/registry-deployment-report-{{ registry_deployment_metadata.deployment_id }}.json"
+  delegate_to: localhost
+  tags:
+    - registry
+    - report
+
+# =========================================================================
+# NETTOYAGE ET FINALISATION
+# =========================================================================
+- name: "Registry | Nettoyage des fichiers temporaires"
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ registry_error_handling.error_log_file }}"
+  when:
+    - registry_deployment_report.status == "SUCCESS"
+    - not registry_deployment_config.debug_mode | bool
+  ignore_errors: yes
+  tags:
+    - registry
+    - cleanup
+
+- name: "Registry | Message de finalisation"
+  debug:
+    msg: |
+      {% if registry_deployment_report.status == 'SUCCESS' %}
+      🎉 Déploiement Registry terminé avec succès !
+
+      📋 Informations de connexion:
+      - Hôte: {{ registry_deployment_report.registry_endpoint }}
+      - Port: {{ lions_registry_port | default(5000) }}
+
+      📚 Documentation disponible à: https://docs.lions.dev/infrastructure/services/registry
+      {% else %}
+      💥 Déploiement Registry échoué en phase {{ registry_deployment_report.failed_phase }}
+
+      🔍 Consultez les logs d'erreur pour plus de détails:
+      - Fichier d'erreur: {{ registry_error_handling.error_log_file }}
+      - Rapport JSON: /tmp/registry-deployment-report-{{ registry_deployment_metadata.deployment_id }}.json
+
+      🛠️  Guide de dépannage: https://docs.lions.dev/infrastructure/troubleshooting/registry
+      {% endif %}
+  tags:
+    - registry
+    - always

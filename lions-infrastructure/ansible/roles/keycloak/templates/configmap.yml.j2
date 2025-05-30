@@ -1,81 +1,374 @@
 ---
-# Titre: Template de ConfigMap Kubernetes pour Keycloak
-# Description: Définit la ConfigMap Kubernetes pour Keycloak
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# ============================================================================
+# LIONS INFRASTRUCTURE 5.0 - TEMPLATE CONFIGMAP KEYCLOAK
+# ============================================================================
+# Description: Template de ConfigMap Kubernetes pour Keycloak avec gestion
+#              complète des variables d'environnement et configuration avancée
+# Version: 5.0.0
+# Date: {{ ansible_date_time.iso8601 }}
+# Maintainer: DevOps Team LIONS
+# Documentation: https://docs.lions.dev/infrastructure/keycloak
+# ============================================================================
 
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: "{{ app_name }}-config"
-  namespace: "{{ app_namespace }}"
+  name: "{{ lions_keycloak_service_name }}-config"
+  namespace: "{{ lions_keycloak_namespace }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "keycloak"
+    # Labels standards LIONS
+    app.kubernetes.io/name: keycloak
+    app.kubernetes.io/instance: "{{ lions_keycloak_service_name }}"
+    app.kubernetes.io/version: "{{ lions_keycloak_version }}"
+    app.kubernetes.io/component: identity-provider
+    app.kubernetes.io/part-of: lions-infrastructure
+    app.kubernetes.io/managed-by: ansible
+
+    # Labels personnalisés LIONS
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/deployment-mode: "{{ lions_deployment_mode }}"
+    lions.dev/service-tier: security
+    lions.dev/backup-enabled: "{{ lions_backup_enabled | lower }}"
+    lions.dev/monitoring-enabled: "{{ lions_monitoring_enabled | lower }}"
+
+    # Labels de versioning
+    lions.dev/config-version: "5.0.0"
+    lions.dev/template-checksum: "{{ (keycloak_config_template_content | default('')) | hash('sha256') }}"
+
   annotations:
-    description: "ConfigMap pour Keycloak {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    # Annotations de documentation
+    description: "ConfigMap Keycloak pour l'environnement {{ lions_environment }}"
+    lions.dev/documentation: "https://docs.lions.dev/services/keycloak"
+    lions.dev/runbook: "https://docs.lions.dev/runbooks/keycloak"
+    lions.dev/last-updated: "{{ ansible_date_time.iso8601 }}"
+
+    # Annotations de sécurité
+    seccomp.security.alpha.kubernetes.io/pod: runtime/default
+    container.apparmor.security.beta.kubernetes.io/keycloak: runtime/default
+
+    # Annotations de monitoring
+    prometheus.io/scrape: "{{ lions_monitoring_enabled | lower }}"
+    prometheus.io/port: "{{ lions_keycloak_metrics_port | default('9990') }}"
+    prometheus.io/path: "/auth/realms/master/metrics"
+
 data:
-  # Variables d'environnement pour Keycloak
-  KC_LOG_LEVEL: "{% if app_environment == 'production' %}WARN{% elif app_environment == 'staging' %}INFO{% else %}DEBUG{% endif %}"
-  KC_CACHE: "{% if app_environment == 'production' %}true{% else %}false{% endif %}"
-  KC_CACHE_STACK: "{% if app_environment == 'production' %}kubernetes{% else %}local{% endif %}"
-  
-  # Configuration du realm par défaut
-  KC_FEATURES: "admin2,declarative-user-profile,update-email"
-  KC_FEATURES_DISABLED: "account2,docker,impersonation,openshift-integration"
-  KC_SPI_EVENTS_LISTENER_JBOSS_LOGGING_SUCCESS_LEVEL: "info"
-  KC_SPI_EVENTS_LISTENER_JBOSS_LOGGING_ERROR_LEVEL: "warn"
-  
-  # Configuration de la sécurité
-  KC_HOSTNAME_STRICT_BACKCHANNEL: "true"
-  KC_HTTP_ENABLED: "true"
-  KC_HTTPS_CERTIFICATE_FILE: "/opt/keycloak/conf/tls.crt"
-  KC_HTTPS_CERTIFICATE_KEY_FILE: "/opt/keycloak/conf/tls.key"
-  KC_HTTPS_PROTOCOLS: "TLSv1.2,TLSv1.3"
-  
-  # Configuration des performances
-  KC_TRANSACTION_XA_ENABLED: "{% if app_environment == 'production' %}true{% else %}false{% endif %}"
-  KC_HTTP_RELATIVE_PATH: "/auth"
-  KC_HOSTNAME_STRICT: "false"
-  KC_PROXY: "edge"
-  
-  # Configuration du realm LIONS
-  keycloak.realm: |
+  # =========================================================================
+  # CONFIGURATION GÉNÉRALE KEYCLOAK
+  # =========================================================================
+
+{% if lions_environment == 'production' %}
+  # Configuration spécifique production
+  KC_LOG_LEVEL: "WARN"
+  KC_CACHE_STACK: "kubernetes"
+  KC_TRANSACTION_XA_ENABLED: "true"
+  KC_DB_POOL_MAX_SIZE: "30"
+{% elif lions_environment == 'staging' %}
+  # Configuration spécifique staging
+  KC_LOG_LEVEL: "INFO"
+  KC_CACHE_STACK: "kubernetes"
+  KC_TRANSACTION_XA_ENABLED: "true"
+  KC_DB_POOL_MAX_SIZE: "15"
+{% else %}
+  # Configuration spécifique développement
+  KC_LOG_LEVEL: "DEBUG"
+  KC_CACHE_STACK: "local"
+  KC_TRANSACTION_XA_ENABLED: "false"
+  KC_DB_POOL_MAX_SIZE: "10"
+{% endif %}
+
+  # Configuration du logging
+  KC_LOG_FORMAT: "{{ lions_log_format }}"
+  KC_LOG_CONSOLE_OUTPUT: "{{ lions_keycloak_log_console_output | default('default') }}"
+
+  # Configuration du serveur
+  KC_HTTP_ENABLED: "{{ lions_keycloak_http_enabled | default('true') }}"
+  KC_HTTP_PORT: "{{ lions_keycloak_port }}"
+  KC_HTTPS_PORT: "{{ lions_keycloak_https_port | default('8443') }}"
+  KC_HOSTNAME: "{{ lions_keycloak_hostname | default('keycloak.' + lions_dns_full_domain) }}"
+  KC_HOSTNAME_STRICT: "{{ lions_keycloak_hostname_strict | default('false') }}"
+  KC_HOSTNAME_STRICT_BACKCHANNEL: "{{ lions_keycloak_hostname_strict_backchannel | default('true') }}"
+
+  # Configuration du proxy (Traefik/Ingress)
+  KC_PROXY: "{{ lions_keycloak_proxy_mode | default('edge') }}"
+  KC_HTTP_RELATIVE_PATH: "{{ lions_keycloak_context_path | default('/auth') }}"
+
+  # =========================================================================
+  # CONFIGURATION DE SÉCURITÉ
+  # =========================================================================
+
+  # Configuration TLS/SSL
+  KC_HTTPS_CERTIFICATE_FILE: "{{ lions_keycloak_tls_cert_path | default('/opt/keycloak/conf/tls.crt') }}"
+  KC_HTTPS_CERTIFICATE_KEY_FILE: "{{ lions_keycloak_tls_key_path | default('/opt/keycloak/conf/tls.key') }}"
+  KC_HTTPS_PROTOCOLS: "{{ lions_keycloak_tls_protocols | default('TLSv1.2,TLSv1.3') }}"
+  KC_HTTPS_CIPHER_SUITES: "{{ lions_keycloak_tls_cipher_suites | default('') }}"
+
+  # Configuration de sécurité avancée
+  KC_SPI_TRUSTSTORE_FILE_FILE: "{{ lions_keycloak_truststore_path | default('') }}"
+  KC_SPI_TRUSTSTORE_FILE_PASSWORD: "{{ lions_keycloak_truststore_password | default('') }}"
+  KC_FIPS_MODE: "{{ lions_keycloak_fips_mode | default('disabled') }}"
+
+  # =========================================================================
+  # CONFIGURATION DE PERFORMANCE ET CACHE
+  # =========================================================================
+
+  # Configuration du cache
+  KC_CACHE: "{{ lions_keycloak_cache_enabled | default('true') }}"
+  KC_CACHE_CONFIG_FILE: "{{ lions_keycloak_cache_config_file | default('cache-ispn.xml') }}"
+
+  # Configuration des sessions
+  KC_SPI_STICKY_SESSION_ENCODER_INFINISPAN_SHOULD_ATTACH_ROUTE: "{{ lions_keycloak_sticky_sessions | default('false') }}"
+
+  # =========================================================================
+  # CONFIGURATION DE LA BASE DE DONNÉES
+  # =========================================================================
+
+  # Configuration PostgreSQL
+  KC_DB: "postgres"
+  KC_DB_URL_HOST: "{{ lions_postgres_service_name }}.{{ lions_postgres_namespace }}.svc.cluster.local"
+  KC_DB_URL_PORT: "{{ lions_postgres_port }}"
+  KC_DB_URL_DATABASE: "{{ lions_keycloak_database | default('keycloak') }}"
+  KC_DB_USERNAME: "{{ lions_keycloak_db_username | default('keycloak') }}"
+  KC_DB_SCHEMA: "{{ lions_keycloak_db_schema | default('public') }}"
+
+  # Configuration des connexions DB
+  KC_DB_POOL_INITIAL_SIZE: "{{ lions_keycloak_db_pool_initial_size | default('5') }}"
+  KC_DB_POOL_MIN_SIZE: "{{ lions_keycloak_db_pool_min_size | default('5') }}"
+
+  # =========================================================================
+  # CONFIGURATION DES FONCTIONNALITÉS
+  # =========================================================================
+
+  # Fonctionnalités activées
+  KC_FEATURES: "{{ lions_keycloak_features_enabled | default(['admin2', 'declarative-user-profile', 'update-email', 'recovery-codes', 'web-authn']) | join(',') }}"
+
+  # Fonctionnalités désactivées
+  KC_FEATURES_DISABLED: "{{ lions_keycloak_features_disabled | default(['account2', 'docker']) | join(',') }}"
+
+  # =========================================================================
+  # CONFIGURATION DES ÉVÉNEMENTS ET AUDIT
+  # =========================================================================
+
+  # Configuration des événements
+  KC_SPI_EVENTS_LISTENER_JBOSS_LOGGING_SUCCESS_LEVEL: "{{ lions_keycloak_events_success_level | default('info') }}"
+  KC_SPI_EVENTS_LISTENER_JBOSS_LOGGING_ERROR_LEVEL: "{{ lions_keycloak_events_error_level | default('warn') }}"
+
+  # Configuration de l'audit
+  KC_SPI_EVENTS_STORE_JPA_MAX_DETAIL_LENGTH: "{{ lions_keycloak_audit_max_detail_length | default('1000') }}"
+  KC_SPI_EVENTS_STORE_JPA_MAX_EVENTS: "{{ lions_keycloak_audit_max_events | default('10000') }}"
+
+  # =========================================================================
+  # CONFIGURATION HEALTH CHECK ET METRICS
+  # =========================================================================
+
+  # Configuration des health checks
+  KC_HEALTH_ENABLED: "{{ lions_keycloak_health_enabled | default('true') }}"
+  KC_METRICS_ENABLED: "{{ lions_monitoring_enabled }}"
+
+  # Configuration des métriques Prometheus
+  KC_SPI_METRICS_LISTENER_PROMETHEUS_ENABLED: "{{ lions_monitoring_enabled }}"
+
+  # =========================================================================
+  # CONFIGURATION DU REALM LIONS PAR DÉFAUT
+  # =========================================================================
+
+  # Configuration du realm principal
+  keycloak-realm.json: |
     {
-      "realm": "{{ keycloak_realm }}",
+      "realm": "{{ lions_keycloak_realm }}",
       "enabled": true,
-      "displayName": "LIONS Realm",
-      "displayNameHtml": "<div class=\"kc-logo-text\"><span>LIONS</span></div>",
-      "sslRequired": "external",
-      "registrationAllowed": false,
-      "loginWithEmailAllowed": true,
-      "duplicateEmailsAllowed": false,
-      "resetPasswordAllowed": true,
-      "editUsernameAllowed": false,
-      "bruteForceProtected": true,
-      "permanentLockout": false,
-      "maxFailureWaitSeconds": 900,
-      "minimumQuickLoginWaitSeconds": 60,
-      "waitIncrementSeconds": 60,
-      "quickLoginCheckMilliSeconds": 1000,
-      "maxDeltaTimeSeconds": 43200,
-      "failureFactor": 5,
-      "defaultSignatureAlgorithm": "RS256",
-      "revokeRefreshToken": true,
-      "refreshTokenMaxReuse": 0,
-      "accessTokenLifespan": 300,
-      "accessTokenLifespanForImplicitFlow": 900,
-      "ssoSessionIdleTimeout": 1800,
-      "ssoSessionMaxLifespan": 36000,
-      "offlineSessionIdleTimeout": 2592000,
-      "accessCodeLifespan": 60,
-      "accessCodeLifespanUserAction": 300,
-      "accessCodeLifespanLogin": 1800,
-      "actionTokenGeneratedByAdminLifespan": 43200,
-      "actionTokenGeneratedByUserLifespan": 300,
-      "oauth2DeviceCodeLifespan": 600,
-      "oauth2DevicePollingInterval": 5
+      "displayName": "{{ lions_keycloak_realm_display_name | default('LIONS Authentication') }}",
+      "displayNameHtml": "<div class=\"kc-logo-text\"><span>{{ lions_keycloak_realm_display_name | default('LIONS') }}</span></div>",
+
+      "sslRequired": "{{ lions_keycloak_ssl_required | default('external') }}",
+      "registrationAllowed": "{{ lions_keycloak_registration_allowed | default('false') | lower }}",
+      "registrationEmailAsUsername": "{{ lions_keycloak_email_as_username | default('true') | lower }}",
+      "loginWithEmailAllowed": "{{ lions_keycloak_login_with_email | default('true') | lower }}",
+      "duplicateEmailsAllowed": "{{ lions_keycloak_duplicate_emails | default('false') | lower }}",
+      "resetPasswordAllowed": "{{ lions_keycloak_reset_password_allowed | default('true') | lower }}",
+      "editUsernameAllowed": "{{ lions_keycloak_edit_username_allowed | default('false') | lower }}",
+      "rememberMe": "{{ lions_keycloak_remember_me | default('true') | lower }}",
+
+      "bruteForceProtected": "{{ lions_keycloak_brute_force_protection | default('true') | lower }}",
+      "permanentLockout": "{{ lions_keycloak_permanent_lockout | default('false') | lower }}",
+      "maxFailureWaitSeconds": "{{ lions_keycloak_max_failure_wait | default('900') }}",
+      "minimumQuickLoginWaitSeconds": "{{ lions_keycloak_min_quick_login_wait | default('60') }}",
+      "waitIncrementSeconds": "{{ lions_keycloak_wait_increment | default('60') }}",
+      "quickLoginCheckMilliSeconds": "{{ lions_keycloak_quick_login_check | default('1000') }}",
+      "maxDeltaTimeSeconds": "{{ lions_keycloak_max_delta_time | default('43200') }}",
+      "failureFactor": "{{ lions_keycloak_failure_factor | default('5') }}",
+
+      "defaultSignatureAlgorithm": "{{ lions_keycloak_signature_algorithm | default('RS256') }}",
+      "revokeRefreshToken": "{{ lions_keycloak_revoke_refresh_token | default('true') | lower }}",
+      "refreshTokenMaxReuse": "{{ lions_keycloak_refresh_token_max_reuse | default('0') }}",
+      "accessTokenLifespan": "{{ lions_keycloak_access_token_lifespan | default('300') }}",
+      "accessTokenLifespanForImplicitFlow": "{{ lions_keycloak_access_token_implicit_lifespan | default('900') }}",
+      "ssoSessionIdleTimeout": "{{ lions_keycloak_sso_session_idle_timeout | default('1800') }}",
+      "ssoSessionMaxLifespan": "{{ lions_keycloak_sso_session_max_lifespan | default('36000') }}",
+      "offlineSessionIdleTimeout": "{{ lions_keycloak_offline_session_idle_timeout | default('2592000') }}",
+      "accessCodeLifespan": "{{ lions_keycloak_access_code_lifespan | default('60') }}",
+      "accessCodeLifespanUserAction": "{{ lions_keycloak_access_code_user_action_lifespan | default('300') }}",
+      "accessCodeLifespanLogin": "{{ lions_keycloak_access_code_login_lifespan | default('1800') }}",
+      "actionTokenGeneratedByAdminLifespan": "{{ lions_keycloak_admin_action_token_lifespan | default('43200') }}",
+      "actionTokenGeneratedByUserLifespan": "{{ lions_keycloak_user_action_token_lifespan | default('300') }}",
+
+      "oauth2DeviceCodeLifespan": "{{ lions_keycloak_oauth2_device_code_lifespan | default('600') }}",
+      "oauth2DevicePollingInterval": "{{ lions_keycloak_oauth2_device_polling_interval | default('5') }}",
+      "clientPolicyEnforced": "{{ lions_keycloak_client_policy_enforced | default('true' if lions_environment == 'production' else 'false') | lower }}",
+
+      "passwordPolicy": "{{ lions_keycloak_password_policy | default('length(8) and digits(1) and lowerCase(1) and upperCase(1) and specialChars(1) and notUsername') }}",
+
+      "internationalizationEnabled": "{{ lions_keycloak_i18n_enabled | default('true') | lower }}",
+      "supportedLocales": "{{ lions_keycloak_supported_locales | default(['en', 'fr']) | to_json }}",
+      "defaultLocale": "{{ lions_keycloak_default_locale | default('en') }}",
+
+      "smtpServer": {
+        "host": "{{ lions_keycloak_smtp_host | default('') }}",
+        "port": "{{ lions_keycloak_smtp_port | default('587') }}",
+        "from": "{{ lions_keycloak_smtp_from | default('noreply@' + lions_dns_domain_base) }}",
+        "fromDisplayName": "{{ lions_keycloak_smtp_from_display_name | default('LIONS Authentication') }}",
+        "ssl": "{{ lions_keycloak_smtp_ssl | default('false') }}",
+        "starttls": "{{ lions_keycloak_smtp_starttls | default('true') }}"
+      },
+
+      "clients": "{{ lions_keycloak_preconfigured_clients | default([]) | to_json }}",
+
+      "roles": {
+        "realm": [
+          {
+            "name": "lions-admin",
+            "description": "Administrateur système LIONS",
+            "composite": false
+          },
+          {
+            "name": "lions-user",
+            "description": "Utilisateur standard LIONS",
+            "composite": false
+          },
+          {
+            "name": "lions-developer",
+            "description": "Développeur LIONS",
+            "composite": false
+          }
+        ]
+      },
+
+      "browserSecurityHeaders": {
+        "contentSecurityPolicy": "{{ lions_keycloak_csp | default('frame-src \'self\';
+        frame-ancestors \'self\'; object-src \'none\';') }}",
+        "xContentTypeOptions": "nosniff",
+        "xRobotsTag": "none",
+        "xFrameOptions": "SAMEORIGIN",
+        "referrerPolicy": "no-referrer",
+        "strictTransportSecurity": "max-age=31536000; includeSubDomains"
+      },
+
+      "eventsEnabled": "{{ lions_audit_enabled | lower }}",
+      "eventsExpiration": "{{ (lions_audit_retention_days | int * 86400) }}",
+      "eventsListeners": ["jboss-logging"{% if lions_monitoring_enabled %}, "prometheus"{% endif %}],
+      "enabledEventTypes": [
+        "LOGIN",
+        "LOGIN_ERROR",
+        "LOGOUT",
+        "REGISTER",
+        "REGISTER_ERROR",
+        "UPDATE_PASSWORD",
+        "UPDATE_PASSWORD_ERROR",
+        "UPDATE_PROFILE",
+        "UPDATE_PROFILE_ERROR",
+        "VERIFY_EMAIL",
+        "VERIFY_EMAIL_ERROR"
+      ],
+
+      "adminEventsEnabled": "{{ lions_audit_enabled | lower }}",
+      "adminEventsDetailsEnabled": "{{ lions_audit_enabled | lower }}"
     }
+
+  # =========================================================================
+  # SCRIPTS DE CONFIGURATION
+  # =========================================================================
+
+  # Script d'initialisation du realm
+  init-realm.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    echo "🚀 Initialisation du realm Keycloak LIONS..."
+
+    # Attendre que Keycloak soit disponible
+    while ! curl -f https://localhost:{{ lions_keycloak_https_port }}/auth/health/ready; do
+      echo "⏳ Attente de Keycloak..."
+      sleep 5
+    done
+
+    # Importer le realm s'il n'existe pas
+    if ! /opt/keycloak/bin/kcadm.sh get realms/{{ lions_keycloak_realm }} --no-config \
+        --server https://localhost:{{ lions_keycloak_https_port }}/auth \
+        --realm master --user "${KC_BOOTSTRAP_ADMIN_USERNAME}" \
+        --password "${KC_BOOTSTRAP_ADMIN_PASSWORD}" > /dev/null 2>&1; then
+
+      echo "📝 Import du realm {{ lions_keycloak_realm }}..."
+      /opt/keycloak/bin/kcadm.sh create realms \
+        --no-config --server https://localhost:{{ lions_keycloak_https_port }}/auth \
+        --realm master --user "${KC_BOOTSTRAP_ADMIN_USERNAME}" \
+        --password "${KC_BOOTSTRAP_ADMIN_PASSWORD}" \
+        --file /opt/keycloak/conf/keycloak-realm.json
+
+      echo "✅ Realm {{ lions_keycloak_realm }} créé avec succès"
+    else
+      echo "ℹ️  Realm {{ lions_keycloak_realm }} existe déjà"
+    fi
+
+    echo "🎉 Initialisation terminée"
+
+  # Script de health check personnalisé
+  health-check.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    # Vérification de base
+    if ! curl -f -s https://localhost:{{ lions_keycloak_https_port }}/auth/health/ready > /dev/null; then
+      echo "❌ Keycloak n'est pas prêt"
+      exit 1
+    fi
+
+    # Vérification du realm LIONS
+    if ! curl -f -s https://localhost:{{ lions_keycloak_https_port }}/auth/realms/{{ lions_keycloak_realm }} > /dev/null; then
+      echo "❌ Realm {{ lions_keycloak_realm }} non accessible"
+      exit 1
+    fi
+
+    echo "✅ Keycloak opérationnel"
+    exit 0
+
+{% if lions_debug_mode %}
+  # =========================================================================
+  # CONFIGURATION DE DEBUGGING
+  # =========================================================================
+
+  # Configuration de debug étendue
+  KC_SPI_LOGIN_PROTOCOL_OPENID_CONNECT_LEGACY_LOGOUT_REDIRECT_URI: "true"
+  KC_SPI_THEME_CACHE_THEMES: "false"
+  KC_SPI_THEME_CACHE_TEMPLATES: "false"
+  KC_SPI_THEME_STATIC_MAX_AGE: "1"
+
+  # Informations de debug
+  debug-info.txt: |
+    LIONS Keycloak Debug Information
+    ===============================
+    Environment: {{ lions_environment }}
+    Version: {{ lions_keycloak_version }}
+    Realm: {{ lions_keycloak_realm }}
+    Database: {{ lions_postgres_service_name }}.{{ lions_postgres_namespace }}
+    Generated: {{ ansible_date_time.iso8601 }}
+
+    Configuration Summary:
+    - TLS Enabled: {{ lions_security_tls_enabled }}
+    - Monitoring: {{ lions_monitoring_enabled }}
+    - Cache: {{ lions_keycloak_cache_enabled | default('true') }}
+    - Backup: {{ lions_backup_enabled }}
+
+    Networking:
+    - Internal URL: https://{{ lions_keycloak_service_name }}.{{ lions_keycloak_namespace }}:{{ lions_keycloak_https_port }}
+    - External URL: {{ lions_keycloak_hostname | default('keycloak.' + lions_dns_full_domain) }}
+
+{% endif %}

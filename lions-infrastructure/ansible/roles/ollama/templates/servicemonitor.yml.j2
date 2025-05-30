@@ -1,30 +1,239 @@
 ---
-# Titre: Template de ServiceMonitor pour Ollama
-# Description: Configure Prometheus pour monitorer Ollama
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-14
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - SERVICE MONITOR OLLAMA
+# =========================================================================
+# Titre: Template ServiceMonitor pour Ollama AI Service
+# Description: Configuration Prometheus pour monitoring complet d'Ollama
+# Auteur: Équipe DevOps LIONS Infrastructure
+# Date: {{ ansible_date_time.iso8601 }}
+# Version: 5.0.0
+# Documentation: https://docs.lions.dev/monitoring/ollama
+# =========================================================================
 
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: "{{ app_name }}"
-  namespace: "{{ app_namespace }}"
+  name: "{{ LIONS_OLLAMA_SERVICE_NAME | default('ollama') }}-monitor"
+  namespace: "{{ LIONS_MONITORING_NAMESPACE | default('monitoring') }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "ollama"
-    release: prometheus
+    # Labels de base pour l'identification
+    app.kubernetes.io/name: "{{ LIONS_OLLAMA_SERVICE_NAME | default('ollama') }}"
+    app.kubernetes.io/version: "{{ LIONS_OLLAMA_VERSION | default('0.1.26') }}"
+    app.kubernetes.io/component: "ai-service"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+    app.kubernetes.io/instance: "{{ LIONS_ENVIRONMENT }}-{{ LIONS_OLLAMA_SERVICE_NAME | default('ollama') }}"
+
+    # Labels pour le monitoring
+    monitoring.lions.dev/enabled: "true"
+    monitoring.lions.dev/service-type: "ai-service"
+    monitoring.lions.dev/criticality: "{{ ollama_monitoring_criticality | default('medium') }}"
+    monitoring.lions.dev/team: "{{ ollama_team_owner | default('platform') }}"
+
+    # Labels pour Prometheus
+    release: "{{ prometheus_release_name | default('prometheus') }}"
+    prometheus.io/scrape: "true"
+    prometheus.io/service-monitor: "ollama"
+
+    # Labels d'environnement
+    environment: "{{ LIONS_ENVIRONMENT }}"
+    tier: "{{ ollama_tier | default('ai') }}"
+
+    # Labels pour GitOps et versioning
+    lions.dev/config-version: "5.0.0"
+    lions.dev/last-updated: "{{ ansible_date_time.iso8601 }}"
+
   annotations:
-    description: "ServiceMonitor pour Ollama {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    # Annotations de documentation
+    description: |
+      ServiceMonitor pour Ollama AI Service {{ LIONS_OLLAMA_SERVICE_NAME | default('ollama') }}
+      Version: {{ LIONS_OLLAMA_VERSION | default('0.1.26') }}
+      Environnement: {{ LIONS_ENVIRONMENT }}
+      Namespace applicatif: {{ LIONS_OLLAMA_NAMESPACE | default('ai') }}
+
+    # Annotations pour les alertes
+    monitoring.lions.dev/alert-runbook: "https://docs.lions.dev/runbooks/ollama-alerts"
+    monitoring.lions.dev/dashboard-url: "https://grafana.{{ LIONS_DNS_FULL_DOMAIN }}/d/ollama-dashboard"
+    monitoring.lions.dev/escalation-policy: "{{ ollama_escalation_policy | default('platform-team') }}"
+
+    # Annotations pour la configuration
+    config.lions.dev/monitoring-profile: "{{ ollama_monitoring_profile | default('standard') }}"
+    config.lions.dev/retention-policy: "{{ ollama_metrics_retention | default('30d') }}"
+
+    # Annotations pour la sécurité
+    security.lions.dev/metrics-access: "{{ ollama_metrics_access_level | default('internal') }}"
+
 spec:
+  # Sélection du service à monitorer
   selector:
     matchLabels:
-      app: "{{ app_name }}"
+      app.kubernetes.io/name: "{{ LIONS_OLLAMA_SERVICE_NAME | default('ollama') }}"
+      app.kubernetes.io/instance: "{{ LIONS_ENVIRONMENT }}-{{ LIONS_OLLAMA_SERVICE_NAME | default('ollama') }}"
+
+  # Configuration de la sélection des pods
+  podTargetLabels:
+    - app.kubernetes.io/name
+    - app.kubernetes.io/version
+    - environment
+    - tier
+
+  # Configuration du namespace cible
+  namespaceSelector:
+    matchNames:
+      - "{{ LIONS_OLLAMA_NAMESPACE | default('ai') }}"
+
+  # Configuration des endpoints de métriques
   endpoints:
-    - port: http
-      path: "{{ ollama_prometheus_path }}"
-      interval: 30s
-      scrapeTimeout: 10s
+    # Endpoint principal pour les métriques Ollama
+    - port: "{{ ollama_metrics_port_name | default('metrics') }}"
+      path: "{{ ollama_prometheus_path | default('/metrics') }}"
+      interval: "{{ ollama_scrape_interval | default('30s') }}"
+      scrapeTimeout: "{{ ollama_scrape_timeout | default('25s') }}"
       honorLabels: true
+      honorTimestamps: true
+
+      # Configuration des headers HTTP
+      headers:
+        User-Agent: "Prometheus/Lions-Infrastructure-5.0"
+        X-Monitoring-Source: "lions-prometheus"
+
+      # Configuration TLS si activée
+{% if LIONS_SECURITY_TLS_ENABLED | default(true) | bool %}
+      scheme: https
+      tlsConfig:
+        serverName: "{{ LIONS_OLLAMA_SERVICE_NAME | default('ollama') }}.{{ LIONS_OLLAMA_NAMESPACE | default('ai') }}.svc.{{ LIONS_K8S_DNS_DOMAIN | default('cluster.local') }}"
+        insecureSkipVerify: {{ ollama_tls_skip_verify | default(false) | bool }}
+{% if ollama_ca_secret is defined %}
+        ca:
+          secret:
+            name: "{{ ollama_ca_secret }}"
+            key: "ca.crt"
+{% endif %}
+{% else %}
+      scheme: http
+{% endif %}
+
+      # Configuration de l'authentification si nécessaire
+{% if ollama_metrics_auth_enabled | default(false) | bool %}
+      basicAuth:
+        username:
+          secret:
+            name: "{{ ollama_metrics_auth_secret | default('ollama-metrics-auth') }}"
+            key: "username"
+        password:
+          secret:
+            name: "{{ ollama_metrics_auth_secret | default('ollama-metrics-auth') }}"
+            key: "password"
+{% endif %}
+
+      # Relabeling pour enrichir les métriques
+      metricRelabelings:
+        # Ajout du nom de l'environnement
+        - sourceLabels: [__name__]
+          targetLabel: lions_environment
+          replacement: "{{ LIONS_ENVIRONMENT }}"
+
+        # Ajout de l'ID de l'instance
+        - sourceLabels: [__name__]
+          targetLabel: lions_instance_id
+          replacement: "{{ LIONS_ENVIRONMENT }}-{{ LIONS_OLLAMA_SERVICE_NAME | default('ollama') }}"
+
+        # Ajout de la version de l'infrastructure
+        - sourceLabels: [__name__]
+          targetLabel: lions_infra_version
+          replacement: "5.0.0"
+
+        # Filtrage des métriques sensibles en production
+{% if LIONS_ENVIRONMENT == 'production' %}
+        - sourceLabels: [__name__]
+          regex: "ollama_debug_.*"
+          action: drop
+{% endif %}
+
+        # Normalisation des labels de version
+        - sourceLabels: [version]
+          targetLabel: app_version
+          regex: "v?(.*)"
+          replacement: "${1}"
+
+    # Endpoint secondaire pour les métriques système (si activé)
+{% if ollama_system_metrics_enabled | default(false) | bool %}
+    - port: "{{ ollama_system_metrics_port_name | default('system-metrics') }}"
+      path: "{{ ollama_system_metrics_path | default('/system/metrics') }}"
+      interval: "{{ ollama_system_scrape_interval | default('60s') }}"
+      scrapeTimeout: "{{ ollama_system_scrape_timeout | default('30s') }}"
+      honorLabels: true
+
+      # Relabeling spécifique aux métriques système
+      metricRelabelings:
+        - sourceLabels: [__name__]
+          targetLabel: metric_type
+          replacement: "system"
+
+        - sourceLabels: [__name__]
+          targetLabel: lions_environment
+          replacement: "{{ LIONS_ENVIRONMENT }}"
+{% endif %}
+
+    # Endpoint pour les métriques GPU (si activé)
+{% if LIONS_OLLAMA_GPU_ENABLED | default(false) | bool %}
+    - port: "{{ ollama_gpu_metrics_port_name | default('gpu-metrics') }}"
+      path: "{{ ollama_gpu_metrics_path | default('/gpu/metrics') }}"
+      interval: "{{ ollama_gpu_scrape_interval | default('15s') }}"
+      scrapeTimeout: "{{ ollama_gpu_scrape_timeout | default('10s') }}"
+      honorLabels: true
+
+      # Relabeling spécifique aux métriques GPU
+      metricRelabelings:
+        - sourceLabels: [__name__]
+          targetLabel: metric_type
+          replacement: "gpu"
+
+        - sourceLabels: [__name__]
+          targetLabel: lions_environment
+          replacement: "{{ LIONS_ENVIRONMENT }}"
+
+        # Ajout d'informations sur le type de GPU
+        - sourceLabels: [gpu_type]
+          targetLabel: lions_gpu_type
+
+        - sourceLabels: [gpu_memory_total]
+          targetLabel: lions_gpu_memory_total
+{% endif %}
+
+  # Configuration de la limite de targets
+  targetLimit: {{ ollama_target_limit | default(100) }}
+
+  # Configuration du sampling
+  sampleLimit: {{ ollama_sample_limit | default(10000) }}
+
+---
+# =========================================================================
+# CONFIGURATION COMPLEMENTAIRE - PROBE MONITOR POUR HEALTH CHECKS
+# =========================================================================
+{% if ollama_health_monitoring_enabled | default(true) | bool %}
+apiVersion: monitoring.coreos.com/v1
+kind: Probe
+metadata:
+  name: "{{ LIONS_OLLAMA_SERVICE_NAME | default('ollama') }}-health-probe"
+  namespace: "{{ LIONS_MONITORING_NAMESPACE | default('monitoring') }}"
+  labels:
+    app.kubernetes.io/name: "{{ LIONS_OLLAMA_SERVICE_NAME | default('ollama') }}"
+    app.kubernetes.io/component: "health-probe"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    environment: "{{ LIONS_ENVIRONMENT }}"
+    monitoring.lions.dev/probe-type: "health"
+  annotations:
+    description: "Probe de santé pour Ollama {{ LIONS_OLLAMA_SERVICE_NAME | default('ollama') }}"
+spec:
+  jobName: "{{ LIONS_OLLAMA_SERVICE_NAME | default('ollama') }}-health"
+  prober:
+    url: "{{ prometheus_blackbox_exporter_url | default('blackbox-exporter.monitoring.svc.cluster.local:9115') }}"
+  module: "{{ ollama_health_probe_module | default('http_2xx') }}"
+  targets:
+    staticConfig:
+      static:
+        - "{{ LIONS_OLLAMA_SERVICE_NAME | default('ollama') }}.{{ LIONS_OLLAMA_NAMESPACE | default('ai') }}.svc.{{ LIONS_K8S_DNS_DOMAIN | default('cluster.local') }}:{{ LIONS_OLLAMA_PORT | default(11434) }}"
+  interval: "{{ ollama_health_probe_interval | default('60s') }}"
+  scrapeTimeout: "{{ ollama_health_probe_timeout | default('30s') }}"
+{% endif %}

@@ -1,26 +1,229 @@
----
-# Titre: Template de PersistentVolumeClaim Kubernetes pour PrimeFaces
-# Description: Définit le PersistentVolumeClaim Kubernetes pour une application PrimeFaces
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - PRIMEFACES PERSISTENTVOLUMECLAIM TEMPLATE
+# =========================================================================
+# Description: Template Kubernetes avancé pour le PersistentVolumeClaim PrimeFaces
+# Composant: PrimeFaces Application PersistentVolumeClaim
+# Version: 5.0.0
+# Maintainer: DevOps LIONS Team
+# Documentation: https://docs.lions.dev/infrastructure/primefaces/persistentvolumeclaim
+# =========================================================================
 
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: "{{ app_name }}-pvc"
-  namespace: "{{ app_namespace }}"
+  name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-pvc"
+  namespace: "{{ lions_primefaces_namespace }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "primefaces"
+    # Labels Kubernetes standards
+    app.kubernetes.io/name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+    app.kubernetes.io/instance: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-{{ lions_environment }}"
+    app.kubernetes.io/version: "{{ lions_primefaces_app_version | default('latest') }}"
+    app.kubernetes.io/component: "storage"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "lions-infrastructure-ansible"
+    
+    # Labels LIONS spécifiques
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/technology: "primefaces"
+    lions.dev/tier: "frontend"
+    lions.dev/storage-tier: "{{ lions_primefaces_storage_tier | default('standard') }}"
+    lions.dev/data-classification: "{{ lions_primefaces_data_classification | default('internal') }}"
+    lions.dev/business-unit: "{{ lions_business_unit | default('infrastructure') }}"
+    lions.dev/cost-center: "{{ lions_cost_center | default('devops') }}"
+    lions.dev/backup-required: "{{ lions_primefaces_backup_required | default('true') }}"
+    lions.dev/encryption-required: "{{ lions_primefaces_encryption_required | default('true') }}"
+    
+    # Labels pour la gestion du stockage
+    storage.lions.dev/purpose: "{{ lions_primefaces_storage_purpose | default('application-data') }}"
+    storage.lions.dev/retention-policy: "{{ lions_primefaces_retention_policy | default('30d') }}"
+    storage.lions.dev/access-pattern: "{{ lions_primefaces_access_pattern | default('random') }}"
+    storage.lions.dev/performance-tier: "{{ lions_primefaces_performance_tier | default('standard') }}"
+    
+    # Labels pour l'observabilité
+    app: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+    version: "{{ lions_primefaces_app_version | default('latest') }}"
+    environment: "{{ lions_environment }}"
+    
   annotations:
-    description: "PersistentVolumeClaim pour l'application {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    # Annotations standards
+    description: "PersistentVolumeClaim enterprise LIONS 5.0 pour l'application PrimeFaces {{ lions_primefaces_app_name | default(lions_primefaces_service_name) }} ({{ lions_primefaces_app_version | default('latest') }}) en environnement {{ lions_environment }}"
+    
+    # Annotations LIONS de gestion
+    lions.dev/created-by: "lions-infrastructure-ansible"
+    lions.dev/last-updated: "{{ ansible_date_time.iso8601 }}"
+    lions.dev/pvc-purpose: "{{ lions_primefaces_pvc_purpose | default('Stockage persistant sécurisé pour l application PrimeFaces avec sauvegarde automatique') }}"
+    lions.dev/support-contact: "{{ lions_support_contact | default('devops@lions.dev') }}"
+    lions.dev/documentation-url: "https://docs.lions.dev/infrastructure/primefaces/persistentvolumeclaim"
+    lions.dev/storage-documentation: "https://docs.lions.dev/infrastructure/storage/primefaces"
+    
+    # Configuration de stockage
+    lions.dev/storage-size: "{{ lions_primefaces_storage_size }}"
+    lions.dev/storage-class: "{{ lions_primefaces_storage_class | default('standard') }}"
+    lions.dev/access-modes: "{{ lions_primefaces_access_modes | default(['ReadWriteOnce']) | join(',') }}"
+    
+    # Configuration de sécurité
+    lions.dev/encryption-enabled: "{{ lions_primefaces_storage_encryption | default('true') }}"
+    lions.dev/backup-schedule: "{{ lions_primefaces_backup_schedule | default('0 2 * * *') }}"
+    lions.dev/snapshot-policy: "{{ lions_primefaces_snapshot_policy | default('daily') }}"
+    
+    # Configuration spécifique au cloud provider
+    {% if lions_cloud_provider == 'aws' %}
+    # Configuration AWS EBS
+    {% if lions_primefaces_aws_ebs_encrypted | default(true) | bool %}
+    volume.beta.kubernetes.io/storage-provisioner: ebs.csi.aws.com
+    {% endif %}
+    {% if lions_primefaces_aws_ebs_volume_type | default('') %}
+    ebs.csi.aws.com/volumeType: "{{ lions_primefaces_aws_ebs_volume_type }}"
+    {% endif %}
+    {% if lions_primefaces_aws_ebs_iops | default('') %}
+    ebs.csi.aws.com/iops: "{{ lions_primefaces_aws_ebs_iops }}"
+    {% endif %}
+    {% if lions_primefaces_aws_ebs_throughput | default('') %}
+    ebs.csi.aws.com/throughput: "{{ lions_primefaces_aws_ebs_throughput }}"
+    {% endif %}
+    {% if lions_primefaces_aws_ebs_kms_key_id | default('') %}
+    ebs.csi.aws.com/kmsKeyId: "{{ lions_primefaces_aws_ebs_kms_key_id }}"
+    {% endif %}
+    {% endif %}
+    
+    {% if lions_cloud_provider == 'azure' %}
+    # Configuration Azure Disk
+    {% if lions_primefaces_azure_disk_sku | default('') %}
+    disk.csi.azure.com/skuName: "{{ lions_primefaces_azure_disk_sku }}"
+    {% endif %}
+    {% if lions_primefaces_azure_disk_kind | default('') %}
+    disk.csi.azure.com/kind: "{{ lions_primefaces_azure_disk_kind }}"
+    {% endif %}
+    {% if lions_primefaces_azure_disk_cache | default('') %}
+    disk.csi.azure.com/cachingMode: "{{ lions_primefaces_azure_disk_cache }}"
+    {% endif %}
+    {% endif %}
+    
+    {% if lions_cloud_provider == 'gcp' %}
+    # Configuration GCP Persistent Disk
+    {% if lions_primefaces_gcp_disk_type | default('') %}
+    disk.csi.gcp.com/type: "{{ lions_primefaces_gcp_disk_type }}"
+    {% endif %}
+    {% if lions_primefaces_gcp_disk_zones | default([]) | length > 0 %}
+    disk.csi.gcp.com/zones: "{{ lions_primefaces_gcp_disk_zones | join(',') }}"
+    {% endif %}
+    {% endif %}
+    
+    # Configuration de snapshot et backup
+    {% if lions_primefaces_snapshot_enabled | default(false) | bool %}
+    snapshot.storage.kubernetes.io/enabled: "true"
+    snapshot.storage.kubernetes.io/class: "{{ lions_primefaces_snapshot_class | default('csi-hostpath-snapclass') }}"
+    {% endif %}
+    
+    # Configuration Velero pour backup
+    {% if lions_velero_enabled | default(false) | bool %}
+    backup.velero.io/backup-volumes: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-pvc"
+    backup.velero.io/backup-volumes-excludes: "{{ lions_primefaces_backup_excludes | default('') }}"
+    {% endif %}
+    
+    # Configuration de monitoring du stockage
+    {% if lions_monitoring_enabled | bool %}
+    storage.lions.dev/monitoring-enabled: "true"
+    storage.lions.dev/alert-usage-threshold: "{{ lions_primefaces_storage_alert_threshold | default('80') }}"
+    {% endif %}
+    
+    # Annotations personnalisées supplémentaires
+    {% if lions_primefaces_extra_pvc_annotations | default({}) %}
+    {% for key, value in lions_primefaces_extra_pvc_annotations.items() %}
+    {{ key }}: "{{ value }}"
+    {% endfor %}
+    {% endif %}
+
 spec:
+  # Modes d'accès au volume
   accessModes:
-    - ReadWriteOnce
-  storageClassName: "{{ primefaces_storage_class }}"
+    {% for mode in lions_primefaces_access_modes | default(['ReadWriteOnce']) %}
+    - {{ mode }}
+    {% endfor %}
+  
+  # Classe de stockage avec fallback intelligent
+  {% if lions_primefaces_storage_class | default('') %}
+  storageClassName: "{{ lions_primefaces_storage_class }}"
+  {% elif lions_cloud_provider == 'aws' %}
+  storageClassName: "{{ lions_primefaces_aws_storage_class | default('gp3') }}"
+  {% elif lions_cloud_provider == 'azure' %}
+  storageClassName: "{{ lions_primefaces_azure_storage_class | default('managed-premium') }}"
+  {% elif lions_cloud_provider == 'gcp' %}
+  storageClassName: "{{ lions_primefaces_gcp_storage_class | default('standard-rwo') }}"
+  {% else %}
+  storageClassName: "{{ lions_primefaces_default_storage_class | default('standard') }}"
+  {% endif %}
+  
+  # Spécifications des ressources
   resources:
     requests:
-      storage: "{{ primefaces_storage_size }}"
+      storage: "{{ lions_primefaces_storage_size }}"
+    {% if lions_primefaces_storage_limits_enabled | default(false) | bool %}
+    limits:
+      storage: "{{ lions_primefaces_storage_limit | default(lions_primefaces_storage_size) }}"
+    {% endif %}
+  
+  # Sélecteur de volume (si spécifique)
+  {% if lions_primefaces_volume_selector | default({}) %}
+  selector:
+    {% if lions_primefaces_volume_selector.matchLabels | default({}) %}
+    matchLabels:
+      {% for key, value in lions_primefaces_volume_selector.matchLabels.items() %}
+      {{ key }}: "{{ value }}"
+      {% endfor %}
+    {% endif %}
+    {% if lions_primefaces_volume_selector.matchExpressions | default([]) | length > 0 %}
+    matchExpressions:
+      {% for expression in lions_primefaces_volume_selector.matchExpressions %}
+      - key: "{{ expression.key }}"
+        operator: "{{ expression.operator }}"
+        {% if expression.values | default([]) | length > 0 %}
+        values:
+          {% for value in expression.values %}
+          - "{{ value }}"
+          {% endfor %}
+        {% endif %}
+      {% endfor %}
+    {% endif %}
+  {% endif %}
+  
+  # Mode de volume (si spécifié)
+  {% if lions_primefaces_volume_mode | default('') %}
+  volumeMode: {{ lions_primefaces_volume_mode }}
+  {% endif %}
+  
+  # Nom du volume (pour le binding statique)
+  {% if lions_primefaces_volume_name | default('') %}
+  volumeName: "{{ lions_primefaces_volume_name }}"
+  {% endif %}
+  
+  # Source de données pour le volume (clonage, snapshot)
+  {% if lions_primefaces_data_source | default({}) %}
+  dataSource:
+    {% if lions_primefaces_data_source.kind | default('') %}
+    kind: "{{ lions_primefaces_data_source.kind }}"
+    {% endif %}
+    {% if lions_primefaces_data_source.name | default('') %}
+    name: "{{ lions_primefaces_data_source.name }}"
+    {% endif %}
+    {% if lions_primefaces_data_source.apiGroup | default('') %}
+    apiGroup: "{{ lions_primefaces_data_source.apiGroup }}"
+    {% endif %}
+  {% endif %}
+  
+  # Source de données de référence (cross-namespace cloning)
+  {% if lions_primefaces_data_source_ref | default({}) %}
+  dataSourceRef:
+    {% if lions_primefaces_data_source_ref.kind | default('') %}
+    kind: "{{ lions_primefaces_data_source_ref.kind }}"
+    {% endif %}
+    {% if lions_primefaces_data_source_ref.name | default('') %}
+    name: "{{ lions_primefaces_data_source_ref.name }}"
+    {% endif %}
+    {% if lions_primefaces_data_source_ref.namespace | default('') %}
+    namespace: "{{ lions_primefaces_data_source_ref.namespace }}"
+    {% endif %}
+    {% if lions_primefaces_data_source_ref.apiGroup | default('') %}
+    apiGroup: "{{ lions_primefaces_data_source_ref.apiGroup }}"
+    {% endif %}
+  {% endif %}

@@ -1,61 +1,296 @@
 ---
-# Titre: Template de déploiement Kubernetes pour le service de notification
-# Description: Définit le déploiement Kubernetes pour le service de notification
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-08
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - NOTIFICATION SERVICE DEPLOYMENT TEMPLATE
+# =========================================================================
+# Description: Template Kubernetes pour le déploiement du service de notification
+# Version: 5.0.0
+# Maintainer: DevOps Team LIONS
+# Date: {{ ansible_date_time.iso8601 }}
+# Environment: {{ notification_environment }}
+# =========================================================================
 
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: "{{ app_name }}"
-  namespace: "{{ app_namespace }}"
+  name: "{{ notification_service_name }}"
+  namespace: "{{ notification_namespace }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
+    # Labels standardisés LIONS
+    app.kubernetes.io/name: "{{ notification_service_name }}"
+    app.kubernetes.io/instance: "{{ notification_service_name }}-{{ notification_environment }}"
+    app.kubernetes.io/version: "{{ notification_service_meta.version }}"
+    app.kubernetes.io/component: "notification-service"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+
+    # Labels LIONS spécifiques
+    lions.dev/environment: "{{ notification_environment }}"
+    lions.dev/service-type: "communication"
+    lions.dev/backup-policy: "{% if notification_storage.backup_enabled %}daily{% else %}none{% endif %}"
+    lions.dev/monitoring: "{% if notification_monitoring.enabled %}enabled{% else %}disabled{% endif %}"
+    lions.dev/security-level: "{% if notification_environment == 'production' %}high{% else %}medium{% endif %}"
+
+    # Labels techniques
+    version: "{{ notification_service_meta.version }}"
     technology: "notification-service"
+    tier: "application"
+
   annotations:
-    description: "Déploiement du service de notification {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    # Annotations de déploiement
     deployment.kubernetes.io/revision: "1"
+    lions.dev/deployment-strategy: "rolling-update"
+    lions.dev/created-by: "ansible-{{ ansible_version.full }}"
+    lions.dev/config-version: "{{ notification_service_meta.config_version | default('5.0.0') }}"
+
+    # Documentation
+    lions.dev/description: "Notification service for LIONS infrastructure in {{ notification_environment }} environment"
+    lions.dev/documentation: "https://docs.lions.dev/services/notification"
+    lions.dev/support-contact: "{{ notification_service_meta.maintainer | default('devops@lions.dev') }}"
+
+    # Informations de configuration
+    lions.dev/database-dependency: "{% if notification_database.enabled %}postgresql.{{ notification_database.namespace }}{% else %}none{% endif %}"
+    lions.dev/redis-dependency: "{% if notification_redis.enabled %}redis.{{ notification_redis.namespace }}{% else %}none{% endif %}"
+    lions.dev/storage-class: "{{ notification_storage.class | default('default') }}"
+    lions.dev/tls-enabled: "{{ notification_tls.enabled | string }}"
+
 spec:
-  replicas: {{ notification_replicas[app_environment] | default(1) }}
+  replicas: {% if notification_environment == 'production' %}{{ notification_resources.scaling.replicas.production | default(2) }}{% elif notification_environment == 'staging' %}{{ notification_resources.scaling.replicas.staging | default(1) }}{% else %}{{ notification_resources.scaling.replicas.development | default(1) }}{% endif %}
+
+  revisionHistoryLimit: {{ notification_deployment.revision_history_limit | default(5) }}
+
+  progressDeadlineSeconds: {{ notification_deployment.timeout | default(1800) }}
+
   selector:
     matchLabels:
-      app: "{{ app_name }}"
+      app.kubernetes.io/name: "{{ notification_service_name }}"
+      app.kubernetes.io/instance: "{{ notification_service_name }}-{{ notification_environment }}"
+
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxSurge: 1
-      maxUnavailable: 0
+      maxSurge: {% if notification_environment == 'production' %}1{% else %}1{% endif %}
+      maxUnavailable: {% if notification_environment == 'production' %}0{% else %}1{% endif %}
+
   template:
     metadata:
       labels:
-        app: "{{ app_name }}"
-        version: "{{ app_version }}"
-        environment: "{{ app_environment }}"
+        # Labels du pod identiques au Deployment
+        app.kubernetes.io/name: "{{ notification_service_name }}"
+        app.kubernetes.io/instance: "{{ notification_service_name }}-{{ notification_environment }}"
+        app.kubernetes.io/version: "{{ notification_service_meta.version }}"
+        app.kubernetes.io/component: "notification-service"
+        app.kubernetes.io/part-of: "lions-infrastructure"
+
+        # Labels spécifiques au pod
+        lions.dev/environment: "{{ notification_environment }}"
+        lions.dev/pod-template-hash: "{{ ansible_date_time.epoch }}"
+        version: "{{ notification_service_meta.version }}"
         technology: "notification-service"
+
       annotations:
-        prometheus.io/scrape: "{{ notification_prometheus_scrape | string | lower }}"
-        prometheus.io/path: "{{ notification_prometheus_path }}"
-        prometheus.io/port: "{{ notification_prometheus_port }}"
+        # Monitoring et observabilité
+        prometheus.io/scrape: "{{ notification_monitoring.enabled | string }}"
+        prometheus.io/path: "{{ notification_endpoints.metrics }}"
+        prometheus.io/port: "{{ notification_network.service.port | string }}"
+        prometheus.io/scheme: "{% if notification_tls.enabled %}https{% else %}http{% endif %}"
+
+        # Configuration de mise à jour
+        lions.dev/config-checksum: "{{ (notification_app_config | default('default')) | hash('sha256') }}"
+        lions.dev/last-restart: "{{ ansible_date_time.iso8601 }}"
+
+        # Sécurité
+        container.apparmor.security.beta.kubernetes.io/notification: "runtime/default"
+        seccomp.security.alpha.kubernetes.io/pod: "runtime/default"
+
+        # Politiques réseau
+        {% if notification_security.network_policies.enabled %}
+        lions.dev/network-policy: "enabled"
+        {% endif %}
+
     spec:
-      serviceAccountName: "{{ app_name }}"
+      serviceAccountName: "{{ notification_service_name }}"
+
+      # Configuration de sécurité renforcée
       securityContext:
         runAsNonRoot: true
-        runAsUser: 1000
-        fsGroup: 1000
+        runAsUser: {{ notification_security.run_as_user | default(1000) }}
+        runAsGroup: {{ notification_security.run_as_group | default(1000) }}
+        fsGroup: {{ notification_security.fs_group | default(1000) }}
+        seccompProfile:
+          type: RuntimeDefault
+        supplementalGroups: []
+
+      # Stratégie de redémarrage
+      restartPolicy: Always
+      terminationGracePeriodSeconds: {{ notification_deployment.termination_grace_period | default(60) }}
+
+      # DNS et résolution de noms
+      dnsPolicy: ClusterFirst
+      dnsConfig:
+        options:
+          - name: timeout
+            value: "2"
+          - name: attempts
+            value: "2"
+
+      # Configuration des volumes
+      volumes:
+        # Volume temporaire sécurisé
+        - name: tmp-volume
+          emptyDir:
+            sizeLimit: 1Gi
+
+        # Configuration du service de notification
+        - name: config-volume
+          configMap:
+            name: "{{ notification_service_name }}-config"
+            defaultMode: 0644
+
+        {% if notification_storage.enabled %}
+        # Stockage persistant des données
+        - name: data-volume
+          persistentVolumeClaim:
+            claimName: "{{ notification_service_name }}-pvc"
+        {% endif %}
+
+        {% if notification_app_config.channels.email.enabled %}
+        # Templates d'email
+        - name: email-templates
+          configMap:
+            name: "{{ notification_service_name }}-email-templates"
+            defaultMode: 0644
+        {% endif %}
+
+        # Cache et logs temporaires
+        - name: cache-volume
+          emptyDir:
+            sizeLimit: 500Mi
+
+        # Secrets pour les canaux de notification
+        - name: notification-secrets
+          secret:
+            secretName: "{{ notification_service_name }}-secrets"
+            defaultMode: 0400
+            optional: true
+
+      # Configuration des conteneurs
       containers:
-        - name: "{{ app_name }}"
-          image: "registry.{{ app_environment }}.lions.dev/{{ app_name }}:{{ app_version }}"
-          imagePullPolicy: IfNotPresent
+        - name: notification-service
+          image: "{{ notification_container.registry }}/{{ notification_container.image }}:{{ notification_service_meta.version }}"
+          imagePullPolicy: {% if notification_environment == 'production' %}Always{% else %}IfNotPresent{% endif %}
+
+          # Ports exposés
           ports:
             - name: http
-              containerPort: {{ notification_default_port }}
+              containerPort: {{ notification_network.service.port }}
               protocol: TCP
+            {% if notification_monitoring.enabled %}
+            - name: metrics
+              containerPort: {{ notification_network.metrics_port | default(9090) }}
+              protocol: TCP
+            {% endif %}
+
+          # Variables d'environnement
           env:
+            # Configuration base
             - name: SPRING_PROFILES_ACTIVE
-              value: "{{ app_environment }}"
+              value: "{{ notification_environment }}"
+            - name: APPLICATION_NAME
+              value: "{{ notification_service_name }}"
+            - name: APPLICATION_VERSION
+              value: "{{ notification_service_meta.version }}"
+
+            # Configuration base de données
+            {% if notification_database.enabled %}
+            - name: DATABASE_HOST
+              value: "{{ notification_database.host }}"
+            - name: DATABASE_PORT
+              value: "{{ notification_database.port | string }}"
+            - name: DATABASE_NAME
+              value: "{{ notification_database.name }}"
+            - name: DATABASE_USERNAME
+              value: "{{ notification_database.username }}"
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: "{{ notification_service_name }}-database-secret"
+                  key: "password"
+            - name: DATABASE_SSL_MODE
+              value: "{% if notification_tls.enabled %}require{% else %}disable{% endif %}"
+            {% endif %}
+
+            # Configuration Redis
+            {% if notification_redis.enabled %}
+            - name: REDIS_HOST
+              value: "{{ notification_redis.host }}"
+            - name: REDIS_PORT
+              value: "{{ notification_redis.port | string }}"
+            - name: REDIS_DATABASE
+              value: "{{ notification_redis.database | string }}"
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: "{{ notification_service_name }}-redis-secret"
+                  key: "password"
+                  optional: true
+            {% endif %}
+
+            # Configuration canaux de notification
+            {% if notification_app_config.channels.email.enabled %}
+            - name: EMAIL_SMTP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: "{{ notification_app_config.channels.email.user_secret }}"
+                  key: "password"
+                  optional: true
+            {% endif %}
+
+            {% if notification_app_config.channels.slack.enabled %}
+            - name: SLACK_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: "{{ notification_app_config.channels.slack.webhook_secret }}"
+                  key: "webhook-url"
+                  optional: true
+            - name: SLACK_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: "{{ notification_app_config.channels.slack.token_secret }}"
+                  key: "bot-token"
+                  optional: true
+            {% endif %}
+
+            {% if notification_app_config.channels.sms.enabled %}
+            - name: SMS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: "{{ notification_app_config.channels.sms.api_secret }}"
+                  key: "api-key"
+                  optional: true
+            {% endif %}
+
+            # Configuration sécurité
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: "{{ notification_secrets.jwt.secret_name }}"
+                  key: "jwt-secret"
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: "{{ notification_secrets.api.key_secret }}"
+                  key: "api-key"
+                  optional: true
+
+            # Configuration monitoring
+            {% if notification_monitoring.enabled %}
+            - name: METRICS_ENABLED
+              value: "true"
+            - name: METRICS_PORT
+              value: "{{ notification_network.metrics_port | default(9090) | string }}"
+            {% endif %}
+
+            # Variables d'environnement Kubernetes
             - name: KUBERNETES_NAMESPACE
               valueFrom:
                 fieldRef:
@@ -64,63 +299,210 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+
+            # Configuration JVM optimisée
             - name: JAVA_OPTS
-              value: "-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -Djava.net.preferIPv4Stack=true"
+              value: "{{ notification_app_config.jvm.opts }}"
+
+            # Configuration timezone
+            - name: TZ
+              value: "{{ notification_app_config.timezone }}"
+
+          # Configuration depuis ConfigMap
           envFrom:
             - configMapRef:
-                name: "{{ app_name }}-config"
-            - secretRef:
-                name: "{{ app_name }}-secrets"
-                optional: true
+                name: "{{ notification_service_name }}-config"
+                optional: false
+
+          # Gestion des ressources
           resources:
             requests:
-              cpu: "{{ notification_resources[app_environment].requests.cpu }}"
-              memory: "{{ notification_resources[app_environment].requests.memory }}"
+              cpu: "{{ notification_resources.limits.cpu.requests[notification_environment] }}"
+              memory: "{{ notification_resources.limits.memory.requests[notification_environment] }}"
+              {% if notification_storage.enabled %}
+              ephemeral-storage: "{{ notification_resources.limits.ephemeral_storage.requests | default('1Gi') }}"
+              {% endif %}
             limits:
-              cpu: "{{ notification_resources[app_environment].limits.cpu }}"
-              memory: "{{ notification_resources[app_environment].limits.memory }}"
+              cpu: "{{ notification_resources.limits.cpu.limits[notification_environment] }}"
+              memory: "{{ notification_resources.limits.memory.limits[notification_environment] }}"
+              {% if notification_storage.enabled %}
+              ephemeral-storage: "{{ notification_resources.limits.ephemeral_storage.limits | default('5Gi') }}"
+              {% endif %}
+
+          # Health checks améliorés
+          startupProbe:
+            httpGet:
+              path: "{{ notification_endpoints.health }}"
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: {{ notification_health_checks.startup.initial_delay | default(30) }}
+            periodSeconds: {{ notification_health_checks.startup.period | default(10) }}
+            timeoutSeconds: {{ notification_health_checks.startup.timeout | default(5) }}
+            failureThreshold: {{ notification_health_checks.startup.failure_threshold | default(30) }}
+            successThreshold: 1
+
           readinessProbe:
-            {{- notification_readiness_probe | to_nice_yaml(indent=2) | indent(12) }}
+            httpGet:
+              path: "{{ notification_endpoints.health }}"
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: {{ notification_health_checks.readiness.initial_delay | default(10) }}
+            periodSeconds: {{ notification_health_checks.readiness.period | default(10) }}
+            timeoutSeconds: {{ notification_health_checks.readiness.timeout | default(5) }}
+            failureThreshold: {{ notification_health_checks.readiness.failure_threshold | default(3) }}
+            successThreshold: 1
+
           livenessProbe:
-            {{- notification_liveness_probe | to_nice_yaml(indent=2) | indent(12) }}
+            httpGet:
+              path: "{{ notification_endpoints.health }}"
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: {{ notification_health_checks.liveness.initial_delay | default(60) }}
+            periodSeconds: {{ notification_health_checks.liveness.period | default(30) }}
+            timeoutSeconds: {{ notification_health_checks.liveness.timeout | default(10) }}
+            failureThreshold: {{ notification_health_checks.liveness.failure_threshold | default(3) }}
+            successThreshold: 1
+
+          # Points de montage des volumes
           volumeMounts:
+            # Volume temporaire
             - name: tmp-volume
               mountPath: /tmp
+
+            # Configuration
             - name: config-volume
-              mountPath: /config
+              mountPath: /etc/notification
               readOnly: true
-{% if notification_channels.email.enabled | default(true) | bool %}
+
+            {% if notification_storage.enabled %}
+            # Données persistantes
+            - name: data-volume
+              mountPath: {{ notification_app_config.data_path }}
+            {% endif %}
+
+            {% if notification_app_config.channels.email.enabled %}
+            # Templates d'email
             - name: email-templates
-              mountPath: "{{ notification_templates_path }}/email"
+              mountPath: {{ notification_app_config.templates.path }}/email
               readOnly: true
-{% endif %}
+            {% endif %}
+
+            # Cache
+            - name: cache-volume
+              mountPath: {{ notification_app_config.data_path }}/cache
+
+            # Secrets
+            - name: notification-secrets
+              mountPath: /secrets
+              readOnly: true
+
+          # Sécurité du conteneur
           securityContext:
             allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: {{ notification_security.run_as_user | default(1000) }}
+            runAsGroup: {{ notification_security.run_as_group | default(1000) }}
+            readOnlyRootFilesystem: {{ notification_security.read_only_root_fs | default(true) }}
             capabilities:
               drop:
                 - ALL
-            readOnlyRootFilesystem: true
-      volumes:
-        - name: tmp-volume
-          emptyDir: {}
-        - name: config-volume
-          configMap:
-            name: "{{ app_name }}-config"
-{% if notification_channels.email.enabled | default(true) | bool %}
-        - name: email-templates
-          configMap:
-            name: "{{ app_name }}-email-templates"
-{% endif %}
+              add: []
+            seccompProfile:
+              type: RuntimeDefault
+
+          # Configuration du cycle de vie
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - "sleep 15; pkill -TERM java"
+
+      # Affinité et anti-affinité
       affinity:
+        # Anti-affinité pour éviter de placer plusieurs pods sur le même nœud
         podAntiAffinity:
+          {% if notification_environment == 'production' %}
+          requiredDuringSchedulingIgnoredDuringExecution:
+          {% else %}
           preferredDuringSchedulingIgnoredDuringExecution:
-            - weight: 100
-              podAffinityTerm:
+          {% endif %}
+            - {% if notification_environment != 'production' %}weight: 100
+              {% endif %}podAffinityTerm:
                 labelSelector:
                   matchExpressions:
-                    - key: app
+                    - key: app.kubernetes.io/name
                       operator: In
                       values:
-                        - "{{ app_name }}"
+                        - "{{ notification_service_name }}"
                 topologyKey: kubernetes.io/hostname
-      terminationGracePeriodSeconds: 30
+
+        # Affinité de nœud si spécifiée
+        {% if notification_deployment.node_selector | default({}) %}
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                {% for key, value in notification_deployment.node_selector.items() %}
+                  - key: "{{ key }}"
+                    operator: In
+                    values:
+                      - "{{ value }}"
+                {% endfor %}
+        {% endif %}
+
+      # Tolérations pour les nœuds spécialisés
+      {% if notification_deployment.tolerations | default([]) %}
+      tolerations:
+        {% for toleration in notification_deployment.tolerations %}
+        - key: "{{ toleration.key }}"
+          operator: "{{ toleration.operator | default('Equal') }}"
+          value: "{{ toleration.value | default('') }}"
+          effect: "{{ toleration.effect }}"
+          {% if toleration.tolerationSeconds is defined %}
+          tolerationSeconds: {{ toleration.tolerationSeconds }}
+          {% endif %}
+        {% endfor %}
+      {% endif %}
+
+      # Priorité du pod
+      priorityClassName: {% if notification_environment == 'production' %}"high-priority"{% else %}"normal-priority"{% endif %}
+
+      # Configuration automatique du pull d'images
+      {% if notification_container.image_pull_secrets | default([]) %}
+      imagePullSecrets:
+        {% for secret in notification_container.image_pull_secrets %}
+        - name: "{{ secret }}"
+        {% endfor %}
+      {% endif %}
+
+---
+# =========================================================================
+# CONFIGURATION AUTOMATIQUE - PodDisruptionBudget
+# =========================================================================
+{% if notification_environment == 'production' and (notification_resources.scaling.replicas.production | default(2)) > 1 %}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: "{{ notification_service_name }}-pdb"
+  namespace: "{{ notification_namespace }}"
+  labels:
+    app.kubernetes.io/name: "{{ notification_service_name }}"
+    app.kubernetes.io/instance: "{{ notification_service_name }}-{{ notification_environment }}"
+    lions.dev/environment: "{{ notification_environment }}"
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: "{{ notification_service_name }}"
+      app.kubernetes.io/instance: "{{ notification_service_name }}-{{ notification_environment }}"
+{% endif %}

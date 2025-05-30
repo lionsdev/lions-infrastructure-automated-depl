@@ -1,26 +1,175 @@
 ---
-# Titre: Template de PersistentVolumeClaim Kubernetes pour Redis
-# Description: Définit le PersistentVolumeClaim Kubernetes pour Redis
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-08
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - REDIS PERSISTENT VOLUME CLAIM TEMPLATE
+# =========================================================================
+# Description: Template Kubernetes PersistentVolumeClaim pour Redis
+# Component: Redis Database Storage
+# Version: 5.0.0
+# Maintainer: LIONS DevOps Team <devops@lions.dev>
+# Documentation: https://docs.lions.dev/infrastructure/storage/redis
+# Last Updated: {{ ansible_date_time.iso8601 }}
+# =========================================================================
 
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: "{{ app_name }}-data"
-  namespace: "{{ app_namespace }}"
+  # ===== IDENTIFICATION =====
+  name: "{{ redis_service_name | default('redis') }}-data-pvc"
+  namespace: "{{ redis_namespace | default(lions_redis_namespace) | default('database') }}"
+
+  # ===== LABELS STANDARDISÉS =====
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "redis"
+    # Labels applicatifs
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/instance: "{{ redis_service_name | default('redis') }}"
+    app.kubernetes.io/version: "{{ redis_version | default(lions_redis_version) | default('7.2') }}"
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: lions-infrastructure
+    app.kubernetes.io/managed-by: ansible
+
+    # Labels LIONS spécifiques
+    lions.dev/project: "{{ lions_project_name | default('lions-infrastructure') }}"
+    lions.dev/environment: "{{ lions_environment | default('development') }}"
+    lions.dev/tier: data
+    lions.dev/storage-type: persistent
+    lions.dev/backup-enabled: "{{ redis_backup_enabled | default(true) | string }}"
+    lions.dev/monitoring-enabled: "{{ redis_monitoring_enabled | default(true) | string }}"
+
+    # Labels opérationnels
+    technology: redis
+    storage-class: "{{ redis_storage_class | default(lions_storage_class_default) | default('local-path') }}"
+    retention-policy: "{{ redis_retention_policy | default('retain') }}"
+
+    # Labels pour GitOps et CI/CD
+    argocd.argoproj.io/instance: "{{ argocd_instance | default('lions-infrastructure') }}"
+    helm.sh/chart: "{{ chart_name | default('lions-redis') }}-{{ chart_version | default('1.0.0') }}"
+
+    # Labels de classification
+    data-classification: "{{ redis_data_classification | default('internal') }}"
+    compliance-required: "{{ redis_compliance_required | default('false') | string }}"
+
+  # ===== ANNOTATIONS COMPLÈTES =====
   annotations:
-    description: "PersistentVolumeClaim pour Redis {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    # Documentation
+    description: "PersistentVolumeClaim pour Redis {{ redis_service_name | default('redis') }} v{{ redis_version | default(lions_redis_version) | default('7.2') }}"
+    documentation: "https://docs.lions.dev/infrastructure/databases/redis"
+    runbook: "https://runbooks.lions.dev/databases/redis"
+
+    # Informations de déploiement
+    deployment.lions.dev/created-by: "ansible-{{ ansible_version.full }}"
+    deployment.lions.dev/created-at: "{{ ansible_date_time.iso8601 }}"
+    deployment.lions.dev/playbook: "{{ ansible_playbook }}"
+    deployment.lions.dev/inventory: "{{ inventory_hostname_short }}"
+
+    # Configuration du stockage
+    storage.lions.dev/type: "{{ redis_storage_type | default('block') }}"
+    storage.lions.dev/performance-tier: "{{ redis_performance_tier | default('standard') }}"
+    storage.lions.dev/iops-requirement: "{{ redis_iops_requirement | default('500') }}"
+    storage.lions.dev/throughput-requirement: "{{ redis_throughput_requirement | default('100Mi/s') }}"
+
+    # Configuration de backup
+    backup.lions.dev/enabled: "{{ redis_backup_enabled | default(true) | string }}"
+    backup.lions.dev/schedule: "{{ redis_backup_schedule | default('0 2 * * *') }}"
+    backup.lions.dev/retention-days: "{{ redis_backup_retention_days | default(lions_backup_retention_days) | default('30') }}"
+    backup.lions.dev/strategy: "{{ redis_backup_strategy | default('snapshot') }}"
+
+    # Configuration de monitoring
+    monitoring.lions.dev/enabled: "{{ redis_monitoring_enabled | default(true) | string }}"
+    monitoring.lions.dev/metrics-port: "{{ redis_metrics_port | default('9121') }}"
+    monitoring.lions.dev/dashboard-id: "{{ redis_dashboard_id | default('redis-overview') }}"
+
+    # Configuration de sécurité
+    security.lions.dev/encrypted-at-rest: "{{ redis_encryption_at_rest | default(lions_security_encryption_at_rest) | default('true') | string }}"
+    security.lions.dev/access-mode: "{{ redis_access_mode | default('private') }}"
+
+    # Informations de ressources
+    resources.lions.dev/size-category: "{{ redis_size_category | default('medium') }}"
+    resources.lions.dev/storage-size: "{{ redis_storage_size | default(lions_redis_storage_size) | default('5Gi') }}"
+
+    # Support et maintenance
+    support.lions.dev/contact: "{{ support_contact | default('devops@lions.dev') }}"
+    support.lions.dev/escalation: "{{ support_escalation | default('infrastructure-team') }}"
+    support.lions.dev/sla: "{{ redis_sla | default('99.9%') }}"
+
+    # Annotations Kubernetes natives
+    volume.beta.kubernetes.io/storage-provisioner: "{{ redis_storage_provisioner | default(lions_storage_provisioner) | default('rancher.io/local-path') }}"
+    {% if redis_storage_class == 'fast-ssd' %}
+    volume.kubernetes.io/selected-node: "{{ redis_preferred_node | default('') }}"
+    {% endif %}
+
+# ===== SPÉCIFICATION DU PVC =====
 spec:
+  # ===== MODES D'ACCÈS =====
   accessModes:
     - ReadWriteOnce
-  storageClassName: "{{ redis_storage_class }}"
+  {% if redis_multi_attach_enabled | default(false) %}
+    - ReadWriteMany
+  {% endif %}
+
+  # ===== CLASSE DE STOCKAGE =====
+  storageClassName: "{{ redis_storage_class | default(lions_storage_class_default) | default('local-path') }}"
+
+  # ===== RESSOURCES DEMANDÉES =====
   resources:
     requests:
-      storage: "{{ redis_storage_size }}"
+      storage: "{{ redis_storage_size | default(lions_redis_storage_size) | default('5Gi') }}"
+    {% if redis_storage_limit is defined %}
+    limits:
+      storage: "{{ redis_storage_limit }}"
+    {% endif %}
+
+  # ===== SÉLECTEUR DE VOLUME (optionnel) =====
+  {% if redis_volume_selector is defined %}
+  selector:
+    matchLabels:
+      {{ redis_volume_selector | to_nice_yaml | indent(6) }}
+  {% endif %}
+
+  # ===== MODE DE VOLUME (optionnel) =====
+  {% if redis_volume_mode is defined %}
+  volumeMode: "{{ redis_volume_mode }}"  # Filesystem ou Block
+  {% endif %}
+
+  # ===== CONTRAINTES DE DONNÉES (optionnel) =====
+  {% if redis_data_source is defined %}
+  dataSource:
+    name: "{{ redis_data_source.name }}"
+    kind: "{{ redis_data_source.kind | default('PersistentVolumeClaim') }}"
+    {% if redis_data_source.api_group is defined %}
+    apiGroup: "{{ redis_data_source.api_group }}"
+    {% endif %}
+  {% endif %}
+
+  # ===== SOURCE DE DONNÉES CROSS-NAMESPACE (optionnel) =====
+  {% if redis_data_source_ref is defined %}
+  dataSourceRef:
+    name: "{{ redis_data_source_ref.name }}"
+    kind: "{{ redis_data_source_ref.kind }}"
+    apiGroup: "{{ redis_data_source_ref.api_group }}"
+    {% if redis_data_source_ref.namespace is defined %}
+    namespace: "{{ redis_data_source_ref.namespace }}"
+    {% endif %}
+  {% endif %}
+
+---
+# ===== CONFIGURATION COMPLÉMENTAIRE =====
+# Si le stockage haute performance est activé, créer un VolumeAttachment
+{% if redis_storage_class == 'fast-ssd' and redis_volume_attachment_enabled | default(false) %}
+apiVersion: storage.k8s.io/v1
+kind: VolumeAttachment
+metadata:
+  name: "{{ redis_service_name | default('redis') }}-volume-attachment"
+  namespace: "{{ redis_namespace | default(lions_redis_namespace) | default('database') }}"
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/instance: "{{ redis_service_name | default('redis') }}"
+    lions.dev/project: "{{ lions_project_name | default('lions-infrastructure') }}"
+    lions.dev/environment: "{{ lions_environment | default('development') }}"
+  annotations:
+    description: "VolumeAttachment pour optimiser les performances de Redis"
+spec:
+  attacher: "{{ redis_volume_attacher | default('csi.lions.dev') }}"
+  source:
+    persistentVolumeName: "{{ redis_service_name | default('redis') }}-data-pv"
+  nodeName: "{{ redis_preferred_node | default('') }}"
+{% endif %}

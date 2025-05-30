@@ -1,127 +1,395 @@
 ---
-# Titre: Déploiement de Redis
-# Description: Déploie Redis sur Kubernetes
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-08
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - DÉPLOIEMENT REDIS
+# =========================================================================
+# Description: Déploie Redis sur Kubernetes avec haute disponibilité
+# Version: 5.0.0
+# Maintainer: DevOps Team LIONS
+# Documentation: https://docs.lions.dev/infrastructure/services/redis
+# =========================================================================
 
-- name: Déploiement de Redis via StatefulSet
+# =========================================================================
+# MÉTADONNÉES ET VALIDATION
+# =========================================================================
+- name: "🏷️  Définition des métadonnées de déploiement Redis"
+  set_fact:
+    redis_deploy_metadata:
+      component: "redis"
+      version: "{{ lookup('env', 'LIONS_REDIS_VERSION') | default('7.2', true) }}"
+      namespace: "{{ lookup('env', 'LIONS_REDIS_NAMESPACE') | default('database', true) }}"
+      environment: "{{ lookup('env', 'LIONS_ENVIRONMENT') | default('development', true) }}"
+      deployment_timestamp: "{{ ansible_date_time.iso8601 }}"
+      deployment_id: "{{ lookup('env', 'LIONS_DEPLOYMENT_ID') | default(ansible_date_time.epoch, true) }}"
+    redis_service_config:
+      name: "{{ lookup('env', 'LIONS_REDIS_SERVICE_NAME') | default('redis', true) }}"
+      port: "{{ lookup('env', 'LIONS_REDIS_PORT') | default('6379', true) | int }}"
+      storage_size: "{{ lookup('env', 'LIONS_REDIS_STORAGE_SIZE') | default('5Gi', true) }}"
+      storage_class: "{{ lookup('env', 'LIONS_STORAGE_CLASS_DEFAULT') | default('local-path', true) }}"
+    redis_resources:
+      requests:
+        cpu: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_CPU_REQUEST') | default('100m', true) }}"
+        memory: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_MEMORY_REQUEST') | default('128Mi', true) }}"
+      limits:
+        cpu: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_CPU_LIMIT') | default('500m', true) }}"
+        memory: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_MEMORY_LIMIT') | default('512Mi', true) }}"
+    redis_timeouts:
+      deployment: "{{ lookup('env', 'LIONS_TIMEOUT_DEPLOYMENT') | default('1800', true) | int }}"
+      readiness: "{{ lookup('env', 'LIONS_TIMEOUT_DEFAULT') | default('300', true) | int }}"
+      rollback: "{{ lookup('env', 'LIONS_TIMEOUT_ROLLBACK') | default('600', true) | int }}"
+
+- name: "🔍 Validation des prérequis de déploiement Redis"
+  assert:
+    that:
+      - redis_deploy_metadata.namespace is defined
+      - redis_deploy_metadata.namespace | length > 0
+      - redis_service_config.name is defined
+      - redis_service_config.port > 0
+      - redis_service_config.storage_size is defined
+      - redis_resources.requests.cpu is defined
+      - redis_resources.requests.memory is defined
+    fail_msg: "❌ Prérequis manquants pour le déploiement Redis"
+    success_msg: "✅ Validation des prérequis Redis réussie"
+
+- name: "📊 Affichage des informations de déploiement Redis"
+  debug:
+    msg:
+      - "🚀 Déploiement Redis {{ redis_deploy_metadata.version }}"
+      - "📦 Namespace: {{ redis_deploy_metadata.namespace }}"
+      - "🏷️  Service: {{ redis_service_config.name }}"
+      - "🔌 Port: {{ redis_service_config.port }}"
+      - "💾 Stockage: {{ redis_service_config.storage_size }}"
+      - "🌐 Environnement: {{ redis_deploy_metadata.environment }}"
+
+# =========================================================================
+# PRÉPARATION DU DÉPLOIEMENT
+# =========================================================================
+- name: "📁 Vérification de l'existence du répertoire temporaire"
+  stat:
+    path: "{{ temp_dir.path }}"
+  register: temp_dir_stat
+
+- name: "❌ Échec si le répertoire temporaire n'existe pas"
+  fail:
+    msg: "Le répertoire temporaire {{ temp_dir.path }} n'existe pas"
+  when: not temp_dir_stat.stat.exists
+
+- name: "🔧 Vérification de la connectivité Kubernetes"
+  k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: "{{ redis_deploy_metadata.namespace }}"
+  register: namespace_check
+  failed_when: false
+
+- name: "🏗️  Création du namespace Redis si nécessaire"
+  k8s:
+    name: "{{ redis_deploy_metadata.namespace }}"
+    api_version: v1
+    kind: Namespace
+    state: present
+    definition:
+      metadata:
+        labels:
+          app.kubernetes.io/name: "{{ redis_service_config.name }}"
+          app.kubernetes.io/component: "database"
+          app.kubernetes.io/part-of: "lions-infrastructure"
+          lions.dev/environment: "{{ redis_deploy_metadata.environment }}"
+          lions.dev/managed-by: "ansible"
+  when: namespace_check.resources | length == 0
+
+# =========================================================================
+# GESTION DES SECRETS ET CONFIGURATION
+# =========================================================================
+- name: "🔐 Génération du mot de passe Redis (si activé)"
+  set_fact:
+    redis_auth_enabled: "{{ lookup('env', 'LIONS_REDIS_AUTH_ENABLED') | default('true', true) | bool }}"
+    redis_password: "{{ lookup('env', 'LIONS_REDIS_PASSWORD') | default(lookup('password', '/dev/null chars=ascii_letters,digits length=32'), true) }}"
+  when: lookup('env', 'LIONS_REDIS_AUTH_ENABLED') | default('true', true) | bool
+
+- name: "🔑 Création du secret Redis"
+  k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ redis_service_config.name }}-secret"
+        namespace: "{{ redis_deploy_metadata.namespace }}"
+        labels:
+          app.kubernetes.io/name: "{{ redis_service_config.name }}"
+          app.kubernetes.io/component: "database"
+          lions.dev/managed-by: "ansible"
+      type: Opaque
+      data:
+        redis-password: "{{ redis_password | b64encode }}"
+  when: redis_auth_enabled | default(true)
+
+# =========================================================================
+# DÉPLOIEMENT DES RESSOURCES KUBERNETES
+# =========================================================================
+- name: "📦 Déploiement du PersistentVolumeClaim Redis"
+  k8s:
+    state: present
+    src: "{{ temp_dir.path }}/persistentvolumeclaim.yml"
+  register: pvc_result
+
+- name: "⚙️  Déploiement de la ConfigMap Redis"
+  k8s:
+    state: present
+    src: "{{ temp_dir.path }}/configmap.yml"
+  register: configmap_result
+
+- name: "👤 Déploiement du ServiceAccount Redis"
+  k8s:
+    state: present
+    src: "{{ temp_dir.path }}/serviceaccount.yml"
+  register: serviceaccount_result
+
+- name: "🚀 Déploiement du StatefulSet Redis"
   k8s:
     state: present
     src: "{{ temp_dir.path }}/statefulset.yml"
   register: statefulset_result
 
-- name: Création du service pour Redis
+- name: "🌐 Création du Service Redis"
   k8s:
     state: present
     src: "{{ temp_dir.path }}/service.yml"
   register: service_result
 
-- name: Attente du déploiement
+# =========================================================================
+# MONITORING ET OBSERVABILITÉ
+# =========================================================================
+- name: "📊 Déploiement du ServiceMonitor Redis (si monitoring activé)"
+  k8s:
+    state: present
+    src: "{{ temp_dir.path }}/servicemonitor.yml"
+  register: servicemonitor_result
+  when: lookup('env', 'LIONS_MONITORING_ENABLED') | default('true', true) | bool
+
+# =========================================================================
+# ATTENTE ET VALIDATION DU DÉPLOIEMENT
+# =========================================================================
+- name: "⏳ Attente de la disponibilité du StatefulSet Redis"
   k8s_info:
     api_version: apps/v1
     kind: StatefulSet
-    namespace: "{{ app_namespace }}"
-    name: "{{ app_name }}"
+    namespace: "{{ redis_deploy_metadata.namespace }}"
+    name: "{{ redis_service_config.name }}"
   register: statefulset_status
-  until: statefulset_status.resources[0].status.readyReplicas is defined and statefulset_status.resources[0].status.readyReplicas == statefulset_status.resources[0].spec.replicas
-  retries: 30
-  delay: 10
-  ignore_errors: yes
+  until: >
+    statefulset_status.resources | length > 0 and
+    statefulset_status.resources[0].status.readyReplicas is defined and
+    statefulset_status.resources[0].status.readyReplicas == statefulset_status.resources[0].spec.replicas
+  retries: "{{ (redis_timeouts.deployment / 30) | int }}"
+  delay: 30
+  failed_when: false
 
-- name: Vérification du statut du déploiement
+- name: "🔍 Validation du statut de déploiement du StatefulSet"
   fail:
-    msg: "Le déploiement de Redis a échoué. Veuillez vérifier les logs pour plus d'informations."
-  when: statefulset_status is failed or statefulset_status.resources | length == 0
+    msg: "❌ Le déploiement du StatefulSet Redis a échoué après {{ redis_timeouts.deployment }}s"
+  when: >
+    statefulset_status.failed or
+    statefulset_status.resources | length == 0 or
+    (statefulset_status.resources[0].status.readyReplicas | default(0)) != (statefulset_status.resources[0].spec.replicas | default(1))
 
-- name: Récupération des informations sur les pods
+- name: "📋 Récupération des informations des pods Redis"
   k8s_info:
     api_version: v1
     kind: Pod
-    namespace: "{{ app_namespace }}"
+    namespace: "{{ redis_deploy_metadata.namespace }}"
     label_selectors:
-      - "app={{ app_name }}"
-  register: pods_info
+      - "app.kubernetes.io/name={{ redis_service_config.name }}"
+  register: redis_pods_info
 
-- name: Affichage des informations sur les pods
+- name: "📊 Affichage du statut des pods Redis"
   debug:
-    msg: "Pod {{ item.metadata.name }} est dans l'état {{ item.status.phase }}"
-  loop: "{{ pods_info.resources }}"
+    msg: "Pod {{ item.metadata.name }} - État: {{ item.status.phase }} - Prêt: {{ item.status.conditions | selectattr('type', 'equalto', 'Ready') | map(attribute='status') | first | default('Unknown') }}"
+  loop: "{{ redis_pods_info.resources }}"
   loop_control:
     label: "{{ item.metadata.name }}"
 
-- name: Attente de l'initialisation de Redis
+# =========================================================================
+# TESTS DE SANTÉ ET CONNECTIVITÉ
+# =========================================================================
+- name: "⏸️  Attente de l'initialisation complète de Redis"
   pause:
-    seconds: "{{ redis_init_delay | default(30) }}"
-  when: statefulset_status is succeeded
+    seconds: "{{ lookup('env', 'LIONS_REDIS_INIT_DELAY') | default('30', true) | int }}"
 
-- name: Vérification de l'état des pods après initialisation
-  k8s_info:
-    api_version: v1
-    kind: Pod
-    namespace: "{{ app_namespace }}"
-    label_selectors:
-      - "app={{ app_name }}"
-  register: pods_info_after_init
-
-- name: Affichage des informations sur les pods après initialisation
-  debug:
-    msg: "Pod {{ item.metadata.name }} est dans l'état {{ item.status.phase }} après initialisation"
-  loop: "{{ pods_info_after_init.resources }}"
-  loop_control:
-    label: "{{ item.metadata.name }}"
-
-- name: Vérification des logs des pods pour détecter des erreurs
-  shell: "kubectl logs -n {{ app_namespace }} {{ item.metadata.name }} | grep -i error | tail -10"
-  loop: "{{ pods_info_after_init.resources }}"
-  register: pod_logs
-  ignore_errors: yes
-  changed_when: false
-  loop_control:
-    label: "{{ item.metadata.name }}"
-
-- name: Affichage des erreurs dans les logs (si présentes)
-  debug:
-    msg: "Erreurs détectées dans les logs de {{ item.item.metadata.name }}: {{ item.stdout }}"
-  loop: "{{ pod_logs.results }}"
-  when: item.stdout != ""
-  loop_control:
-    label: "{{ item.item.metadata.name }}"
-
-- name: Vérification de la disponibilité de Redis
-  shell: "kubectl exec -n {{ app_namespace }} {{ pods_info_after_init.resources[0].metadata.name }} -- redis-cli ping"
-  register: redis_ping
-  ignore_errors: yes
-  retries: 5
+- name: "🩺 Test de connectivité Redis"
+  shell: |
+    kubectl exec -n {{ redis_deploy_metadata.namespace }} {{ redis_pods_info.resources[0].metadata.name }} -- \
+    {% if redis_auth_enabled | default(true) %}
+    redis-cli -a "{{ redis_password }}" ping
+    {% else %}
+    redis-cli ping
+    {% endif %}
+  register: redis_ping_test
+  retries: "{{ (redis_timeouts.readiness / 10) | int }}"
   delay: 10
-  until: redis_ping.rc == 0 and redis_ping.stdout == "PONG"
+  until: redis_ping_test.rc == 0 and redis_ping_test.stdout.strip() == "PONG"
+  failed_when: false
   changed_when: false
+  no_log: "{{ redis_auth_enabled | default(true) }}"
 
-- name: Avertissement si Redis n'est pas disponible
-  debug:
-    msg: "AVERTISSEMENT: Redis n'est pas disponible. Vérifiez les logs pour plus d'informations."
-  when: redis_ping is failed
+- name: "⚠️  Gestion de l'échec du test de connectivité"
+  block:
+    - name: "📋 Récupération des logs d'erreur Redis"
+      shell: "kubectl logs -n {{ redis_deploy_metadata.namespace }} {{ redis_pods_info.resources[0].metadata.name }} --tail=50"
+      register: redis_error_logs
+      failed_when: false
 
-- name: Vérification de la configuration Redis
-  shell: "kubectl exec -n {{ app_namespace }} {{ pods_info_after_init.resources[0].metadata.name }} -- redis-cli config get maxmemory"
-  register: redis_config
-  ignore_errors: yes
+    - name: "❌ Affichage des logs d'erreur"
+      debug:
+        msg: "Logs d'erreur Redis: {{ redis_error_logs.stdout_lines | default(['Aucun log disponible']) }}"
+
+    - name: "🔄 Tentative de redémarrage du pod Redis"
+      shell: "kubectl delete pod -n {{ redis_deploy_metadata.namespace }} {{ redis_pods_info.resources[0].metadata.name }}"
+      when: lookup('env', 'LIONS_AUTO_RECOVERY_ENABLED') | default('true', true) | bool
+
+    - name: "❌ Échec critique du déploiement Redis"
+      fail:
+        msg: "❌ Redis n'est pas disponible après {{ redis_timeouts.readiness }}s. Consultez les logs pour plus d'informations."
+  when: redis_ping_test.failed or redis_ping_test.rc != 0
+
+# =========================================================================
+# VALIDATION DE LA CONFIGURATION REDIS
+# =========================================================================
+- name: "🔧 Vérification de la configuration Redis"
+  shell: |
+    kubectl exec -n {{ redis_deploy_metadata.namespace }} {{ redis_pods_info.resources[0].metadata.name }} -- \
+    {% if redis_auth_enabled | default(true) %}
+    redis-cli -a "{{ redis_password }}" config get maxmemory
+    {% else %}
+    redis-cli config get maxmemory
+    {% endif %}
+  register: redis_config_check
+  failed_when: false
   changed_when: false
-  when: redis_ping is succeeded
+  no_log: "{{ redis_auth_enabled | default(true) }}"
 
-- name: Affichage de la configuration Redis
+- name: "📊 Affichage de la configuration Redis"
   debug:
-    msg: "Configuration Redis - maxmemory: {{ redis_config.stdout_lines[1] if redis_config is succeeded and redis_config.stdout_lines | length > 1 else 'Non disponible' }}"
-  when: redis_ping is succeeded
+    msg:
+      - "💾 Mémoire maximale configurée: {{ redis_config_check.stdout_lines[1] if redis_config_check.rc == 0 and redis_config_check.stdout_lines | length > 1 else 'Non configurée' }}"
+      - "🔧 Version Redis: {{ redis_deploy_metadata.version }}"
+      - "🔌 Port d'écoute: {{ redis_service_config.port }}"
 
-- name: Vérification du cluster Redis (si activé)
-  shell: "kubectl exec -n {{ app_namespace }} {{ pods_info_after_init.resources[0].metadata.name }} -- redis-cli cluster info"
-  register: redis_cluster_info
-  ignore_errors: yes
+# =========================================================================
+# TESTS DE PERFORMANCE ET SÉCURITÉ
+# =========================================================================
+- name: "🔒 Test de sécurité - Vérification de l'authentification"
+  shell: |
+    kubectl exec -n {{ redis_deploy_metadata.namespace }} {{ redis_pods_info.resources[0].metadata.name }} -- \
+    redis-cli ping
+  register: redis_security_test
+  failed_when: false
   changed_when: false
-  when: redis_cluster_enabled | default(false) | bool and redis_ping is succeeded
+  when: redis_auth_enabled | default(true)
 
-- name: Affichage des informations sur le cluster Redis
+- name: "✅ Validation de la sécurité Redis"
   debug:
-    msg: "Informations sur le cluster Redis: {{ redis_cluster_info.stdout_lines if redis_cluster_info is succeeded else 'Non disponible' }}"
-  when: redis_cluster_enabled | default(false) | bool and redis_ping is succeeded
+    msg: "🔐 Authentification Redis correctement configurée"
+  when: redis_auth_enabled | default(true) and redis_security_test.rc != 0
+
+- name: "⚠️  Avertissement de sécurité Redis"
+  debug:
+    msg: "⚠️  ATTENTION: Redis fonctionne sans authentification - Risque de sécurité!"
+  when: not (redis_auth_enabled | default(true))
+
+# =========================================================================
+# TESTS DE CLUSTERING (SI ACTIVÉ)
+# =========================================================================
+- name: "🔗 Test du cluster Redis (si activé)"
+  block:
+    - name: "📊 Vérification des informations du cluster Redis"
+      shell: |
+        kubectl exec -n {{ redis_deploy_metadata.namespace }} {{ redis_pods_info.resources[0].metadata.name }} -- \
+        {% if redis_auth_enabled | default(true) %}
+        redis-cli -a "{{ redis_password }}" cluster info
+        {% else %}
+        redis-cli cluster info
+        {% endif %}
+      register: redis_cluster_info
+      failed_when: false
+      changed_when: false
+      no_log: "{{ redis_auth_enabled | default(true) }}"
+
+    - name: "📋 Affichage des informations du cluster"
+      debug:
+        msg: "Cluster Redis: {{ redis_cluster_info.stdout_lines | default(['Cluster non configuré']) }}"
+  when: lookup('env', 'LIONS_REDIS_CLUSTER_ENABLED') | default('false', true) | bool
+
+# =========================================================================
+# FINALISATION ET REPORTING
+# =========================================================================
+- name: "📊 Récupération des métriques de déploiement"
+  set_fact:
+    redis_deployment_metrics:
+      deployment_duration: "{{ (ansible_date_time.epoch | int) - (redis_deploy_metadata.deployment_id | int) }}"
+      pods_ready: "{{ redis_pods_info.resources | selectattr('status.phase', 'equalto', 'Running') | list | length }}"
+      pods_total: "{{ redis_pods_info.resources | length }}"
+      pvc_status: "{{ pvc_result.result.status.phase | default('Unknown') }}"
+      service_ready: "{{ service_result is succeeded }}"
+      monitoring_enabled: "{{ lookup('env', 'LIONS_MONITORING_ENABLED') | default('true', true) | bool }}"
+
+- name: "📋 Génération du rapport de déploiement Redis"
+  debug:
+    msg:
+      - "🎉 ======= DÉPLOIEMENT REDIS TERMINÉ ======="
+      - "📊 Version déployée: {{ redis_deploy_metadata.version }}"
+      - "🏷️  Service: {{ redis_service_config.name }}"
+      - "📦 Namespace: {{ redis_deploy_metadata.namespace }}"
+      - "⏱️  Durée du déploiement: {{ redis_deployment_metrics.deployment_duration }}s"
+      - "🚀 Pods prêts: {{ redis_deployment_metrics.pods_ready }}/{{ redis_deployment_metrics.pods_total }}"
+      - "💾 Stockage: {{ redis_deployment_metrics.pvc_status }}"
+      - "🌐 Service: {{ 'Actif' if redis_deployment_metrics.service_ready else 'Inactif' }}"
+      - "📊 Monitoring: {{ 'Activé' if redis_deployment_metrics.monitoring_enabled else 'Désactivé' }}"
+      - "🔐 Authentification: {{ 'Activée' if redis_auth_enabled | default(true) else 'Désactivée' }}"
+      - "==========================================="
+
+- name: "✅ Marquer le déploiement comme réussi"
+  set_fact:
+    redis_deployment_status: "success"
+    redis_deployment_completed_at: "{{ ansible_date_time.iso8601 }}"
+
+# =========================================================================
+# GESTION D'ERREUR ET ROLLBACK
+# =========================================================================
+- rescue:
+  - name: "❌ Gestion d'erreur lors du déploiement Redis"
+    debug:
+      msg:
+        - "❌ ERREUR: Échec du déploiement Redis"
+        - "🔍 Cause: {{ ansible_failed_result.msg | default('Erreur inconnue') }}"
+        - "⏰ Timestamp: {{ ansible_date_time.iso8601 }}"
+
+  - name: "🔄 Tentative de rollback automatique (si activé)"
+    include_tasks: rollback.yml
+    when: lookup('env', 'LIONS_AUTO_ROLLBACK_ENABLED') | default('false', true) | bool
+
+  - name: "📋 Collecte des informations de debug"
+    shell: |
+      echo "=== Informations de debug Redis ==="
+      kubectl get all -n {{ redis_deploy_metadata.namespace }} -l app.kubernetes.io/name={{ redis_service_config.name }}
+      echo "=== Logs du dernier pod ==="
+      kubectl logs -n {{ redis_deploy_metadata.namespace }} -l app.kubernetes.io/name={{ redis_service_config.name }} --tail=100
+    register: debug_info
+    failed_when: false
+
+  - name: "📄 Affichage des informations de debug"
+    debug:
+      msg: "{{ debug_info.stdout_lines | default(['Aucune information de debug disponible']) }}"
+
+  - name: "❌ Échec final du déploiement"
+    fail:
+      msg: "❌ Le déploiement Redis a échoué de manière critique"
+
+- always:
+  - name: "🧹 Nettoyage des ressources temporaires"
+    file:
+      path: "{{ item }}"
+      state: absent
+    loop:
+      - "{{ temp_dir.path }}/redis-temp-password"
+    failed_when: false

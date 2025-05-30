@@ -1,86 +1,363 @@
 ---
-# Titre: Préparation des ressources pour pgAdmin
-# Description: Prépare les ressources nécessaires pour déployer pgAdmin
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-10
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - PGADMIN PREPARATION TASKS
+# =========================================================================
+# Description: Tâches de préparation avancées pour pgAdmin avec gestion d'erreurs robuste
+# Version: 5.0.0
+# Maintainer: DevOps Team LIONS
+# Date: "{{ lions_config_last_updated | default(ansible_date_time.iso8601) }}"
+# Documentation: https://docs.lions.dev/infrastructure/database/pgadmin
+# =========================================================================
 
-- name: Création d'un répertoire temporaire pour les templates
+# =========================================================================
+# VALIDATION DE LA CONFIGURATION PRÉALABLE
+# =========================================================================
+- name: "pgAdmin | Validation | Vérification des variables obligatoires"
+  assert:
+    that:
+      - lions_pgadmin_enabled is defined
+      - lions_pgladmin_enabled | bool
+      - lions_pgadmin_namespace is defined
+      - lions_pgadmin_service_name is defined
+      - lions_postgres_enabled is defined
+      - lions_postgres_enabled | bool
+    fail_msg: "Variables de configuration pgAdmin manquantes ou invalides"
+    success_msg: "Configuration pgAdmin validée avec succès"
+  tags:
+    - validation
+    - pgadmin
+    - preparation
+
+- name: "pgAdmin | Validation | Vérification de la disponibilité de PostgreSQL"
+  k8s_info:
+    api_version: v1
+    kind: Service
+    namespace: "{{ lions_postgres_namespace }}"
+    name: "{{ lions_postgres_service_name }}"
+  register: postgres_service_check
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file }}"
+  failed_when: false
+  tags:
+    - validation
+    - dependencies
+
+- name: "pgAdmin | Validation | Avertissement sur la dépendance PostgreSQL"
+  debug:
+    msg: |
+      ⚠️  AVERTISSEMENT: Service PostgreSQL non détecté
+      📋 Namespace recherché: {{ lions_postgres_namespace }}
+      📋 Service recherché: {{ lions_postgres_service_name }}
+      💡 pgAdmin sera déployé mais pourrait ne pas fonctionner correctement
+  when:
+    - postgres_service_check.resources is defined
+    - postgres_service_check.resources | length == 0
+
+# =========================================================================
+# PRÉPARATION DE L'ENVIRONNEMENT DE TRAVAIL
+# =========================================================================
+- name: "pgAdmin | Préparation | Création du répertoire de travail temporaire"
   tempfile:
     state: directory
-    suffix: pgadmin-deploy
-  register: temp_dir
+    suffix: ".{{ lions_pgadmin_service_name }}-{{ lions_environment }}"
+    prefix: "lions-pgadmin-"
+  register: pgadmin_temp_workspace
   changed_when: false
+  tags:
+    - preparation
+    - workspace
 
-- name: Génération des templates Kubernetes
-  template:
-    src: "{{ item }}.yml.j2"
-    dest: "{{ temp_dir.path }}/{{ item }}.yml"
-  loop:
-    - configmap
-    - deployment
-    - service
-    - ingress
-    - serviceaccount
-    - servicemonitor
-  changed_when: false
+- name: "pgAdmin | Préparation | Configuration des métadonnées de déploiement"
+  set_fact:
+    pgadmin_deployment_metadata:
+      timestamp: "{{ ansible_date_time.iso8601 }}"
+      environment: "{{ lions_environment }}"
+      version: "{{ lions_config_version }}"
+      operator: "{{ ansible_user_id }}"
+      deployment_id: "{{ 999999 | random | to_uuid }}"
+  tags:
+    - preparation
+    - metadata
 
-- name: Création du ConfigMap pour la configuration de pgAdmin
-  k8s:
-    state: present
-    src: "{{ temp_dir.path }}/configmap.yml"
-  register: configmap_result
-  environment:
-    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+- name: "pgAdmin | Préparation | Affichage des informations de déploiement"
+  debug:
+    msg: |
+      🚀 Préparation du déploiement pgAdmin
+      📊 Environnement: {{ lions_environment }}
+      🏷️  Namespace: {{ lions_pgladmin_namespace }}
+      📦 Service: {{ lions_pgadmin_service_name }}
+      🔧 Version config: {{ lions_config_version }}
+      ⏰ Timestamp: {{ pgadmin_deployment_metadata.timestamp }}
+      🆔 ID Déploiement: {{ pgadmin_deployment_metadata.deployment_id }}
+  when: lions_debug_mode | default(false) | bool
 
-- name: Vérification de l'existence du secret pour l'administrateur pgAdmin
+# =========================================================================
+# GESTION DES SECRETS ET SÉCURITÉ
+# =========================================================================
+- name: "pgAdmin | Sécurité | Vérification de l'existence des secrets"
   k8s_info:
     api_version: v1
     kind: Secret
-    namespace: "{{ app_namespace }}"
-    name: "{{ pgadmin_admin_password_secret }}"
-  register: admin_secret_info
+    namespace: "{{ lions_pgadmin_namespace }}"
+    name: "{{ lions_pgadmin_service_name }}-credentials"
+  register: pgadmin_credentials_secret
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file }}"
   failed_when: false
-  environment:
-    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+  tags:
+    - security
+    - secrets
 
-- name: Avertissement si le secret pour l'administrateur pgAdmin n'existe pas
-  debug:
-    msg: "AVERTISSEMENT: Le secret pour l'administrateur pgAdmin n'existe pas. Utilisez kubectl pour créer un secret sécurisé."
-  when: admin_secret_info is failed or admin_secret_info.resources | length == 0
+- name: "pgAdmin | Sécurité | Génération de credentials sécurisés si nécessaire"
+  block:
+    - name: "pgAdmin | Sécurité | Génération d'un mot de passe administrateur sécurisé"
+      set_fact:
+        pgadmin_generated_password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+      no_log: true
+      when: pgadmin_admin_password is not defined
 
-- name: Création d'un secret temporaire pour l'administrateur pgAdmin si nécessaire
+    - name: "pgAdmin | Sécurité | Création du secret avec credentials sécurisés"
+      k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: "{{ lions_pgadmin_service_name }}-credentials"
+            namespace: "{{ lions_pgadmin_namespace }}"
+            labels:
+              app.kubernetes.io/name: "{{ lions_pgadmin_service_name }}"
+              app.kubernetes.io/instance: "{{ lions_pgadmin_service_name }}-{{ lions_environment }}"
+              app.kubernetes.io/component: pgladmin
+              app.kubernetes.io/part-of: "{{ lions_project_name | default('lions-infrastructure') }}"
+              app.kubernetes.io/managed-by: ansible
+              lions.dev/environment: "{{ lions_environment }}"
+              lions.dev/service-type: database
+            annotations:
+              lions.dev/deployment-id: "{{ pgadmin_deployment_metadata.deployment_id }}"
+              lions.dev/created-by: "{{ ansible_user_id }}"
+              lions.dev/created-at: "{{ pgadmin_deployment_metadata.timestamp }}"
+              description: "Credentials sécurisés pour pgAdmin {{ lions_environment }}"
+          type: Opaque
+          stringData:
+            PGADMIN_DEFAULT_EMAIL: "{{ pgadmin_admin_email | default('admin@' + lions_dns_domain_base) }}"
+            PGADMIN_DEFAULT_PASSWORD: "{{ pgadmin_admin_password | default(pgadmin_generated_password) }}"
+        wait: true
+        wait_condition:
+          type: Complete
+          status: "True"
+        wait_timeout: "{{ lions_timeout_default }}"
+      environment:
+        KUBECONFIG: "{{ lions_k8s_config_file }}"
+      register: pgadmin_secret_creation
+      no_log: true
+
+    - name: "pgAdmin | Sécurité | Confirmation de la création du secret"
+      debug:
+        msg: |
+          ✅ Secret pgAdmin créé avec succès
+          📧 Email administrateur: {{ pgadmin_admin_email | default('admin@' + lions_dns_domain_base) }}
+          🔐 Mot de passe: [GÉNÉRÉ AUTOMATIQUEMENT - SÉCURISÉ]
+      when: pgadmin_secret_creation.changed
+
+  when:
+    - pgadmin_credentials_secret.resources is defined
+    - pgadmin_credentials_secret.resources | length == 0
+  tags:
+    - security
+    - secrets
+    - credentials
+
+- name: "pgAdmin | Sécurité | Validation de l'existence du secret"
+  assert:
+    that:
+      - pgadmin_credentials_secret.resources | length > 0 or pgadmin_secret_creation.changed
+    fail_msg: "Impossible de créer ou de trouver le secret pour pgAdmin"
+    success_msg: "Secret pgAdmin disponible et validé"
+  tags:
+    - security
+    - validation
+
+# =========================================================================
+# GÉNÉRATION DES MANIFESTES KUBERNETES
+# =========================================================================
+- name: "pgAdmin | Manifestes | Génération des templates Kubernetes optimisés"
+  template:
+    src: "{{ item.template }}.yml.j2"
+    dest: "{{ pgadmin_temp_workspace.path }}/{{ item.output }}.yml"
+    mode: '0644'
+    backup: false
+  loop:
+    - { template: "serviceaccount", output: "01-serviceaccount" }
+    - { template: "configmap", output: "02-configmap" }
+    - { template: "service", output: "03-service" }
+    - { template: "deployment", output: "04-deployment" }
+    - { template: "ingress", output: "05-ingress" }
+    - { template: "servicemonitor", output: "06-servicemonitor" }
+  register: pgadmin_templates_generation
+  changed_when: false
+  tags:
+    - manifests
+    - templates
+
+- name: "pgAdmin | Manifestes | Validation de la syntaxe des manifestes générés"
   k8s:
     state: present
-    definition:
-      apiVersion: v1
-      kind: Secret
-      metadata:
-        name: "{{ pgadmin_admin_password_secret }}"
-        namespace: "{{ app_namespace }}"
-        labels:
-          app: "{{ app_name }}"
-          technology: "pgadmin"
-        annotations:
-          description: "Secret temporaire pour l'administrateur pgAdmin. À remplacer par un secret sécurisé."
-      type: Opaque
-      stringData:
-        PGADMIN_DEFAULT_EMAIL: "{{ pgadmin_admin_email | default('admin@example.com') }}"
-        PGADMIN_DEFAULT_PASSWORD: "{{ pgadmin_admin_password | default('changeme') }}"
-  when: admin_secret_info is failed or admin_secret_info.resources | length == 0
-  register: secret_created
+    src: "{{ item }}"
+    dry_run: true
+    validate:
+      fail_on_error: true
+      strict: true
+  loop: "{{ pgadmin_templates_generation.results | map(attribute='dest') | list }}"
   environment:
-    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+    KUBECONFIG: "{{ lions_k8s_config_file }}"
+  changed_when: false
+  tags:
+    - validation
+    - manifests
 
-- name: Avertissement sur le mot de passe temporaire
-  debug:
-    msg: "AVERTISSEMENT: Un mot de passe temporaire a été créé pour l'administrateur pgAdmin. Veuillez le changer dès que possible."
-  when: secret_created.changed
-
-- name: Création du ServiceAccount pour pgAdmin
+# =========================================================================
+# PRÉPARATION DES RESSOURCES KUBERNETES
+# =========================================================================
+- name: "pgAdmin | K8s | Création/Mise à jour du ServiceAccount"
   k8s:
     state: present
-    src: "{{ temp_dir.path }}/serviceaccount.yml"
-  register: serviceaccount_result
+    src: "{{ pgadmin_temp_workspace.path }}/01-serviceaccount.yml"
+    wait: true
+    wait_condition:
+      type: Ready
+      status: "True"
+    wait_timeout: "{{ lions_timeout_default }}"
   environment:
-    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+    KUBECONFIG: "{{ lions_k8s_config_file }}"
+  register: pgadmin_serviceaccount_result
+  tags:
+    - k8s-resources
+    - serviceaccount
+
+- name: "pgAdmin | K8s | Création/Mise à jour du ConfigMap"
+  k8s:
+    state: present
+    src: "{{ pgadmin_temp_workspace.path }}/02-configmap.yml"
+    wait: true
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file }}"
+  register: pgladmin_configmap_result
+  tags:
+    - k8s-resources
+    - configmap
+
+- name: "pgAdmin | K8s | Création/Mise à jour du Service"
+  k8s:
+    state: present
+    src: "{{ pgadmin_temp_workspace.path }}/03-service.yml"
+    wait: true
+    wait_condition:
+      type: Ready
+      status: "True"
+    wait_timeout: "{{ lions_timeout_default }}"
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file }}"
+  register: pgadmin_service_result
+  tags:
+    - k8s-resources
+    - service
+
+# =========================================================================
+# VÉRIFICATIONS POST-PRÉPARATION
+# =========================================================================
+- name: "pgAdmin | Validation | Vérification de la disponibilité des ressources"
+  k8s_info:
+    api_version: "{{ item.api_version }}"
+    kind: "{{ item.kind }}"
+    namespace: "{{ lions_pgadmin_namespace }}"
+    name: "{{ item.name }}"
+  loop:
+    - { api_version: "v1", kind: "ServiceAccount", name: "{{ lions_pgadmin_service_name }}" }
+    - { api_version: "v1", kind: "ConfigMap", name: "{{ lions_pgadmin_service_name }}-config" }
+    - { api_version: "v1", kind: "Service", name: "{{ lions_pgadmin_service_name }}" }
+    - { api_version: "v1", kind: "Secret", name: "{{ lions_pgadmin_service_name }}-credentials" }
+  register: pgadmin_resources_verification
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file }}"
+  tags:
+    - validation
+    - verification
+
+- name: "pgAdmin | Validation | Confirmation des ressources créées"
+  assert:
+    that:
+      - item.resources | length > 0
+    fail_msg: "Ressource {{ item.item.kind }}/{{ item.item.name }} non trouvée"
+    success_msg: "Ressource {{ item.item.kind }}/{{ item.item.name }} disponible"
+  loop: "{{ pgadmin_resources_verification.results }}"
+  tags:
+    - validation
+
+# =========================================================================
+# FINALISATION ET RAPPORT
+# =========================================================================
+- name: "pgAdmin | Finalisation | Enregistrement des métadonnées de préparation"
+  set_fact:
+    pgadmin_preparation_status:
+      completed: true
+      timestamp: "{{ ansible_date_time.iso8601 }}"
+      environment: "{{ lions_environment }}"
+      namespace: "{{ lions_pgladmin_namespace }}"
+      service_name: "{{ lions_pgladmin_service_name }}"
+      deployment_id: "{{ pgadmin_deployment_metadata.deployment_id }}"
+      resources_created:
+        - serviceaccount
+        - configmap
+        - service
+        - secret
+      next_step: "deploy"
+  tags:
+    - finalization
+    - metadata
+
+- name: "pgAdmin | Finalisation | Affichage du rapport de préparation"
+  debug:
+    msg: |
+      ✅ PRÉPARATION PGADMIN TERMINÉE AVEC SUCCÈS
+      ==========================================
+      📊 Environnement: {{ lions_environment }}
+      🏷️  Namespace: {{ lions_pgladmin_namespace }}
+      📦 Service: {{ lions_pgladmin_service_name }}
+      🆔 ID Déploiement: {{ pgadmin_deployment_metadata.deployment_id }}
+      ⏰ Durée: {{ (ansible_date_time.epoch | int) - (pgadmin_deployment_metadata.timestamp | to_datetime('%Y-%m-%dT%H:%M:%SZ') | int) }}s
+      
+      📋 RESSOURCES PRÉPARÉES:
+      - ✅ ServiceAccount: {{ lions_pgladmin_service_name }}
+      - ✅ ConfigMap: {{ lions_pgladmin_service_name }}-config  
+      - ✅ Service: {{ lions_pgladmin_service_name }}
+      - ✅ Secret: {{ lions_pgladmin_service_name }}-credentials
+      
+      🔄 PROCHAINE ÉTAPE: Exécution du déploiement
+  tags:
+    - reporting
+    - finalization
+
+# =========================================================================
+# NETTOYAGE DU WORKSPACE TEMPORAIRE
+# =========================================================================
+- name: "pgAdmin | Nettoyage | Suppression du répertoire de travail temporaire"
+  file:
+    path: "{{ pgadmin_temp_workspace.path }}"
+    state: absent
+  changed_when: false
+  when: not (lions_debug_mode | default(false) | bool)
+  tags:
+    - cleanup
+    - workspace
+
+- name: "pgAdmin | Debug | Conservation du workspace pour débogage"
+  debug:
+    msg: |
+      🐛 MODE DEBUG: Workspace conservé
+      📁 Chemin: {{ pgadmin_temp_workspace.path }}
+      💡 Supprimer manuellement après inspection
+  when: lions_debug_mode | default(false) | bool
+  tags:
+    - debug
+    - workspace

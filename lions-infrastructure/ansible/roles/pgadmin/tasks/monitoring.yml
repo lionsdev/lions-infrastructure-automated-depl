@@ -1,73 +1,425 @@
 ---
-# Titre: Configuration du monitoring pour pgAdmin
-# Description: Configure le monitoring pour pgAdmin
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-10
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - PGADMIN MONITORING CONFIGURATION
+# =========================================================================
+# Description: Configuration complète du monitoring pour pgAdmin avec Prometheus/Grafana
+# Version: 5.0.0
+# Maintainer: DevOps Team
+# Documentation: https://docs.lions.dev/infrastructure/monitoring/pgadmin
+# Dependencies: Prometheus Operator, Grafana
+# =========================================================================
 
-- name: Vérification de l'existence de Prometheus
-  k8s_info:
+- name: "📊 Configuration du monitoring pgAdmin - Début"
+  debug:
+    msg: |
+      🔍 Début de la configuration du monitoring pour pgAdmin
+      📦 Application: {{ lions_pgadmin_service_name | default('pgadmin') }}
+      🏷️  Namespace: {{ lions_pgadmin_namespace | default('development') }}
+      🌍 Environnement: {{ lions_environment | default('development') }}
+      📈 Monitoring activé: {{ lions_monitoring_enabled | default(true) }}
+  tags: ['monitoring', 'pgadmin', 'setup']
+
+# =========================================================================
+# VÉRIFICATIONS PRÉALABLES
+# =========================================================================
+
+- name: "🔍 Vérification de l'état du monitoring global"
+  fail:
+    msg: "❌ Le monitoring global LIONS est désactivé. Activez LIONS_MONITORING_ENABLED pour continuer."
+  when: not (lions_monitoring_enabled | default(true) | bool)
+  tags: ['monitoring', 'pgadmin', 'validation']
+
+- name: "🔍 Vérification de la disponibilité de Prometheus"
+  kubernetes.core.k8s_info:
     api_version: v1
     kind: Service
-    namespace: monitoring
-    name: prometheus-kube-prometheus-prometheus
-  register: prometheus_info
+    namespace: "{{ lions_monitoring_namespace | default('monitoring') }}"
+    name: "{{ lions_prometheus_service_name | default('prometheus-kube-prometheus-prometheus') }}"
+    wait: true
+    wait_condition:
+      type: Ready
+      status: "True"
+    wait_timeout: 60
+  register: lions_prometheus_service_check
   failed_when: false
   environment:
-    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+    KUBECONFIG: "{{ lions_k8s_config_file | default('/home/' + ansible_user + '/.kube/config') }}"
+  tags: ['monitoring', 'pgadmin', 'validation']
 
-- name: Avertissement si Prometheus n'est pas trouvé
-  debug:
-    msg: "AVERTISSEMENT: Le service Prometheus n'a pas été trouvé. Le monitoring de pgAdmin ne sera pas configuré."
-  when: prometheus_info.resources | length == 0
-
-- name: Création du ServiceMonitor pour pgAdmin
-  k8s:
-    state: present
-    src: "{{ temp_dir.path }}/servicemonitor.yml"
-  register: servicemonitor_result
-  when:
-    - prometheus_info.resources | length > 0
-    - pgadmin_prometheus_scrape | default(true) | bool
+- name: "🔍 Vérification de la disponibilité de Grafana"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Service
+    namespace: "{{ lions_monitoring_namespace | default('monitoring') }}"
+    name: "{{ lions_grafana_service_name | default('grafana') }}"
+  register: lions_grafana_service_check
+  failed_when: false
   environment:
-    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+    KUBECONFIG: "{{ lions_k8s_config_file | default('/home/' + ansible_user + '/.kube/config') }}"
+  tags: ['monitoring', 'pgladmin', 'validation']
 
-- name: Configuration des règles d'alerte pour pgAdmin
-  k8s:
+- name: "⚠️  Notification - Services de monitoring manquants"
+  debug:
+    msg: |
+      ⚠️  ATTENTION: Services de monitoring non disponibles
+      🔴 Prometheus: {{ 'NON TROUVÉ' if lions_prometheus_service_check.resources | length == 0 else 'DISPONIBLE' }}
+      🔴 Grafana: {{ 'NON TROUVÉ' if lions_grafana_service_check.resources | length == 0 else 'DISPONIBLE' }}
+      📋 Le monitoring pgAdmin sera configuré en mode dégradé
+  when:
+    - lions_prometheus_service_check.resources | length == 0 or lions_grafana_service_check.resources | length == 0
+  tags: ['monitoring', 'pgadmin', 'warning']
+
+# =========================================================================
+# CONFIGURATION DU SERVICEMONITOR
+# =========================================================================
+
+- name: "📊 Génération du ServiceMonitor pgAdmin"
+  template:
+    src: servicemonitor.yml.j2
+    dest: "{{ lions_temp_dir | default('/tmp') }}/pgladmin-servicemonitor.yml"
+    mode: '0644'
+    backup: yes
+  vars:
+    servicemonitor_config:
+      name: "{{ lions_pgadmin_service_name | default('pgadmin') }}-monitor"
+      namespace: "{{ lions_monitoring_namespace | default('monitoring') }}"
+      app_name: "{{ lions_pgadmin_service_name | default('pgadmin') }}"
+      app_namespace: "{{ lions_pgadmin_namespace | default('development') }}"
+      scrape_interval: "{{ lions_monitoring_scrape_interval | default('30s') }}"
+      scrape_timeout: "{{ lions_monitoring_scrape_timeout | default('10s') }}"
+      metrics_path: "{{ lions_pgadmin_metrics_path | default('/metrics') }}"
+      port_name: "{{ lions_pgadmin_metrics_port_name | default('metrics') }}"
+      honor_labels: "{{ lions_monitoring_honor_labels | default(false) }}"
+      honor_timestamps: "{{ lions_monitoring_honor_timestamps | default(true) }}"
+  when: lions_prometheus_service_check.resources | length > 0
+  tags: ['monitoring', 'pgadmin', 'servicemonitor']
+
+- name: "🚀 Déploiement du ServiceMonitor pgAdmin"
+  kubernetes.core.k8s:
+    state: present
+    src: "{{ lions_temp_dir | default('/tmp') }}/pgadmin-servicemonitor.yml"
+    wait: true
+    wait_condition:
+      type: Ready
+      status: "True"
+    wait_timeout: 120
+  register: lions_pgadmin_servicemonitor_result
+  when:
+    - lions_prometheus_service_check.resources | length > 0
+    - lions_pgadmin_monitoring_enabled | default(true) | bool
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file | default('/home/' + ansible_user + '/.kube/config') }}"
+  tags: ['monitoring', 'pgadmin', 'servicemonitor']
+
+# =========================================================================
+# CONFIGURATION DES RÈGLES D'ALERTE
+# =========================================================================
+
+- name: "🚨 Configuration des règles d'alerte pgAdmin"
+  kubernetes.core.k8s:
     state: present
     definition:
       apiVersion: monitoring.coreos.com/v1
       kind: PrometheusRule
       metadata:
-        name: "{{ app_name }}-alerts"
-        namespace: monitoring
+        name: "{{ lions_pgadmin_service_name | default('pgadmin') }}-alerts"
+        namespace: "{{ lions_monitoring_namespace | default('monitoring') }}"
         labels:
-          app: "{{ app_name }}"
-          technology: "pgadmin"
+          app: "{{ lions_pgladmin_service_name | default('pgadmin') }}"
+          component: pgadmin
+          technology: database-admin
           prometheus: kube-prometheus
+          environment: "{{ lions_environment | default('development') }}"
+          managed-by: lions-infrastructure
+          version: "{{ lions_config_version | default('5.0.0') }}"
       spec:
         groups:
-          - name: pgadmin.rules
+          - name: "{{ lions_pgadmin_service_name | default('pgadmin') }}.rules"
+            interval: "{{ lions_monitoring_alert_evaluation_interval | default('30s') }}"
             rules:
+              # Alerte de disponibilité critique
               - alert: PgAdminInstanceDown
-                expr: absent(up{job="{{ app_name }}"})
-                for: 5m
+                expr: 'absent(up{job="{{ lions_pgadmin_service_name | default('pgadmin') }}"}) == 1'
+                for: "{{ lions_monitoring_alert_pgadmin_down_duration | default('5m') }}"
                 labels:
                   severity: critical
+                  component: pgadmin
+                  environment: "{{ lions_environment | default('development') }}"
+                  team: devops
+                  service: "{{ lions_pgadmin_service_name | default('pgadmin') }}"
                 annotations:
-                  summary: "Instance pgAdmin {{ app_name }} down"
-                  description: "L'instance pgAdmin {{ app_name }} est indisponible depuis 5 minutes."
-                  runbook_url: "https://docs.lions.dev/runbooks/pgadmin-down"
-  register: prometheusrule_result
-  when:
-    - prometheus_info.resources | length > 0
-    - pgadmin_prometheus_scrape | default(true) | bool
-  environment:
-    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+                  summary: "🔴 pgAdmin instance indisponible"
+                  description: |
+                    L'instance pgAdmin {{ lions_pgadmin_service_name | default('pgadmin') }} est indisponible depuis {{ lions_monitoring_alert_pgadmin_down_duration | default('5m') }}.
+                    
+                    📊 Détails:
+                    - Service: {{ lions_pgadmin_service_name | default('pgadmin') }}
+                    - Namespace: {{ lions_pgadmin_namespace | default('development') }}
+                    - Environnement: {{ lions_environment | default('development') }}
+                    
+                    🔧 Actions recommandées:
+                    1. Vérifier l'état des pods pgAdmin
+                    2. Examiner les logs d'erreur
+                    3. Contrôler les ressources disponibles
+                  runbook_url: "https://docs.lions.dev/runbooks/pgadmin/instance-down"
+                  dashboard_url: "https://grafana.{{ lions_dns_full_domain | default('lions.local') }}/d/pgadmin-overview"
 
-- name: Affichage des informations sur le monitoring
-  debug:
-    msg: "Le monitoring a été configuré pour pgAdmin. ServiceMonitor: {{ servicemonitor_result.changed | default(false) }}, PrometheusRule: {{ prometheusrule_result.changed | default(false) }}"
+              # Alerte de performance - Latence élevée
+              - alert: PgAdminHighLatency
+                expr: 'histogram_quantile(0.95, rate(pgadmin_request_duration_seconds_bucket{job="{{ lions_pgadmin_service_name | default('pgadmin') }}"}[5m])) > {{ lions_monitoring_alert_pgadmin_high_latency_threshold | default('2') }}'
+                for: "{{ lions_monitoring_alert_pgadmin_high_latency_duration | default('10m') }}"
+                labels:
+                  severity: warning
+                  component: pgadmin
+                  environment: "{{ lions_environment | default('development') }}"
+                  team: devops
+                  service: "{{ lions_pgadmin_service_name | default('pladmin') }}"
+                annotations:
+                  summary: "⚠️  pgAdmin latence élevée détectée"
+                  description: |
+                    La latence P95 de pgAdmin {{ lions_pgadmin_service_name | default('pgadmin') }} dépasse {{ lions_monitoring_alert_pgadmin_high_latency_threshold | default('2') }}s.
+                    
+                    📊 Valeur actuelle: {{ '{{ $value }}' }}s
+                    🎯 Seuil configuré: {{ lions_monitoring_alert_pgadmin_high_latency_threshold | default('2') }}s
+                  runbook_url: "https://docs.lions.dev/runbooks/pgadmin/high-latency"
+
+              # Alerte de ressources - Utilisation CPU élevée
+              - alert: PgAdminHighCPUUsage
+                expr: 'rate(container_cpu_usage_seconds_total{container="{{ lions_pgadmin_service_name | default('pgadmin') }}", namespace="{{ lions_pgladmin_namespace | default('development') }}"}[5m]) > {{ lions_monitoring_alert_pgadmin_cpu_threshold | default('0.8') }}'
+                for: "{{ lions_monitoring_alert_pgadmin_high_cpu_duration | default('15m') }}"
+                labels:
+                  severity: warning
+                  component: pgadmin
+                  environment: "{{ lions_environment | default('development') }}"
+                  team: devops
+                  service: "{{ lions_pgadmin_service_name | default('pgadmin') }}"
+                annotations:
+                  summary: "⚠️  pgAdmin utilisation CPU élevée"
+                  description: |
+                    L'utilisation CPU de pgAdmin {{ lions_pgadmin_service_name | default('pgadmin') }} dépasse {{ (lions_monitoring_alert_pgadmin_cpu_threshold | default('0.8') | float * 100) | int }}%.
+                    
+                    📊 Utilisation actuelle: {{ '{{ $value | humanizePercentage }}' }}
+
+              # Alerte de ressources - Utilisation mémoire élevée
+              - alert: PgAdminHighMemoryUsage
+                expr: 'container_memory_usage_bytes{container="{{ lions_pgadmin_service_name | default('pgadmin') }}", namespace="{{ lions_pgadmin_namespace | default('development') }}"} / container_spec_memory_limit_bytes{container="{{ lions_pgadmin_service_name | default('pgadmin') }}", namespace="{{ lions_pgadmin_namespace | default('development') }}"} > {{ lions_monitoring_alert_pgadmin_memory_threshold | default('0.85') }}'
+                for: "{{ lions_monitoring_alert_pgladmin_high_memory_duration | default('15m') }}"
+                labels:
+                  severity: warning
+                  component: pgadmin
+                  environment: "{{ lions_environment | default('development') }}"
+                  team: devops
+                  service: "{{ lions_pgladmin_service_name | default('pgadmin') }}"
+                annotations:
+                  summary: "⚠️  pgAdmin utilisation mémoire élevée"
+                  description: |
+                    L'utilisation mémoire de pgAdmin {{ lions_pgadmin_service_name | default('pgadmin') }} dépasse {{ (lions_monitoring_alert_pgadmin_memory_threshold | default('0.85') | float * 100) | int }}%.
+                    
+                    📊 Utilisation actuelle: {{ '{{ $value | humanizePercentage }}' }}
+
+              # Alerte de connectivité - Erreurs de connexion élevées
+              - alert: PgAdminHighErrorRate
+                expr: 'rate(pgladmin_errors_total{job="{{ lions_pgadmin_service_name | default('pgadmin') }}"}[5m]) > {{ lions_monitoring_alert_pgadmin_error_rate_threshold | default('0.1') }}'
+                for: "{{ lions_monitoring_alert_pgadmin_high_error_duration | default('5m') }}"
+                labels:
+                  severity: warning
+                  component: pgadmin
+                  environment: "{{ lions_environment | default('development') }}"
+                  team: devops
+                  service: "{{ lions_pgadmin_service_name | default('pgadmin') }}"
+                annotations:
+                  summary: "⚠️  pgAdmin taux d'erreur élevé"
+                  description: |
+                    Le taux d'erreur de pgAdmin {{ lions_pgadmin_service_name | default('pgadmin') }} dépasse {{ lions_monitoring_alert_pgadmin_error_rate_threshold | default('0.1') }} erreurs/seconde.
+                    
+                    📊 Taux actuel: {{ '{{ $value }}' }} erreurs/seconde
+
+  register: lions_pgadmin_prometheusrule_result
   when:
-    - prometheus_info.resources | length > 0
-    - pgadmin_prometheus_scrape | default(true) | bool
+    - lions_prometheus_service_check.resources | length > 0
+    - lions_pgadmin_monitoring_enabled | default(true) | bool
+    - lions_pgadmin_alerts_enabled | default(true) | bool
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file | default('/home/' + ansible_user + '/.kube/config') }}"
+  tags: ['monitoring', 'pgadmin', 'alerts']
+
+# =========================================================================
+# CONFIGURATION DU DASHBOARD GRAFANA
+# =========================================================================
+
+- name: "📊 Génération de la configuration du dashboard Grafana"
+  template:
+    src: grafana-dashboard.json.j2
+    dest: "{{ lions_temp_dir | default('/tmp') }}/pgadmin-dashboard.json"
+    mode: '0644'
+    backup: yes
+  vars:
+    dashboard_config:
+      title: "pgAdmin - {{ lions_environment | upper }} - {{ lions_pgadmin_service_name | default('pgadmin') }}"
+      tags: ["pgadmin", "database", "admin", "{{ lions_environment }}"]
+      environment: "{{ lions_environment | default('development') }}"
+      service_name: "{{ lions_pgadmin_service_name | default('pgadmin') }}"
+      namespace: "{{ lions_pgadmin_namespace | default('development') }}"
+  when:
+    - lions_grafana_service_check.resources | length > 0
+    - lions_pgadmin_dashboard_enabled | default(true) | bool
+  tags: ['monitoring', 'pgadmin', 'dashboard']
+
+- name: "📊 Déploiement du ConfigMap pour le dashboard Grafana"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ lions_pgadmin_service_name | default('pgadmin') }}-dashboard"
+        namespace: "{{ lions_monitoring_namespace | default('monitoring') }}"
+        labels:
+          app: "{{ lions_pgadmin_service_name | default('pgadmin') }}"
+          component: dashboard
+          grafana_dashboard: "true"
+          environment: "{{ lions_environment | default('development') }}"
+          managed-by: lions-infrastructure
+          version: "{{ lions_config_version | default('5.0.0') }}"
+      data:
+        dashboard.json: "{{ lookup('file', lions_temp_dir | default('/tmp') + '/pgadmin-dashboard.json') }}"
+  register: lions_pgadmin_dashboard_result
+  when:
+    - lions_grafana_service_check.resources | length > 0
+    - lions_pgadmin_dashboard_enabled | default(true) | bool
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file | default('/home/' + ansible_user + '/.kube/config') }}"
+  tags: ['monitoring', 'pgadmin', 'dashboard']
+
+# =========================================================================
+# CONFIGURATION DES MÉTRIQUES PERSONNALISÉES
+# =========================================================================
+
+- name: "📈 Configuration des ServiceLevelObjectives (SLO)"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ lions_pgadmin_service_name | default('pgadmin') }}-slo"
+        namespace: "{{ lions_monitoring_namespace | default('monitoring') }}"
+        labels:
+          app: "{{ lions_pgadmin_service_name | default('pgadmin') }}"
+          component: slo
+          environment: "{{ lions_environment | default('development') }}"
+          managed-by: lions-infrastructure
+      data:
+        slo.yml: |
+          # SLO Configuration for pgAdmin
+          slos:
+            - name: pgadmin_availability
+              description: "pgAdmin service availability"
+              service: "{{ lions_pgadmin_service_name | default('pgadmin') }}"
+              sli:
+                events:
+                  error_query: 'sum(rate(pgadmin_requests_total{job="{{ lions_pgadmin_service_name | default('pgadmin') }}", code=~"5.."}[5m]))'
+                  total_query: 'sum(rate(pgadmin_requests_total{job="{{ lions_pgadmin_service_name | default('pgladmin') }}"}[5m]))'
+              objectives:
+                - target: {{ lions_pgladmin_slo_availability_target | default('0.995') }}  # 99.5%
+                  window: 30d
+                - target: {{ lions_pgadmin_slo_availability_target_weekly | default('0.99') }}  # 99%
+                  window: 7d
+
+            - name: pgadmin_latency
+              description: "pgAdmin response latency"
+              service: "{{ lions_pgadmin_service_name | default('pgladmin') }}"
+              sli:
+                events:
+                  error_query: 'sum(rate(pgadmin_request_duration_seconds_bucket{job="{{ lions_pgadmin_service_name | default('pgadmin') }}", le="{{ lions_pgadmin_slo_latency_threshold | default('2') }}"}[5m]))'
+                  total_query: 'sum(rate(pgadmin_request_duration_seconds_count{job="{{ lions_pgadmin_service_name | default('pgadmin') }}"}[5m]))'
+              objectives:
+                - target: {{ lions_pgadmin_slo_latency_target | default('0.95') }}  # 95%
+                  window: 30d
+
+  when:
+    - lions_prometheus_service_check.resources | length > 0
+    - lions_pgadmin_slo_enabled | default(true) | bool
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file | default('/home/' + ansible_user + '/.kube/config') }}"
+  tags: ['monitoring', 'pgadmin', 'slo']
+
+# =========================================================================
+# VALIDATION ET VÉRIFICATION
+# =========================================================================
+
+- name: "✅ Vérification du déploiement du ServiceMonitor"
+  kubernetes.core.k8s_info:
+    api_version: monitoring.coreos.com/v1
+    kind: ServiceMonitor
+    namespace: "{{ lions_monitoring_namespace | default('monitoring') }}"
+    name: "{{ lions_pgadmin_service_name | default('pgadmin') }}-monitor"
+  register: lions_pgadmin_servicemonitor_verification
+  when: lions_pgadmin_servicemonitor_result is defined
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file | default('/home/' + ansible_user + '/.kube/config') }}"
+  tags: ['monitoring', 'pgadmin', 'validation']
+
+- name: "✅ Vérification du déploiement des règles d'alerte"
+  kubernetes.core.k8s_info:
+    api_version: monitoring.coreos.com/v1
+    kind: PrometheusRule
+    namespace: "{{ lions_monitoring_namespace | default('monitoring') }}"
+    name: "{{ lions_pgadmin_service_name | default('pgadmin') }}-alerts"
+  register: lions_pgadmin_prometheusrule_verification
+  when: lions_pgadmin_prometheusrule_result is defined
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file | default('/home/' + ansible_user + '/.kube/config') }}"
+  tags: ['monitoring', 'pgadmin', 'validation']
+
+# =========================================================================
+# NETTOYAGE ET FINALISATION
+# =========================================================================
+
+- name: "🧹 Nettoyage des fichiers temporaires"
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ lions_temp_dir | default('/tmp') }}/pgadmin-servicemonitor.yml"
+    - "{{ lions_temp_dir | default('/tmp') }}/pgadmin-dashboard.json"
+  when: lions_cleanup_temp_files | default(true) | bool
+  tags: ['monitoring', 'pgadmin', 'cleanup']
+
+# =========================================================================
+# RAPPORT FINAL
+# =========================================================================
+
+- name: "📋 Rapport de configuration du monitoring pgAdmin"
+  debug:
+    msg: |
+      
+      🎉 CONFIGURATION DU MONITORING PGADMIN TERMINÉE
+      ================================================
+      
+      📊 Résumé de la configuration:
+      ─────────────────────────────────
+      🔹 Service: {{ lions_pgadmin_service_name | default('pgadmin') }}
+      🔹 Namespace: {{ lions_pgadmin_namespace | default('development') }}
+      🔹 Environnement: {{ lions_environment | default('development') }}
+      
+      📈 Composants configurés:
+      ─────────────────────────
+      ✅ ServiceMonitor: {{ 'CONFIGURÉ' if lions_pgladmin_servicemonitor_result.changed | default(false) else 'EXISTANT' }}
+      ✅ Règles d'alerte: {{ 'CONFIGURÉES' if lions_pgadmin_prometheusrule_result.changed | default(false) else 'EXISTANTES' }}
+      ✅ Dashboard Grafana: {{ 'CONFIGURÉ' if lions_pgadmin_dashboard_result.changed | default(false) else 'EXISTANT' }}
+      
+      🔗 Liens utiles:
+      ──────────────
+      📊 Dashboard: https://grafana.{{ lions_dns_full_domain | default('lions.local') }}/d/pgadmin-overview
+      📚 Documentation: https://docs.lions.dev/infrastructure/monitoring/pgadmin
+      🔧 Runbooks: https://docs.lions.dev/runbooks/pgadmin/
+      
+      ⚡ Prochaines étapes recommandées:
+      ────────────────────────────────
+      1. Vérifier les métriques dans Prometheus
+      2. Configurer les canaux de notification d'alertes
+      3. Tester les alertes critiques
+      4. Ajuster les seuils selon les besoins
+
+  tags: ['monitoring', 'pgadmin', 'report']

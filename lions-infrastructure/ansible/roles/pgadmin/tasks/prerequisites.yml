@@ -1,80 +1,419 @@
 ---
-# Titre: Vérification des prérequis pour pgAdmin
-# Description: Vérifie que tous les prérequis sont satisfaits pour déployer pgAdmin
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-10
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - PGADMIN PREREQUISITES
+# =========================================================================
+# Description: Vérification et préparation des prérequis pour pgAdmin
+# Composant: pgAdmin Web Interface for PostgreSQL
+# Version: 5.0.0
+# Maintainer: DevOps Team LIONS
+# Documentation: https://docs.lions.dev/components/pgadmin
+# =========================================================================
 
-- name: Vérification de l'existence du namespace
-  k8s_info:
+- name: "pgAdmin Prerequisites | Initialisation des variables de prérequis"
+  set_fact:
+    lions_pgadmin_prerequisite_checks:
+      namespace: false
+      rbac: false
+      ingress_controller: false
+      postgres_service: false
+      storage_class: false
+      node_resources: false
+    lions_pgladmin_errors: []
+    lions_pgladmin_warnings: []
+  tags:
+    - pgadmin
+    - prerequisites
+    - initialization
+
+- name: "pgAdmin Prerequisites | Validation de la configuration des variables"
+  assert:
+    that:
+      - lions_pgadmin_namespace is defined
+      - lions_pgladmin_service_name is defined
+      - lions_postgres_service_name is defined
+      - lions_storage_class_default is defined
+    fail_msg: "Variables d'environnement LIONS requises manquantes pour pgAdmin"
+    success_msg: "Variables d'environnement LIONS validées pour pgAdmin"
+  tags:
+    - pgadmin
+    - prerequisites
+    - validation
+
+# =========================================================================
+# VÉRIFICATION DU NAMESPACE
+# =========================================================================
+- name: "pgAdmin Prerequisites | Vérification de l'existence du namespace {{ lions_pgladmin_namespace }}"
+  kubernetes.core.k8s_info:
     api_version: v1
     kind: Namespace
-    name: "{{ app_namespace }}"
-  register: namespace_info
+    name: "{{ lions_pgladmin_namespace }}"
+  register: lions_pgladmin_namespace_check
+  failed_when: false
+  tags:
+    - pgadmin
+    - prerequisites
+    - namespace
 
-- name: Création du namespace si nécessaire
+- name: "pgAdmin Prerequisites | Création du namespace {{ lions_pgladmin_namespace }}"
   kubernetes.core.k8s:
     state: present
     definition:
       apiVersion: v1
       kind: Namespace
       metadata:
-        name: "{{ app_namespace }}"
+        name: "{{ lions_pgladmin_namespace }}"
         labels:
-          app: "{{ app_name | string }}"
-          env: "{{ app_environment | string }}"
-  when: namespace_info.resources | length == 0
+          app.kubernetes.io/name: "{{ lions_pgladmin_service_name }}"
+          app.kubernetes.io/component: "database-management"
+          app.kubernetes.io/part-of: "lions-infrastructure"
+          app.kubernetes.io/managed-by: "ansible"
+          app.kubernetes.io/version: "{{ lions_pgladmin_version | default('latest') }}"
+          environment: "{{ lions_environment }}"
+          owner: "lions-devops"
+        annotations:
+          lions.dev/created-by: "ansible-playbook"
+          lions.dev/creation-date: "{{ ansible_date_time.iso8601 }}"
+          lions.dev/description: "Namespace pour pgAdmin - Interface web PostgreSQL"
+  when: lions_pgladmin_namespace_check.resources | length == 0
+  register: lions_pgladmin_namespace_creation
+  tags:
+    - pgadmin
+    - prerequisites
+    - namespace
 
-- name: Vérification des droits d'accès
-  k8s_info:
+- name: "pgAdmin Prerequisites | Mise à jour du statut - Namespace"
+  set_fact:
+    lions_pgladmin_prerequisite_checks: "{{ lions_pgladmin_prerequisite_checks | combine({'namespace': true}) }}"
+  when:
+    - lions_pgladmin_namespace_check.resources | length > 0 or lions_pgladmin_namespace_creation is succeeded
+  tags:
+    - pgadmin
+    - prerequisites
+    - namespace
+
+# =========================================================================
+# VÉRIFICATION DU CONTRÔLE D'ACCÈS (RBAC)
+# =========================================================================
+- name: "pgAdmin Prerequisites | Vérification des permissions RBAC"
+  kubernetes.core.k8s_info:
     api_version: rbac.authorization.k8s.io/v1
     kind: Role
-    name: "{{ app_name }}-role"
-    namespace: "{{ app_namespace }}"
-  register: role_info
+    name: "{{ lions_pgladmin_service_name }}-role"
+    namespace: "{{ lions_pgladmin_namespace }}"
+  register: lions_pgladmin_rbac_check
   failed_when: false
+  tags:
+    - pgadmin
+    - prerequisites
+    - rbac
 
-- name: Avertissement si les droits d'accès ne sont pas configurés
-  debug:
-    msg: "AVERTISSEMENT: Les droits d'accès pour pgAdmin ne sont pas configurés. Certaines fonctionnalités pourraient ne pas fonctionner correctement."
-  when: role_info.resources | length == 0
+- name: "pgAdmin Prerequisites | Création du ServiceAccount pour pgAdmin"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: "{{ lions_pgladmin_service_name }}-sa"
+        namespace: "{{ lions_pgladmin_namespace }}"
+        labels:
+          app.kubernetes.io/name: "{{ lions_pgladmin_service_name }}"
+          app.kubernetes.io/component: "database-management"
+          app.kubernetes.io/part-of: "lions-infrastructure"
+        annotations:
+          lions.dev/description: "Service Account pour pgAdmin"
+  when: lions_pgladmin_rbac_check.resources | length == 0
+  tags:
+    - pgadmin
+    - prerequisites
+    - rbac
 
-- name: Vérification de l'existence du contrôleur d'ingress (Traefik)
-  k8s_info:
+- name: "pgAdmin Prerequisites | Mise à jour du statut - RBAC"
+  set_fact:
+    lions_pgladmin_prerequisite_checks: "{{ lions_pgladmin_prerequisite_checks | combine({'rbac': true}) }}"
+    lions_pgladmin_warnings: "{{ lions_pgladmin_warnings + ['RBAC non configuré pour pgAdmin - fonctionnalités limitées possibles'] }}"
+  when: lions_pgladmin_rbac_check.resources | length == 0
+  tags:
+    - pgadmin
+    - prerequisites
+    - rbac
+
+# =========================================================================
+# VÉRIFICATION DU CONTRÔLEUR D'INGRESS
+# =========================================================================
+- name: "pgAdmin Prerequisites | Vérification du contrôleur d'ingress Traefik"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: "{{ lions_k8s_system_namespace | default('kube-system') }}"
+    label_selectors:
+      - "app.kubernetes.io/name=traefik"
+  register: lions_pgladmin_ingress_check
+  failed_when: false
+  tags:
+    - pgadmin
+    - prerequisites
+    - ingress
+
+- name: "pgAdmin Prerequisites | Vérification alternative - Traefik dans kube-system"
+  kubernetes.core.k8s_info:
     api_version: v1
     kind: Pod
     namespace: kube-system
     label_selectors:
-      - app=traefik
-  register: ingress_info
+      - "app=traefik"
+  register: lions_pgladmin_ingress_check_alt
+  when: lions_pgladmin_ingress_check.resources | length == 0
   failed_when: false
+  tags:
+    - pgadmin
+    - prerequisites
+    - ingress
 
-- name: Avertissement si le contrôleur d'ingress n'est pas trouvé
-  debug:
-    msg: "AVERTISSEMENT: Le contrôleur d'ingress Traefik n'a pas été trouvé. L'interface web de pgAdmin ne sera pas accessible depuis l'extérieur."
-  when: ingress_info.resources | length == 0
+- name: "pgAdmin Prerequisites | Mise à jour du statut - Ingress Controller"
+  set_fact:
+    lions_pgladmin_prerequisite_checks: "{{ lions_pgladmin_prerequisite_checks | combine({'ingress_controller': true}) }}"
+  when:
+    - lions_pgladmin_ingress_check.resources | length > 0 or
+      (lions_pgladmin_ingress_check_alt is defined and lions_pgladmin_ingress_check_alt.resources | length > 0)
+  tags:
+    - pgadmin
+    - prerequisites
+    - ingress
 
-- name: Vérification de l'existence de Postgres
-  k8s_info:
+- name: "pgAdmin Prerequisites | Ajout d'avertissement - Ingress Controller"
+  set_fact:
+    lions_pgladmin_warnings: "{{ lions_pgladmin_warnings + ['Contrôleur d\\'ingress Traefik non trouvé - accès web externe indisponible'] }}"
+  when:
+    - lions_pgladmin_ingress_check.resources | length == 0 and
+      (lions_pgladmin_ingress_check_alt is not defined or lions_pgladmin_ingress_check_alt.resources | length == 0)
+  tags:
+    - pgadmin
+    - prerequisites
+    - ingress
+
+# =========================================================================
+# VÉRIFICATION DU SERVICE POSTGRESQL
+# =========================================================================
+- name: "pgAdmin Prerequisites | Vérification du service PostgreSQL"
+  kubernetes.core.k8s_info:
     api_version: v1
     kind: Service
-    namespace: "{{ app_namespace }}"
-    name: "{{ pgadmin_database_service | default('postgres') }}"
-  register: postgres_info
+    namespace: "{{ lions_postgres_namespace }}"
+    name: "{{ lions_postgres_service_name }}"
+  register: lions_pgladmin_postgres_check
   failed_when: false
+  tags:
+    - pgadmin
+    - prerequisites
+    - database
 
-- name: Avertissement si Postgres n'est pas trouvé
-  debug:
-    msg: "AVERTISSEMENT: Le service PostgreSQL n'a pas été trouvé. pgAdmin nécessite une base de données PostgreSQL pour fonctionner correctement."
-  when: postgres_info.resources | length == 0
+- name: "pgAdmin Prerequisites | Vérification alternative - PostgreSQL dans le même namespace"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Service
+    namespace: "{{ lions_pgladmin_namespace }}"
+    name: "{{ lions_postgres_service_name }}"
+  register: lions_pgladmin_postgres_check_alt
+  when: lions_pgladmin_postgres_check.resources | length == 0
+  failed_when: false
+  tags:
+    - pgadmin
+    - prerequisites
+    - database
 
-- name: Vérification des ressources disponibles sur les nœuds
-  k8s_info:
+- name: "pgAdmin Prerequisites | Mise à jour du statut - PostgreSQL Service"
+  set_fact:
+    lions_pgladmin_prerequisite_checks: "{{ lions_pgladmin_prerequisite_checks | combine({'postgres_service': true}) }}"
+  when:
+    - lions_pgladmin_postgres_check.resources | length > 0 or
+      (lions_pgladmin_postgres_check_alt is defined and lions_pgladmin_postgres_check_alt.resources | length > 0)
+  tags:
+    - pgadmin
+    - prerequisites
+    - database
+
+- name: "pgAdmin Prerequisites | Ajout d'erreur critique - PostgreSQL Service"
+  set_fact:
+    lions_pgladmin_errors: "{{ lions_pgladmin_errors + ['Service PostgreSQL non trouvé - pgAdmin ne peut pas fonctionner sans base de données'] }}"
+  when:
+    - lions_pgladmin_postgres_check.resources | length == 0 and
+      (lions_pgladmin_postgres_check_alt is not defined or lions_pgladmin_postgres_check_alt.resources | length == 0)
+  tags:
+    - pgadmin
+    - prerequisites
+    - database
+
+# =========================================================================
+# VÉRIFICATION DE LA CLASSE DE STOCKAGE
+# =========================================================================
+- name: "pgAdmin Prerequisites | Vérification de la classe de stockage {{ lions_storage_class_default }}"
+  kubernetes.core.k8s_info:
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+    name: "{{ lions_storage_class_default }}"
+  register: lions_pgladmin_storage_check
+  failed_when: false
+  tags:
+    - pgadmin
+    - prerequisites
+    - storage
+
+- name: "pgAdmin Prerequisites | Vérification des classes de stockage disponibles"
+  kubernetes.core.k8s_info:
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+  register: lions_pgladmin_available_storage_classes
+  when: lions_pgladmin_storage_check.resources | length == 0
+  tags:
+    - pgadmin
+    - prerequisites
+    - storage
+
+- name: "pgAdmin Prerequisites | Mise à jour du statut - Classe de stockage"
+  set_fact:
+    lions_pgladmin_prerequisite_checks: "{{ lions_pgladmin_prerequisite_checks | combine({'storage_class': true}) }}"
+  when: lions_pgladmin_storage_check.resources | length > 0
+  tags:
+    - pgadmin
+    - prerequisites
+    - storage
+
+- name: "pgAdmin Prerequisites | Ajout d'avertissement - Classe de stockage"
+  set_fact:
+    lions_pgladmin_warnings: "{{ lions_pgladmin_warnings + ['Classe de stockage ' + lions_storage_class_default + ' non trouvée - utilisation de la classe par défaut'] }}"
+  when: lions_pgladmin_storage_check.resources | length == 0
+  tags:
+    - pgadmin
+    - prerequisites
+    - storage
+
+# =========================================================================
+# VÉRIFICATION DES RESSOURCES DISPONIBLES
+# =========================================================================
+- name: "pgAdmin Prerequisites | Vérification des nœuds disponibles"
+  kubernetes.core.k8s_info:
     api_version: v1
     kind: Node
-  register: nodes_info
+  register: lions_pgladmin_nodes_check
+  tags:
+    - pgadmin
+    - prerequisites
+    - resources
 
-- name: Avertissement sur les ressources
+- name: "pgAdmin Prerequisites | Analyse des ressources disponibles sur les nœuds"
+  set_fact:
+    lions_pgladmin_total_nodes: "{{ lions_pgladmin_nodes_check.resources | length }}"
+    lions_pgladmin_ready_nodes: "{{ lions_pgladmin_nodes_check.resources | selectattr('status.conditions', 'defined') | selectattr('status.conditions', 'selectattr', 'type', 'equalto', 'Ready') | selectattr('status.conditions', 'selectattr', 'status', 'equalto', 'True') | list | length }}"
+  tags:
+    - pgadmin
+    - prerequisites
+    - resources
+
+- name: "pgAdmin Prerequisites | Mise à jour du statut - Ressources des nœuds"
+  set_fact:
+    lions_pgladmin_prerequisite_checks: "{{ lions_pgladmin_prerequisite_checks | combine({'node_resources': true}) }}"
+  when: lions_pgladmin_ready_nodes | int > 0
+  tags:
+    - pgadmin
+    - prerequisites
+    - resources
+
+- name: "pgAdmin Prerequisites | Ajout d'avertissement - Ressources"
+  set_fact:
+    lions_pgladmin_warnings: "{{ lions_pgladmin_warnings + ['Vérifiez les ressources disponibles - pgAdmin requiert: ' + lions_resources_small_cpu_request + ' CPU, ' + lions_resources_small_memory_request + ' RAM'] }}"
+  when: lions_pgladmin_ready_nodes | int > 0
+  tags:
+    - pgadmin
+    - prerequisites
+    - resources
+
+# =========================================================================
+# RAPPORT FINAL DES PRÉREQUIS
+# =========================================================================
+- name: "pgAdmin Prerequisites | Génération du rapport de vérification"
+  set_fact:
+    lions_pgladmin_prerequisites_summary:
+      total_checks: "{{ lions_pgladmin_prerequisite_checks | length }}"
+      passed_checks: "{{ lions_pgladmin_prerequisite_checks | dict2items | selectattr('value', 'equalto', true) | list | length }}"
+      failed_checks: "{{ lions_pgladmin_prerequisite_checks | dict2items | selectattr('value', 'equalto', false) | list | length }}"
+      warnings_count: "{{ lions_pgladmin_warnings | length }}"
+      errors_count: "{{ lions_pgladmin_errors | length }}"
+      status: "{{ 'READY' if (lions_pgladmin_errors | length == 0) else 'BLOCKED' }}"
+  tags:
+    - pgadmin
+    - prerequisites
+    - reporting
+
+- name: "pgAdmin Prerequisites | Affichage du rapport de prérequis"
   debug:
-    msg: "AVERTISSEMENT: Vérifiez que les nœuds disposent de suffisamment de ressources pour pgAdmin. Ressources recommandées: 1 CPU, 1Gi mémoire."
-  when: nodes_info.resources | length > 0
+    msg: |
+      ╔════════════════════════════════════════════════════════════════╗
+      ║                    RAPPORT PRÉREQUIS PGADMIN                   ║
+      ╠════════════════════════════════════════════════════════════════╣
+      ║ Statut Global: {{ lions_pgladmin_prerequisites_summary.status | upper }}
+      ║ Vérifications: {{ lions_pgladmin_prerequisites_summary.passed_checks }}/{{ lions_pgladmin_prerequisites_summary.total_checks }} réussies
+      ║ Avertissements: {{ lions_pgladmin_prerequisites_summary.warnings_count }}
+      ║ Erreurs: {{ lions_pgladmin_prerequisites_summary.errors_count }}
+      ╠════════════════════════════════════════════════════════════════╣
+      ║ Détails des vérifications:
+      ║ • Namespace: {{ '✅' if lions_pgladmin_prerequisite_checks.namespace else '❌' }}
+      ║ • RBAC: {{ '✅' if lions_pgladmin_prerequisite_checks.rbac else '⚠️' }}
+      ║ • Ingress Controller: {{ '✅' if lions_pgladmin_prerequisite_checks.ingress_controller else '⚠️' }}
+      ║ • Service PostgreSQL: {{ '✅' if lions_pgladmin_prerequisite_checks.postgres_service else '❌' }}
+      ║ • Classe de stockage: {{ '✅' if lions_pgladmin_prerequisite_checks.storage_class else '⚠️' }}
+      ║ • Ressources nœuds: {{ '✅' if lions_pgladmin_prerequisite_checks.node_resources else '❌' }}
+      ╚════════════════════════════════════════════════════════════════╝
+  tags:
+    - pgadmin
+    - prerequisites
+    - reporting
+
+- name: "pgAdmin Prerequisites | Affichage des avertissements"
+  debug:
+    msg: "⚠️  AVERTISSEMENT: {{ item }}"
+  loop: "{{ lions_pgladmin_warnings }}"
+  when: lions_pgladmin_warnings | length > 0
+  tags:
+    - pgadmin
+    - prerequisites
+    - warnings
+
+- name: "pgAdmin Prerequisites | Affichage des erreurs critiques"
+  debug:
+    msg: "❌ ERREUR CRITIQUE: {{ item }}"
+  loop: "{{ lions_pgladmin_errors }}"
+  when: lions_pgladmin_errors | length > 0
+  tags:
+    - pgadmin
+    - prerequisites
+    - errors
+
+- name: "pgAdmin Prerequisites | Échec si erreurs critiques détectées"
+  fail:
+    msg: |
+      ❌ DÉPLOIEMENT BLOQUÉ: Des erreurs critiques empêchent le déploiement de pgAdmin.
+      Consultez les erreurs ci-dessus et corrigez-les avant de continuer.
+      
+      Actions recommandées:
+      1. Vérifiez que PostgreSQL est déployé et fonctionnel
+      2. Assurez-vous que les variables d'environnement sont correctement configurées
+      3. Vérifiez la connectivité réseau entre les services
+  when: lions_pgladmin_errors | length > 0
+  tags:
+    - pgadmin
+    - prerequisites
+    - validation
+
+- name: "pgAdmin Prerequisites | Confirmation de la préparation au déploiement"
+  debug:
+    msg: |
+      ✅ PRÉREQUIS VALIDÉS: pgAdmin est prêt pour le déploiement
+      {% if lions_pgladmin_warnings | length > 0 %}
+      ⚠️  Note: {{ lions_pgladmin_warnings | length }} avertissement(s) détecté(s) - fonctionnalités potentiellement limitées
+      {% endif %}
+  when: lions_pgladmin_errors | length == 0
+  tags:
+    - pgadmin
+    - prerequisites
+    - confirmation

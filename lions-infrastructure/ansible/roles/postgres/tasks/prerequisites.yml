@@ -1,122 +1,510 @@
 ---
-# Titre: Vérification des prérequis pour PostgreSQL
-# Description: Vérifie que tous les prérequis sont satisfaits pour déployer PostgreSQL
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - PRÉREQUIS POSTGRESQL
+# =========================================================================
+# Description: Vérification et validation des prérequis pour PostgreSQL
+# Version: 5.0.0
+# Maintainer: DevOps Team LIONS
+# Documentation: https://docs.lions.dev/infrastructure/services/postgresql
+# =========================================================================
+# Dépendances:
+#   - Kubernetes cluster opérationnel
+#   - Variables d'environnement LIONS configurées
+#   - Permissions RBAC appropriées
+# =========================================================================
 
-- name: Vérification de l'existence du namespace
-  k8s_info:
+- name: "PostgreSQL Prerequisites | Initialisation des variables de validation"
+  set_fact:
+    lions_postgres_validation_errors: []
+    lions_postgres_validation_warnings: []
+    lions_postgres_prerequisites_start_time: "{{ ansible_date_time.epoch }}"
+  tags:
+    - postgres
+    - prerequisites
+    - validation
+
+- name: "PostgreSQL Prerequisites | Affichage des informations de déploiement"
+  debug:
+    msg:
+      - "🐘 === VALIDATION DES PRÉREQUIS POSTGRESQL ==="
+      - "📊 Environnement: {{ lions_environment | default('undefined') }}"
+      - "🏷️  Namespace cible: {{ lions_postgres_namespace | default('database') }}"
+      - "📦 Version PostgreSQL: {{ lions_postgres_version | default('15.4') }}"
+      - "💾 Classe de stockage: {{ lions_storage_class_default | default('local-path') }}"
+      - "📏 Taille de stockage: {{ lions_postgres_storage_size | default('20Gi') }}"
+  tags:
+    - postgres
+    - prerequisites
+    - info
+
+# =========================================================================
+# VALIDATION DE LA CONFIGURATION KUBERNETES
+# =========================================================================
+
+- name: "PostgreSQL Prerequisites | Vérification de la connectivité Kubernetes"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Node
+  register: lions_postgres_k8s_nodes
+  failed_when: false
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file | default('/etc/rancher/k3s/k3s.yaml') }}"
+  tags:
+    - postgres
+    - prerequisites
+    - kubernetes
+
+- name: "PostgreSQL Prerequisites | Validation de la connectivité cluster"
+  set_fact:
+    lions_postgres_validation_errors: "{{ lions_postgres_validation_errors + ['Impossible de se connecter au cluster Kubernetes'] }}"
+  when: lions_postgres_k8s_nodes.failed | default(false)
+  tags:
+    - postgres
+    - prerequisites
+    - kubernetes
+
+- name: "PostgreSQL Prerequisites | Vérification des ressources cluster"
+  debug:
+    msg: "✅ Cluster Kubernetes accessible avec {{ lions_postgres_k8s_nodes.resources | length }} nœud(s)"
+  when: not (lions_postgres_k8s_nodes.failed | default(false))
+  tags:
+    - postgres
+    - prerequisites
+    - kubernetes
+
+# =========================================================================
+# VALIDATION ET CRÉATION DU NAMESPACE
+# =========================================================================
+
+- name: "PostgreSQL Prerequisites | Vérification de l'existence du namespace"
+  kubernetes.core.k8s_info:
     api_version: v1
     kind: Namespace
-    name: "{{ app_namespace }}"
-  register: namespace_info
+    name: "{{ lions_postgres_namespace | default('database') }}"
+  register: lions_postgres_namespace_info
   environment:
-    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+    KUBECONFIG: "{{ lions_k8s_config_file | default('/etc/rancher/k3s/k3s.yaml') }}"
+  tags:
+    - postgres
+    - prerequisites
+    - namespace
 
-- name: Création du namespace si nécessaire
+- name: "PostgreSQL Prerequisites | Création du namespace avec métadonnées"
   kubernetes.core.k8s:
     state: present
     definition:
       apiVersion: v1
       kind: Namespace
       metadata:
-        name: "{{ app_namespace }}"
+        name: "{{ lions_postgres_namespace | default('database') }}"
         labels:
-          app: "{{ app_name | string }}"
-          env: "{{ app_environment | string }}"
-  when: namespace_info.resources | length == 0
+          app.kubernetes.io/name: postgresql
+          app.kubernetes.io/component: database
+          app.kubernetes.io/part-of: lions-infrastructure
+          app.kubernetes.io/managed-by: ansible
+          lions.dev/environment: "{{ lions_environment | default('development') }}"
+          lions.dev/service-type: database
+          lions.dev/backup-enabled: "{{ lions_postgres_backup_enabled | default('true') | string }}"
+        annotations:
+          lions.dev/created-by: "ansible-{{ ansible_user | default('system') }}"
+          lions.dev/creation-date: "{{ ansible_date_time.iso8601 }}"
+          lions.dev/config-version: "{{ lions_config_version | default('5.0.0') }}"
+          kubectl.kubernetes.io/last-applied-configuration: |
+            {"apiVersion":"v1","kind":"Namespace","metadata":{"name":"{{ lions_postgres_namespace | default('database') }}"}}
+  when: lions_postgres_namespace_info.resources | length == 0
   environment:
-    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+    KUBECONFIG: "{{ lions_k8s_config_file | default('/etc/rancher/k3s/k3s.yaml') }}"
+  tags:
+    - postgres
+    - prerequisites
+    - namespace
 
-- name: Vérification des droits d'accès au namespace
-  k8s:
+# =========================================================================
+# VALIDATION DES PERMISSIONS RBAC
+# =========================================================================
+
+- name: "PostgreSQL Prerequisites | Test des permissions RBAC sur le namespace"
+  kubernetes.core.k8s:
     state: present
     definition:
       apiVersion: v1
       kind: ConfigMap
       metadata:
-        name: "access-check"
-        namespace: "{{ app_namespace }}"
+        name: "lions-postgres-rbac-test-{{ ansible_date_time.epoch }}"
+        namespace: "{{ lions_postgres_namespace | default('database') }}"
+        labels:
+          lions.dev/test-type: rbac-validation
+          lions.dev/temporary: "true"
       data:
-        check: "true"
-  register: access_check
-  ignore_errors: yes
+        test-purpose: "RBAC permissions validation for PostgreSQL deployment"
+        test-timestamp: "{{ ansible_date_time.iso8601 }}"
+        test-environment: "{{ lions_environment | default('development') }}"
+  register: lions_postgres_rbac_test
+  failed_when: false
   environment:
-    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+    KUBECONFIG: "{{ lions_k8s_config_file | default('/etc/rancher/k3s/k3s.yaml') }}"
+  tags:
+    - postgres
+    - prerequisites
+    - rbac
 
-- name: Suppression du ConfigMap de vérification
-  k8s:
+- name: "PostgreSQL Prerequisites | Nettoyage du test RBAC"
+  kubernetes.core.k8s:
     state: absent
     api_version: v1
     kind: ConfigMap
-    name: "access-check"
-    namespace: "{{ app_namespace }}"
-  when: access_check is succeeded
+    name: "lions-postgres-rbac-test-{{ ansible_date_time.epoch }}"
+    namespace: "{{ lions_postgres_namespace | default('database') }}"
+  when: not (lions_postgres_rbac_test.failed | default(false))
   environment:
-    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+    KUBECONFIG: "{{ lions_k8s_config_file | default('/etc/rancher/k3s/k3s.yaml') }}"
+  tags:
+    - postgres
+    - prerequisites
+    - rbac
 
-- name: Échec si les droits d'accès sont insuffisants
-  fail:
-    msg: "Droits d'accès insuffisants pour déployer dans le namespace {{ app_namespace }}"
-  when: access_check is failed
+- name: "PostgreSQL Prerequisites | Validation des permissions RBAC"
+  set_fact:
+    lions_postgres_validation_errors: "{{ lions_postgres_validation_errors + ['Permissions RBAC insuffisantes sur le namespace ' + (lions_postgres_namespace | default('database'))] }}"
+  when: lions_postgres_rbac_test.failed | default(false)
+  tags:
+    - postgres
+    - prerequisites
+    - rbac
 
-- name: Vérification de l'existence du registre Docker
-  k8s_info:
-    api_version: v1
-    kind: Service
-    name: registry
-    namespace: registry
-  register: registry_info
-  ignore_errors: yes
-  environment:
-    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+# =========================================================================
+# VALIDATION DU STOCKAGE PERSISTANT
+# =========================================================================
 
-- name: Avertissement si le registre Docker n'est pas trouvé
-  debug:
-    msg: "AVERTISSEMENT: Le registre Docker n'a pas été trouvé. Certaines fonctionnalités de déploiement d'images pourraient ne pas fonctionner correctement."
-  when: registry_info is failed or registry_info.resources | length == 0
-
-- name: Vérification de l'existence de l'ingress controller
-  k8s_info:
-    api_version: v1
-    kind: Service
-    name: ingress-nginx-controller
-    namespace: ingress-nginx
-  register: ingress_info
-  ignore_errors: yes
-  environment:
-    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
-
-- name: Avertissement si l'ingress controller n'est pas trouvé
-  debug:
-    msg: "AVERTISSEMENT: L'ingress controller n'a pas été trouvé. L'interface d'administration de PostgreSQL ne sera pas accessible via une URL."
-  when: ingress_info is failed or ingress_info.resources | length == 0
-
-- name: Vérification de la disponibilité du stockage persistant
-  k8s_info:
+- name: "PostgreSQL Prerequisites | Vérification de la classe de stockage"
+  kubernetes.core.k8s_info:
     api_version: storage.k8s.io/v1
     kind: StorageClass
-    name: "{{ postgres_storage_class }}"
-  register: storage_class_info
-  ignore_errors: yes
+    name: "{{ lions_storage_class_default | default('local-path') }}"
+  register: lions_postgres_storage_class_info
   environment:
-    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+    KUBECONFIG: "{{ lions_k8s_config_file | default('/etc/rancher/k3s/k3s.yaml') }}"
+  tags:
+    - postgres
+    - prerequisites
+    - storage
 
-- name: Avertissement si la classe de stockage n'est pas trouvée
-  debug:
-    msg: "AVERTISSEMENT: La classe de stockage {{ postgres_storage_class }} n'a pas été trouvée. PostgreSQL nécessite un stockage persistant pour fonctionner correctement."
-  when: storage_class_info is failed or storage_class_info.resources | length == 0
+- name: "PostgreSQL Prerequisites | Validation de la classe de stockage"
+  set_fact:
+    lions_postgres_validation_errors: "{{ lions_postgres_validation_errors + ['Classe de stockage ' + (lions_storage_class_default | default('local-path')) + ' introuvable'] }}"
+  when: lions_postgres_storage_class_info.resources | length == 0
+  tags:
+    - postgres
+    - prerequisites
+    - storage
 
-- name: Vérification des ressources disponibles sur les nœuds
-  shell: "kubectl describe nodes | grep -A 5 'Allocated resources' | grep -v 'Allocated resources'"
-  register: node_resources
-  changed_when: false
-  ignore_errors: yes
+- name: "PostgreSQL Prerequisites | Test de création PVC"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: "lions-postgres-storage-test-{{ ansible_date_time.epoch }}"
+        namespace: "{{ lions_postgres_namespace | default('database') }}"
+        labels:
+          lions.dev/test-type: storage-validation
+          lions.dev/temporary: "true"
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: "{{ lions_storage_class_default | default('local-path') }}"
+        resources:
+          requests:
+            storage: "1Gi"
+  register: lions_postgres_pvc_test
+  failed_when: false
   environment:
-    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+    KUBECONFIG: "{{ lions_k8s_config_file | default('/etc/rancher/k3s/k3s.yaml') }}"
+  tags:
+    - postgres
+    - prerequisites
+    - storage
 
-- name: Avertissement si les ressources sont limitées
+- name: "PostgreSQL Prerequisites | Attente de la liaison du PVC de test"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: PersistentVolumeClaim
+    name: "lions-postgres-storage-test-{{ ansible_date_time.epoch }}"
+    namespace: "{{ lions_postgres_namespace | default('database') }}"
+    wait: true
+    wait_condition:
+      type: Bound
+      status: "True"
+    wait_timeout: 60
+  register: lions_postgres_pvc_bound
+  failed_when: false
+  when: not (lions_postgres_pvc_test.failed | default(false))
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file | default('/etc/rancher/k3s/k3s.yaml') }}"
+  tags:
+    - postgres
+    - prerequisites
+    - storage
+
+- name: "PostgreSQL Prerequisites | Nettoyage du PVC de test"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: v1
+    kind: PersistentVolumeClaim
+    name: "lions-postgres-storage-test-{{ ansible_date_time.epoch }}"
+    namespace: "{{ lions_postgres_namespace | default('database') }}"
+  when: not (lions_postgres_pvc_test.failed | default(false))
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file | default('/etc/rancher/k3s/k3s.yaml') }}"
+  tags:
+    - postgres
+    - prerequisites
+    - storage
+
+- name: "PostgreSQL Prerequisites | Ajout d'avertissement pour le stockage"
+  set_fact:
+    lions_postgres_validation_warnings: "{{ lions_postgres_validation_warnings + ['Le stockage persistant pourrait ne pas fonctionner correctement'] }}"
+  when: lions_postgres_pvc_test.failed | default(false) or lions_postgres_pvc_bound.failed | default(false)
+  tags:
+    - postgres
+    - prerequisites
+    - storage
+
+# =========================================================================
+# VALIDATION DES RESSOURCES SYSTÈME
+# =========================================================================
+
+- name: "PostgreSQL Prerequisites | Collecte des informations sur les ressources des nœuds"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Node
+  register: lions_postgres_nodes_details
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file | default('/etc/rancher/k3s/k3s.yaml') }}"
+  tags:
+    - postgres
+    - prerequisites
+    - resources
+
+- name: "PostgreSQL Prerequisites | Analyse des ressources disponibles"
+  set_fact:
+    lions_postgres_total_cpu: "{{ lions_postgres_nodes_details.resources | map(attribute='status.capacity.cpu') | map('int') | sum }}"
+    lions_postgres_total_memory: "{{ lions_postgres_nodes_details.resources | map(attribute='status.capacity.memory') | map('regex_replace', 'Ki$', '') | map('int') | sum }}"
+  when: lions_postgres_nodes_details.resources | length > 0
+  tags:
+    - postgres
+    - prerequisites
+    - resources
+
+- name: "PostgreSQL Prerequisites | Validation des ressources minimales"
+  set_fact:
+    lions_postgres_validation_warnings: "{{ lions_postgres_validation_warnings + ['Ressources système limitées détectées - Vérifiez la capacité du cluster'] }}"
+  when:
+    - lions_postgres_total_cpu is defined
+    - lions_postgres_total_memory is defined
+    - (lions_postgres_total_cpu | int < 2 or lions_postgres_total_memory | int < 2097152)
+  tags:
+    - postgres
+    - prerequisites
+    - resources
+
+# =========================================================================
+# VALIDATION DES SERVICES D'INFRASTRUCTURE
+# =========================================================================
+
+- name: "PostgreSQL Prerequisites | Vérification du service DNS"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Service
+    name: kube-dns
+    namespace: kube-system
+  register: lions_postgres_dns_service
+  failed_when: false
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file | default('/etc/rancher/k3s/k3s.yaml') }}"
+  tags:
+    - postgres
+    - prerequisites
+    - infrastructure
+
+- name: "PostgreSQL Prerequisites | Validation du service DNS"
+  set_fact:
+    lions_postgres_validation_warnings: "{{ lions_postgres_validation_warnings + ['Service DNS Kubernetes non détecté - La résolution de noms pourrait être affectée'] }}"
+  when: lions_postgres_dns_service.resources | length == 0
+  tags:
+    - postgres
+    - prerequisites
+    - infrastructure
+
+- name: "PostgreSQL Prerequisites | Vérification du contrôleur d'ingress"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Service
+    name: traefik
+    namespace: kube-system
+  register: lions_postgres_ingress_service
+  failed_when: false
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file | default('/etc/rancher/k3s/k3s.yaml') }}"
+  tags:
+    - postgres
+    - prerequisites
+    - infrastructure
+
+- name: "PostgreSQL Prerequisites | Validation du contrôleur d'ingress"
+  set_fact:
+    lions_postgres_validation_warnings: "{{ lions_postgres_validation_warnings + ['Contrôleur d\\'ingress non détecté - L\\'accès externe pourrait être limité'] }}"
+  when: lions_postgres_ingress_service.resources | length == 0
+  tags:
+    - postgres
+    - prerequisites
+    - infrastructure
+
+# =========================================================================
+# VALIDATION DES SERVICES DE MONITORING
+# =========================================================================
+
+- name: "PostgreSQL Prerequisites | Vérification du service Prometheus"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Service
+    name: prometheus-server
+    namespace: "{{ lions_monitoring_namespace | default('monitoring') }}"
+  register: lions_postgres_prometheus_service
+  failed_when: false
+  when: lions_monitoring_enabled | default(true) | bool
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file | default('/etc/rancher/k3s/k3s.yaml') }}"
+  tags:
+    - postgres
+    - prerequisites
+    - monitoring
+
+- name: "PostgreSQL Prerequisites | Validation du monitoring"
+  set_fact:
+    lions_postgres_validation_warnings: "{{ lions_postgres_validation_warnings + ['Service Prometheus non détecté - Le monitoring PostgreSQL sera limité'] }}"
+  when:
+    - lions_monitoring_enabled | default(true) | bool
+    - lions_postgres_prometheus_service.resources | default([]) | length == 0
+  tags:
+    - postgres
+    - prerequisites
+    - monitoring
+
+# =========================================================================
+# VALIDATION DES SERVICES DE SÉCURITÉ
+# =========================================================================
+
+- name: "PostgreSQL Prerequisites | Vérification du service Vault"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Service
+    name: "{{ lions_vault_service_name | default('vault') }}"
+    namespace: "{{ lions_vault_namespace | default('vault-system') }}"
+  register: lions_postgres_vault_service
+  failed_when: false
+  when: lions_vault_enabled | default(true) | bool
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file | default('/etc/rancher/k3s/k3s.yaml') }}"
+  tags:
+    - postgres
+    - prerequisites
+    - security
+
+- name: "PostgreSQL Prerequisites | Validation de Vault"
+  set_fact:
+    lions_postgres_validation_warnings: "{{ lions_postgres_validation_warnings + ['Service Vault non détecté - La gestion des secrets sera basique'] }}"
+  when:
+    - lions_vault_enabled | default(true) | bool
+    - lions_postgres_vault_service.resources | default([]) | length == 0
+  tags:
+    - postgres
+    - prerequisites
+    - security
+
+# =========================================================================
+# VALIDATION DES DÉPENDANCES APPLICATIVES
+# =========================================================================
+
+- name: "PostgreSQL Prerequisites | Vérification de l'absence de conflits PostgreSQL"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: StatefulSet
+    namespace: "{{ lions_postgres_namespace | default('database') }}"
+    label_selectors:
+      - "app.kubernetes.io/name=postgresql"
+  register: lions_postgres_existing_instances
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file | default('/etc/rancher/k3s/k3s.yaml') }}"
+  tags:
+    - postgres
+    - prerequisites
+    - conflicts
+
+- name: "PostgreSQL Prerequisites | Détection d'instances existantes"
   debug:
-    msg: "AVERTISSEMENT: Vérifiez que les nœuds disposent de suffisamment de ressources pour PostgreSQL. Ressources actuelles: {{ node_resources.stdout }}"
-  when: node_resources is succeeded
+    msg: "⚠️  Instance PostgreSQL existante détectée: {{ item.metadata.name }}"
+  loop: "{{ lions_postgres_existing_instances.resources }}"
+  when: lions_postgres_existing_instances.resources | length > 0
+  tags:
+    - postgres
+    - prerequisites
+    - conflicts
+
+# =========================================================================
+# COMPILATION ET AFFICHAGE DU RAPPORT DE VALIDATION
+# =========================================================================
+
+- name: "PostgreSQL Prerequisites | Calcul du temps d'exécution"
+  set_fact:
+    lions_postgres_prerequisites_duration: "{{ ansible_date_time.epoch | int - lions_postgres_prerequisites_start_time | int }}"
+  tags:
+    - postgres
+    - prerequisites
+    - report
+
+- name: "PostgreSQL Prerequisites | Affichage du rapport de validation"
+  debug:
+    msg:
+      - "📋 === RAPPORT DE VALIDATION POSTGRESQL ==="
+      - "⏱️  Durée d'exécution: {{ lions_postgres_prerequisites_duration }}s"
+      - "❌ Erreurs critiques: {{ lions_postgres_validation_errors | length }}"
+      - "⚠️  Avertissements: {{ lions_postgres_validation_warnings | length }}"
+      - "{% if lions_postgres_validation_errors | length > 0 %}🚨 ERREURS CRITIQUES:{% for error in lions_postgres_validation_errors %}   - {{ error }}{% endfor %}{% endif %}"
+      - "{% if lions_postgres_validation_warnings | length > 0 %}⚠️  AVERTISSEMENTS:{% for warning in lions_postgres_validation_warnings %}   - {{ warning }}{% endfor %}{% endif %}"
+      - "{% if lions_postgres_validation_errors | length == 0 %}✅ Validation réussie - Prêt pour le déploiement PostgreSQL{% endif %}"
+  tags:
+    - postgres
+    - prerequisites
+    - report
+
+# =========================================================================
+# GESTION DES ÉCHECS CRITIQUES
+# =========================================================================
+
+- name: "PostgreSQL Prerequisites | Arrêt en cas d'erreurs critiques"
+  fail:
+    msg: |
+      🚨 ÉCHEC DE LA VALIDATION DES PRÉREQUIS POSTGRESQL
+      
+      Les erreurs suivantes doivent être corrigées avant de continuer:
+      {% for error in lions_postgres_validation_errors %}
+      ❌ {{ error }}
+      {% endfor %}
+      
+      📚 Consultez la documentation: https://docs.lions.dev/infrastructure/services/postgresql/troubleshooting
+      🔧 Exécutez les playbooks de base avant de continuer: install-k3s.yml, install-vault.yml
+  when: lions_postgres_validation_errors | length > 0
+  tags:
+    - postgres
+    - prerequisites
+    - validation
+
+- name: "PostgreSQL Prerequisites | Confirmation de la validation"
+  debug:
+    msg: "✅ Validation des prérequis PostgreSQL terminée avec succès"
+  tags:
+    - postgres
+    - prerequisites
+    - success

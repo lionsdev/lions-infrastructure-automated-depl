@@ -1,55 +1,433 @@
 ---
-# Titre: Vérification des prérequis pour Redis
-# Description: Vérifie que tous les prérequis sont satisfaits pour déployer Redis
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-08
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - REDIS PREREQUISITES
+# =========================================================================
+# Description: Vérification complète des prérequis pour le déploiement Redis
+# Version: 5.0.0
+# Maintainer: LIONS DevOps Team
+# Documentation: https://docs.lions.dev/services/redis/prerequisites
+# =========================================================================
 
-- name: Vérification de l'existence du namespace
+- name: "🔍 Redis Prerequisites | Initialize validation context"
+  set_fact:
+    redis_prerequisites_validation_start: "{{ ansible_date_time.iso8601 }}"
+    redis_prerequisites_errors: []
+    redis_prerequisites_warnings: []
+    redis_validation_context:
+      service_name: "{{ LIONS_REDIS_SERVICE_NAME | default('redis') }}"
+      namespace: "{{ LIONS_REDIS_NAMESPACE | default('database') }}"
+      environment: "{{ LIONS_ENVIRONMENT | default('development') }}"
+      storage_enabled: "{{ LIONS_REDIS_STORAGE_ENABLED | default(true) | bool }}"
+      storage_class: "{{ LIONS_REDIS_STORAGE_CLASS | default(LIONS_STORAGE_CLASS_DEFAULT) }}"
+      storage_size: "{{ LIONS_REDIS_STORAGE_SIZE | default('5Gi') }}"
+      monitoring_enabled: "{{ LIONS_MONITORING_ENABLED | default(true) | bool }}"
+      security_enabled: "{{ LIONS_SECURITY_RBAC_ENABLED | default(true) | bool }}"
+      debug_mode: "{{ LIONS_DEBUG_MODE | default(false) | bool }}"
+
+- name: "📋 Redis Prerequisites | Display validation context"
+  debug:
+    msg:
+      - "🏷️  Service: {{ redis_validation_context.service_name }}"
+      - "📦 Namespace: {{ redis_validation_context.namespace }}"
+      - "🌍 Environment: {{ redis_validation_context.environment }}"
+      - "💾 Storage: {{ redis_validation_context.storage_enabled }}"
+      - "📊 Monitoring: {{ redis_validation_context.monitoring_enabled }}"
+      - "🔒 Security: {{ redis_validation_context.security_enabled }}"
+  when: redis_validation_context.debug_mode | bool
+
+# =========================================================================
+# VÉRIFICATIONS KUBERNETES CORE
+# =========================================================================
+
+- name: "🔍 Redis Prerequisites | Verify Kubernetes cluster connectivity"
+  k8s_info:
+    api_version: v1
+    kind: Node
+  register: k8s_cluster_info
+  failed_when: false
+  no_log: "{{ not (redis_validation_context.debug_mode | bool) }}"
+
+- name: "❌ Redis Prerequisites | Fail if Kubernetes cluster is not accessible"
+  fail:
+    msg: "❌ Kubernetes cluster is not accessible. Please verify cluster connection and credentials."
+  when: k8s_cluster_info is failed
+
+- name: "✅ Redis Prerequisites | Kubernetes cluster connectivity verified"
+  debug:
+    msg: "✅ Kubernetes cluster accessible with {{ k8s_cluster_info.resources | length }} nodes"
+  when:
+    - k8s_cluster_info is succeeded
+    - redis_validation_context.debug_mode | bool
+
+- name: "🔍 Redis Prerequisites | Verify Kubernetes version compatibility"
+  shell: |
+    kubectl version --output=json | jq -r '.serverVersion.gitVersion'
+  register: k8s_version_check
+  changed_when: false
+  failed_when: false
+
+- name: "🏷️  Redis Prerequisites | Extract Kubernetes version information"
+  set_fact:
+    k8s_version: "{{ k8s_version_check.stdout | regex_replace('^v', '') }}"
+  when: k8s_version_check is succeeded
+
+- name: "⚠️  Redis Prerequisites | Add warning for Kubernetes version check failure"
+  set_fact:
+    redis_prerequisites_warnings: "{{ redis_prerequisites_warnings + ['Unable to determine Kubernetes version'] }}"
+  when: k8s_version_check is failed
+
+# =========================================================================
+# VÉRIFICATIONS NAMESPACE
+# =========================================================================
+
+- name: "🔍 Redis Prerequisites | Verify target namespace exists"
   k8s_info:
     api_version: v1
     kind: Namespace
-    name: "{{ app_namespace }}"
-  register: namespace_info
-  failed_when: namespace_info.resources | length == 0
+    name: "{{ redis_validation_context.namespace }}"
+  register: namespace_verification
+  failed_when: false
 
-- name: Vérification des droits d'accès
+- name: "❌ Redis Prerequisites | Fail if target namespace does not exist"
+  fail:
+    msg: |
+      ❌ Target namespace '{{ redis_validation_context.namespace }}' does not exist.
+      Please create the namespace before deploying Redis:
+      kubectl create namespace {{ redis_validation_context.namespace }}
+  when:
+    - namespace_verification is failed or (namespace_verification.resources | length == 0)
+
+- name: "✅ Redis Prerequisites | Target namespace verified"
+  debug:
+    msg: "✅ Target namespace '{{ redis_validation_context.namespace }}' exists and is accessible"
+  when:
+    - namespace_verification is succeeded
+    - namespace_verification.resources | length > 0
+    - redis_validation_context.debug_mode | bool
+
+- name: "🔍 Redis Prerequisites | Verify namespace labels and annotations"
+  set_fact:
+    namespace_labels: "{{ namespace_verification.resources[0].metadata.labels | default({}) }}"
+    namespace_annotations: "{{ namespace_verification.resources[0].metadata.annotations | default({}) }}"
+  when:
+    - namespace_verification is succeeded
+    - namespace_verification.resources | length > 0
+
+- name: "⚠️  Redis Prerequisites | Check namespace environment label"
+  set_fact:
+    redis_prerequisites_warnings: "{{ redis_prerequisites_warnings + ['Namespace missing environment label'] }}"
+  when:
+    - namespace_labels is defined
+    - "'lions.dev/environment' not in namespace_labels"
+
+# =========================================================================
+# VÉRIFICATIONS RBAC ET SÉCURITÉ
+# =========================================================================
+
+- name: "🔍 Redis Prerequisites | Verify RBAC permissions"
   k8s_info:
     api_version: rbac.authorization.k8s.io/v1
-    kind: RoleBinding
-    namespace: "{{ app_namespace }}"
-  register: rolebinding_info
-  ignore_errors: yes
+    kind: Role
+    namespace: "{{ redis_validation_context.namespace }}"
+  register: rbac_roles_check
+  failed_when: false
+  when: redis_validation_context.security_enabled | bool
 
-- name: Vérification de la classe de stockage
+- name: "🔍 Redis Prerequisites | Verify ServiceAccount permissions"
+  k8s_info:
+    api_version: v1
+    kind: ServiceAccount
+    namespace: "{{ redis_validation_context.namespace }}"
+    name: "{{ redis_validation_context.service_name }}"
+  register: serviceaccount_check
+  failed_when: false
+  when: redis_validation_context.security_enabled | bool
+
+- name: "📋 Redis Prerequisites | RBAC status summary"
+  debug:
+    msg:
+      - "🔐 RBAC Roles found: {{ rbac_roles_check.resources | length if rbac_roles_check.resources is defined else 0 }}"
+      - "👤 ServiceAccount exists: {{ 'Yes' if serviceaccount_check.resources | length > 0 else 'No' }}"
+  when:
+    - redis_validation_context.security_enabled | bool
+    - redis_validation_context.debug_mode | bool
+
+# =========================================================================
+# VÉRIFICATIONS STOCKAGE
+# =========================================================================
+
+- name: "🔍 Redis Prerequisites | Verify storage class availability"
   k8s_info:
     api_version: storage.k8s.io/v1
     kind: StorageClass
-    name: "{{ redis_storage_class | default('standard') }}"
-  register: storageclass_info
-  ignore_errors: yes
-  when: redis_persistent_storage | default(true) | bool
+    name: "{{ redis_validation_context.storage_class }}"
+  register: storage_class_verification
+  failed_when: false
+  when: redis_validation_context.storage_enabled | bool
 
-- name: Avertissement si la classe de stockage n'existe pas
+- name: "❌ Redis Prerequisites | Fail if required storage class is missing"
+  fail:
+    msg: |
+      ❌ Required storage class '{{ redis_validation_context.storage_class }}' not found.
+      Available storage classes:
+      {{ available_storage_classes.stdout if available_storage_classes is defined else 'Unable to list storage classes' }}
+  when:
+    - redis_validation_context.storage_enabled | bool
+    - storage_class_verification is failed or (storage_class_verification.resources | length == 0)
+    - redis_validation_context.environment == 'production'
+
+- name: "⚠️  Redis Prerequisites | Add warning for missing storage class"
+  set_fact:
+    redis_prerequisites_warnings: "{{ redis_prerequisites_warnings + ['Storage class ' + redis_validation_context.storage_class + ' not found'] }}"
+  when:
+    - redis_validation_context.storage_enabled | bool
+    - storage_class_verification is failed or (storage_class_verification.resources | length == 0)
+    - redis_validation_context.environment != 'production'
+
+- name: "🔍 Redis Prerequisites | List available storage classes"
+  shell: |
+    kubectl get storageclass -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'
+  register: available_storage_classes
+  changed_when: false
+  failed_when: false
+  when:
+    - redis_validation_context.storage_enabled | bool
+    - redis_validation_context.debug_mode | bool
+
+- name: "✅ Redis Prerequisites | Storage class verified"
   debug:
-    msg: "AVERTISSEMENT: La classe de stockage {{ redis_storage_class | default('standard') }} n'existe pas. Le déploiement pourrait échouer si la persistance est activée."
-  when: redis_persistent_storage | default(true) | bool and (storageclass_info is failed or storageclass_info.resources | length == 0)
+    msg: "✅ Storage class '{{ redis_validation_context.storage_class }}' is available"
+  when:
+    - redis_validation_context.storage_enabled | bool
+    - storage_class_verification is succeeded
+    - storage_class_verification.resources | length > 0
+    - redis_validation_context.debug_mode | bool
 
-- name: Vérification de la disponibilité des ressources
+# =========================================================================
+# VÉRIFICATIONS RESSOURCES
+# =========================================================================
+
+- name: "🔍 Redis Prerequisites | Verify resource quotas"
   k8s_info:
     api_version: v1
     kind: ResourceQuota
-    namespace: "{{ app_namespace }}"
-  register: resourcequota_info
-  ignore_errors: yes
+    namespace: "{{ redis_validation_context.namespace }}"
+  register: resource_quota_check
+  failed_when: false
 
-- name: Vérification de la version de Kubernetes
-  shell: "kubectl version --short | grep Server"
-  register: k8s_version
-  changed_when: false
-  ignore_errors: yes
+- name: "📊 Redis Prerequisites | Check resource limits"
+  k8s_info:
+    api_version: v1
+    kind: LimitRange
+    namespace: "{{ redis_validation_context.namespace }}"
+  register: limit_range_check
+  failed_when: false
 
-- name: Affichage de la version de Kubernetes
+- name: "📋 Redis Prerequisites | Resource constraints summary"
   debug:
-    msg: "Version de Kubernetes: {{ k8s_version.stdout }}"
-  when: k8s_version is succeeded
+    msg:
+      - "📊 Resource quotas: {{ resource_quota_check.resources | length if resource_quota_check.resources is defined else 0 }}"
+      - "🔒 Limit ranges: {{ limit_range_check.resources | length if limit_range_check.resources is defined else 0 }}"
+  when: redis_validation_context.debug_mode | bool
+
+# =========================================================================
+# VÉRIFICATIONS RÉSEAU ET SÉCURITÉ
+# =========================================================================
+
+- name: "🔍 Redis Prerequisites | Verify network policies"
+  k8s_info:
+    api_version: networking.k8s.io/v1
+    kind: NetworkPolicy
+    namespace: "{{ redis_validation_context.namespace }}"
+  register: network_policy_check
+  failed_when: false
+  when: LIONS_SECURITY_NETWORK_POLICIES | default(true) | bool
+
+- name: "🔍 Redis Prerequisites | Verify pod security policies"
+  k8s_info:
+    api_version: policy/v1beta1
+    kind: PodSecurityPolicy
+  register: pod_security_policy_check
+  failed_when: false
+  when: LIONS_SECURITY_POD_SECURITY_STANDARDS | default('restricted') != 'privileged'
+
+- name: "📋 Redis Prerequisites | Security policies summary"
+  debug:
+    msg:
+      - "🛡️  Network policies: {{ network_policy_check.resources | length if network_policy_check.resources is defined else 0 }}"
+      - "🔐 Pod security policies: {{ pod_security_policy_check.resources | length if pod_security_policy_check.resources is defined else 0 }}"
+  when: redis_validation_context.debug_mode | bool
+
+# =========================================================================
+# VÉRIFICATIONS MONITORING
+# =========================================================================
+
+- name: "🔍 Redis Prerequisites | Verify monitoring namespace exists"
+  k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: "{{ LIONS_MONITORING_NAMESPACE | default('monitoring') }}"
+  register: monitoring_namespace_check
+  failed_when: false
+  when: redis_validation_context.monitoring_enabled | bool
+
+- name: "🔍 Redis Prerequisites | Verify Prometheus ServiceMonitor CRD"
+  k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: servicemonitors.monitoring.coreos.com
+  register: servicemonitor_crd_check
+  failed_when: false
+  when: redis_validation_context.monitoring_enabled | bool
+
+- name: "⚠️  Redis Prerequisites | Add monitoring warnings"
+  set_fact:
+    redis_prerequisites_warnings: "{{ redis_prerequisites_warnings + monitoring_warnings | default([]) }}"
+  vars:
+    monitoring_warnings: |
+      {{
+        ([] if monitoring_namespace_check.resources | length > 0 else ['Monitoring namespace not found']) +
+        ([] if servicemonitor_crd_check.resources | length > 0 else ['ServiceMonitor CRD not found'])
+      }}
+  when:
+    - redis_validation_context.monitoring_enabled | bool
+    - (monitoring_namespace_check is failed or monitoring_namespace_check.resources | length == 0) or
+      (servicemonitor_crd_check is failed or servicemonitor_crd_check.resources | length == 0)
+
+- name: "✅ Redis Prerequisites | Monitoring prerequisites verified"
+  debug:
+    msg: "✅ Monitoring prerequisites satisfied"
+  when:
+    - redis_validation_context.monitoring_enabled | bool
+    - monitoring_namespace_check.resources | length > 0
+    - servicemonitor_crd_check.resources | length > 0
+    - redis_validation_context.debug_mode | bool
+
+# =========================================================================
+# VÉRIFICATIONS EXISTANTES
+# =========================================================================
+
+- name: "🔍 Redis Prerequisites | Check for existing Redis deployments"
+  k8s_info:
+    api_version: apps/v1
+    kind: StatefulSet
+    namespace: "{{ redis_validation_context.namespace }}"
+    name: "{{ redis_validation_context.service_name }}"
+  register: existing_redis_check
+  failed_when: false
+
+- name: "⚠️  Redis Prerequisites | Warn about existing deployment"
+  debug:
+    msg: "⚠️  Existing Redis deployment found. This operation may update or replace it."
+  when:
+    - existing_redis_check.resources | length > 0
+
+- name: "🔍 Redis Prerequisites | Check for existing PVCs"
+  k8s_info:
+    api_version: v1
+    kind: PersistentVolumeClaim
+    namespace: "{{ redis_validation_context.namespace }}"
+    label_selectors:
+      - "app.kubernetes.io/name={{ redis_validation_context.service_name }}"
+  register: existing_pvc_check
+  failed_when: false
+  when: redis_validation_context.storage_enabled | bool
+
+- name: "📋 Redis Prerequisites | Existing resources summary"
+  debug:
+    msg:
+      - "🔄 Existing StatefulSet: {{ 'Yes' if existing_redis_check.resources | length > 0 else 'No' }}"
+      - "💾 Existing PVCs: {{ existing_pvc_check.resources | length if existing_pvc_check.resources is defined else 0 }}"
+  when: redis_validation_context.debug_mode | bool
+
+# =========================================================================
+# VÉRIFICATIONS SPÉCIFIQUES À REDIS
+# =========================================================================
+
+- name: "🔍 Redis Prerequisites | Verify Redis configuration parameters"
+  set_fact:
+    redis_config_validation:
+      memory_limit: "{{ LIONS_REDIS_MEMORY_LIMIT | default(LIONS_RESOURCES_MEDIUM_MEMORY_LIMIT) }}"
+      cpu_limit: "{{ LIONS_REDIS_CPU_LIMIT | default(LIONS_RESOURCES_MEDIUM_CPU_LIMIT) }}"
+      version: "{{ LIONS_REDIS_VERSION | default('7.2') }}"
+      port: "{{ LIONS_REDIS_PORT | default(6379) }}"
+      auth_enabled: "{{ LIONS_REDIS_AUTH_ENABLED | default(true) | bool }}"
+
+- name: "📋 Redis Prerequisites | Redis configuration summary"
+  debug:
+    msg:
+      - "🐧 Redis version: {{ redis_config_validation.version }}"
+      - "🔌 Port: {{ redis_config_validation.port }}"
+      - "🔐 Authentication: {{ 'Enabled' if redis_config_validation.auth_enabled else 'Disabled' }}"
+      - "💾 Memory limit: {{ redis_config_validation.memory_limit }}"
+      - "⚡ CPU limit: {{ redis_config_validation.cpu_limit }}"
+  when: redis_validation_context.debug_mode | bool
+
+# =========================================================================
+# VALIDATION FINALE ET RAPPORT
+# =========================================================================
+
+- name: "🔍 Redis Prerequisites | Generate validation report"
+  set_fact:
+    redis_prerequisites_report:
+      timestamp: "{{ ansible_date_time.iso8601 }}"
+      service: "{{ redis_validation_context.service_name }}"
+      namespace: "{{ redis_validation_context.namespace }}"
+      environment: "{{ redis_validation_context.environment }}"
+      kubernetes_version: "{{ k8s_version | default('unknown') }}"
+      errors: "{{ redis_prerequisites_errors }}"
+      warnings: "{{ redis_prerequisites_warnings }}"
+      validations:
+        cluster_connectivity: "{{ '✅ Pass' if k8s_cluster_info is succeeded else '❌ Fail' }}"
+        namespace_exists: "{{ '✅ Pass' if namespace_verification.resources | length > 0 else '❌ Fail' }}"
+        storage_class: "{{ '✅ Pass' if not redis_validation_context.storage_enabled or storage_class_verification.resources | length > 0 else '⚠️  Warning' }}"
+        monitoring_ready: "{{ '✅ Pass' if not redis_validation_context.monitoring_enabled or (monitoring_namespace_check.resources | length > 0 and servicemonitor_crd_check.resources | length > 0) else '⚠️  Warning' }}"
+
+- name: "📋 Redis Prerequisites | Display validation report"
+  debug:
+    msg:
+      - "═══════════════════════════════════════════════════════════════"
+      - "🔍 REDIS PREREQUISITES VALIDATION REPORT"
+      - "═══════════════════════════════════════════════════════════════"
+      - "🕐 Timestamp: {{ redis_prerequisites_report.timestamp }}"
+      - "🏷️  Service: {{ redis_prerequisites_report.service }}"
+      - "📦 Namespace: {{ redis_prerequisites_report.namespace }}"
+      - "🌍 Environment: {{ redis_prerequisites_report.environment }}"
+      - "⚙️  Kubernetes: {{ redis_prerequisites_report.kubernetes_version }}"
+      - "───────────────────────────────────────────────────────────────"
+      - "📋 VALIDATION RESULTS:"
+      - "   {{ redis_prerequisites_report.validations.cluster_connectivity }} Cluster connectivity"
+      - "   {{ redis_prerequisites_report.validations.namespace_exists }} Namespace exists"
+      - "   {{ redis_prerequisites_report.validations.storage_class }} Storage class"
+      - "   {{ redis_prerequisites_report.validations.monitoring_ready }} Monitoring ready"
+      - "───────────────────────────────────────────────────────────────"
+      - "⚠️  WARNINGS: {{ redis_prerequisites_report.warnings | length }}"
+      - "❌ ERRORS: {{ redis_prerequisites_report.errors | length }}"
+      - "═══════════════════════════════════════════════════════════════"
+
+- name: "⚠️  Redis Prerequisites | Display warnings"
+  debug:
+    msg: "⚠️  {{ item }}"
+  loop: "{{ redis_prerequisites_warnings }}"
+  when: redis_prerequisites_warnings | length > 0
+
+- name: "❌ Redis Prerequisites | Display errors"
+  debug:
+    msg: "❌ {{ item }}"
+  loop: "{{ redis_prerequisites_errors }}"
+  when: redis_prerequisites_errors | length > 0
+
+- name: "❌ Redis Prerequisites | Fail if critical errors found"
+  fail:
+    msg: |
+      ❌ Critical prerequisites validation failed for Redis deployment.
+      Please resolve the errors listed above before proceeding.
+  when: redis_prerequisites_errors | length > 0
+
+- name: "✅ Redis Prerequisites | Validation completed successfully"
+  debug:
+    msg: |
+      ✅ Redis prerequisites validation completed successfully!
+      🚀 Ready to proceed with Redis deployment in {{ redis_validation_context.namespace }} namespace.
+      ⏱️  Validation duration: {{ ((ansible_date_time.epoch | int) - (redis_prerequisites_validation_start | to_datetime('%Y-%m-%dT%H:%M:%SZ') | int)) }}s
+  when: redis_prerequisites_errors | length == 0

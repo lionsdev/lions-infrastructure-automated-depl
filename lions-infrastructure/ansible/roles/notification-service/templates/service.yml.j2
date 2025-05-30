@@ -1,29 +1,362 @@
 ---
-# Titre: Template de Service Kubernetes pour le service de notification
-# Description: Définit le Service Kubernetes pour le service de notification
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-08
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - NOTIFICATION SERVICE TEMPLATE
+# =========================================================================
+# Description: Template Kubernetes Service pour le service de notification avec configuration avancée
+# Version: 5.0.0
+# Auteur: LIONS DevOps Team
+# Date: {{ ansible_date_time.iso8601 }}
+# Documentation: https://docs.lions.dev/infrastructure/services/notification
+# =========================================================================
 
 apiVersion: v1
 kind: Service
 metadata:
-  name: "{{ app_name }}"
-  namespace: "{{ app_namespace }}"
+  name: "{{ notification_service_name }}"
+  namespace: "{{ notification_namespace }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "notification-service"
+    # Labels de base pour l'identification
+    app.kubernetes.io/name: "{{ notification_service_name }}"
+    app.kubernetes.io/instance: "{{ notification_service_name }}-{{ notification_environment }}"
+    app.kubernetes.io/version: "{{ notification_service_meta.version }}"
+    app.kubernetes.io/component: "notification-service"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+
+    # Labels pour l'environnement et la technologie
+    lions.dev/environment: "{{ notification_environment }}"
+    lions.dev/service-type: "communication"
+    lions.dev/technology: "notification-service"
+    lions.dev/backup-required: "{{ notification_storage.backup_enabled | default('false') | string | lower }}"
+
+    # Labels pour le monitoring et l'observabilité
+    lions.dev/monitoring: "{{ notification_monitoring.enabled | default('true') | string | lower }}"
+    lions.dev/logging: "{{ notification_logging.enabled | default('true') | string | lower }}"
+    lions.dev/metrics: "{{ notification_monitoring.prometheus.enabled | default('true') | string | lower }}"
+
+    # Labels pour la sécurité
+    lions.dev/security-policy: "{{ notification_security.policy | default('standard') }}"
+    lions.dev/network-policy: "{{ notification_security.network_policies.enabled | default('true') | string | lower }}"
+    lions.dev/tls-enabled: "{{ notification_tls.enabled | default('true') | string | lower }}"
+
+    # Labels pour le scaling et les ressources
+    lions.dev/scaling-enabled: "{{ notification_resources.scaling.enabled | default('true') | string | lower }}"
+    lions.dev/resource-tier: "{{ notification_resources.tier | default('medium') }}"
+
   annotations:
-    description: "Service pour le service de notification {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    # Annotations de base
+    description: "Service Kubernetes pour le service de notification {{ notification_service_meta.version }} en environnement {{ notification_environment }}"
+    version: "{{ notification_service_meta.config_version | default('5.0.0') }}"
+    created-by: "lions-infrastructure-ansible"
+    last-updated: "{{ ansible_date_time.iso8601 }}"
+
+    # Annotations pour le monitoring Prometheus
+    prometheus.io/scrape: "{{ notification_monitoring.enabled | default('true') | string | lower }}"
+    prometheus.io/port: "{{ notification_network.service.port | default('8080') | string }}"
+    prometheus.io/path: "{{ notification_endpoints.metrics | default('/metrics') }}"
+    prometheus.io/interval: "{{ notification_monitoring.prometheus.scrape_interval | default('30s') }}"
+    prometheus.io/scheme: "{{ 'https' if notification_tls.enabled | default('false') | bool else 'http' }}"
+
+    # Annotations pour la sécurité
+    security.lions.dev/scan-enabled: "{{ notification_security.vulnerability_scan.enabled | default('true') | string | lower }}"
+    security.lions.dev/vulnerability-scanning: "{{ notification_security.vulnerability_scan.enabled | default('true') | string | lower }}"
+
+    # Annotations pour les réseaux
+    networking.lions.dev/ingress-class: "{{ notification_ingress.class | default('traefik') }}"
+    networking.lions.dev/load-balancer-class: "{{ notification_network.load_balancer.class | default('metallb') }}"
+{% if notification_network.service.type == 'LoadBalancer' and notification_network.load_balancer.ip is defined and notification_network.load_balancer.ip != '' %}
+    # Configuration LoadBalancer IP via annotations (remplacement de loadBalancerIP déprécié)
+    metallb.universe.tf/loadBalancerIPs: "{{ notification_network.load_balancer.ip }}"
+{% endif %}
+
+    # Annotations pour le backup
+    backup.lions.dev/enabled: "{{ notification_storage.backup_enabled | default('false') | string | lower }}"
+    backup.lions.dev/schedule: "{{ notification_storage.backup_schedule | default('0 2 * * *') }}"
+    backup.lions.dev/retention: "{{ notification_storage.backup_retention_days | default('30') }}d"
+
+    # Annotations conditionnelles pour les environnements spéciaux
+{% if notification_environment == 'production' %}
+    production.lions.dev/critical-service: "true"
+    production.lions.dev/disaster-recovery: "{{ notification_disaster_recovery.enabled | default('true') | string | lower }}"
+    production.lions.dev/sla-tier: "{{ notification_sla.tier | default('gold') }}"
+{% endif %}
+{% if notification_environment == 'development' %}
+    development.lions.dev/auto-cleanup: "{{ notification_development.auto_cleanup | default('false') | string | lower }}"
+    development.lions.dev/debug-mode: "{{ notification_debug.enabled | default('false') | string | lower }}"
+{% endif %}
+
+    # Annotations spécifiques aux canaux de notification
+    notification.lions.dev/email-enabled: "{{ notification_app_config.channels.email.enabled | default('false') | string | lower }}"
+    notification.lions.dev/slack-enabled: "{{ notification_app_config.channels.slack.enabled | default('false') | string | lower }}"
+    notification.lions.dev/sms-enabled: "{{ notification_app_config.channels.sms.enabled | default('false') | string | lower }}"
+    notification.lions.dev/webhook-enabled: "{{ notification_app_config.channels.webhook.enabled | default('false') | string | lower }}"
+
 spec:
-  selector:
-    app: "{{ app_name }}"
+  type: "{{ notification_network.service.type | default('ClusterIP') }}"
+
+  # Configuration des ports
   ports:
+    # Port HTTP principal
     - name: http
-      port: 80
+      port: {{ notification_network.service.port | default('8080') | int }}
       targetPort: http
       protocol: TCP
+      appProtocol: "{{ 'https' if notification_tls.enabled | default('false') | bool else 'http' }}"
+{% if notification_network.service.type == 'NodePort' and notification_network.node_port.http is defined %}
+      nodePort: {{ notification_network.node_port.http | int }}
+{% endif %}
+
+{% if notification_monitoring.enabled | default('true') | bool and notification_monitoring.prometheus.separate_port | default('false') | bool %}
+    # Port pour les métriques Prometheus (séparé)
+    - name: metrics
+      port: {{ notification_network.metrics_port | default('9090') | int }}
+      targetPort: metrics
+      protocol: TCP
+      appProtocol: http
+{% if notification_network.service.type == 'NodePort' and notification_network.node_port.metrics is defined %}
+      nodePort: {{ notification_network.node_port.metrics | int }}
+{% endif %}
+{% endif %}
+
+{% if notification_management.enabled | default('true') | bool and notification_management.separate_port | default('false') | bool %}
+    # Port pour les endpoints de management
+    - name: management
+      port: {{ notification_network.management_port | default('8081') | int }}
+      targetPort: management
+      protocol: TCP
+      appProtocol: http
+{% if notification_network.service.type == 'NodePort' and notification_network.node_port.management is defined %}
+      nodePort: {{ notification_network.node_port.management | int }}
+{% endif %}
+{% endif %}
+
+{% if notification_app_config.grpc.enabled | default('false') | bool %}
+    # Port gRPC (si activé)
+    - name: grpc
+      port: {{ notification_app_config.grpc.port | default('9090') | int }}
+      targetPort: grpc
+      protocol: TCP
+      appProtocol: grpc
+{% if notification_network.service.type == 'NodePort' and notification_network.node_port.grpc is defined %}
+      nodePort: {{ notification_network.node_port.grpc | int }}
+{% endif %}
+{% endif %}
+
+{% if notification_app_config.websocket.enabled | default('false') | bool %}
+    # Port WebSocket (pour notifications en temps réel)
+    - name: websocket
+      port: {{ notification_app_config.websocket.port | default('8082') | int }}
+      targetPort: websocket
+      protocol: TCP
+      appProtocol: http
+{% if notification_network.service.type == 'NodePort' and notification_network.node_port.websocket is defined %}
+      nodePort: {{ notification_network.node_port.websocket | int }}
+{% endif %}
+{% endif %}
+
+  # Sélecteurs pour cibler les pods
+  selector:
+    app.kubernetes.io/name: "{{ notification_service_name }}"
+    app.kubernetes.io/instance: "{{ notification_service_name }}-{{ notification_environment }}"
+    app.kubernetes.io/component: "notification-service"
+
+{% if notification_network.service.type == 'LoadBalancer' %}
+  # Configuration spécifique pour LoadBalancer
+  loadBalancerClass: "{{ notification_network.load_balancer.class | default('metallb') }}"
+{% if notification_network.load_balancer.source_ranges is defined and notification_network.load_balancer.source_ranges | length > 0 %}
+  loadBalancerSourceRanges:
+{% for range in notification_network.load_balancer.source_ranges %}
+    - "{{ range }}"
+{% endfor %}
+{% endif %}
+{% endif %}
+
+{% if notification_network.external_traffic_policy is defined %}
+  # Politique de trafic externe
+  externalTrafficPolicy: "{{ notification_network.external_traffic_policy }}"
+{% endif %}
+
+{% if notification_network.session_affinity.enabled | default('false') | bool %}
+  # Configuration de l'affinité de session
+  sessionAffinity: "{{ notification_network.session_affinity.type | default('ClientIP') }}"
+{% if notification_network.session_affinity.type == 'ClientIP' %}
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: {{ notification_network.session_affinity.timeout | default('10800') | int }}
+{% endif %}
+{% endif %}
+
+{% if notification_network.ip_families is defined and notification_network.ip_families | length > 0 %}
+  # Configuration IPv4/IPv6
+  ipFamilies:
+{% for family in notification_network.ip_families %}
+    - {{ family }}
+{% endfor %}
+  ipFamilyPolicy: "{{ notification_network.ip_family_policy | default('SingleStack') }}"
+{% endif %}
+
+---
+# =========================================================================
+# SERVICE DE MÉTRIQUES DÉDIÉ (si séparé du service principal)
+# =========================================================================
+{% if notification_monitoring.prometheus.separate_service | default('false') | bool %}
+apiVersion: v1
+kind: Service
+metadata:
+  name: "{{ notification_service_name }}-metrics"
+  namespace: "{{ notification_namespace }}"
+  labels:
+    app.kubernetes.io/name: "{{ notification_service_name }}-metrics"
+    app.kubernetes.io/instance: "{{ notification_service_name }}-{{ notification_environment }}"
+    app.kubernetes.io/version: "{{ notification_service_meta.version }}"
+    app.kubernetes.io/component: "metrics"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+    lions.dev/environment: "{{ notification_environment }}"
+    lions.dev/service-type: "metrics"
+    lions.dev/monitoring: "true"
+  annotations:
+    description: "Service de métriques pour le service de notification {{ notification_service_meta.version }}"
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "{{ notification_network.metrics_port | default('9090') | string }}"
+    prometheus.io/path: "{{ notification_endpoints.metrics | default('/metrics') }}"
+spec:
   type: ClusterIP
-  sessionAffinity: None
+  ports:
+    - name: metrics
+      port: {{ notification_network.metrics_port | default('9090') | int }}
+      targetPort: metrics
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: "{{ notification_service_name }}"
+    app.kubernetes.io/instance: "{{ notification_service_name }}-{{ notification_environment }}"
+    app.kubernetes.io/component: "notification-service"
+{% endif %}
+
+---
+# =========================================================================
+# SERVICE DE MANAGEMENT DÉDIÉ (si séparé du service principal)
+# =========================================================================
+{% if notification_management.separate_service | default('false') | bool %}
+apiVersion: v1
+kind: Service
+metadata:
+  name: "{{ notification_service_name }}-management"
+  namespace: "{{ notification_namespace }}"
+  labels:
+    app.kubernetes.io/name: "{{ notification_service_name }}-management"
+    app.kubernetes.io/instance: "{{ notification_service_name }}-{{ notification_environment }}"
+    app.kubernetes.io/version: "{{ notification_service_meta.version }}"
+    app.kubernetes.io/component: "management"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+    lions.dev/environment: "{{ notification_environment }}"
+    lions.dev/service-type: "management"
+    lions.dev/monitoring: "true"
+  annotations:
+    description: "Service de management pour le service de notification {{ notification_service_meta.version }}"
+    monitoring.lions.dev/health-check: "true"
+    monitoring.lions.dev/health-path: "{{ notification_endpoints.health }}"
+spec:
+  type: ClusterIP
+  ports:
+    - name: management
+      port: {{ notification_network.management_port | default('8081') | int }}
+      targetPort: management
+      protocol: TCP
+    - name: health
+      port: {{ notification_network.management_port | default('8081') | int }}
+      targetPort: management
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: "{{ notification_service_name }}"
+    app.kubernetes.io/instance: "{{ notification_service_name }}-{{ notification_environment }}"
+    app.kubernetes.io/component: "notification-service"
+{% endif %}
+
+---
+# =========================================================================
+# HEADLESS SERVICE (pour StatefulSet ou découverte de services)
+# =========================================================================
+{% if notification_network.headless_service.enabled | default('false') | bool %}
+apiVersion: v1
+kind: Service
+metadata:
+  name: "{{ notification_service_name }}-headless"
+  namespace: "{{ notification_namespace }}"
+  labels:
+    app.kubernetes.io/name: "{{ notification_service_name }}-headless"
+    app.kubernetes.io/instance: "{{ notification_service_name }}-{{ notification_environment }}"
+    app.kubernetes.io/version: "{{ notification_service_meta.version }}"
+    app.kubernetes.io/component: "notification-service"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+    lions.dev/environment: "{{ notification_environment }}"
+    lions.dev/service-type: "headless"
+  annotations:
+    description: "Service headless pour le service de notification {{ notification_service_meta.version }} - Découverte de services"
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: http
+      port: {{ notification_network.service.port | default('8080') | int }}
+      targetPort: http
+      protocol: TCP
+{% if notification_monitoring.enabled and notification_monitoring.prometheus.separate_port %}
+    - name: metrics
+      port: {{ notification_network.metrics_port | default('9090') | int }}
+      targetPort: metrics
+      protocol: TCP
+{% endif %}
+{% if notification_management.enabled and notification_management.separate_port %}
+    - name: management
+      port: {{ notification_network.management_port | default('8081') | int }}
+      targetPort: management
+      protocol: TCP
+{% endif %}
+  selector:
+    app.kubernetes.io/name: "{{ notification_service_name }}"
+    app.kubernetes.io/instance: "{{ notification_service_name }}-{{ notification_environment }}"
+    app.kubernetes.io/component: "notification-service"
+{% endif %}
+
+---
+# =========================================================================
+# SERVICE EXTERNE POUR WEBHOOKS (si activé)
+# =========================================================================
+{% if notification_app_config.channels.webhook.enabled | default('false') | bool and notification_app_config.channels.webhook.external_service | default('false') | bool %}
+apiVersion: v1
+kind: Service
+metadata:
+  name: "{{ notification_service_name }}-webhooks"
+  namespace: "{{ notification_namespace }}"
+  labels:
+    app.kubernetes.io/name: "{{ notification_service_name }}-webhooks"
+    app.kubernetes.io/instance: "{{ notification_service_name }}-{{ notification_environment }}"
+    app.kubernetes.io/version: "{{ notification_service_meta.version }}"
+    app.kubernetes.io/component: "webhooks"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+    lions.dev/environment: "{{ notification_environment }}"
+    lions.dev/service-type: "webhook-receiver"
+  annotations:
+    description: "Service externe pour recevoir les webhooks du service de notification {{ notification_service_meta.version }}"
+    networking.lions.dev/external-access: "true"
+    security.lions.dev/webhook-validation: "{{ notification_app_config.channels.webhook.validation.enabled | default('true') | string | lower }}"
+spec:
+  type: "{{ notification_app_config.channels.webhook.service_type | default('LoadBalancer') }}"
+  ports:
+    - name: webhook
+      port: {{ notification_app_config.channels.webhook.port | default('8443') | int }}
+      targetPort: http
+      protocol: TCP
+      appProtocol: "{{ 'https' if notification_tls.enabled else 'http' }}"
+  selector:
+    app.kubernetes.io/name: "{{ notification_service_name }}"
+    app.kubernetes.io/instance: "{{ notification_service_name }}-{{ notification_environment }}"
+    app.kubernetes.io/component: "notification-service"
+{% if notification_app_config.channels.webhook.load_balancer_ip is defined %}
+  loadBalancerIP: "{{ notification_app_config.channels.webhook.load_balancer_ip }}"
+{% endif %}
+{% endif %}

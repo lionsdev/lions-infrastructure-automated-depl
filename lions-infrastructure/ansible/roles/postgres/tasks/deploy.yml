@@ -1,166 +1,413 @@
 ---
-# Titre: Déploiement de PostgreSQL
-# Description: Déploie PostgreSQL sur Kubernetes
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - DÉPLOIEMENT POSTGRESQL
+# =========================================================================
+# Description: Déploiement robuste et sécurisé de PostgreSQL sur Kubernetes
+# Version: 5.0.0
+# Auteur: DevOps Team LIONS
+# Date: "{{ ansible_date_time.iso8601 }}"
+# Documentation: https://docs.lions.dev/infrastructure/databases/postgresql
+# =========================================================================
 
-- name: Déploiement de PostgreSQL via StatefulSet
+# =========================================================================
+# VALIDATION DES PRÉ-REQUIS
+# =========================================================================
+- name: "PostgreSQL Deploy | Validation des variables critiques"
+  assert:
+    that:
+      - lions_postgres_namespace is defined
+      - lions_postgres_service_name is defined
+      - lions_postgres_version is defined
+      - lions_postgres_storage_size is defined
+      - postgres_admin_user is defined
+    fail_msg: "❌ Variables critiques manquantes pour le déploiement PostgreSQL"
+    success_msg: "✅ Variables critiques validées"
+  tags: [postgres, validation]
+
+- name: "PostgreSQL Deploy | Validation de l'environnement Kubernetes"
+  k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: "{{ lions_postgres_namespace }}"
+  register: namespace_check
+  failed_when: false
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file }}"
+  tags: [postgres, validation]
+
+- name: "PostgreSQL Deploy | Création du namespace si nécessaire"
+  k8s:
+    name: "{{ lions_postgres_namespace }}"
+    api_version: v1
+    kind: Namespace
+    state: present
+    definition:
+      metadata:
+        labels:
+          name: "{{ lions_postgres_namespace }}"
+          component: database
+          managed-by: lions-infrastructure
+          environment: "{{ lions_environment }}"
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file }}"
+  when: namespace_check.resources | length == 0
+  tags: [postgres, namespace]
+
+# =========================================================================
+# GESTION DES SECRETS AVEC VAULT
+# =========================================================================
+- name: "PostgreSQL Deploy | Récupération des secrets depuis Vault"
+  vault_secret:
+    path: "{{ lions_vault_secrets_path }}/postgres"
+    key: "{{ item.key }}"
+    default: "{{ item.default | default('') }}"
+  register: postgres_secrets
+  loop:
+    - { key: "admin_password", default: "{{ postgres_admin_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=32')) }}" }
+    - { key: "replication_password", default: "{{ postgres_replication_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=32')) }}" }
+    - { key: "keycloak_password", default: "{{ postgres_keycloak_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=32')) }}" }
+    - { key: "gitea_password", default: "{{ postgres_gitea_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=32')) }}" }
+  when: lions_vault_enabled | bool
+  no_log: true
+  tags: [postgres, secrets]
+
+- name: "PostgreSQL Deploy | Création du secret Kubernetes pour PostgreSQL"
+  k8s:
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ lions_postgres_service_name }}-secrets"
+        namespace: "{{ lions_postgres_namespace }}"
+        labels:
+          app: "{{ lions_postgres_service_name }}"
+          component: database
+          managed-by: lions-infrastructure
+          environment: "{{ lions_environment }}"
+      type: Opaque
+      data:
+        postgres-admin-password: "{{ (postgres_secrets.results[0].value if lions_vault_enabled else postgres_admin_password) | b64encode }}"
+        postgres-replication-password: "{{ (postgres_secrets.results[1].value if lions_vault_enabled else postgres_replication_password) | b64encode }}"
+        postgres-keycloak-password: "{{ (postgres_secrets.results[2].value if lions_vault_enabled else postgres_keycloak_password) | b64encode }}"
+        postgres-gitea-password: "{{ (postgres_secrets.results[3].value if lions_vault_enabled else postgres_gitea_password) | b64encode }}"
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file }}"
+  no_log: true
+  tags: [postgres, secrets]
+
+# =========================================================================
+# GÉNÉRATION DES MANIFESTES KUBERNETES
+# =========================================================================
+- name: "PostgreSQL Deploy | Création du répertoire temporaire pour les manifestes"
+  tempfile:
+    state: directory
+    suffix: _postgresql_deploy
+  register: temp_manifests_dir
+  tags: [postgres, templates]
+
+- name: "PostgreSQL Deploy | Génération des manifestes Kubernetes"
+  template:
+    src: "{{ item.src }}"
+    dest: "{{ temp_manifests_dir.path }}/{{ item.dest }}"
+    mode: '0600'
+  loop:
+    - { src: "configmap.yml.j2", dest: "configmap.yml" }
+    - { src: "persistentvolumeclaim.yml.j2", dest: "persistentvolumeclaim.yml" }
+    - { src: "statefulset.yml.j2", dest: "statefulset.yml" }
+    - { src: "service.yml.j2", dest: "service.yml" }
+    - { src: "serviceaccount.yml.j2", dest: "serviceaccount.yml" }
+    - { src: "servicemonitor.yml.j2", dest: "servicemonitor.yml" }
+  tags: [postgres, templates]
+
+# =========================================================================
+# DÉPLOIEMENT DES RESSOURCES KUBERNETES
+# =========================================================================
+- name: "PostgreSQL Deploy | Déploiement du ServiceAccount"
   k8s:
     state: present
-    src: "{{ temp_dir.path }}/statefulset.yml"
+    src: "{{ temp_manifests_dir.path }}/serviceaccount.yml"
+    wait: true
+    wait_condition:
+      type: Ready
+      status: "True"
+    wait_timeout: "{{ lions_timeout_default }}"
+  register: serviceaccount_result
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file }}"
+  tags: [postgres, deploy]
+
+- name: "PostgreSQL Deploy | Déploiement de la ConfigMap"
+  k8s:
+    state: present
+    src: "{{ temp_manifests_dir.path }}/configmap.yml"
+    wait: true
+    wait_timeout: "{{ lions_timeout_default }}"
+  register: configmap_result
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file }}"
+  tags: [postgres, deploy]
+
+- name: "PostgreSQL Deploy | Déploiement du PersistentVolumeClaim"
+  k8s:
+    state: present
+    src: "{{ temp_manifests_dir.path }}/persistentvolumeclaim.yml"
+    wait: true
+    wait_condition:
+      type: Bound
+      status: "True"
+    wait_timeout: "{{ lions_timeout_default }}"
+  register: pvc_result
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file }}"
+  tags: [postgres, deploy, storage]
+
+- name: "PostgreSQL Deploy | Déploiement du StatefulSet PostgreSQL"
+  k8s:
+    state: present
+    src: "{{ temp_manifests_dir.path }}/statefulset.yml"
+    wait: true
+    wait_timeout: "{{ lions_timeout_deployment }}"
   register: statefulset_result
   environment:
-    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+    KUBECONFIG: "{{ lions_k8s_config_file }}"
+  tags: [postgres, deploy]
 
-- name: Création du service pour PostgreSQL
+- name: "PostgreSQL Deploy | Déploiement du Service"
   k8s:
     state: present
-    src: "{{ temp_dir.path }}/service.yml"
+    src: "{{ temp_manifests_dir.path }}/service.yml"
+    wait: true
+    wait_timeout: "{{ lions_timeout_default }}"
   register: service_result
   environment:
-    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+    KUBECONFIG: "{{ lions_k8s_config_file }}"
+  tags: [postgres, deploy]
 
-- name: Attente du déploiement
+- name: "PostgreSQL Deploy | Déploiement du ServiceMonitor (si monitoring activé)"
+  k8s:
+    state: present
+    src: "{{ temp_manifests_dir.path }}/servicemonitor.yml"
+    wait: true
+    wait_timeout: "{{ lions_timeout_default }}"
+  register: servicemonitor_result
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file }}"
+  when: lions_monitoring_enabled | bool
+  tags: [postgres, deploy, monitoring]
+
+# =========================================================================
+# VÉRIFICATION DU DÉPLOIEMENT
+# =========================================================================
+- name: "PostgreSQL Deploy | Attente de la disponibilité du StatefulSet"
   k8s_info:
     api_version: apps/v1
     kind: StatefulSet
-    namespace: "{{ app_namespace }}"
-    name: "{{ app_name }}"
+    namespace: "{{ lions_postgres_namespace }}"
+    name: "{{ lions_postgres_service_name }}"
+    wait: true
+    wait_condition:
+      type: Ready
+      status: "True"
+    wait_timeout: "{{ lions_timeout_deployment }}"
   register: statefulset_status
-  until: statefulset_status.resources[0].status.readyReplicas is defined and statefulset_status.resources[0].status.readyReplicas == statefulset_status.resources[0].spec.replicas
-  retries: 30
-  delay: 10
-  ignore_errors: yes
   environment:
-    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
-
-- name: Vérification du statut du déploiement
-  fail:
-    msg: "Le déploiement de PostgreSQL a échoué. Veuillez vérifier les logs pour plus d'informations."
-  when: statefulset_status is failed or statefulset_status.resources | length == 0
-
-- name: Récupération des informations sur les pods
-  k8s_info:
-    api_version: v1
-    kind: Pod
-    namespace: "{{ app_namespace }}"
-    label_selectors:
-      - "app={{ app_name }}"
-  register: pods_info
-  environment:
-    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
-
-- name: Affichage des informations sur les pods
-  debug:
-    msg: "Pod {{ item.metadata.name }} est dans l'état {{ item.status.phase }}"
-  loop: "{{ pods_info.resources }}"
-  loop_control:
-    label: "{{ item.metadata.name }}"
-
-- name: Attente de l'initialisation de PostgreSQL
-  pause:
-    seconds: "{{ postgres_init_delay | default(30) }}"
-  when: statefulset_status is succeeded
-
-- name: Vérification de l'état des pods après initialisation
-  k8s_info:
-    api_version: v1
-    kind: Pod
-    namespace: "{{ app_namespace }}"
-    label_selectors:
-      - "app={{ app_name }}"
-  register: pods_info_after_init
-  environment:
-    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
-
-- name: Affichage des informations sur les pods après initialisation
-  debug:
-    msg: "Pod {{ item.metadata.name }} est dans l'état {{ item.status.phase }} après initialisation"
-  loop: "{{ pods_info_after_init.resources }}"
-  loop_control:
-    label: "{{ item.metadata.name }}"
-
-- name: Vérification des logs des pods pour détecter des erreurs
-  shell: "kubectl logs -n {{ app_namespace }} {{ item.metadata.name }} | grep -i error | tail -10"
-  loop: "{{ pods_info_after_init.resources }}"
-  register: pod_logs
-  ignore_errors: yes
-  changed_when: false
-  loop_control:
-    label: "{{ item.metadata.name }}"
-  environment:
-    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
-
-- name: Affichage des erreurs dans les logs (si présentes)
-  debug:
-    msg: "Erreurs détectées dans les logs de {{ item.item.metadata.name }}: {{ item.stdout }}"
-  loop: "{{ pod_logs.results }}"
-  when: item.stdout != ""
-  loop_control:
-    label: "{{ item.item.metadata.name }}"
-
-- name: Vérification de la disponibilité de PostgreSQL
-  shell: "kubectl exec -n {{ app_namespace }} {{ pods_info_after_init.resources[0].metadata.name }} -- pg_isready -U {{ postgres_admin_user }} -h localhost -p {{ postgres_default_port }}"
-  register: pg_ready_check
-  ignore_errors: yes
+    KUBECONFIG: "{{ lions_k8s_config_file }}"
   retries: 5
-  delay: 10
-  until: pg_ready_check.rc == 0
-  changed_when: false
+  delay: 30
+  until: >
+    statefulset_status.resources | length > 0 and
+    statefulset_status.resources[0].status.readyReplicas is defined and
+    statefulset_status.resources[0].status.readyReplicas == (statefulset_status.resources[0].spec.replicas | default(1))
+  tags: [postgres, verify]
+
+- name: "PostgreSQL Deploy | Vérification critique du déploiement"
+  fail:
+    msg: |
+      ❌ ÉCHEC CRITIQUE: Le déploiement PostgreSQL a échoué
+      - Namespace: {{ lions_postgres_namespace }}
+      - StatefulSet: {{ lions_postgres_service_name }}
+      - Timeout: {{ lions_timeout_deployment }}s
+      Consultez les logs avec: kubectl logs -n {{ lions_postgres_namespace }} -l app={{ lions_postgres_service_name }}
+  when: >
+    statefulset_status.resources | length == 0 or
+    statefulset_status.resources[0].status.readyReplicas is not defined or
+    statefulset_status.resources[0].status.readyReplicas != (statefulset_status.resources[0].spec.replicas | default(1))
+  tags: [postgres, verify]
+
+# =========================================================================
+# VÉRIFICATIONS DE SANTÉ AVANCÉES
+# =========================================================================
+- name: "PostgreSQL Deploy | Récupération des informations des pods"
+  k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: "{{ lions_postgres_namespace }}"
+    label_selectors:
+      - "app={{ lions_postgres_service_name }}"
+  register: postgres_pods
   environment:
-    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+    KUBECONFIG: "{{ lions_k8s_config_file }}"
+  tags: [postgres, health]
 
-- name: Avertissement si PostgreSQL n'est pas disponible
+- name: "PostgreSQL Deploy | Journalisation des informations des pods"
   debug:
-    msg: "AVERTISSEMENT: PostgreSQL n'est pas disponible. Vérifiez les logs pour plus d'informations."
-  when: pg_ready_check is failed
-
-- name: Vérification de la réplication (si HA activé)
-  shell: "kubectl exec -n {{ app_namespace }} {{ pods_info_after_init.resources[0].metadata.name }} -- psql -U {{ postgres_admin_user }} -c 'SELECT * FROM pg_stat_replication;'"
-  register: replication_check
-  ignore_errors: yes
-  when: postgres_ha_enabled | bool and pods_info_after_init.resources | length > 1
-  changed_when: false
-  environment:
-    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
-
-- name: Affichage du statut de la réplication
-  debug:
-    msg: "Statut de la réplication PostgreSQL: {{ replication_check.stdout }}"
-  when: replication_check is defined and replication_check.stdout is defined
-
-- name: Avertissement si la réplication n'est pas configurée correctement
-  debug:
-    msg: "AVERTISSEMENT: La réplication PostgreSQL n'est pas configurée correctement. Vérifiez les logs pour plus d'informations."
-  when: postgres_ha_enabled | bool and pods_info_after_init.resources | length > 1 and replication_check is defined and replication_check is failed
-
-- name: Vérification de l'existence des bases de données
-  shell: "kubectl exec -n {{ app_namespace }} {{ pods_info_after_init.resources[0].metadata.name }} -- psql -U {{ postgres_admin_user }} -lqt | cut -d \\| -f 1 | grep -qw {{ item }}"
-  loop:
-    - "keycloak"
-    - "gitea"
-  register: db_exists_check
-  ignore_errors: yes
-  changed_when: false
-  when: pg_ready_check is succeeded
-  environment:
-    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
-
-- name: Création des bases de données si elles n'existent pas
-  shell: "kubectl exec -n {{ app_namespace }} {{ pods_info_after_init.resources[0].metadata.name }} -- psql -U {{ postgres_admin_user }} -c \"CREATE DATABASE {{ item.item }}\""
-  loop: "{{ db_exists_check.results }}"
-  when: pg_ready_check is succeeded and item.rc != 0
-  register: create_db_result
-  ignore_errors: yes
-  changed_when: false
-  environment:
-    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
-
-- name: Affichage du résultat de la création des bases de données
-  debug:
-    msg: "Création de la base de données {{ item.item.item }}: {{ 'Succès' if item.rc is defined and item.rc == 0 else 'Échec ou déjà existante' }}"
-  loop: "{{ create_db_result.results }}"
-  when: create_db_result is succeeded
+    msg: |
+      📊 Pod PostgreSQL: {{ item.metadata.name }}
+      - État: {{ item.status.phase }}
+      - Node: {{ item.spec.nodeName | default('N/A') }}
+      - IP: {{ item.status.podIP | default('N/A') }}
+      - Restart Count: {{ item.status.containerStatuses[0].restartCount | default(0) }}
+    verbosity: 1
+  loop: "{{ postgres_pods.resources }}"
   loop_control:
-    label: "{{ item.item.item }}"
+    label: "{{ item.metadata.name }}"
+  tags: [postgres, health]
+
+- name: "PostgreSQL Deploy | Attente de l'initialisation PostgreSQL"
+  pause:
+    seconds: "{{ postgres_init_delay | default(60) }}"
+  when: statefulset_status.resources[0].status.readyReplicas > 0
+  tags: [postgres, health]
+
+- name: "PostgreSQL Deploy | Test de connectivité PostgreSQL avec retry intelligent"
+  shell: |
+    kubectl exec -n {{ lions_postgres_namespace }} {{ postgres_pods.resources[0].metadata.name }} \
+    -- pg_isready -U {{ postgres_admin_user }} -h localhost -p {{ lions_postgres_port }} -t 10
+  register: pg_connectivity_check
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file }}"
+  retries: 10
+  delay: 15
+  until: pg_connectivity_check.rc == 0
+  changed_when: false
+  tags: [postgres, health]
+
+- name: "PostgreSQL Deploy | Échec critique si PostgreSQL non disponible"
+  fail:
+    msg: |
+      ❌ ÉCHEC CRITIQUE: PostgreSQL n'est pas disponible après {{ 10 * 15 }} secondes
+      - Pod: {{ postgres_pods.resources[0].metadata.name }}
+      - Namespace: {{ lions_postgres_namespace }}
+      - Port: {{ lions_postgres_port }}
+      Vérifiez les logs: kubectl logs -n {{ lions_postgres_namespace }} {{ postgres_pods.resources[0].metadata.name }}
+  when: pg_connectivity_check is failed
+  tags: [postgres, health]
+
+# =========================================================================
+# CONFIGURATION DES BASES DE DONNÉES APPLICATIVES
+# =========================================================================
+- name: "PostgreSQL Deploy | Configuration des bases de données applicatives"
+  include_tasks: configure_databases.yml
+  vars:
+    databases_config:
+      - name: "keycloak"
+        user: "keycloak_user"
+        password_secret_key: "postgres-keycloak-password"
+        extensions: ["uuid-ossp"]
+      - name: "gitea"
+        user: "gitea_user"
+        password_secret_key: "postgres-gitea-password"
+        extensions: ["pg_trgm", "btree_gin"]
+  when: pg_connectivity_check is succeeded
+  tags: [postgres, databases]
+
+# =========================================================================
+# CONFIGURATION HAUTE DISPONIBILITÉ
+# =========================================================================
+- name: "PostgreSQL Deploy | Configuration de la réplication (mode HA)"
+  include_tasks: configure_replication.yml
+  when:
+    - lions_postgres_ha_enabled | default(false) | bool
+    - postgres_pods.resources | length > 1
+    - pg_connectivity_check is succeeded
+  tags: [postgres, ha, replication]
+
+# =========================================================================
+# CONFIGURATION DU MONITORING
+# =========================================================================
+- name: "PostgreSQL Deploy | Configuration du monitoring PostgreSQL"
+  include_tasks: configure_monitoring.yml
+  when:
+    - lions_monitoring_enabled | bool
+    - pg_connectivity_check is succeeded
+  tags: [postgres, monitoring]
+
+# =========================================================================
+# TESTS DE VALIDATION POST-DÉPLOIEMENT
+# =========================================================================
+- name: "PostgreSQL Deploy | Exécution des tests de validation"
+  include_tasks: validate_deployment.yml
+  when: pg_connectivity_check is succeeded
+  tags: [postgres, validation, tests]
+
+# =========================================================================
+# CONFIGURATION DES SAUVEGARDES
+# =========================================================================
+- name: "PostgreSQL Deploy | Configuration des sauvegardes automatiques"
+  include_tasks: configure_backup.yml
+  when:
+    - lions_backup_enabled | bool
+    - pg_connectivity_check is succeeded
+  tags: [postgres, backup]
+
+# =========================================================================
+# NETTOYAGE ET FINALISATION
+# =========================================================================
+- name: "PostgreSQL Deploy | Nettoyage du répertoire temporaire"
+  file:
+    path: "{{ temp_manifests_dir.path }}"
+    state: absent
+  when: temp_manifests_dir is defined
+  tags: [postgres, cleanup]
+
+- name: "PostgreSQL Deploy | Journalisation du succès du déploiement"
+  debug:
+    msg: |
+      ✅ SUCCÈS: Déploiement PostgreSQL terminé avec succès
+      - Environnement: {{ lions_environment }}
+      - Namespace: {{ lions_postgres_namespace }}
+      - Service: {{ lions_postgres_service_name }}
+      - Version: {{ lions_postgres_version }}
+      - Stockage: {{ lions_postgres_storage_size }}
+      - HA: {{ lions_postgres_ha_enabled | default(false) }}
+      - Monitoring: {{ lions_monitoring_enabled }}
+      - Backup: {{ lions_backup_enabled }}
+      - URL de connexion: {{ lions_postgres_service_name }}.{{ lions_postgres_namespace }}.svc.{{ lions_k8s_dns_domain }}:{{ lions_postgres_port }}
+  tags: [postgres, summary]
+
+# =========================================================================
+# MÉTRIQUES ET OBSERVABILITÉ
+# =========================================================================
+- name: "PostgreSQL Deploy | Envoi des métriques de déploiement"
+  uri:
+    url: "{{ lions_metrics_endpoint | default('') }}/api/v1/metrics"
+    method: POST
+    body_format: json
+    body:
+      metric: "lions_infrastructure_deployment"
+      value: 1
+      labels:
+        component: "postgresql"
+        environment: "{{ lions_environment }}"
+        version: "{{ lions_postgres_version }}"
+        status: "success"
+        timestamp: "{{ ansible_date_time.epoch }}"
+    status_code: [200, 201, 204]
+  when:
+    - lions_metrics_endpoint is defined
+    - lions_metrics_endpoint != ""
+  ignore_errors: true
+  tags: [postgres, metrics]
+
+- name: "PostgreSQL Deploy | Notification de fin de déploiement"
+  include_tasks: "{{ lions_notification_tasks | default('notification_stub.yml') }}"
+  vars:
+    notification_message: |
+      🐘 PostgreSQL déployé avec succès
+      Environment: {{ lions_environment }}
+      Namespace: {{ lions_postgres_namespace }}
+      Version: {{ lions_postgres_version }}
+    notification_type: "success"
+    notification_component: "postgresql"
+  when: lions_notification_enabled | default(false) | bool
+  tags: [postgres, notification]

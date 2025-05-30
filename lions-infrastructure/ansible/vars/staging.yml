@@ -1,75 +1,489 @@
 ---
-# Staging environment variables for LIONS Infrastructure
-# These variables override common.yml for the staging environment
-# Author: LIONS Infrastructure Team
-# Date: 2025-05-24
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - VARIABLES ENVIRONNEMENT STAGING
+# =========================================================================
+# Description: Variables spécifiques à l'environnement de staging
+# Version: 5.0.0
+# Date: 2025-05-26
+# Maintainer: DevOps Team
+# Documentation: https://docs.lions.dev/infrastructure/environments/staging
+# =========================================================================
 
-# Environment settings
-lions_env: "staging"
-lions_domain: "staging.lions.dev"
+# =========================================================================
+# MÉTADONNÉES DE CONFIGURATION
+# =========================================================================
+lions_config_metadata:
+  version: "5.0.0"
+  schema_version: "1.0"
+  environment: "staging"
+  last_updated: "{{ ansible_date_time.iso8601 }}"
+  maintainer: "devops@lions.dev"
+  description: "Configuration de l'environnement de staging LIONS Infrastructure"
 
-# Resource settings - moderate for staging environment
-lions_cpu_request: "300m"
-lions_cpu_limit: "1000m"
-lions_memory_request: "512Mi"
-lions_memory_limit: "1.5Gi"
+# =========================================================================
+# CONFIGURATION ENVIRONNEMENT PRINCIPAL
+# =========================================================================
+lions_environment: "staging"
+lions_deployment_mode: "single"  # single|cluster|ha
+lions_debug_mode: false
+lions_dry_run: false
 
-# Monitoring configuration - moderate for staging environment
-monitoring_config:
-  namespace: "monitoring"
-  grafana_admin_password: "{{ lookup('env', 'LIONS_STAGING_GRAFANA_PASSWORD') | default('StrongStaging@Pwd123!', true) }}"
-  prometheus_retention: "7d"   # Moderate retention for staging
-  prometheus_storage: "10Gi"   # Moderate storage for staging
-  grafana_storage: "5Gi"       # Moderate storage for staging
-  resource_limits:
-    prometheus_cpu: "750m"     # Moderate CPU for staging
-    prometheus_memory: "1.5Gi" # Moderate memory for staging
-    grafana_cpu: "300m"        # Moderate CPU for staging
-    grafana_memory: "512Mi"    # Moderate memory for staging
+# =========================================================================
+# CONFIGURATION DNS ET DOMAINES
+# =========================================================================
+lions_dns_config:
+  domain_base: "lions.dev"
+  subdomain_prefix: "staging"
+  full_domain: "staging.lions.dev"
+  wildcard_enabled: true
+  tls_email: "admin@lions.dev"
 
-# Staging-specific component enablement
-# Enable most components for staging
-lions_monitoring_enabled: true
-lions_registry_enabled: true
-lions_postgres_enabled: true
-lions_keycloak_enabled: true
-lions_gitea_enabled: true
-lions_ollama_enabled: true
-lions_vault_enabled: true
+# =========================================================================
+# CONFIGURATION INFRASTRUCTURE RÉSEAU
+# =========================================================================
+lions_infrastructure_config:
+  target_user: "lions-admin"
+  ssh_key_path: "~/.ssh/lions_infrastructure_rsa"
+  k8s:
+    version: "v1.30.2+k3s1"
+    cluster_cidr: "10.42.0.0/16"
+    service_cidr: "10.43.0.0/16"
+    dns_domain: "cluster.local"
+    data_dir: "/var/lib/rancher/k3s"
+    config_file: "/etc/rancher/k3s/k3s.yaml"
+    ha_enabled: false
+    traefik_enabled: true
+    metallb_enabled: true
 
-# Staging-specific credentials
-# Using stronger passwords for staging
-default_credentials:
-  postgres:
-    username: "postgres"
-    password: "{{ lookup('env', 'LIONS_STAGING_POSTGRES_PASSWORD') | default('StrongPg@Staging123!', true) }}"
+# =========================================================================
+# CONFIGURATION STOCKAGE
+# =========================================================================
+lions_storage_config:
+  default_class: "local-path"
+  ssd_class: "fast-ssd"
+  provisioner: "rancher.io/local-path"
+  reclaim_policy: "Retain"
+  base_path: "/opt/lions/storage"
+  sizes:
+    small: "5Gi"
+    medium: "20Gi"
+    large: "100Gi"
+
+# =========================================================================
+# CONFIGURATION SÉCURITÉ
+# =========================================================================
+lions_security_config:
+  tls:
+    enabled: true
+    provider: "letsencrypt"  # letsencrypt|selfsigned|vault
+    staging: true  # Certificats de test pour staging
+    email: "{{ lions_dns_config.tls_email }}"
+
+  network_policies:
+    enabled: true
+    default_deny: true
+
+  pod_security:
+    standards: "restricted"
+    enforce: true
+
+  rbac:
+    enabled: true
+    strict_mode: true
+
+  encryption:
+    at_rest: true
+    secrets: true
+    provider: "aescbc"
+
+# =========================================================================
+# CONFIGURATION RESSOURCES PAR DÉFAUT
+# =========================================================================
+lions_resources_config:
+  # Profils de ressources adaptés au staging
+  small:
+    cpu_request: "150m"
+    cpu_limit: "500m"
+    memory_request: "256Mi"
+    memory_limit: "512Mi"
+
+  medium:
+    cpu_request: "300m"
+    cpu_limit: "1000m"
+    memory_request: "512Mi"
+    memory_limit: "1500Mi"  # Ressources modérées pour staging
+
+  large:
+    cpu_request: "500m"
+    cpu_limit: "1500m"
+    memory_request: "1Gi"
+    memory_limit: "3Gi"
+
+  # Profil par défaut pour staging
+  default_profile: "medium"
+
+# =========================================================================
+# CONFIGURATION VAULT
+# =========================================================================
+lions_vault_config:
+  enabled: true
+  version: "1.15.2"
+  namespace: "vault-system"
+  service_name: "vault"
+  port: 8200
+  storage_size: "10Gi"
+  addr: "https://vault.{{ lions_dns_config.full_domain }}"
+  skip_verify: false
+  data_dir: "/opt/vault/data"
+  config_dir: "/etc/vault.d"
+  ha_enabled: false
+  auto_unseal: false
+  seal_type: "shamir"
+
+# =========================================================================
+# CONFIGURATION SERVICES - BASES DE DONNÉES
+# =========================================================================
+lions_database_services:
+  postgresql:
+    enabled: true
+    version: "15.4"
+    namespace: "database"
+    service_name: "postgresql"
+    port: 5432
+    database: "lions_db"
+    storage_size: "20Gi"
+    backup_enabled: true
+    resources: "{{ lions_resources_config.medium }}"
+    credentials:
+      username: "postgres"
+      password_env: "LIONS_STAGING_POSTGRES_PASSWORD"
+      password_default: "{{ vault_lookup('secret/staging/postgres', 'password') | default('generated_secure_password', true) }}"
+
+  redis:
+    enabled: true
+    version: "7.2"
+    namespace: "database"
+    service_name: "redis"
+    port: 6379
+    storage_size: "5Gi"
+    resources: "{{ lions_resources_config.small }}"
+
+# =========================================================================
+# CONFIGURATION SERVICES - SÉCURITÉ ET IDENTITÉ
+# =========================================================================
+lions_security_services:
   keycloak:
-    admin_username: "admin"
-    admin_password: "{{ lookup('env', 'LIONS_STAGING_KEYCLOAK_PASSWORD') | default('StrongKc@Staging123!', true) }}"
-  gitea:
-    admin_username: "gitea_admin"
-    admin_password: "{{ lookup('env', 'LIONS_STAGING_GITEA_PASSWORD') | default('StrongGitea@Staging123!', true) }}"
-  registry:
-    username: "registry_admin"
-    password: "{{ lookup('env', 'LIONS_STAGING_REGISTRY_PASSWORD') | default('StrongReg@Staging123!', true) }}"
+    enabled: true
+    version: "22.0"
+    namespace: "security"
+    service_name: "keycloak"
+    port: 8080
+    realm: "lions"
+    resources: "{{ lions_resources_config.medium }}"
+    credentials:
+      admin_username: "admin"
+      admin_password_env: "LIONS_STAGING_KEYCLOAK_PASSWORD"
+      admin_password_default: "{{ vault_lookup('secret/staging/keycloak', 'admin_password') | default('generated_secure_password', true) }}"
 
-# Backup configuration - moderate for staging
-backup_config:
-  schedule: "0 2 * * *"   # Daily at 2 AM
-  storage_location: "/var/backups/lions"
-  retention_days: 14      # Keep 14 days of backups in staging
+# =========================================================================
+# CONFIGURATION SERVICES - DÉVELOPPEMENT
+# =========================================================================
+lions_development_services:
+  gitea:
+    enabled: true
+    version: "1.20.5"
+    namespace: "development"
+    service_name: "gitea"
+    port: 3000
+    storage_size: "10Gi"
+    resources: "{{ lions_resources_config.medium }}"
+    credentials:
+      admin_username: "gitea_admin"
+      admin_password_env: "LIONS_STAGING_GITEA_PASSWORD"
+      admin_password_default: "{{ vault_lookup('secret/staging/gitea', 'admin_password') | default('generated_secure_password', true) }}"
+
+  registry:
+    enabled: true
+    version: "2.8"
+    namespace: "development"
+    service_name: "registry"
+    port: 5000
+    storage_size: "30Gi"  # Taille modérée pour staging
+    resources: "{{ lions_resources_config.medium }}"
+    credentials:
+      username: "registry_admin"
+      password_env: "LIONS_STAGING_REGISTRY_PASSWORD"
+      password_default: "{{ vault_lookup('secret/staging/registry', 'password') | default('generated_secure_password', true) }}"
+
+# =========================================================================
+# CONFIGURATION SERVICES - INTELLIGENCE ARTIFICIELLE
+# =========================================================================
+lions_ai_services:
+  ollama:
+    enabled: true
+    version: "0.1.26"
+    namespace: "ai"
+    service_name: "ollama"
+    port: 11434
+    storage_size: "75Gi"  # Taille réduite pour staging
+    gpu_enabled: false
+    resources: "{{ lions_resources_config.large }}"
+
+# =========================================================================
+# CONFIGURATION APPLICATIONS MÉTIER
+# =========================================================================
+lions_business_applications:
+  primereact:
+    enabled: false  # Désactivé par défaut en staging
+    namespace: "applications"
+    port: 3000
+    resources: "{{ lions_resources_config.small }}"
+
+  primefaces:
+    enabled: false  # Désactivé par défaut en staging
+    namespace: "applications"
+    port: 8080
+    resources: "{{ lions_resources_config.medium }}"
+
+  quarkus:
+    enabled: false  # Désactivé par défaut en staging
+    namespace: "applications"
+    port: 8080
+    resources: "{{ lions_resources_config.medium }}"
+
+  notification_service:
+    enabled: false  # Désactivé par défaut en staging
+    namespace: "services"
+    port: 8080
+    resources: "{{ lions_resources_config.small }}"
+
+# =========================================================================
+# CONFIGURATION MONITORING ET OBSERVABILITÉ
+# =========================================================================
+lions_monitoring_config:
+  enabled: true
+  namespace: "monitoring"
+
+  prometheus:
+    enabled: true
+    version: "2.45.0"
+    storage_size: "25Gi"  # Taille modérée pour staging
+    retention: "15d"      # Rétention modérée pour staging
+    resources:
+      cpu_request: "400m"
+      cpu_limit: "1000m"
+      memory_request: "1Gi"
+      memory_limit: "2Gi"
+
+  grafana:
+    enabled: true
+    version: "10.1.0"
+    storage_size: "5Gi"
+    resources:
+      cpu_request: "200m"
+      cpu_limit: "500m"
+      memory_request: "256Mi"
+      memory_limit: "512Mi"
+    credentials:
+      admin_username: "admin"
+      admin_password_env: "LIONS_STAGING_GRAFANA_PASSWORD"
+      admin_password_default: "{{ vault_lookup('secret/staging/grafana', 'admin_password') | default('generated_secure_password', true) }}"
+
+  alertmanager:
+    enabled: true
+    version: "0.25.0"
+    resources: "{{ lions_resources_config.small }}"
+
+  loki:
+    enabled: true
+    version: "2.9.0"
+    storage_size: "20Gi"
+    resources: "{{ lions_resources_config.medium }}"
+
+# =========================================================================
+# CONFIGURATION BACKUP ET RÉCUPÉRATION
+# =========================================================================
+lions_backup_config:
+  enabled: true
+  storage_class: "{{ lions_storage_config.default_class }}"
+  retention_days: 15  # Rétention modérée pour staging
+  schedule: "0 2 * * *"  # Quotidien à 2h du matin
+  compression: "gzip"
+  encryption: true
+
+  storage:
+    local_path: "/var/backups/lions"
+    size_limit: "100Gi"
+
+  external:
+    enabled: false  # Désactivé par défaut en staging
+    type: "s3"
+    bucket: "lions-backup-staging"
+
   components:
-    - postgres
+    - postgresql
     - gitea
     - keycloak
+    - vault
     - kubernetes_resources
+    - monitoring_data
 
-# Logging configuration - balanced for staging
+# =========================================================================
+# CONFIGURATION LOGGING ET DEBUGGING
+# =========================================================================
+lions_logging_config:
+  level: "INFO"  # Niveau modéré pour staging
+  format: "json"
+  output: "stdout"
+  retention_days: 15  # Rétention modérée pour staging
+  max_size: "100Mi"
+
+  audit:
+    enabled: true
+    level: "INFO"
+    retention_days: 30
+
+# =========================================================================
+# CONFIGURATION PERFORMANCE ET SCALING
+# =========================================================================
+lions_scaling_config:
+  autoscaling:
+    enabled: true
+    default_min_replicas: 1
+    default_max_replicas: 5  # Limité pour staging
+    cpu_target: 70
+    memory_target: 80
+
+  timeouts:
+    default: 300       # 5 minutes
+    deployment: 1200   # 20 minutes (réduit pour staging)
+    rollback: 600      # 10 minutes
+
+# =========================================================================
+# VARIABLES DE COMPATIBILITÉ (Legacy)
+# =========================================================================
+# Ces variables maintiennent la compatibilité avec l'ancienne structure
+# TODO: À supprimer dans la version 6.0
+
+# Variables legacy pour la compatibilité
+lions_env: "{{ lions_environment }}"
+lions_domain: "{{ lions_dns_config.full_domain }}"
+lions_cpu_request: "{{ lions_resources_config.medium.cpu_request }}"
+lions_cpu_limit: "{{ lions_resources_config.medium.cpu_limit }}"
+lions_memory_request: "{{ lions_resources_config.medium.memory_request }}"
+lions_memory_limit: "{{ lions_resources_config.medium.memory_limit }}"
+
+# Services legacy (structure aplatie pour compatibilité)
+lions_monitoring_enabled: "{{ lions_monitoring_config.enabled }}"
+lions_registry_enabled: "{{ lions_development_services.registry.enabled }}"
+lions_postgres_enabled: "{{ lions_database_services.postgresql.enabled }}"
+lions_keycloak_enabled: "{{ lions_security_services.keycloak.enabled }}"
+lions_gitea_enabled: "{{ lions_development_services.gitea.enabled }}"
+lions_ollama_enabled: "{{ lions_ai_services.ollama.enabled }}"
+lions_vault_enabled: "{{ lions_vault_config.enabled }}"
+lions_network_policy_enabled: "{{ lions_security_config.network_policies.enabled }}"
+
+# Configuration monitoring legacy
+monitoring_config:
+  namespace: "{{ lions_monitoring_config.namespace }}"
+  grafana_admin_password: "{{ lions_monitoring_config.grafana.credentials.admin_password_default }}"
+  prometheus_retention: "{{ lions_monitoring_config.prometheus.retention }}"
+  prometheus_storage: "{{ lions_monitoring_config.prometheus.storage_size }}"
+  grafana_storage: "{{ lions_monitoring_config.grafana.storage_size }}"
+  resource_limits:
+    prometheus_cpu: "{{ lions_monitoring_config.prometheus.resources.cpu_limit }}"
+    prometheus_memory: "{{ lions_monitoring_config.prometheus.resources.memory_limit }}"
+    grafana_cpu: "{{ lions_monitoring_config.grafana.resources.cpu_limit }}"
+    grafana_memory: "{{ lions_monitoring_config.grafana.resources.memory_limit }}"
+
+# Credentials legacy
+default_credentials:
+  postgres:
+    username: "{{ lions_database_services.postgresql.credentials.username }}"
+    password: "{{ lions_database_services.postgresql.credentials.password_default }}"
+  keycloak:
+    admin_username: "{{ lions_security_services.keycloak.credentials.admin_username }}"
+    admin_password: "{{ lions_security_services.keycloak.credentials.admin_password_default }}"
+  gitea:
+    admin_username: "{{ lions_development_services.gitea.credentials.admin_username }}"
+    admin_password: "{{ lions_development_services.gitea.credentials.admin_password_default }}"
+  registry:
+    username: "{{ lions_development_services.registry.credentials.username }}"
+    password: "{{ lions_development_services.registry.credentials.password_default }}"
+
+# Configuration backup legacy
+backup_config:
+  schedule: "{{ lions_backup_config.schedule }}"
+  storage_location: "{{ lions_backup_config.storage.local_path }}"
+  retention_days: "{{ lions_backup_config.retention_days }}"
+  components: "{{ lions_backup_config.components }}"
+
+# Configuration logging legacy
 logging_config:
-  log_level: "INFO"       # Standard logging for staging
-  retention_days: 14      # Keep 14 days of logs in staging
-  max_size: "100Mi"       # Standard log size for staging
+  log_level: "{{ lions_logging_config.level }}"
+  retention_days: "{{ lions_logging_config.retention_days }}"
+  max_size: "{{ lions_logging_config.max_size }}"
 
-# Security settings - enhanced for staging
-lions_network_policy_enabled: true
+# =========================================================================
+# FONCTIONS UTILITAIRES ANSIBLE
+# =========================================================================
+
+# Fonction pour obtenir les ressources d'un service
+# Usage: {{ lions_get_service_resources('postgresql') }}
+lions_service_resources: |
+  {%- set service_configs = {
+    'postgresql': lions_database_services.postgresql,
+    'redis': lions_database_services.redis,
+    'keycloak': lions_security_services.keycloak,
+    'gitea': lions_development_services.gitea,
+    'registry': lions_development_services.registry,
+    'ollama': lions_ai_services.ollama,
+    'prometheus': lions_monitoring_config.prometheus,
+    'grafana': lions_monitoring_config.grafana
+  } -%}
+  {%- if service_configs[service_name] is defined -%}
+    {%- if service_configs[service_name].resources is string -%}
+      {{ vars[service_configs[service_name].resources] }}
+    {%- else -%}
+      {{ service_configs[service_name].resources }}
+    {%- endif -%}
+  {%- else -%}
+    {{ lions_resources_config.medium }}
+  {%- endif -%}
+
+# =========================================================================
+# VALIDATION DE CONFIGURATION
+# =========================================================================
+lions_validation_rules:
+  required_vars:
+    - lions_environment
+    - lions_dns_config
+    - lions_infrastructure_config
+    - lions_security_config
+
+  environment_checks:
+    - name: "Vérification environnement staging"
+      condition: "{{ lions_environment == 'staging' }}"
+      message: "Cette configuration est spécifique à l'environnement staging"
+
+  resource_checks:
+    - name: "Vérification ressources modérées"
+      condition: "{{ lions_resources_config.default_profile == 'medium' }}"
+      message: "Les ressources doivent être modérées en staging"
+
+  security_checks:
+    - name: "Vérification TLS staging"
+      condition: "{{ lions_security_config.tls.staging == true }}"
+      message: "Les certificats de test doivent être activés en staging"
+
+# =========================================================================
+# TAGS DE DÉPLOIEMENT
+# =========================================================================
+lions_deployment_tags:
+  environment: "staging"
+  version: "5.0.0"
+  managed_by: "ansible"
+  project: "lions-infrastructure"
+  cost_center: "engineering"
+  backup_policy: "standard"
+  monitoring: "enabled"

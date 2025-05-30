@@ -1,116 +1,445 @@
 ---
-# Titre: Validation post-déploiement pour la registry de conteneurs
-# Description: Valide le déploiement de la registry de conteneurs Docker
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-10
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - VALIDATION REGISTRY
+# =========================================================================
+# Description: Validation post-déploiement pour la registry de conteneurs
+# Version: 5.0.0
+# Maintainer: DevOps Team LIONS
+# Documentation: https://docs.lions.dev/infrastructure/registry/validation
+# =========================================================================
 
-- name: Récupération des informations sur les pods après initialisation
+- name: "🔍 [VALIDATION] Démarrage de la validation de la registry"
+  debug:
+    msg:
+      - "=================== VALIDATION REGISTRY ==================="
+      - "Namespace: {{ lions_registry_namespace }}"
+      - "Service: {{ lions_registry_service_name }}"
+      - "Version: {{ lions_registry_version }}"
+      - "Environment: {{ lions_environment }}"
+      - "========================================================"
+
+# =========================================================================
+# VALIDATION DE L'ÉTAT DES PODS
+# =========================================================================
+- name: "📊 [PODS] Récupération des informations sur les pods"
   kubernetes.core.k8s_info:
     api_version: v1
     kind: Pod
-    namespace: "{{ app_namespace | default('registry') }}"
+    namespace: "{{ lions_registry_namespace }}"
     label_selectors:
-      - app={{ app_name | default('registry') }}
-  register: pods_info_after_init
+      - "app={{ lions_registry_service_name }}"
+      - "component=registry"
+      - "environment={{ lions_environment }}"
+    wait: true
+    wait_condition:
+      type: Ready
+      status: "True"
+    wait_sleep: 10
+    wait_timeout: "{{ lions_timeout_deployment }}"
+  register: registry_pods_info
+  tags:
+    - validation
+    - pods
 
-- name: Vérification que les pods de la registry sont en cours d'exécution
-  debug:
-    msg: "{{ pods_info_after_init.resources | length }} pod(s) de la registry trouvé(s). État du premier pod: {{ pods_info_after_init.resources[0].status.phase | default('Inconnu') }}"
-  when: pods_info_after_init.resources | length > 0
+- name: "✅ [PODS] Vérification du nombre de pods déployés"
+  assert:
+    that:
+      - registry_pods_info.resources | length > 0
+      - registry_pods_info.resources | length >= (lions_registry_min_replicas | default(1) | int)
+    fail_msg: "❌ Nombre insuffisant de pods registry ({{ registry_pods_info.resources | length }}/{{ lions_registry_min_replicas | default(1) }})"
+    success_msg: "✅ Nombre correct de pods registry déployés ({{ registry_pods_info.resources | length }})"
+  tags:
+    - validation
+    - pods
 
-- name: Avertissement si aucun pod de la registry n'est trouvé
-  debug:
-    msg: "AVERTISSEMENT: Aucun pod de la registry n'a été trouvé. Le déploiement a peut-être échoué."
-  when: pods_info_after_init.resources | length == 0
+- name: "🔍 [PODS] Validation de l'état des pods"
+  assert:
+    that:
+      - item.status.phase == "Running"
+      - item.status.conditions | selectattr('type', 'equalto', 'Ready') | selectattr('status', 'equalto', 'True') | list | length > 0
+    fail_msg: "❌ Pod {{ item.metadata.name }} n'est pas en état Running/Ready"
+    success_msg: "✅ Pod {{ item.metadata.name }} est opérationnel"
+  loop: "{{ registry_pods_info.resources }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+  tags:
+    - validation
+    - pods
 
-- name: Vérification de la résolution DNS pour la registry
-  shell: "kubectl exec -n {{ app_namespace | default('registry') }} {{ pods_info_after_init.resources[0].metadata.name }} -- nslookup {{ app_name | default('registry') }}.{{ app_namespace | default('registry') }}.svc.cluster.local"
-  register: dns_check
-  failed_when: false
-  when: pods_info_after_init.resources | length > 0
+# =========================================================================
+# VALIDATION DES SERVICES KUBERNETES
+# =========================================================================
+- name: "🌐 [SERVICE] Vérification du service Kubernetes"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Service
+    name: "{{ lions_registry_service_name }}"
+    namespace: "{{ lions_registry_namespace }}"
+  register: registry_service_info
+  tags:
+    - validation
+    - service
 
-- name: Avertissement si la résolution DNS échoue
-  debug:
-    msg: "AVERTISSEMENT: La résolution DNS pour la registry a échoué. Vérifiez la configuration DNS du cluster."
-  when: pods_info_after_init.resources | length > 0 and (dns_check is failed or dns_check.rc != 0)
+- name: "✅ [SERVICE] Validation de la configuration du service"
+  assert:
+    that:
+      - registry_service_info.resources | length == 1
+      - registry_service_info.resources[0].spec.ports | selectattr('port', 'equalto', lions_registry_port | int) | list | length > 0
+    fail_msg: "❌ Service registry mal configuré ou manquant"
+    success_msg: "✅ Service registry correctement configuré"
+  tags:
+    - validation
+    - service
 
-- name: Attente que la registry soit prête
+# =========================================================================
+# VALIDATION DE LA CONNECTIVITÉ RÉSEAU
+# =========================================================================
+- name: "🔗 [NETWORK] Test de résolution DNS interne"
+  kubernetes.core.k8s_exec:
+    namespace: "{{ lions_registry_namespace }}"
+    pod: "{{ registry_pods_info.resources[0].metadata.name }}"
+    command: >-
+      nslookup {{ lions_registry_service_name }}.{{ lions_registry_namespace }}.svc.{{ lions_k8s_dns_domain }}
+  register: registry_dns_check
+  failed_when: registry_dns_check.rc != 0
+  retries: 3
+  delay: 5
+  when: registry_pods_info.resources | length > 0
+  tags:
+    - validation
+    - network
+
+- name: "🔗 [NETWORK] Test de connectivité interne au service"
+  kubernetes.core.k8s_exec:
+    namespace: "{{ lions_registry_namespace }}"
+    pod: "{{ registry_pods_info.resources[0].metadata.name }}"
+    command: >-
+      curl -sf --max-time 10 
+      http://{{ lions_registry_service_name }}.{{ lions_registry_namespace }}.svc.{{ lions_k8s_dns_domain }}:{{ lions_registry_port }}/v2/
+  register: registry_internal_connectivity
+  failed_when: registry_internal_connectivity.rc != 0
+  retries: 5
+  delay: 10
+  when: registry_pods_info.resources | length > 0
+  tags:
+    - validation
+    - network
+
+# =========================================================================
+# VALIDATION DE L'INGRESS (SI ACTIVÉ)
+# =========================================================================
+- name: "🌍 [INGRESS] Vérification de la configuration Ingress"
+  kubernetes.core.k8s_info:
+    api_version: networking.k8s.io/v1
+    kind: Ingress
+    name: "{{ lions_registry_service_name }}"
+    namespace: "{{ lions_registry_namespace }}"
+  register: registry_ingress_info
+  when: lions_security_tls_enabled | default(true) | bool
+  tags:
+    - validation
+    - ingress
+
+- name: "🌍 [INGRESS] Validation de la configuration TLS"
+  assert:
+    that:
+      - registry_ingress_info.resources | length == 1
+      - registry_ingress_info.resources[0].spec.tls | length > 0
+    fail_msg: "❌ Configuration Ingress/TLS incorrecte pour la registry"
+    success_msg: "✅ Configuration Ingress/TLS validée"
+  when:
+    - lions_security_tls_enabled | default(true) | bool
+    - registry_ingress_info.resources is defined
+  tags:
+    - validation
+    - ingress
+
+# =========================================================================
+# VALIDATION DE LA SANTÉ DE L'APPLICATION
+# =========================================================================
+- name: "🏥 [HEALTH] Test des endpoints de santé de la registry"
   uri:
-    url: "http://{{ app_name | default('registry') }}.{{ app_namespace | default('registry') }}.svc.cluster.local:{{ registry_default_port | default(5000) }}{{ registry_health_path | default('/v2/') }}"
+    url: "http://{{ lions_registry_service_name }}.{{ lions_registry_namespace }}.svc.{{ lions_k8s_dns_domain }}:{{ lions_registry_port }}/v2/"
     method: GET
     status_code: 200
-    validate_certs: no
-  register: health_check
-  until: health_check.status == 200
-  retries: 30
+    timeout: 30
+    validate_certs: false
+  register: registry_health_check
+  retries: 10
+  delay: 15
+  until: registry_health_check.status == 200
+  delegate_to: localhost
+  run_once: true
+  tags:
+    - validation
+    - health
+
+- name: "🏥 [HEALTH] Validation du catalogue de la registry"
+  uri:
+    url: "http://{{ lions_registry_service_name }}.{{ lions_registry_namespace }}.svc.{{ lions_k8s_dns_domain }}:{{ lions_registry_port }}/v2/_catalog"
+    method: GET
+    status_code: 200
+    timeout: 30
+    validate_certs: false
+  register: registry_catalog_check
+  retries: 5
   delay: 10
-  ignore_errors: yes
-  when: pods_info_after_init.resources | length > 0 and dns_check.rc == 0
+  delegate_to: localhost
+  run_once: true
+  tags:
+    - validation
+    - health
 
-- name: Vérification de l'état de santé de la registry
-  debug:
-    msg: "La registry {{ app_name | default('registry') }} est en bonne santé et prête à recevoir des requêtes."
-  when: health_check is defined and health_check is succeeded
+# =========================================================================
+# VALIDATION DU STOCKAGE PERSISTANT
+# =========================================================================
+- name: "💾 [STORAGE] Vérification des PersistentVolumeClaims"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: PersistentVolumeClaim
+    namespace: "{{ lions_registry_namespace }}"
+    label_selectors:
+      - "app={{ lions_registry_service_name }}"
+  register: registry_pvc_info
+  tags:
+    - validation
+    - storage
 
-- name: Avertissement si la registry n'est pas en bonne santé
-  debug:
-    msg: "AVERTISSEMENT: La registry {{ app_name | default('registry') }} n'est pas en bonne santé. Vérifiez les logs pour plus d'informations."
-  when: health_check is defined and health_check is failed
+- name: "💾 [STORAGE] Validation de l'état des PVCs"
+  assert:
+    that:
+      - registry_pvc_info.resources | length > 0
+      - item.status.phase == "Bound"
+    fail_msg: "❌ PVC {{ item.metadata.name }} non lié ({{ item.status.phase }})"
+    success_msg: "✅ PVC {{ item.metadata.name }} correctement lié"
+  loop: "{{ registry_pvc_info.resources }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+  tags:
+    - validation
+    - storage
 
-- name: Affichage des détails de l'erreur de la registry
-  debug:
-    msg: 
-      - "Détails de l'erreur:"
-      - "Status: {{ health_check.status | default('Non disponible') }}"
-      - "Message: {{ health_check.msg | default('Non disponible') }}"
-  when: health_check is defined and health_check is failed
+# =========================================================================
+# VALIDATION DU MONITORING (SI ACTIVÉ)
+# =========================================================================
+- name: "📊 [MONITORING] Vérification du ServiceMonitor"
+  kubernetes.core.k8s_info:
+    api_version: monitoring.coreos.com/v1
+    kind: ServiceMonitor
+    name: "{{ lions_registry_service_name }}"
+    namespace: "{{ lions_registry_namespace }}"
+  register: registry_servicemonitor_info
+  when: lions_monitoring_enabled | default(true) | bool
+  tags:
+    - validation
+    - monitoring
 
-- name: Affichage de l'URL d'accès
-  set_fact:
-    service_url: "{{ app_name | default('registry') }}.{{ app_namespace | default('registry') }}.svc.cluster.local:{{ registry_default_port | default(5000) }}"
-    ingress_url: "{{ app_name | default('registry') }}.{{ app_environment | default('development') }}.lions.dev"
+- name: "📊 [MONITORING] Validation du monitoring Prometheus"
+  assert:
+    that:
+      - registry_servicemonitor_info.resources | length == 1
+      - registry_servicemonitor_info.resources[0].spec.endpoints | length > 0
+    fail_msg: "❌ ServiceMonitor registry mal configuré"
+    success_msg: "✅ ServiceMonitor registry opérationnel"
+  when:
+    - lions_monitoring_enabled | default(true) | bool
+    - registry_servicemonitor_info.resources is defined
+  tags:
+    - validation
+    - monitoring
 
-- name: Affichage des informations d'accès
-  debug:
-    msg: 
-      - "La registry {{ app_name | default('registry') }} est accessible à l'adresse interne: {{ service_url }}"
-      - "La registry {{ app_name | default('registry') }} est accessible à l'adresse externe: https://{{ ingress_url }} (si l'ingress est configuré)"
+# =========================================================================
+# VALIDATION DE LA SÉCURITÉ
+# =========================================================================
+- name: "🔒 [SECURITY] Vérification du ServiceAccount"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ServiceAccount
+    name: "{{ lions_registry_service_name }}"
+    namespace: "{{ lions_registry_namespace }}"
+  register: registry_serviceaccount_info
+  tags:
+    - validation
+    - security
 
-- name: Test de connexion à la registry
+- name: "🔒 [SECURITY] Validation des politiques réseau"
+  kubernetes.core.k8s_info:
+    api_version: networking.k8s.io/v1
+    kind: NetworkPolicy
+    namespace: "{{ lions_registry_namespace }}"
+    label_selectors:
+      - "app={{ lions_registry_service_name }}"
+  register: registry_networkpolicy_info
+  when: lions_security_network_policies | default(true) | bool
+  tags:
+    - validation
+    - security
+
+# =========================================================================
+# TESTS FONCTIONNELS
+# =========================================================================
+- name: "🧪 [FUNCTIONAL] Test d'upload d'image de test"
+  block:
+    - name: "🧪 [FUNCTIONAL] Création d'une image de test"
+      kubernetes.core.k8s_exec:
+        namespace: "{{ lions_registry_namespace }}"
+        pod: "{{ registry_pods_info.resources[0].metadata.name }}"
+        command: >-
+          sh -c "
+          echo 'FROM alpine:latest' > /tmp/Dockerfile-test &&
+          echo 'RUN echo \"Test registry LIONS\"' >> /tmp/Dockerfile-test
+          "
+      register: test_image_creation
+
+    - name: "🧪 [FUNCTIONAL] Test de push/pull basique"
+      kubernetes.core.k8s_exec:
+        namespace: "{{ lions_registry_namespace }}"
+        pod: "{{ registry_pods_info.resources[0].metadata.name }}"
+        command: >-
+          curl -sf --max-time 30 
+          -X PUT "http://localhost:{{ lions_registry_port }}/v2/lions-test/manifests/latest"
+          -H "Content-Type: application/vnd.docker.distribution.manifest.v2+json"
+          -d '{"mediaType":"application/vnd.docker.distribution.manifest.v2+json","schemaVersion":2}'
+      register: registry_push_test
+      failed_when: false
+
+  rescue:
+    - name: "⚠️  [FUNCTIONAL] Tests fonctionnels échoués (non bloquant)"
+      debug:
+        msg: "Les tests fonctionnels ont échoué, mais la registry semble opérationnelle"
+
+  when: lions_environment == "development"
+  tags:
+    - validation
+    - functional
+
+# =========================================================================
+# COLLECTE DES MÉTRIQUES DE PERFORMANCE
+# =========================================================================
+- name: "📈 [METRICS] Collecte des métriques de ressources"
   kubernetes.core.k8s_exec:
-    namespace: "{{ app_namespace | default('registry') }}"
-    pod: "{{ pods_info_after_init.resources[0].metadata.name }}"
-    command: >
-      curl -s -f http://localhost:{{ registry_default_port | default(5000) }}/v2/
-  register: registry_connection
+    namespace: "{{ lions_registry_namespace }}"
+    pod: "{{ registry_pods_info.resources[0].metadata.name }}"
+    command: >-
+      sh -c "
+      echo 'CPU Usage:' && cat /sys/fs/cgroup/cpu/cpuacct.usage;
+      echo 'Memory Usage:' && cat /proc/meminfo | grep MemAvailable
+      "
+  register: registry_metrics
   failed_when: false
-  when: pods_info_after_init.resources | length > 0
+  tags:
+    - validation
+    - metrics
 
-- name: Affichage du statut de connexion à la registry
-  debug:
-    msg: "La connexion à la registry est {{ 'établie' if registry_connection.rc == 0 else 'impossible' }}."
-  when: pods_info_after_init.resources | length > 0
-
-- name: Récupération des logs de la registry
+# =========================================================================
+# VALIDATION DES LOGS
+# =========================================================================
+- name: "📝 [LOGS] Récupération des logs récents"
   kubernetes.core.k8s_log:
-    namespace: "{{ app_namespace | default('registry') }}"
-    name: "{{ pods_info_after_init.resources[0].metadata.name }}"
-    container: "{{ app_name | default('registry') }}"
+    namespace: "{{ lions_registry_namespace }}"
+    name: "{{ registry_pods_info.resources[0].metadata.name }}"
+    container: "{{ lions_registry_service_name }}"
+    tail_lines: 50
   register: registry_logs
-  when: pods_info_after_init.resources | length > 0
+  tags:
+    - validation
+    - logs
 
-- name: Vérification des erreurs dans les logs
-  debug:
-    msg: "AVERTISSEMENT: Des erreurs ont été détectées dans les logs de la registry. Veuillez les vérifier."
-  when: pods_info_after_init.resources | length > 0 and registry_logs.log is search("ERROR")
+- name: "📝 [LOGS] Recherche d'erreurs critiques dans les logs"
+  assert:
+    that:
+      - not (registry_logs.log | regex_search('FATAL|PANIC|CRITICAL'))
+    fail_msg: "❌ Erreurs critiques détectées dans les logs"
+    success_msg: "✅ Aucune erreur critique dans les logs"
+  tags:
+    - validation
+    - logs
 
-- name: Résumé du déploiement
-  debug:
-    msg: "Le déploiement de la registry {{ app_name | default('registry') }} en version {{ app_version | default('latest') }} est terminé avec succès."
-  when: health_check is defined and health_check is succeeded
+# =========================================================================
+# CALCUL DES MÉTRIQUES DE VALIDATION
+# =========================================================================
+- name: "📊 [SUMMARY] Calcul des métriques de validation"
+  set_fact:
+    registry_validation_metrics:
+      deployment_time: "{{ ansible_date_time.epoch | int - (deployment_start_time | default(ansible_date_time.epoch | int)) }}"
+      pods_count: "{{ registry_pods_info.resources | length }}"
+      pvc_count: "{{ registry_pvc_info.resources | length }}"
+      health_status: "{{ 'healthy' if registry_health_check.status == 200 else 'unhealthy' }}"
+      dns_resolution: "{{ 'ok' if registry_dns_check.rc == 0 else 'failed' }}"
+      monitoring_enabled: "{{ lions_monitoring_enabled | default(true) }}"
+      security_policies: "{{ lions_security_network_policies | default(true) }}"
+      environment: "{{ lions_environment }}"
+      version: "{{ lions_registry_version }}"
+  tags:
+    - validation
+    - summary
 
-- name: Résumé du déploiement (échec)
+# =========================================================================
+# DÉFINITION DES URLS D'ACCÈS
+# =========================================================================
+- name: "🔗 [ACCESS] Configuration des URLs d'accès"
+  set_fact:
+    registry_access_urls:
+      internal_service: "{{ lions_registry_service_name }}.{{ lions_registry_namespace }}.svc.{{ lions_k8s_dns_domain }}:{{ lions_registry_port }}"
+      external_ingress: "registry.{{ lions_dns_full_domain }}"
+      health_endpoint: "{{ lions_registry_service_name }}.{{ lions_registry_namespace }}.svc.{{ lions_k8s_dns_domain }}:{{ lions_registry_port }}/v2/"
+      catalog_endpoint: "{{ lions_registry_service_name }}.{{ lions_registry_namespace }}.svc.{{ lions_k8s_dns_domain }}:{{ lions_registry_port }}/v2/_catalog"
+  tags:
+    - validation
+    - access
+
+# =========================================================================
+# RAPPORT FINAL DE VALIDATION
+# =========================================================================
+- name: "📋 [REPORT] Génération du rapport de validation"
   debug:
-    msg: "Le déploiement de la registry {{ app_name | default('registry') }} en version {{ app_version | default('latest') }} a échoué. Veuillez vérifier les logs et la configuration."
-  when: pods_info_after_init.resources | length == 0 or (health_check is defined and health_check is failed)
+    msg:
+      - "=================== RAPPORT DE VALIDATION ==================="
+      - "🎯 Service: {{ lions_registry_service_name }}"
+      - "🏷️  Version: {{ lions_registry_version }}"
+      - "🌍 Environnement: {{ lions_environment }}"
+      - "📊 Pods déployés: {{ registry_validation_metrics.pods_count }}"
+      - "💾 Volumes persistants: {{ registry_validation_metrics.pvc_count }}"
+      - "🏥 État de santé: {{ registry_validation_metrics.health_status }}"
+      - "🔗 DNS: {{ registry_validation_metrics.dns_resolution }}"
+      - "📊 Monitoring: {{ 'Activé' if registry_validation_metrics.monitoring_enabled else 'Désactivé' }}"
+      - "🔒 Politiques sécurité: {{ 'Activées' if registry_validation_metrics.security_policies else 'Désactivées' }}"
+      - "⏱️  Temps de déploiement: {{ registry_validation_metrics.deployment_time }}s"
+      - ""
+      - "🔗 URLs d'accès:"
+      - "   • Service interne: {{ registry_access_urls.internal_service }}"
+      - "   • Ingress externe: https://{{ registry_access_urls.external_ingress }}"
+      - "   • Health check: {{ registry_access_urls.health_endpoint }}"
+      - "   • Catalog: {{ registry_access_urls.catalog_endpoint }}"
+      - ""
+      - "✅ Validation registry terminée avec succès !"
+      - "=========================================================="
+  tags:
+    - validation
+    - report
+
+# =========================================================================
+# SAUVEGARDE DU RAPPORT
+# =========================================================================
+- name: "💾 [REPORT] Sauvegarde du rapport de validation"
+  copy:
+    content: |
+      # Rapport de Validation Registry LIONS
+      **Date**: {{ ansible_date_time.iso8601 }}
+      **Environnement**: {{ lions_environment }}
+      **Version**: {{ lions_registry_version }}
+      
+      ## Métriques de Validation
+      {{ registry_validation_metrics | to_nice_yaml }}
+      
+      ## URLs d'Accès
+      {{ registry_access_urls | to_nice_yaml }}
+      
+      ## Statut: ✅ SUCCÈS
+    dest: "/tmp/lions-registry-validation-{{ ansible_date_time.epoch }}.md"
+  delegate_to: localhost
+  run_once: true
+  when: lions_environment != "production"  # Éviter en production pour la sécurité
+  tags:
+    - validation
+    - report

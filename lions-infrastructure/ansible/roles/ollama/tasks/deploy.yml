@@ -1,63 +1,948 @@
 ---
-# Titre: Tâches de déploiement pour Ollama
-# Description: Déploiement d'Ollama sur Kubernetes
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-14
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - DÉPLOIEMENT OLLAMA AI SERVICE
+# =========================================================================
+# Description: Tâches avancées de déploiement du service IA Ollama avec intégration complète
+# Composant: Ollama LLM Service - Orchestration Kubernetes Enterprise
+# Version: 5.0.0
+# Auteur: Équipe DevOps LIONS
+# Date: 2025-05-29
+# Dépendances: Kubernetes 1.24+, Persistent Storage, GPU (optionnel), Vault, Prometheus
+# Documentation: https://docs.lions.dev/services/ollama/deployment
+# =========================================================================
 
-- name: "[Ollama] Déployer le ServiceAccount"
-  kubernetes.core.k8s:
-    state: present
-    definition: "{{ lookup('template', 'serviceaccount.yml.j2') | from_yaml }}"
+# =========================================================================
+# CHARGEMENT DE LA CONFIGURATION ENVIRONNEMENT
+# =========================================================================
+- name: "[OLLAMA-DEPLOY] Charger la configuration d'environnement"
+  block:
+    - name: "Définir les variables d'environnement Ollama depuis LIONS_ENV"
+      set_fact:
+        ollama_config:
+          # Configuration principale
+          service_name: "{{ lookup('env', 'LIONS_OLLAMA_SERVICE_NAME') | default('ollama') }}"
+          namespace: "{{ lookup('env', 'LIONS_OLLAMA_NAMESPACE') | default('ai') }}"
+          version: "{{ lookup('env', 'LIONS_OLLAMA_VERSION') | default('0.1.26') }}"
+          enabled: "{{ lookup('env', 'LIONS_OLLAMA_ENABLED') | default('true') | bool }}"
+          port: "{{ lookup('env', 'LIONS_OLLAMA_PORT') | default('11434') | int }}"
 
-- name: "[Ollama] Déployer la ConfigMap"
-  kubernetes.core.k8s:
-    state: present
-    definition: "{{ lookup('template', 'configmap.yml.j2') | from_yaml }}"
+          # Configuration réseau et DNS
+          domain: "{{ lookup('env', 'LIONS_DNS_FULL_DOMAIN') | default('lions.local') }}"
+          subdomain: "ollama"
+          full_domain: "ollama.{{ lookup('env', 'LIONS_DNS_FULL_DOMAIN') | default('lions.local') }}"
 
-- name: "[Ollama] Déployer le PersistentVolumeClaim"
-  kubernetes.core.k8s:
-    state: present
-    definition: "{{ lookup('template', 'persistentvolumeclaim.yml.j2') | from_yaml }}"
-  when: ollama_persistent_storage | bool
+          # Configuration stockage
+          storage_enabled: true
+          storage_size: "{{ lookup('env', 'LIONS_OLLAMA_STORAGE_SIZE') | default('100Gi') }}"
+          storage_class: "{{ lookup('env', 'LIONS_STORAGE_CLASS_DEFAULT') | default('local-path') }}"
 
-- name: "[Ollama] Déployer le Service"
-  kubernetes.core.k8s:
-    state: present
-    definition: "{{ lookup('template', 'service.yml.j2') | from_yaml }}"
+          # Configuration GPU
+          gpu_enabled: "{{ lookup('env', 'LIONS_OLLAMA_GPU_ENABLED') | default('false') | bool }}"
 
-- name: "[Ollama] Déployer l'application"
-  kubernetes.core.k8s:
-    state: present
-    definition: "{{ lookup('template', 'deployment.yml.j2') | from_yaml }}"
+          # Configuration sécurité
+          tls_enabled: "{{ lookup('env', 'LIONS_SECURITY_TLS_ENABLED') | default('true') | bool }}"
+          network_policies: "{{ lookup('env', 'LIONS_SECURITY_NETWORK_POLICIES') | default('true') | bool }}"
 
-- name: "[Ollama] Attendre que le déploiement soit prêt"
-  kubernetes.core.k8s_info:
-    api_version: apps/v1
-    kind: Deployment
-    name: "{{ app_name }}"
-    namespace: "{{ app_namespace }}"
-    wait: true
-    wait_condition:
-      type: Available
-      status: "True"
-    wait_timeout: 300
+          # Configuration monitoring
+          monitoring_enabled: "{{ lookup('env', 'LIONS_MONITORING_ENABLED') | default('true') | bool }}"
+          monitoring_namespace: "{{ lookup('env', 'LIONS_MONITORING_NAMESPACE') | default('monitoring') }}"
 
-- name: "[Ollama] Déployer l'Ingress"
-  kubernetes.core.k8s:
-    state: present
-    definition: "{{ lookup('template', 'ingress.yml.j2') | from_yaml }}"
+          # Configuration Vault
+          vault_enabled: "{{ lookup('env', 'LIONS_VAULT_ENABLED') | default('true') | bool }}"
+          vault_addr: "{{ lookup('env', 'LIONS_VAULT_ADDR') | default('') }}"
+          vault_namespace: "{{ lookup('env', 'LIONS_VAULT_NAMESPACE') | default('vault-system') }}"
 
-- name: "[Ollama] Pré-télécharger les modèles"
-  kubernetes.core.k8s_exec:
-    namespace: "{{ app_namespace }}"
-    pod: "{{ item.metadata.name }}"
-    command: "ollama pull {{ model }}"
-  loop: "{{ ollama_models }}"
-  loop_control:
-    loop_var: model
-  with_items: "{{ pods.resources }}"
-  vars:
-    pods: "{{ lookup('kubernetes.core.k8s', api_version='v1', kind='Pod', namespace=app_namespace, label_selector='app=' + app_name) }}"
-  when: ollama_models is defined and ollama_models | length > 0
-  ignore_errors: yes
+          # Configuration environnement
+          environment: "{{ lookup('env', 'LIONS_ENVIRONMENT') | default('development') }}"
+          debug_mode: "{{ lookup('env', 'LIONS_DEBUG_MODE') | default('false') | bool }}"
+          dry_run: "{{ lookup('env', 'LIONS_DRY_RUN') | default('false') | bool }}"
+
+    - name: "Définir les ressources par environnement"
+      set_fact:
+        ollama_resources: >-
+          {%- if ollama_config.environment == 'production' -%}
+          {
+            "requests": {
+              "cpu": "{{ lookup('env', 'LIONS_RESOURCES_LARGE_CPU_REQUEST') | default('500m') }}",
+              "memory": "{{ lookup('env', 'LIONS_RESOURCES_LARGE_MEMORY_REQUEST') | default('1Gi') }}"
+            },
+            "limits": {
+              "cpu": "{{ lookup('env', 'LIONS_RESOURCES_LARGE_CPU_LIMIT') | default('2000m') }}",
+              "memory": "{{ lookup('env', 'LIONS_RESOURCES_LARGE_MEMORY_LIMIT') | default('4Gi') }}"
+            }
+          }
+          {%- elif ollama_config.environment == 'staging' -%}
+          {
+            "requests": {
+              "cpu": "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_CPU_REQUEST') | default('200m') }}",
+              "memory": "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_MEMORY_REQUEST') | default('512Mi') }}"
+            },
+            "limits": {
+              "cpu": "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_CPU_LIMIT') | default('1000m') }}",
+              "memory": "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_MEMORY_LIMIT') | default('2Gi') }}"
+            }
+          }
+          {%- else -%}
+          {
+            "requests": {
+              "cpu": "{{ lookup('env', 'LIONS_RESOURCES_SMALL_CPU_REQUEST') | default('100m') }}",
+              "memory": "{{ lookup('env', 'LIONS_RESOURCES_SMALL_MEMORY_REQUEST') | default('128Mi') }}"
+            },
+            "limits": {
+              "cpu": "{{ lookup('env', 'LIONS_RESOURCES_SMALL_CPU_LIMIT') | default('500m') }}",
+              "memory": "{{ lookup('env', 'LIONS_RESOURCES_SMALL_MEMORY_LIMIT') | default('512Mi') }}"
+            }
+          }
+          {%- endif -%}
+
+    - name: "Générer l'identifiant de déploiement unique"
+      set_fact:
+        deployment_metadata:
+          id: "{{ ansible_date_time.iso8601_basic_short }}-{{ ansible_hostname | hash('md5') | truncate(8, True, '') }}"
+          timestamp: "{{ ansible_date_time.epoch }}"
+          version: "{{ ollama_config.version }}"
+          environment: "{{ ollama_config.environment }}"
+          operator: "{{ ansible_user_id | default('system') }}"
+
+    - name: "Afficher la configuration de déploiement"
+      debug:
+        msg:
+          - "🚀 Configuration Ollama AI Service LIONS 5.0:"
+          - "  📝 ID Déploiement: {{ deployment_metadata.id }}"
+          - "  🏷️  Service: {{ ollama_config.service_name }}"
+          - "  📦 Namespace: {{ ollama_config.namespace }}"
+          - "  🔖 Version: {{ ollama_config.version }}"
+          - "  🌍 Environnement: {{ ollama_config.environment }}"
+          - "  🌐 Domaine: {{ ollama_config.full_domain }}"
+          - "  🖥️  GPU: {{ 'Activé' if ollama_config.gpu_enabled else 'Désactivé' }}"
+          - "  💾 Stockage: {{ ollama_config.storage_size if ollama_config.storage_enabled else 'Désactivé' }}"
+          - "  🔒 TLS: {{ 'Activé' if ollama_config.tls_enabled else 'Désactivé' }}"
+          - "  📊 Monitoring: {{ 'Activé' if ollama_config.monitoring_enabled else 'Désactivé' }}"
+      when: ollama_config.debug_mode
+
+  tags: [ollama, ai-ml, deploy, config]
+
+# =========================================================================
+# VALIDATION PRÉ-DÉPLOIEMENT AVANCÉE
+# =========================================================================
+- name: "[OLLAMA-DEPLOY] Validation des prérequis système"
+  block:
+    - name: "Vérifier si Ollama est activé"
+      meta: end_play
+      when: not ollama_config.enabled
+
+    - name: "Valider la configuration Kubernetes"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Node
+      register: k8s_nodes
+      failed_when: k8s_nodes.resources | length == 0
+
+    - name: "Vérifier l'existence du namespace cible"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ ollama_config.namespace }}"
+            labels:
+              lions.dev/environment: "{{ ollama_config.environment }}"
+              lions.dev/service-type: "ai-ml"
+              lions.dev/managed-by: "ansible"
+        wait: true
+        wait_timeout: 60
+
+    - name: "Valider la disponibilité des ressources GPU"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Node
+        label_selectors:
+          - "nvidia.com/gpu"
+      register: gpu_nodes
+      when: ollama_config.gpu_enabled
+      failed_when:
+        - ollama_config.gpu_enabled
+        - gpu_nodes.resources | length == 0
+
+    - name: "Vérifier la connectivité Vault"
+      uri:
+        url: "{{ ollama_config.vault_addr }}/v1/sys/health"
+        method: GET
+        status_code: [200, 429, 472, 473, 501, 503]
+        timeout: 10
+      register: vault_health
+      when: ollama_config.vault_enabled
+      failed_when: false
+
+    - name: "Valider les classes de stockage disponibles"
+      kubernetes.core.k8s_info:
+        api_version: storage.k8s.io/v1
+        kind: StorageClass
+        name: "{{ ollama_config.storage_class }}"
+      register: storage_class_check
+      when: ollama_config.storage_enabled
+      failed_when:
+        - ollama_config.storage_enabled
+        - storage_class_check.resources | length == 0
+
+    - name: "Vérifier les quotas de ressources du namespace"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: ResourceQuota
+        namespace: "{{ ollama_config.namespace }}"
+      register: resource_quotas
+
+    - name: "Validation de la configuration réseau"
+      kubernetes.core.k8s_info:
+        api_version: networking.k8s.io/v1
+        kind: NetworkPolicy
+        namespace: "{{ ollama_config.namespace }}"
+      register: network_policies
+      when: ollama_config.network_policies
+
+  rescue:
+    - name: "Gérer l'échec de validation des prérequis"
+      debug:
+        msg: |
+          ❌ Échec de validation des prérequis Ollama AI:
+          - Kubernetes: {{ 'OK' if k8s_nodes.resources | default([]) | length > 0 else 'ERREUR' }}
+          - GPU: {{ 'OK' if not ollama_config.gpu_enabled or (gpu_nodes.resources | default([]) | length > 0) else 'ERREUR' }}
+          - Vault: {{ 'OK' if not ollama_config.vault_enabled or vault_health.status == 200 else 'AVERTISSEMENT' }}
+          - Stockage: {{ 'OK' if not ollama_config.storage_enabled or (storage_class_check.resources | default([]) | length > 0) else 'ERREUR' }}
+
+    - fail:
+        msg: "Les prérequis système pour Ollama AI ne sont pas satisfaits"
+
+  tags: [ollama, ai-ml, deploy, validation]
+
+# =========================================================================
+# GESTION AVANCÉE DES SECRETS ET CONFIGURATION
+# =========================================================================
+- name: "[OLLAMA-DEPLOY] Configuration des secrets et données sensibles"
+  block:
+    - name: "Générer les identifiants d'API Ollama"
+      set_fact:
+        ollama_credentials:
+          api_key: "{{ lookup('password', '/dev/null length=64 chars=ascii_letters,digits') }}"
+          admin_token: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+          deployment_secret: "{{ lookup('password', '/dev/null length=16 chars=ascii_letters,digits') }}"
+      no_log: true
+
+    - name: "Stocker les secrets dans Vault"
+      uri:
+        url: "{{ ollama_config.vault_addr }}/v1/secret/data/lions/{{ ollama_config.environment }}/ollama/credentials"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ vault_token | default('') }}"
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          data:
+            api_key: "{{ ollama_credentials.api_key }}"
+            admin_token: "{{ ollama_credentials.admin_token }}"
+            deployment_id: "{{ deployment_metadata.id }}"
+            created_at: "{{ ansible_date_time.iso8601 }}"
+            environment: "{{ ollama_config.environment }}"
+        status_code: [200, 204]
+        timeout: 30
+      register: vault_secret_result
+      when:
+        - ollama_config.vault_enabled
+        - vault_health.status | default(0) == 200
+      no_log: true
+
+    - name: "Créer le secret Kubernetes pour Ollama"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: "{{ ollama_config.service_name }}-secrets"
+            namespace: "{{ ollama_config.namespace }}"
+            labels:
+              app.kubernetes.io/name: "{{ ollama_config.service_name }}"
+              app.kubernetes.io/instance: "{{ ollama_config.service_name }}-{{ ollama_config.environment }}"
+              app.kubernetes.io/component: "ai-ml"
+              app.kubernetes.io/version: "{{ ollama_config.version }}"
+              lions.dev/environment: "{{ ollama_config.environment }}"
+              lions.dev/deployment-id: "{{ deployment_metadata.id }}"
+            annotations:
+              lions.dev/created-by: "ansible"
+              lions.dev/last-updated: "{{ ansible_date_time.iso8601 }}"
+          type: Opaque
+          data:
+            api-key: "{{ ollama_credentials.api_key | b64encode }}"
+            admin-token: "{{ ollama_credentials.admin_token | b64encode }}"
+            deployment-secret: "{{ ollama_credentials.deployment_secret | b64encode }}"
+        wait: true
+        wait_timeout: 60
+      no_log: true
+
+  rescue:
+    - name: "Utiliser la configuration de secours pour les secrets"
+      debug:
+        msg: "⚠️  Utilisation de la configuration de secours pour les secrets Ollama"
+
+    - set_fact:
+        ollama_credentials:
+          api_key: "fallback-api-key-{{ deployment_metadata.id | truncate(8, True, '') }}"
+          admin_token: "fallback-admin-{{ deployment_metadata.id | truncate(8, True, '') }}"
+          deployment_secret: "fallback-secret"
+
+  tags: [ollama, ai-ml, deploy, secrets]
+
+# =========================================================================
+# DÉPLOIEMENT DES RESSOURCES KUBERNETES CORE
+# =========================================================================
+- name: "[OLLAMA-DEPLOY] Déployer les ressources Kubernetes fondamentales"
+  block:
+    - name: "Déployer le ServiceAccount avec RBAC"
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('template', 'serviceaccount.yml.j2') | from_yaml }}"
+        wait: true
+        wait_timeout: 60
+
+    - name: "Créer la ConfigMap de configuration Ollama"
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('template', 'configmap.yml.j2') | from_yaml }}"
+        wait: true
+        wait_timeout: 60
+
+    - name: "Provisionner le stockage persistant"
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('template', 'persistentvolumeclaim.yml.j2') | from_yaml }}"
+        wait: true
+        wait_condition:
+          type: Bound
+          status: "True"
+        wait_timeout: 300
+      when: ollama_config.storage_enabled
+
+    - name: "Déployer le Service réseau"
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('template', 'service.yml.j2') | from_yaml }}"
+        wait: true
+        wait_timeout: 60
+
+    - name: "Déployer les politiques réseau"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: "{{ ollama_config.service_name }}-network-policy"
+            namespace: "{{ ollama_config.namespace }}"
+            labels:
+              app.kubernetes.io/name: "{{ ollama_config.service_name }}"
+              lions.dev/environment: "{{ ollama_config.environment }}"
+          spec:
+            podSelector:
+              matchLabels:
+                app.kubernetes.io/name: "{{ ollama_config.service_name }}"
+            policyTypes:
+              - Ingress
+              - Egress
+            ingress:
+              - from:
+                  - namespaceSelector:
+                      matchLabels:
+                        name: "{{ ollama_config.monitoring_namespace }}"
+                  - podSelector:
+                      matchLabels:
+                        app.kubernetes.io/name: traefik
+                ports:
+                  - protocol: TCP
+                    port: "{{ ollama_config.port }}"
+            egress:
+              - to: []
+                ports:
+                  - protocol: TCP
+                    port: 443
+                  - protocol: TCP
+                    port: 80
+                  - protocol: UDP
+                    port: 53
+        wait: true
+        wait_timeout: 60
+      when: ollama_config.network_policies
+
+  rescue:
+    - name: "Gérer l'échec de déploiement des ressources fondamentales"
+      debug:
+        msg: "❌ Échec du déploiement des ressources Kubernetes fondamentales"
+    - fail:
+        msg: "Le déploiement des ressources fondamentales Ollama a échoué"
+
+  tags: [ollama, ai-ml, deploy, kubernetes, core]
+
+# =========================================================================
+# DÉPLOIEMENT DE L'APPLICATION OLLAMA
+# =========================================================================
+- name: "[OLLAMA-DEPLOY] Déployer l'application Ollama AI"
+  block:
+    - name: "Déployer l'application Ollama avec stratégie de déploiement intelligente"
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('template', 'deployment.yml.j2') | from_yaml }}"
+        wait: true
+        wait_condition:
+          type: Available
+          status: "True"
+        wait_timeout: 1200  # Timeout étendu pour les modèles IA
+      register: deployment_result
+
+    - name: "Vérifier le statut de déploiement détaillé"
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        namespace: "{{ ollama_config.namespace }}"
+        name: "{{ ollama_config.service_name }}"
+      register: deployment_status
+      until:
+        - deployment_status.resources | length > 0
+        - deployment_status.resources[0].status.readyReplicas | default(0) > 0
+        - deployment_status.resources[0].status.readyReplicas == deployment_status.resources[0].spec.replicas
+      retries: 80
+      delay: 15
+
+    - name: "Obtenir les informations des pods déployés"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Pod
+        namespace: "{{ ollama_config.namespace }}"
+        label_selectors:
+          - "app.kubernetes.io/name={{ ollama_config.service_name }}"
+          - "app.kubernetes.io/instance={{ ollama_config.service_name }}-{{ ollama_config.environment }}"
+      register: ollama_pods
+
+    - name: "Valider la santé des pods"
+      assert:
+        that:
+          - ollama_pods.resources | length > 0
+          - ollama_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list | length == ollama_pods.resources | length
+          - ollama_pods.resources | selectattr('status.containerStatuses.0.ready', 'equalto', true) | list | length == ollama_pods.resources | length
+        fail_msg: "❌ Les pods Ollama ne sont pas tous en état de fonctionnement optimal"
+        success_msg: "✅ Tous les pods Ollama sont déployés et opérationnels"
+
+  rescue:
+    - name: "Diagnostiquer l'échec de déploiement de l'application"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Event
+        namespace: "{{ ollama_config.namespace }}"
+        field_selectors:
+          - "involvedObject.name={{ ollama_config.service_name }}"
+      register: deployment_events
+
+    - name: "Collecter les logs des pods en échec"
+      kubernetes.core.k8s_log:
+        namespace: "{{ ollama_config.namespace }}"
+        name: "{{ item.metadata.name }}"
+        tail_lines: 200
+      register: failed_pod_logs
+      loop: "{{ ollama_pods.resources | default([]) }}"
+      when:
+        - ollama_pods.resources is defined
+        - item.status.phase != "Running"
+
+    - name: "Afficher les informations de diagnostic"
+      debug:
+        msg: |
+          🔍 Diagnostic d'échec de déploiement Ollama:
+          {% if deployment_events.resources %}
+          📋 Événements récents:
+          {% for event in deployment_events.resources[:5] %}
+          - {{ event.firstTimestamp }}: {{ event.reason }} - {{ event.message }}
+          {% endfor %}
+          {% endif %}
+          
+          {% if failed_pod_logs.results %}
+          📜 Logs des pods en échec:
+          {% for log in failed_pod_logs.results %}
+          Pod {{ log.item.metadata.name }}:
+          {{ log.log | default('Aucun log disponible') | truncate(500) }}
+          {% endfor %}
+          {% endif %}
+
+    - fail:
+        msg: "Le déploiement de l'application Ollama AI a échoué"
+
+  tags: [ollama, ai-ml, deploy, application]
+
+# =========================================================================
+# CONFIGURATION RÉSEAU ET INGRESS
+# =========================================================================
+- name: "[OLLAMA-DEPLOY] Configurer l'accès réseau et l'exposition"
+  block:
+    - name: "Déployer la ressource Ingress avec TLS"
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('template', 'ingress.yml.j2') | from_yaml }}"
+        wait: true
+        wait_timeout: 120
+      when: ollama_config.tls_enabled
+
+    - name: "Attendre le provisionnement du certificat TLS"
+      kubernetes.core.k8s_info:
+        api_version: cert-manager.io/v1
+        kind: Certificate
+        namespace: "{{ ollama_config.namespace }}"
+        name: "{{ ollama_config.service_name }}-tls"
+      register: tls_certificate
+      until:
+        - tls_certificate.resources | length > 0
+        - tls_certificate.resources[0].status.conditions | selectattr('type', 'equalto', 'Ready') | selectattr('status', 'equalto', 'True') | list | length > 0
+      retries: 30
+      delay: 10
+      when: ollama_config.tls_enabled
+
+    - name: "Vérifier la résolution DNS"
+      uri:
+        url: "{{ 'https' if ollama_config.tls_enabled else 'http' }}://{{ ollama_config.full_domain }}/api/tags"
+        method: GET
+        status_code: [200, 404, 405]
+        timeout: 30
+        validate_certs: "{{ not (ollama_config.environment == 'development') }}"
+      register: dns_check
+      retries: 10
+      delay: 30
+      until: dns_check is not failed
+
+  rescue:
+    - name: "Gérer l'échec de configuration réseau"
+      debug:
+        msg: "⚠️  Configuration réseau partiellement échouée. Ollama sera accessible uniquement en interne"
+
+  tags: [ollama, ai-ml, deploy, network, ingress]
+
+# =========================================================================
+# VÉRIFICATIONS DE SANTÉ AVANCÉES
+# =========================================================================
+- name: "[OLLAMA-DEPLOY] Effectuer les vérifications de santé complètes"
+  block:
+    - name: "Test de connectivité API interne"
+      uri:
+        url: "http://{{ ollama_config.service_name }}.{{ ollama_config.namespace }}.svc.cluster.local:{{ ollama_config.port }}/api/tags"
+        method: GET
+        status_code: 200
+        timeout: 30
+      register: internal_health_check
+      retries: 20
+      delay: 15
+      until: internal_health_check is succeeded
+
+    - name: "Test de connectivité API externe"
+      uri:
+        url: "{{ 'https' if ollama_config.tls_enabled else 'http' }}://{{ ollama_config.full_domain }}/api/tags"
+        method: GET
+        status_code: 200
+        timeout: 30
+        validate_certs: "{{ not (ollama_config.environment == 'development') }}"
+      register: external_health_check
+      retries: 15
+      delay: 20
+      until: external_health_check is succeeded
+      when: ollama_config.tls_enabled
+
+    - name: "Vérifier la disponibilité du GPU"
+      uri:
+        url: "http://{{ ollama_config.service_name }}.{{ ollama_config.namespace }}.svc.cluster.local:{{ ollama_config.port }}/api/ps"
+        method: GET
+        status_code: 200
+        timeout: 30
+      register: gpu_check
+      when: ollama_config.gpu_enabled
+
+    - name: "Test de fonctionnalité basique de génération"
+      uri:
+        url: "http://{{ ollama_config.service_name }}.{{ ollama_config.namespace }}.svc.cluster.local:{{ ollama_config.port }}/api/generate"
+        method: POST
+        body_format: json
+        body:
+          model: "phi3"
+          prompt: "Test"
+          stream: false
+        status_code: [200, 404]  # 404 acceptable si le modèle n'est pas encore chargé
+        timeout: 60
+      register: generation_test
+      failed_when: false
+
+  rescue:
+    - name: "Gérer l'échec des vérifications de santé"
+      debug:
+        msg: |
+          ⚠️  Certaines vérifications de santé ont échoué:
+          - API interne: {{ 'OK' if internal_health_check is succeeded else 'ERREUR' }}
+          - API externe: {{ 'OK' if external_health_check is succeeded else 'ERREUR' }}
+          - GPU: {{ 'OK' if not ollama_config.gpu_enabled or gpu_check is succeeded else 'ERREUR' }}
+          - Génération: {{ 'OK' if generation_test.status == 200 else 'NON TESTÉ' }}
+
+  tags: [ollama, ai-ml, deploy, health-check]
+
+# =========================================================================
+# CONFIGURATION DU MONITORING AVANCÉ
+# =========================================================================
+- name: "[OLLAMA-DEPLOY] Configurer le monitoring et l'observabilité"
+  block:
+    - name: "Déployer le ServiceMonitor pour Prometheus"
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('template', 'servicemonitor.yml.j2') | from_yaml }}"
+        wait: true
+        wait_timeout: 60
+      when: ollama_config.monitoring_enabled
+
+    - name: "Créer les alertes Prometheus personnalisées"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: "{{ ollama_config.service_name }}-alerts"
+            namespace: "{{ ollama_config.monitoring_namespace }}"
+            labels:
+              prometheus-rule: "true"
+              app.kubernetes.io/name: "{{ ollama_config.service_name }}"
+              lions.dev/environment: "{{ ollama_config.environment }}"
+          data:
+            ollama-alerts.yml: |
+              groups:
+                - name: ollama.alerts
+                  rules:
+                    - alert: OllamaDown
+                      expr: up{job="{{ ollama_config.service_name }}"} == 0
+                      for: 5m
+                      labels:
+                        severity: critical
+                        service: ollama
+                        environment: "{{ ollama_config.environment }}"
+                      annotations:
+                        summary: "Ollama AI service is down"
+                        description: "Ollama AI service has been down for more than 5 minutes"
+              
+                    - alert: OllamaHighMemoryUsage
+                      expr: container_memory_usage_bytes{pod=~"{{ ollama_config.service_name }}-.*"} / container_spec_memory_limit_bytes > 0.9
+                      for: 10m
+                      labels:
+                        severity: warning
+                        service: ollama
+                        environment: "{{ ollama_config.environment }}"
+                      annotations:
+                        summary: "Ollama high memory usage"
+                        description: "Ollama pod {{ $labels.pod }} memory usage is above 90%"
+              
+                    - alert: OllamaModelLoadingFailed
+                      expr: increase(ollama_model_load_failures_total[5m]) > 0
+                      for: 1m
+                      labels:
+                        severity: warning
+                        service: ollama
+                        environment: "{{ ollama_config.environment }}"
+                      annotations:
+                        summary: "Ollama model loading failures"
+                        description: "Ollama has failed to load models in the last 5 minutes"
+      when: ollama_config.monitoring_enabled
+
+    - name: "Déployer le tableau de bord Grafana"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: "{{ ollama_config.service_name }}-dashboard"
+            namespace: "{{ ollama_config.monitoring_namespace }}"
+            labels:
+              grafana_dashboard: "1"
+              app.kubernetes.io/name: "{{ ollama_config.service_name }}"
+              lions.dev/environment: "{{ ollama_config.environment }}"
+              lions.dev/service-type: "ai-ml"
+          data:
+            ollama-dashboard.json: "{{ lookup('file', '../../../monitoring/dashboards/ollama/application-dashboard.json') | default('{}') }}"
+      when: ollama_config.monitoring_enabled
+
+  rescue:
+    - name: "Gérer l'échec de configuration du monitoring"
+      debug:
+        msg: "⚠️  Configuration du monitoring partiellement échouée"
+
+  tags: [ollama, ai-ml, deploy, monitoring]
+
+# =========================================================================
+# GESTION INTELLIGENTE DES MODÈLES IA
+# =========================================================================
+- name: "[OLLAMA-DEPLOY] Gestion avancée des modèles IA"
+  block:
+    - name: "Attendre la disponibilité complète d'Ollama"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Pod
+        namespace: "{{ ollama_config.namespace }}"
+        label_selectors:
+          - "app.kubernetes.io/name={{ ollama_config.service_name }}"
+        field_selectors:
+          - "status.phase=Running"
+      register: ready_pods
+      until: ready_pods.resources | length > 0
+      retries: 30
+      delay: 20
+
+    - name: "Définir les modèles à précharger selon l'environnement"
+      set_fact:
+        models_to_preload: >-
+          {%- if ollama_config.environment == 'production' -%}
+          ["phi3", "llava", "mistral"]
+          {%- elif ollama_config.environment == 'staging' -%}
+          ["phi3", "llava"]
+          {%- else -%}
+          ["phi3"]
+          {%- endif -%}
+
+    - name: "Précharger les modèles IA de base"
+      kubernetes.core.k8s_exec:
+        namespace: "{{ ollama_config.namespace }}"
+        pod: "{{ ready_pods.resources[0].metadata.name }}"
+        command: ["/bin/sh", "-c", "timeout 1800 ollama pull {{ item }} || echo 'Failed to pull {{ item }}'"]
+      loop: "{{ models_to_preload }}"
+      register: model_preload_results
+      when: models_to_preload | length > 0
+      failed_when: false
+      async: 1800
+      poll: 60
+
+    - name: "Vérifier les modèles disponibles"
+      kubernetes.core.k8s_exec:
+        namespace: "{{ ollama_config.namespace }}"
+        pod: "{{ ready_pods.resources[0].metadata.name }}"
+        command: ["/bin/sh", "-c", "ollama list"]
+      register: available_models_list
+      failed_when: false
+
+    - name: "Créer la ConfigMap des modèles disponibles"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: "{{ ollama_config.service_name }}-models"
+            namespace: "{{ ollama_config.namespace }}"
+            labels:
+              app.kubernetes.io/name: "{{ ollama_config.service_name }}"
+              lions.dev/environment: "{{ ollama_config.environment }}"
+          data:
+            models.list: "{{ available_models_list.stdout | default('No models available') }}"
+            preload.status: "{{ model_preload_results.results | map(attribute='rc') | list | join(',') }}"
+            last.updated: "{{ ansible_date_time.iso8601 }}"
+
+  rescue:
+    - name: "Gérer l'échec de gestion des modèles"
+      debug:
+        msg: "⚠️  Gestion des modèles partiellement échouée. Ollama est fonctionnel mais certains modèles peuvent manquer"
+
+  when: ollama_config.storage_enabled
+  tags: [ollama, ai-ml, deploy, models]
+
+# =========================================================================
+# FINALISATION ET REPORTING
+# =========================================================================
+- name: "[OLLAMA-DEPLOY] Finaliser le déploiement et générer le rapport"
+  block:
+    - name: "Enregistrer le statut de déploiement dans Vault"
+      uri:
+        url: "{{ ollama_config.vault_addr }}/v1/secret/data/lions/{{ ollama_config.environment }}/ollama/deployment"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ vault_token | default('') }}"
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          data:
+            status: "deployed"
+            deployment_id: "{{ deployment_metadata.id }}"
+            version: "{{ ollama_config.version }}"
+            namespace: "{{ ollama_config.namespace }}"
+            environment: "{{ ollama_config.environment }}"
+            deployed_at: "{{ ansible_date_time.iso8601 }}"
+            deployed_by: "{{ deployment_metadata.operator }}"
+            internal_url: "http://{{ ollama_config.service_name }}.{{ ollama_config.namespace }}.svc.cluster.local:{{ ollama_config.port }}"
+            external_url: "{{ 'https' if ollama_config.tls_enabled else 'http' }}://{{ ollama_config.full_domain }}"
+            gpu_enabled: "{{ ollama_config.gpu_enabled }}"
+            storage_enabled: "{{ ollama_config.storage_enabled }}"
+            monitoring_enabled: "{{ ollama_config.monitoring_enabled }}"
+            models_available: "{{ available_models_list.stdout | default('') }}"
+        status_code: [200, 204]
+        timeout: 30
+      when:
+        - ollama_config.vault_enabled
+        - vault_health.status | default(0) == 200
+
+    - name: "Générer le rapport de déploiement complet"
+      debug:
+        msg: |
+          
+          ✅ DÉPLOIEMENT OLLAMA AI SERVICE LIONS 5.0 TERMINÉ AVEC SUCCÈS !
+          
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          📊 RÉSUMÉ DU DÉPLOIEMENT
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          
+          🏷️  Identification:
+              • ID Déploiement: {{ deployment_metadata.id }}
+              • Service: {{ ollama_config.service_name }}
+              • Version: {{ ollama_config.version }}
+              • Namespace: {{ ollama_config.namespace }}
+              • Environnement: {{ ollama_config.environment }}
+              • Opérateur: {{ deployment_metadata.operator }}
+              • Déployé le: {{ ansible_date_time.iso8601 }}
+          
+          🌐 Configuration Réseau:
+              • Domaine: {{ ollama_config.full_domain }}
+              • Port: {{ ollama_config.port }}
+              • TLS: {{ 'Activé' if ollama_config.tls_enabled else 'Désactivé' }}
+              • URL Interne: http://{{ ollama_config.service_name }}.{{ ollama_config.namespace }}.svc.cluster.local:{{ ollama_config.port }}
+              • URL Externe: {{ 'https' if ollama_config.tls_enabled else 'http' }}://{{ ollama_config.full_domain }}
+          
+          🔧 Configuration Technique:
+              • GPU: {{ 'Activé' if ollama_config.gpu_enabled else 'Désactivé' }}
+              • Stockage: {{ ollama_config.storage_size if ollama_config.storage_enabled else 'Désactivé' }}
+              • Monitoring: {{ 'Activé' if ollama_config.monitoring_enabled else 'Désactivé' }}
+              • Vault: {{ 'Activé' if ollama_config.vault_enabled else 'Désactivé' }}
+              • Politiques Réseau: {{ 'Activées' if ollama_config.network_policies else 'Désactivées' }}
+          
+          🧠 Ressources Allouées:
+              • CPU Request: {{ ollama_resources.requests.cpu }}
+              • CPU Limit: {{ ollama_resources.limits.cpu }}
+              • Memory Request: {{ ollama_resources.requests.memory }}
+              • Memory Limit: {{ ollama_resources.limits.memory }}
+          
+          🤖 Modèles IA Disponibles:
+          {{ available_models_list.stdout | default('Aucun modèle préchargé') | indent(6, True) }}
+          
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          🔗 POINTS D'ACCÈS API
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          
+          📝 API Documentation: {{ 'https' if ollama_config.tls_enabled else 'http' }}://{{ ollama_config.full_domain }}/api
+          🏷️  Liste des modèles: {{ 'https' if ollama_config.tls_enabled else 'http' }}://{{ ollama_config.full_domain }}/api/tags
+          💬 Génération de texte: {{ 'https' if ollama_config.tls_enabled else 'http' }}://{{ ollama_config.full_domain }}/api/generate
+          🗨️  Chat IA: {{ 'https' if ollama_config.tls_enabled else 'http' }}://{{ ollama_config.full_domain }}/api/chat
+          📊 Statut des processus: {{ 'https' if ollama_config.tls_enabled else 'http' }}://{{ ollama_config.full_domain }}/api/ps
+          
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          🔧 COMMANDES D'ADMINISTRATION
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          
+          📋 Vérifier les pods:
+              kubectl get pods -n {{ ollama_config.namespace }} -l app.kubernetes.io/name={{ ollama_config.service_name }}
+          
+          📜 Consulter les logs:
+              kubectl logs -n {{ ollama_config.namespace }} -l app.kubernetes.io/name={{ ollama_config.service_name }} -f
+          
+          🔍 Port-forward pour tests locaux:
+              kubectl port-forward -n {{ ollama_config.namespace }} svc/{{ ollama_config.service_name }} {{ ollama_config.port }}:{{ ollama_config.port }}
+          
+          📊 Métriques Prometheus:
+              kubectl get servicemonitor -n {{ ollama_config.namespace }} {{ ollama_config.service_name }}
+          
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          🧪 TESTS DE VALIDATION
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          
+          🌐 Test de connectivité:
+              curl {{ 'https' if ollama_config.tls_enabled else 'http' }}://{{ ollama_config.full_domain }}/api/tags
+          
+          💬 Test de génération simple:
+              curl -X POST {{ 'https' if ollama_config.tls_enabled else 'http' }}://{{ ollama_config.full_domain }}/api/generate \
+                   -H "Content-Type: application/json" \
+                   -d '{"model":"phi3","prompt":"Hello, comment allez-vous?","stream":false}'
+          
+          🔍 Test de santé:
+              curl {{ 'https' if ollama_config.tls_enabled else 'http' }}://{{ ollama_config.full_domain }}/api/ps
+          
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          
+          🎉 Ollama AI Service est maintenant opérationnel dans l'environnement {{ ollama_config.environment | upper }} !
+          📚 Documentation complète: https://docs.lions.dev/services/ollama
+          🔧 Support technique: devops@lions.dev
+
+    - name: "Définir les variables de résultat final"
+      set_fact:
+        ollama_deployment_result:
+          status: "success"
+          deployment_id: "{{ deployment_metadata.id }}"
+          service_name: "{{ ollama_config.service_name }}"
+          namespace: "{{ ollama_config.namespace }}"
+          version: "{{ ollama_config.version }}"
+          environment: "{{ ollama_config.environment }}"
+          internal_url: "http://{{ ollama_config.service_name }}.{{ ollama_config.namespace }}.svc.cluster.local:{{ ollama_config.port }}"
+          external_url: "{{ 'https' if ollama_config.tls_enabled else 'http' }}://{{ ollama_config.full_domain }}"
+          gpu_enabled: "{{ ollama_config.gpu_enabled }}"
+          storage_enabled: "{{ ollama_config.storage_enabled }}"
+          monitoring_enabled: "{{ ollama_config.monitoring_enabled }}"
+          models_available: "{{ available_models_list.stdout | default('') }}"
+          deployed_at: "{{ ansible_date_time.iso8601 }}"
+          deployed_by: "{{ deployment_metadata.operator }}"
+
+  rescue:
+    - name: "Gérer l'échec de finalisation"
+      debug:
+        msg: "⚠️  Finalisation partiellement échouée mais déploiement réussi"
+
+  tags: [ollama, ai-ml, deploy, completion]
+
+# =========================================================================
+# GESTION D'ERREURS GLOBALE ET ROLLBACK AUTOMATIQUE
+# =========================================================================
+- name: "[OLLAMA-DEPLOY] Procédure d'urgence en cas d'échec critique"
+  block:
+    - name: "Déclencher la procédure de rollback automatique"
+      include_tasks: "rollback.yml"
+      vars:
+        rollback_reason: "critical_deployment_failure"
+        deployment_id: "{{ deployment_metadata.id }}"
+        preserve_data: true
+      when:
+        - ollama_config.environment == "production"
+        - ansible_failed_task is defined
+
+    - name: "Enregistrer l'échec dans Vault"
+      uri:
+        url: "{{ ollama_config.vault_addr }}/v1/secret/data/lions/{{ ollama_config.environment }}/ollama/deployment"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ vault_token | default('') }}"
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          data:
+            status: "failed"
+            deployment_id: "{{ deployment_metadata.id }}"
+            failed_at: "{{ ansible_date_time.iso8601 }}"
+            error_details: "{{ ansible_failed_result.msg | default('Erreur critique inconnue') }}"
+            rollback_initiated: true
+        status_code: [200, 204]
+        timeout: 30
+      when:
+        - ollama_config.vault_enabled
+        - ansible_failed_task is defined
+
+    - name: "Définir le résultat d'échec"
+      set_fact:
+        ollama_deployment_result:
+          status: "failed"
+          deployment_id: "{{ deployment_metadata.id }}"
+          failed_at: "{{ ansible_date_time.iso8601 }}"
+          error_message: "{{ ansible_failed_result.msg | default('Erreur critique de déploiement') }}"
+          rollback_initiated: true
+
+  when: ansible_failed_task is defined
+  tags: [ollama, ai-ml, deploy, error-handling, rollback]

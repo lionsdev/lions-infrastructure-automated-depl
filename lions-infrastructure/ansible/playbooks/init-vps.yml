@@ -1,466 +1,524 @@
 ---
-# Titre: Playbook d'initialisation du VPS
-# Description: Prépare le VPS pour l'installation de K3s et le déploiement de l'infrastructure LIONS
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2023-05-15
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - PLAYBOOK D'INITIALISATION VPS
+# =========================================================================
+# Description: Playbook d'initialisation sécurisée et optimisée du VPS
+# Version: 5.0.0
+# Maintainer: DevOps Team <devops@lions.dev>
+# Documentation: https://docs.lions.dev/infrastructure/vps-initialization
+# =========================================================================
 
-- name: Initialisation du VPS Contabo
-  hosts: vps
-  become: yes
+- name: "LIONS Infrastructure 5.0 - Initialisation VPS {{ inventory_hostname }}"
+  hosts: "{{ target_hosts | default('all') }}"
+  become: true
+  gather_facts: true
 
   vars:
-    swap_size: 4G
-    timezone: "Europe/Paris"
+    # Variables de contrôle du playbook
+    lions_init_skip_reboot: "{{ lions_skip_reboot | default(false) }}"
+    lions_init_force_update: "{{ lions_force_system_update | default(false) }}"
+    lions_init_debug_mode: "{{ lions_debug_mode | default(false) }}"
+
+    # Configuration système de base
+    lions_system_timezone: "{{ lions_timezone | default('UTC') }}"
+    lions_system_locale: "{{ lions_locale | default('en_US.UTF-8') }}"
+    lions_system_swap_size: "{{ lions_swap_size | default('4G') }}"
+
+    # Configuration réseau et sécurité
+    lions_ssh_port: "{{ ansible_port | default(22) }}"
+    lions_firewall_enabled: "{{ lions_security_firewall_enabled | default(true) }}"
+    lions_fail2ban_enabled: "{{ lions_security_fail2ban_enabled | default(true) }}"
+
+    # Configuration des répertoires
+    lions_base_directory: "{{ lions_base_dir | default('/opt/lions') }}"
+    lions_logs_directory: "{{ lions_logs_dir | default('/var/log/lions') }}"
+    lions_config_directory: "{{ lions_config_dir | default('/etc/lions') }}"
+    lions_data_directory: "{{ lions_data_dir | default('/var/lib/lions') }}"
+
+  pre_tasks:
+    - name: "🔍 Validation de la configuration d'initialisation"
+      block:
+        - name: "Vérification des variables requises"
+          assert:
+            that:
+              - inventory_hostname is defined
+              - ansible_user is defined
+              - lions_environment is defined
+            fail_msg: "Variables d'environnement requises manquantes"
+            success_msg: "✅ Variables d'environnement validées"
+
+        - name: "Affichage des informations d'initialisation"
+          debug:
+            msg:
+              - "🏗️  Initialisation VPS: {{ inventory_hostname }}"
+              - "🌍 Environnement: {{ lions_environment }}"
+              - "👤 Utilisateur: {{ ansible_user }}"
+              - "🔧 Mode debug: {{ lions_init_debug_mode }}"
+              - "⏰ Fuseau horaire: {{ lions_system_timezone }}"
+          when: lions_init_debug_mode | bool
+
+        - name: "Test de connectivité et privilèges"
+          ping:
+          register: connectivity_test
+
+        - name: "Vérification des privilèges sudo"
+          command: whoami
+          become: true
+          register: sudo_test
+          changed_when: false
+
+      rescue:
+        - name: "❌ Échec de la validation pré-initialisation"
+          fail:
+            msg: "Impossible de continuer l'initialisation - vérifiez la connectivité et les privilèges"
 
   tasks:
-    - name: Suppression du dépôt Kubernetes obsolète (kubernetes-xenial)
-      file:
-        path: /etc/apt/sources.list.d/kubernetes.list
-        state: absent
-      ignore_errors: yes
-
-    - name: Suppression des entrées kubernetes-xenial dans sources.list
-      lineinfile:
-        path: /etc/apt/sources.list
-        regexp: '.*apt.kubernetes.io.*xenial.*'
-        state: absent
-      ignore_errors: yes
-
-    - name: Création du répertoire pour les clés GPG
-      file:
-        path: /etc/apt/keyrings
-        state: directory
-        mode: '0755'
-
-    - name: Téléchargement de la clé GPG de Kubernetes
-      get_url:
-        url: https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key
-        dest: /tmp/k8s-release.key
-        mode: '0644'
-      ignore_errors: yes
-
-    - name: Ajout de la clé GPG de Kubernetes
-      shell: |
-        cat /tmp/k8s-release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-      args:
-        creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-      ignore_errors: yes
-
-    - name: Ajout du dépôt Kubernetes
-      apt_repository:
-        repo: deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /
-        state: present
-        filename: kubernetes
-      ignore_errors: yes
-
-    - name: Mise à jour du cache APT
-      apt:
-        update_cache: yes
-        cache_valid_time: 3600
-        force_apt_get: yes
-      register: apt_update_result
-      ignore_errors: yes
-
-    - name: Mise à jour du cache APT avec options de contournement (si échec précédent)
-      shell: apt-get update -o Acquire::AllowInsecureRepositories=true -o Acquire::AllowDowngradeToInsecureRepositories=true
-      when: apt_update_result is failed
-      ignore_errors: yes
-
-    - name: Mise à jour du système
-      apt:
-        upgrade: dist
-        force_apt_get: yes
-      register: system_updated
-      ignore_errors: yes
-
-    - name: Mise à jour du système avec options de contournement (si échec précédent)
-      shell: DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" -o Acquire::AllowInsecureRepositories=true
-      when: system_updated is failed
-      register: system_updated_fallback
-      ignore_errors: yes
-
-    - name: Mise à jour du statut de mise à jour système
-      set_fact:
-        system_updated: 
-          changed: "{{ system_updated.changed | default(false) or (system_updated_fallback is defined and system_updated_fallback.rc is defined and system_updated_fallback.rc == 0) }}"
-
-    - name: Redémarrage si nécessaire après mise à jour (connexion distante)
-      reboot:
-        reboot_timeout: 600
-      when: system_updated.changed and ansible_connection != 'local'
-
-    - name: Notification de redémarrage manuel nécessaire (connexion locale)
-      debug:
-        msg: "Des mises à jour système ont été appliquées. Un redémarrage manuel du serveur est recommandé après la fin de l'installation."
-      when: system_updated.changed and ansible_connection == 'local'
-
-    - name: Installation des paquets essentiels
-      apt:
-        name:
-          - fail2ban
-          - ufw
-          - python3-pip
-          - git
-          - curl
-          - wget
-          - vim
-          - htop
-          - iotop
-          - net-tools
-          - dnsutils
-          - jq
-          - unzip
-          - ca-certificates
-          - gnupg
-          - lsb-release
-          - apt-transport-https
-        state: present
-
-    # Configuration de UFW pour utiliser les valeurs par défaut
-    - name: Restauration de la configuration par défaut de UFW
-      copy:
-        src: /etc/default/ufw
-        dest: /etc/default/ufw.backup
-        remote_src: yes
-        backup: yes
-      ignore_errors: yes
-
-    - name: Restauration de la configuration par défaut de UFW (sysctl)
-      copy:
-        src: /etc/ufw/sysctl.conf
-        dest: /etc/ufw/sysctl.conf.backup
-        remote_src: yes
-        backup: yes
-      ignore_errors: yes
-
-    # Suppression des modifications précédentes qui causaient des erreurs
-    - name: Vérification de l'existence des fichiers de règles UFW
-      stat:
-        path: "{{ item }}"
-      register: ufw_rules_files
-      with_items:
-        - /etc/ufw/before.rules
-        - /etc/ufw/after.rules
-        - /etc/ufw/user.rules
-        - /etc/ufw/user6.rules
-        - /etc/ufw/before6.rules
-        - /etc/ufw/after6.rules
-
-    - name: Sauvegarde des fichiers de règles UFW
-      copy:
-        src: "{{ item.item }}"
-        dest: "{{ item.item }}.bak"
-        remote_src: yes
-      when: item.stat.exists
-      with_items: "{{ ufw_rules_files.results }}"
-
-    - name: Arrêt de UFW avant réinitialisation des règles iptables
-      service:
-        name: ufw
-        state: stopped
-      ignore_errors: yes
-
-    - name: Réinitialisation des règles iptables avant configuration UFW
-      shell: |
-        iptables -F
-        iptables -X
-        iptables -t nat -F
-        iptables -t nat -X
-        iptables -t mangle -F
-        iptables -t mangle -X
-        iptables -P INPUT ACCEPT
-        iptables -P FORWARD ACCEPT
-        iptables -P OUTPUT ACCEPT
-      ignore_errors: yes
-
-    - name: Configuration du fuseau horaire
-      timezone:
-        name: "{{ timezone }}"
-
-    - name: Configuration de Fail2ban pour SSH
-      copy:
-        dest: /etc/fail2ban/jail.local
-        content: |
-          [sshd]
-          enabled = true
-          port = {{ ansible_port }}
-          filter = sshd
-          logpath = /var/log/auth.log
-          maxretry = 3
-          bantime = 3600
-      notify: restart fail2ban
-
-    - name: Configuration du pare-feu UFW - SSH
-      ufw:
-        rule: allow
-        port: "{{ ansible_port }}"
-        proto: tcp
-      register: ufw_ssh
-      failed_when: false
-
-    - name: Configuration alternative du pare-feu UFW - SSH (si la méthode précédente a échoué)
-      command: "ufw allow {{ ansible_port }}/tcp"
-      when: ufw_ssh is defined and ufw_ssh.failed
-      failed_when: false
-
-    - name: Configuration du pare-feu UFW - HTTP
-      ufw:
-        rule: allow
-        port: 80
-        proto: tcp
-
-    - name: Configuration du pare-feu UFW - HTTPS
-      ufw:
-        rule: allow
-        port: 443
-        proto: tcp
-
-    - name: Configuration du pare-feu UFW - K3s API
-      ufw:
-        rule: allow
-        port: 6443
-        proto: tcp
-
-    - name: Configuration du pare-feu UFW - SSH standard
-      ufw:
-        rule: allow
-        port: 22
-        proto: tcp
-      register: ufw_ssh_standard
-      failed_when: false
-
-    - name: Vérification de la configuration SSH standard
-      debug:
-        msg: "Configuration SSH standard (port 22) {{ 'réussie' if not ufw_ssh_standard.failed else 'échouée mais ignorée' }}"
-
-    - name: Configuration alternative du pare-feu UFW - SSH standard (si la méthode précédente a échoué)
-      command: ufw allow 22/tcp
-      when: ufw_ssh_standard is defined and ufw_ssh_standard.failed
-      register: ufw_ssh_standard_alt
-      failed_when: false
-
-    - name: Configuration du pare-feu UFW - Kubernetes Dashboard
-      ufw:
-        rule: allow
-        port: 30001
-        proto: tcp
-
-    - name: Configuration du pare-feu UFW - NodePort 30000
-      ufw:
-        rule: allow
-        port: 30000
-        proto: tcp
-
-    - name: Configuration du pare-feu UFW - K3s kubelet
-      ufw:
-        rule: allow
-        port: 10250
-        proto: tcp
-
-    - name: Configuration du pare-feu UFW - K3s kube-scheduler
-      ufw:
-        rule: allow
-        port: 10251
-        proto: tcp
-
-    - name: Configuration du pare-feu UFW - K3s kube-controller
-      ufw:
-        rule: allow
-        port: 10252
-        proto: tcp
-
-    # Configuration pour que UFW utilise l'option -w avec iptables
-    - name: Création du répertoire /etc/ufw/conf.d si nécessaire
-      file:
-        path: /etc/ufw/conf.d
-        state: directory
-        mode: '0755'
-
-    - name: Configuration de UFW pour utiliser l'option -w avec iptables
-      copy:
-        dest: /etc/ufw/conf.d/iptables-wait.conf
-        content: |
-          # Configuration pour que iptables attende la libération du verrou
-          IPTABLES_WAIT="-w"
-        mode: '0644'
-      register: ufw_wait_config
-
-    - name: Redémarrage de UFW si la configuration a changé
-      service:
-        name: ufw
-        state: restarted
-      when: ufw_wait_config.changed
-
-    - name: Configuration du pare-feu UFW - K3s flannel VXLAN
-      ufw:
-        rule: allow
-        port: 8472
-        proto: udp
-
-    - name: Configuration du pare-feu UFW - K3s flannel VXLAN (alternative)
-      ufw:
-        rule: allow
-        port: 4789
-        proto: udp
-
-    - name: Configuration du pare-feu UFW - K3s Wireguard
-      ufw:
-        rule: allow
-        port: 51820
-        proto: udp
-
-    - name: Configuration du pare-feu UFW - K3s Wireguard (alternative)
-      ufw:
-        rule: allow
-        port: 51821
-        proto: udp
-
-    # Désactivation de IPv6 dans UFW pour éviter les problèmes
-    - name: Modification du fichier /etc/default/ufw pour désactiver l'utilisation de IPv6
-      lineinfile:
-        path: /etc/default/ufw
-        regexp: '^IPV6='
-        line: 'IPV6=no'
-        state: present
-
-    - name: Activation du pare-feu UFW avec force
-      command: echo 'y' | ufw --force enable
-      register: ufw_enable_result
-      changed_when: "'Firewall is active and enabled on system startup' in ufw_enable_result.stdout"
-      failed_when: false
-
-    - name: Vérification que UFW est bien actif
-      shell: |
-        ufw status | grep -q "Status: active" || (echo 'y' | ufw --force enable)
-      register: ufw_status_check
-      changed_when: false
-      failed_when: false
-
-
-    - name: Vérification de l'état de UFW
-      command: ufw status
-      register: ufw_status
-      changed_when: false
-
-    - name: Affichage de l'état de UFW
-      debug:
-        var: ufw_status.stdout_lines
-
-    - name: Vérification de l'existence du fichier swap
-      stat:
-        path: /swapfile
-      register: swap_file_check
-
-    - name: Configuration du swap
+    # =========================================================================
+    # PHASE 1: PRÉPARATION SYSTÈME
+    # =========================================================================
+    - name: "🚀 PHASE 1: Préparation du système"
       block:
-        - name: Création du fichier swap
-          command: fallocate -l {{ swap_size }} /swapfile
-          args:
-            creates: /swapfile
+        - name: "📊 Collecte des informations système"
+          setup:
+            gather_subset:
+              - hardware
+              - network
+              - virtual
+              - distribution
+          register: system_facts
 
-        - name: Attribution des permissions au fichier swap
-          file:
-            path: /swapfile
-            mode: 0600
-
-        - name: Formatage du fichier swap
-          command: mkswap /swapfile
-          args:
-            creates: /proc/swaps
-          register: swap_created
-
-        - name: Activation du swap
-          command: swapon /swapfile
-          when: swap_created.changed
-
-        - name: Configuration permanente du swap dans fstab
+        - name: "📝 Journalisation de l'initialisation"
           lineinfile:
-            path: /etc/fstab
-            line: '/swapfile none swap sw 0 0'
-            state: present
-      when: not swap_file_check.stat.exists
+            path: "/var/log/lions-init.log"
+            line: "{{ ansible_date_time.iso8601 }} - Début initialisation VPS {{ inventory_hostname }} ({{ lions_environment }})"
+            create: true
+            mode: '0644'
+          delegate_to: localhost
+          become: false
 
-    - name: Optimisation de la mémoire - swappiness
-      sysctl:
-        name: vm.swappiness
-        value: '10'
-        state: present
-        reload: yes
+        - name: "🔧 Création de la structure de répertoires LIONS"
+          file:
+            path: "{{ item }}"
+            state: directory
+            mode: '0755'
+            owner: root
+            group: root
+          loop:
+            - "{{ lions_base_directory }}"
+            - "{{ lions_config_directory }}"
+            - "{{ lions_data_directory }}"
+            - "{{ lions_logs_directory }}"
+            - "{{ lions_logs_directory }}/system"
+            - "{{ lions_logs_directory }}/security"
+            - "{{ lions_logs_directory }}/applications"
+            - "{{ lions_logs_directory }}/deployments"
+            - "{{ lions_logs_directory }}/maintenance"
+            - "/opt/lions/backups"
+            - "/opt/lions/scripts"
+            - "/opt/lions/tmp"
 
-    - name: Optimisation de la mémoire - cache pressure
-      sysctl:
-        name: vm.vfs_cache_pressure
-        value: '50'
-        state: present
-        reload: yes
-
-    - name: Création du répertoire pour les logs LIONS
-      file:
-        path: /var/log/lions
-        state: directory
-        mode: 0755
-        owner: root
-        group: root
-
-    - name: Création des sous-répertoires pour les logs
-      file:
-        path: "/var/log/lions/{{ item }}"
-        state: directory
-        mode: 0755
-        owner: root
-        group: root
-      loop:
-        - deployments
-        - maintenance
-        - applications
-        - infrastructure
-        - security
-
-    - name: Configuration des permissions pour les répertoires de sauvegarde
+    # =========================================================================
+    # PHASE 2: MISE À JOUR SYSTÈME SÉCURISÉE
+    # =========================================================================
+    - name: "🔄 PHASE 2: Mise à jour système sécurisée"
       block:
-        - name: Vérification de l'existence de l'utilisateur
-          shell: id -u {{ ansible_user }} || echo "user_not_found"
-          register: user_check
+        - name: "🧹 Nettoyage des anciens dépôts Kubernetes obsolètes"
+          block:
+            - name: "Suppression des dépôts Kubernetes obsolètes"
+              file:
+                path: "{{ item }}"
+                state: absent
+              loop:
+                - "/etc/apt/sources.list.d/kubernetes.list"
+                - "/etc/apt/sources.list.d/docker.list"
+              ignore_errors: true
+
+            - name: "Nettoyage des entrées obsolètes dans sources.list"
+              lineinfile:
+                path: /etc/apt/sources.list
+                regexp: "{{ item }}"
+                state: absent
+              loop:
+                - '.*apt.kubernetes.io.*xenial.*'
+                - '.*download.docker.com.*xenial.*'
+              ignore_errors: true
+
+        - name: "🔑 Configuration des dépôts sécurisés"
+          block:
+            - name: "Création du répertoire des clés GPG"
+              file:
+                path: /etc/apt/keyrings
+                state: directory
+                mode: '0755'
+
+            - name: "Installation des certificats CA mis à jour"
+              apt:
+                name: ca-certificates
+                state: present
+                update_cache: true
+                cache_valid_time: 0
+
+        - name: "⬆️ Mise à jour du système avec gestion d'erreurs améliorée"
+          block:
+            - name: "Mise à jour du cache APT"
+              apt:
+                update_cache: true
+                cache_valid_time: 3600
+                force_apt_get: true
+              register: apt_cache_update
+              retries: 3
+              delay: 10
+              until: apt_cache_update is succeeded
+
+            - name: "Mise à jour des paquets système"
+              apt:
+                upgrade: safe
+                force_apt_get: true
+                dpkg_options: 'force-confdef,force-confold'
+              register: system_upgrade
+              retries: 2
+              delay: 30
+              when: lions_init_force_update | bool
+
+            - name: "Nettoyage des paquets orphelins"
+              apt:
+                autoremove: true
+                autoclean: true
+
+          rescue:
+            - name: "⚠️ Gestion des erreurs de mise à jour"
+              debug:
+                msg: "Problème lors de la mise à jour système - continuons avec l'installation des paquets essentiels"
+
+    # =========================================================================
+    # PHASE 3: INSTALLATION DES PAQUETS ESSENTIELS
+    # =========================================================================
+    - name: "📦 PHASE 3: Installation des paquets essentiels"
+      block:
+        - name: "Installation des paquets de base système"
+          apt:
+            name:
+              # Sécurité et monitoring
+              - fail2ban
+              - ufw
+              - unattended-upgrades
+              - logrotate
+              # Outils système
+              - curl
+              - wget
+              - vim
+              - htop
+              - iotop
+              - sysstat
+              - tree
+              # Réseau et diagnostics
+              - net-tools
+              - dnsutils
+              - telnet
+              - traceroute
+              - tcpdump
+              # Développement et automation
+              - git
+              - jq
+              - yq
+              - unzip
+              - zip
+              - tar
+              - gzip
+              # Python et pip
+              - python3
+              - python3-pip
+              - python3-venv
+              # Certificats et cryptographie
+              - ca-certificates
+              - gnupg
+              - software-properties-common
+              - apt-transport-https
+              - lsb-release
+            state: present
+            install_recommends: false
+          register: essential_packages
+          retries: 3
+          delay: 30
+
+        - name: "Installation des outils de monitoring avancés"
+          apt:
+            name:
+              - prometheus-node-exporter
+              - collectd
+              - rsyslog
+            state: present
+          when: lions_monitoring_enabled | default(true) | bool
+
+    # =========================================================================
+    # PHASE 4: CONFIGURATION SÉCURISÉE DU SYSTÈME
+    # =========================================================================
+    - name: "🔐 PHASE 4: Configuration de la sécurité"
+      block:
+        - name: "🕐 Configuration du fuseau horaire"
+          timezone:
+            name: "{{ lions_system_timezone }}"
+          notify: restart rsyslog
+
+        - name: "🗂️ Configuration des locales"
+          locale_gen:
+            name: "{{ lions_system_locale }}"
+            state: present
+
+        - name: "🔥 Configuration du pare-feu UFW"
+          include_tasks: tasks/configure_firewall.yml
+          when: lions_firewall_enabled | bool
+
+        - name: "🛡️ Configuration de Fail2Ban"
+          include_tasks: tasks/configure_fail2ban.yml
+          when: lions_fail2ban_enabled | bool
+
+        - name: "👤 Configuration de l'utilisateur LIONS"
+          include_tasks: tasks/configure_user.yml
+
+    # =========================================================================
+    # PHASE 5: OPTIMISATION SYSTÈME
+    # =========================================================================
+    - name: "⚡ PHASE 5: Optimisation système"
+      block:
+        - name: "💾 Configuration du swap intelligent"
+          include_tasks: tasks/configure_swap.yml
+
+        - name: "🚀 Optimisation des paramètres kernel"
+          sysctl:
+            name: "{{ item.name }}"
+            value: "{{ item.value }}"
+            state: present
+            reload: true
+            sysctl_file: /etc/sysctl.d/99-lions-optimization.conf
+          loop:
+            # Optimisation mémoire
+            - { name: "vm.swappiness", value: "10" }
+            - { name: "vm.vfs_cache_pressure", value: "50" }
+            - { name: "vm.dirty_ratio", value: "15" }
+            - { name: "vm.dirty_background_ratio", value: "5" }
+            # Optimisation réseau
+            - { name: "net.core.rmem_max", value: "16777216" }
+            - { name: "net.core.wmem_max", value: "16777216" }
+            - { name: "net.ipv4.tcp_rmem", value: "4096 65536 16777216" }
+            - { name: "net.ipv4.tcp_wmem", value: "4096 65536 16777216" }
+            # Sécurité réseau
+            - { name: "net.ipv4.conf.all.send_redirects", value: "0" }
+            - { name: "net.ipv4.conf.default.send_redirects", value: "0" }
+            - { name: "net.ipv4.conf.all.accept_redirects", value: "0" }
+            - { name: "net.ipv4.conf.default.accept_redirects", value: "0" }
+            - { name: "net.ipv4.conf.all.secure_redirects", value: "0" }
+            - { name: "net.ipv4.conf.default.secure_redirects", value: "0" }
+            # Kubernetes/Container optimizations
+            - { name: "net.bridge.bridge-nf-call-iptables", value: "1" }
+            - { name: "net.bridge.bridge-nf-call-ip6tables", value: "1" }
+            - { name: "net.ipv4.ip_forward", value: "1" }
+          register: sysctl_optimization
+
+        - name: "📊 Configuration des limites système"
+          pam_limits:
+            domain: "{{ item.domain }}"
+            limit_type: "{{ item.type }}"
+            limit_item: "{{ item.item }}"
+            value: "{{ item.value }}"
+          loop:
+            - { domain: "*", type: "soft", item: "nofile", value: "65536" }
+            - { domain: "*", type: "hard", item: "nofile", value: "65536" }
+            - { domain: "*", type: "soft", item: "nproc", value: "32768" }
+            - { domain: "*", type: "hard", item: "nproc", value: "32768" }
+            - { domain: "root", type: "soft", item: "nofile", value: "65536" }
+            - { domain: "root", type: "hard", item: "nofile", value: "65536" }
+
+    # =========================================================================
+    # PHASE 6: CONFIGURATION DES SERVICES
+    # =========================================================================
+    - name: "🔧 PHASE 6: Configuration des services système"
+      block:
+        - name: "🔄 Configuration de la rotation des logs"
+          template:
+            src: logrotate-lions.conf.j2
+            dest: /etc/logrotate.d/lions
+            mode: '0644'
+          vars:
+            log_directories:
+              - "{{ lions_logs_directory }}"
+              - "/var/log/lions"
+            retention_days: "{{ lions_log_retention_days | default(30) }}"
+
+        - name: "📈 Configuration de la collecte des métriques"
+          systemd:
+            name: "{{ item }}"
+            enabled: true
+            state: started
+          loop:
+            - prometheus-node-exporter
+            - rsyslog
+          when: lions_monitoring_enabled | default(true) | bool
+
+        - name: "🔧 Configuration des mises à jour automatiques de sécurité"
+          template:
+            src: unattended-upgrades.conf.j2
+            dest: /etc/apt/apt.conf.d/50unattended-upgrades
+            mode: '0644'
+          vars:
+            auto_security_updates: true
+            auto_reboot: false
+            notification_email: "{{ lions_admin_email | default('') }}"
+
+    # =========================================================================
+    # PHASE 7: PRÉPARATION POUR KUBERNETES
+    # =========================================================================
+    - name: "☸️ PHASE 7: Préparation pour Kubernetes"
+      block:
+        - name: "🔧 Chargement des modules kernel requis"
+          modprobe:
+            name: "{{ item }}"
+            state: present
+          loop:
+            - br_netfilter
+            - overlay
+            - ip_vs
+            - ip_vs_rr
+            - ip_vs_wrr
+            - ip_vs_sh
+            - nf_conntrack
+
+        - name: "📝 Configuration permanente des modules"
+          lineinfile:
+            path: /etc/modules-load.d/lions-k8s.conf
+            line: "{{ item }}"
+            create: true
+            mode: '0644'
+          loop:
+            - br_netfilter
+            - overlay
+            - ip_vs
+            - ip_vs_rr
+            - ip_vs_wrr
+            - ip_vs_sh
+            - nf_conntrack
+
+        - name: "🏗️ Préparation des répertoires Kubernetes"
+          file:
+            path: "{{ item }}"
+            state: directory
+            mode: '0755'
+            owner: root
+            group: root
+          loop:
+            - /etc/rancher
+            - /etc/rancher/k3s
+            - /var/lib/rancher
+            - /var/lib/rancher/k3s
+            - /var/log/rancher
+
+    # =========================================================================
+    # PHASE 8: VALIDATION FINALE
+    # =========================================================================
+    - name: "✅ PHASE 8: Validation finale de l'initialisation"
+      block:
+        - name: "🔍 Vérification des services critiques"
+          service_facts:
+          register: services_status
+
+        - name: "📊 Vérification de l'état système"
+          command: "{{ item }}"
+          loop:
+            - "systemctl is-active rsyslog"
+            - "systemctl is-active ssh"
+            - "ufw status"
+          register: system_checks
           changed_when: false
           failed_when: false
 
-        - name: Création de l'utilisateur si nécessaire
-          user:
-            name: "{{ ansible_user }}"
-            shell: /bin/bash
-            createhome: yes
-          when: user_check.stdout == "user_not_found"
+        - name: "💾 Vérification de l'espace disque"
+          shell: |
+            df -h / | tail -1 | awk '{print $5}' | sed 's/%//'
+          register: disk_usage
+          changed_when: false
 
-        - name: Création du répertoire .kube s'il n'existe pas
-          file:
-            path: "/home/{{ ansible_user }}/.kube"
-            state: directory
-            mode: 0755
-            owner: "{{ ansible_user }}"
-            group: "{{ ansible_user }}"
+        - name: "⚠️ Alerte espace disque"
+          debug:
+            msg: "⚠️  ATTENTION: Espace disque utilisé à {{ disk_usage.stdout }}%"
+          when: disk_usage.stdout | int > 80
 
-        - name: Ajout de l'utilisateur au groupe sudo
-          user:
-            name: "{{ ansible_user }}"
-            groups: sudo
-            append: yes
+        - name: "📝 Génération du rapport d'initialisation"
+          template:
+            src: init-report.j2
+            dest: "{{ lions_logs_directory }}/initialization-report-{{ ansible_date_time.epoch }}.log"
+            mode: '0644'
+          vars:
+            initialization_date: "{{ ansible_date_time.iso8601 }}"
+            hostname: "{{ inventory_hostname }}"
+            environment: "{{ lions_environment }}"
+            system_info: "{{ ansible_facts }}"
+            installed_packages: "{{ essential_packages }}"
 
-        - name: Configuration de sudo sans mot de passe pour les commandes de sauvegarde
+  post_tasks:
+    - name: "🎉 Finalisation de l'initialisation"
+      block:
+        - name: "📝 Journalisation de fin d'initialisation"
           lineinfile:
-            path: /etc/sudoers.d/lions-backup
-            line: "{{ ansible_user }} ALL=(ALL) NOPASSWD: /bin/tar, /bin/rm, /bin/chmod, /bin/chown, /bin/mkdir, /bin/touch"
-            state: present
-            create: yes
-            mode: 0440
-            validate: 'visudo -cf %s'
+            path: "/var/log/lions-init.log"
+            line: "{{ ansible_date_time.iso8601 }} - Fin initialisation VPS {{ inventory_hostname }} - SUCCÈS"
+            create: true
+            mode: '0644'
+          delegate_to: localhost
+          become: false
 
-    - name: Vérification de l'état du système après initialisation
-      debug:
-        msg: "Le VPS a été initialisé avec succès et est prêt pour l'installation de K3s."
+        - name: "🔄 Planification du redémarrage si nécessaire"
+          block:
+            - name: "Vérification de la nécessité de redémarrage"
+              stat:
+                path: /var/run/reboot-required
+              register: reboot_required
+
+            - name: "⚠️ Notification de redémarrage requis"
+              debug:
+                msg: |
+                  ⚠️  REDÉMARRAGE REQUIS DÉTECTÉ
+                  Le système nécessite un redémarrage pour finaliser les mises à jour.
+                  Exécutez 'sudo reboot' manuellement ou relancez avec -e lions_skip_reboot=false
+              when:
+                - reboot_required.stat.exists
+                - lions_init_skip_reboot | bool
+
+            - name: "🔄 Redémarrage automatique du système"
+              reboot:
+                reboot_timeout: 600
+                post_reboot_delay: 30
+                test_command: uptime
+              when:
+                - reboot_required.stat.exists
+                - not lions_init_skip_reboot | bool
+                - ansible_connection != 'local'
+
+        - name: "🎯 Résumé de l'initialisation"
+          debug:
+            msg:
+              - "✅ Initialisation VPS completée avec succès!"
+              - "🏷️  Hostname: {{ inventory_hostname }}"
+              - "🌍 Environnement: {{ lions_environment }}"
+              - "📊 Espace disque utilisé: {{ disk_usage.stdout }}%"
+              - "🔧 Répertoire base LIONS: {{ lions_base_directory }}"
+              - "📝 Logs disponibles dans: {{ lions_logs_directory }}"
+              - "⏭️  Prêt pour l'installation de Kubernetes (K3s)"
 
   handlers:
+    - name: restart rsyslog
+      systemd:
+        name: rsyslog
+        state: restarted
+
     - name: restart fail2ban
-      service:
+      systemd:
         name: fail2ban
         state: restarted
+
+    - name: restart ssh
+      systemd:
+        name: ssh
+        state: restarted
+
+    - name: reload ufw
+      command: ufw --force reload

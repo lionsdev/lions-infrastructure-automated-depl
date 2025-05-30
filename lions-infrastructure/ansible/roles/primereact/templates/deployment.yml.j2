@@ -1,65 +1,189 @@
 ---
-# Titre: Template de déploiement Kubernetes pour PrimeReact
-# Description: Définit le déploiement Kubernetes pour une application PrimeReact
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - TEMPLATE DÉPLOIEMENT PRIMEREACT
+# =========================================================================
+# Description: Template Kubernetes pour le déploiement d'applications PrimeReact
+# Version: 5.0.0
+# Auteur: LIONS DevOps Team
+# Date: {{ ansible_date_time.iso8601 }}
+# Compatibilité: Kubernetes 1.30+, Ansible 2.15+
+# Documentation: https://docs.lions.dev/infrastructure/primereact
+# =========================================================================
 
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: "{{ app_name }}"
-  namespace: "{{ app_namespace }}"
+  name: "{{ lions_primereact_service_name | default(app_name) }}"
+  namespace: "{{ lions_primereact_namespace }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
+    # Labels standard LIONS
+    app.kubernetes.io/name: "{{ lions_primereact_service_name | default(app_name) }}"
+    app.kubernetes.io/instance: "{{ lions_primereact_service_name | default(app_name) }}-{{ lions_environment }}"
+    app.kubernetes.io/version: "{{ app_version | default(lions_primereact_version) }}"
+    app.kubernetes.io/component: "frontend"
+    app.kubernetes.io/part-of: "lions-platform"
+    app.kubernetes.io/managed-by: "ansible"
+
+    # Labels métier LIONS
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/technology: "primereact"
+    lions.dev/tier: "frontend"
+    lions.dev/config-version: "{{ lions_config_version }}"
+
+    # Labels legacy (compatibilité)
+    app: "{{ lions_primereact_service_name | default(app_name) }}"
+    version: "{{ app_version | default(lions_primereact_version) }}"
+    environment: "{{ lions_environment }}"
     technology: "primereact"
+
   annotations:
-    description: "Déploiement de l'application {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    # Annotations informatives
     deployment.kubernetes.io/revision: "1"
+    lions.dev/description: "Déploiement PrimeReact {{ lions_primereact_service_name | default(app_name) }} v{{ app_version | default(lions_primereact_version) }}"
+    lions.dev/maintainer: "{{ lions_config_maintainer }}"
+    lions.dev/documentation: "https://docs.lions.dev/applications/primereact"
+    lions.dev/source: "{{ gitea_repository_url | default('') }}"
+
+    # Annotations pour le monitoring
+    lions.dev/monitoring-enabled: "{{ lions_monitoring_enabled | string | lower }}"
+    lions.dev/backup-enabled: "{{ lions_backup_enabled | string | lower }}"
+
+    # Annotations pour la sécurité
+    lions.dev/security-scan-date: "{{ ansible_date_time.iso8601 }}"
+    lions.dev/compliance-level: "{{ lions_security_pod_security_standards }}"
+
 spec:
-  replicas: {{ primereact_replicas[app_environment] }}
+  # Configuration des répliques selon l'environnement
+  replicas: {% if lions_environment == 'production' %}{{ lions_primereact_replicas_prod | default(3) }}{% elif lions_environment == 'staging' %}{{ lions_primereact_replicas_staging | default(2) }}{% else %}{{ lions_primereact_replicas_dev | default(1) }}{% endif %}
+
   selector:
     matchLabels:
-      app: "{{ app_name }}"
+      app.kubernetes.io/name: "{{ lions_primereact_service_name | default(app_name) }}"
+      app.kubernetes.io/instance: "{{ lions_primereact_service_name | default(app_name) }}-{{ lions_environment }}"
+
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxSurge: 1
-      maxUnavailable: 0
+      maxSurge: {% if lions_environment == 'production' %}1{% else %}100%{% endif %}
+      maxUnavailable: {% if lions_environment == 'production' %}0{% else %}50%{% endif %}
+
   template:
     metadata:
       labels:
-        app: "{{ app_name }}"
-        version: "{{ app_version }}"
-        environment: "{{ app_environment }}"
+        # Labels identiques au selector
+        app.kubernetes.io/name: "{{ lions_primereact_service_name | default(app_name) }}"
+        app.kubernetes.io/instance: "{{ lions_primereact_service_name | default(app_name) }}-{{ lions_environment }}"
+        app.kubernetes.io/version: "{{ app_version | default(lions_primereact_version) }}"
+        app.kubernetes.io/component: "frontend"
+        app.kubernetes.io/part-of: "lions-platform"
+
+        # Labels pour le networking et les politiques
+        lions.dev/environment: "{{ lions_environment }}"
+        lions.dev/technology: "primereact"
+        lions.dev/tier: "frontend"
+        lions.dev/network-policy: "frontend"
+
+        # Labels legacy (compatibilité)
+        app: "{{ lions_primereact_service_name | default(app_name) }}"
+        version: "{{ app_version | default(lions_primereact_version) }}"
+        environment: "{{ lions_environment }}"
         technology: "primereact"
+
       annotations:
-        prometheus.io/scrape: "{{ primereact_prometheus_scrape | string | lower }}"
-        prometheus.io/path: "{{ primereact_prometheus_path }}"
-        prometheus.io/port: "{{ primereact_prometheus_port | string }}"
+        # Configuration Prometheus selon les variables LIONS
+        prometheus.io/scrape: "{{ lions_monitoring_enabled | string | lower }}"
+        prometheus.io/path: "{{ lions_primereact_metrics_path | default('/metrics') }}"
+        prometheus.io/port: "{{ lions_primereact_metrics_port | default('3001') }}"
+        prometheus.io/scheme: "http"
+
+        # Configuration de logging
+        logging.lions.dev/enabled: "{{ lions_loki_enabled | string | lower }}"
+        logging.lions.dev/level: "{{ lions_log_level | lower }}"
+
+        # Configuration de réseau
+        traffic.sidecar.istio.io/includeInboundPorts: "{{ lions_primereact_port }}"
+
+        # Checksums pour forcer le redéploiement
+        checksum/config: "{{ (primereact_config | default({})) | to_json | hash('sha256') }}"
+        checksum/secrets: "{{ (primereact_secrets | default({})) | to_json | hash('sha256') }}"
+
     spec:
-      serviceAccountName: "{{ app_name }}"
+      serviceAccountName: "{{ lions_primereact_service_name | default(app_name) }}"
+
+      # Configuration de sécurité du pod selon les standards LIONS
       securityContext:
         runAsNonRoot: true
-        runAsUser: 1000
-        fsGroup: 1000
+        runAsUser: {{ lions_primereact_security_uid | default(1001) }}
+        runAsGroup: {{ lions_primereact_security_gid | default(1001) }}
+        fsGroup: {{ lions_primereact_security_gid | default(1001) }}
+        {% if lions_security_pod_security_standards == 'restricted' %}
+        seccompProfile:
+          type: RuntimeDefault
+        {% endif %}
+
+      # Configuration des conteneurs d'init si nécessaire
+      {% if lions_primereact_init_containers_enabled | default(false) %}
+      initContainers:
+        - name: wait-for-dependencies
+          image: "{{ lions_utility_image | default('alpine:3.18') }}"
+          command: ['sh', '-c']
+          args:
+            - |
+              echo "Vérification des dépendances..."
+              {% if lions_redis_enabled and lions_primereact_use_redis | default(false) %}
+              until nc -z {{ lions_redis_service_name }}.{{ lions_redis_namespace }}.svc.cluster.local {{ lions_redis_port }}; do
+                echo "En attente de Redis..."
+                sleep 2
+              done
+              {% endif %}
+              {% if lions_postgres_enabled and lions_primereact_use_postgres | default(false) %}
+              until nc -z {{ lions_postgres_service_name }}.{{ lions_postgres_namespace }}.svc.cluster.local {{ lions_postgres_port }}; do
+                echo "En attente de PostgreSQL..."
+                sleep 2
+              done
+              {% endif %}
+              echo "Toutes les dépendances sont disponibles"
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: {{ lions_primereact_security_uid | default(1001) }}
+            capabilities:
+              drop: ["ALL"]
+            {% if lions_security_pod_security_standards == 'restricted' %}
+            seccompProfile:
+              type: RuntimeDefault
+            {% endif %}
+      {% endif %}
+
       containers:
-        - name: "{{ app_name }}"
-          image: "registry.{{ app_environment }}.lions.dev/{{ app_name }}:{{ app_version }}"
-          imagePullPolicy: IfNotPresent
+        - name: "{{ lions_primereact_service_name | default(app_name) }}"
+
+          # Configuration de l'image selon les variables LIONS
+          image: "{{ lions_registry_url | default('registry.' + lions_dns_full_domain) }}/{{ lions_primereact_service_name | default(app_name) }}:{{ app_version | default(lions_primereact_version) }}"
+          imagePullPolicy: {% if lions_environment == 'development' %}Always{% else %}IfNotPresent{% endif %}
+
+          # Configuration des ports
           ports:
             - name: http
-              containerPort: {{ primereact_default_port }}
+              containerPort: {{ lions_primereact_port }}
               protocol: TCP
+            {% if lions_monitoring_enabled %}
+            - name: metrics
+              containerPort: {{ lions_primereact_metrics_port | default('3001') }}
+              protocol: TCP
+            {% endif %}
+
+          # Variables d'environnement selon les standards LIONS
           env:
+            # Configuration Node.js
             - name: NODE_ENV
-              value: "{{ primereact_node_env }}"
+              value: "{{ lions_environment }}"
             - name: NODE_OPTIONS
-              value: "{{ primereact_node_options }}"
+              value: "{{ lions_primereact_node_options | default('--max-old-space-size=1024') }}"
             - name: PORT
-              value: "{{ primereact_default_port | string }}"
+              value: "{{ lions_primereact_port | string }}"
+
+            # Configuration Kubernetes
             - name: KUBERNETES_NAMESPACE
               valueFrom:
                 fieldRef:
@@ -68,63 +192,320 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+
+            # Configuration LIONS
+            - name: LIONS_ENVIRONMENT
+              value: "{{ lions_environment }}"
+            - name: LIONS_CONFIG_VERSION
+              value: "{{ lions_config_version }}"
+            - name: LIONS_LOG_LEVEL
+              value: "{{ lions_log_level }}"
+            - name: LIONS_LOG_FORMAT
+              value: "{{ lions_log_format }}"
+
+            # Configuration PrimeReact spécifique
             - name: PRIMEREACT_THEME
-              value: "{{ primereact_theme }}"
+              value: "{{ lions_primereact_theme | default('lara-light-blue') }}"
             - name: PRIMEREACT_RIPPLE
-              value: "{{ primereact_ripple | string | lower }}"
+              value: "{{ lions_primereact_ripple | default(true) | string | lower }}"
             - name: PRIMEREACT_RESPONSIVE
-              value: "{{ primereact_responsive | string | lower }}"
-            {% if primereact_use_redis | bool %}
-            - name: REDIS_HOST
-              value: "{{ primereact_redis_service }}"
-            - name: REDIS_PORT
-              value: "{{ primereact_redis_port | string }}"
+              value: "{{ lions_primereact_responsive | default(true) | string | lower }}"
+            - name: PRIMEREACT_LOCALE
+              value: "{{ lions_primereact_locale | default('fr') }}"
+
+            # Configuration des services backend
+            {% if lions_keycloak_enabled %}
+            - name: KEYCLOAK_URL
+              value: "https://{{ lions_keycloak_service_name }}.{{ lions_dns_full_domain }}"
+            - name: KEYCLOAK_REALM
+              value: "{{ lions_keycloak_realm }}"
             {% endif %}
+
+            {% if lions_postgres_enabled and lions_primereact_use_postgres | default(false) %}
+            - name: DATABASE_HOST
+              value: "{{ lions_postgres_service_name }}.{{ lions_postgres_namespace }}.svc.cluster.local"
+            - name: DATABASE_PORT
+              value: "{{ lions_postgres_port | string }}"
+            - name: DATABASE_NAME
+              value: "{{ lions_primereact_database_name | default('primereact_' + lions_environment) }}"
+            {% endif %}
+
+            {% if lions_redis_enabled and lions_primereact_use_redis | default(false) %}
+            - name: REDIS_HOST
+              value: "{{ lions_redis_service_name }}.{{ lions_redis_namespace }}.svc.cluster.local"
+            - name: REDIS_PORT
+              value: "{{ lions_redis_port | string }}"
+            {% endif %}
+
+            # Configuration du monitoring
+            {% if lions_monitoring_enabled %}
+            - name: METRICS_ENABLED
+              value: "true"
+            - name: METRICS_PORT
+              value: "{{ lions_primereact_metrics_port | default('3001') | string }}"
+            - name: METRICS_PATH
+              value: "{{ lions_primereact_metrics_path | default('/metrics') }}"
+            {% endif %}
+
+          # Configuration des variables depuis ConfigMap et Secrets
           envFrom:
             - configMapRef:
-                name: "{{ app_name }}-config"
+                name: "{{ lions_primereact_service_name | default(app_name) }}-config"
+                optional: false
+            {% if lions_primereact_secrets_enabled | default(true) %}
             - secretRef:
-                name: "{{ app_name }}-secrets"
+                name: "{{ lions_primereact_service_name | default(app_name) }}-secrets"
                 optional: true
+            {% endif %}
+            {% if lions_vault_enabled %}
+            - secretRef:
+                name: "{{ lions_primereact_service_name | default(app_name) }}-vault-secrets"
+                optional: true
+            {% endif %}
+
+          # Configuration des ressources selon l'environnement et la taille
           resources:
             requests:
-              cpu: "{{ primereact_resources[app_environment].requests.cpu }}"
-              memory: "{{ primereact_resources[app_environment].requests.memory }}"
+              cpu: "{{ lions_primereact_resources_profile[lions_environment].requests.cpu | default(lions_resources_medium_cpu_request) }}"
+              memory: "{{ lions_primereact_resources_profile[lions_environment].requests.memory | default(lions_resources_medium_memory_request) }}"
             limits:
-              cpu: "{{ primereact_resources[app_environment].limits.cpu }}"
-              memory: "{{ primereact_resources[app_environment].limits.memory }}"
+              cpu: "{{ lions_primereact_resources_profile[lions_environment].limits.cpu | default(lions_resources_medium_cpu_limit) }}"
+              memory: "{{ lions_primereact_resources_profile[lions_environment].limits.memory | default(lions_resources_medium_memory_limit) }}"
+
+          # Probes de santé optimisées selon l'environnement
           readinessProbe:
-            {{- primereact_readiness_probe | to_nice_yaml(indent=2) | indent(12) }}
+            httpGet:
+              path: {{ lions_primereact_health_readiness_path | default('/health/ready') }}
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: {{ lions_primereact_readiness_initial_delay | default(15) }}
+            periodSeconds: {{ lions_primereact_readiness_period | default(10) }}
+            timeoutSeconds: {{ lions_primereact_readiness_timeout | default(5) }}
+            successThreshold: 1
+            failureThreshold: {% if lions_environment == 'production' %}3{% else %}5{% endif %}
+
           livenessProbe:
-            {{- primereact_liveness_probe | to_nice_yaml(indent=2) | indent(12) }}
+            httpGet:
+              path: {{ lions_primereact_health_liveness_path | default('/health/live') }}
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: {{ lions_primereact_liveness_initial_delay | default(30) }}
+            periodSeconds: {{ lions_primereact_liveness_period | default(30) }}
+            timeoutSeconds: {{ lions_primereact_liveness_timeout | default(10) }}
+            successThreshold: 1
+            failureThreshold: {% if lions_environment == 'production' %}3{% else %}5{% endif %}
+
+          {% if lions_primereact_startup_probe_enabled | default(true) %}
+          startupProbe:
+            httpGet:
+              path: {{ lions_primereact_health_startup_path | default('/health/startup') }}
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: {{ lions_primereact_startup_initial_delay | default(10) }}
+            periodSeconds: {{ lions_primereact_startup_period | default(5) }}
+            timeoutSeconds: {{ lions_primereact_startup_timeout | default(3) }}
+            successThreshold: 1
+            failureThreshold: {{ lions_primereact_startup_failure_threshold | default(20) }}
+          {% endif %}
+
+          # Configuration des volumes montés
           volumeMounts:
+            # Volume temporaire sécurisé
             - name: tmp-volume
               mountPath: /tmp
+              readOnly: false
+
+            # Volume pour les logs applicatifs
+            - name: logs-volume
+              mountPath: /app/logs
+              readOnly: false
+
+            # Configuration en lecture seule
             - name: config-volume
               mountPath: /app/config
               readOnly: true
+
+            # Cache et données temporaires
+            {% if lions_primereact_cache_enabled | default(true) %}
+            - name: cache-volume
+              mountPath: /app/.cache
+              readOnly: false
+            {% endif %}
+
+            # Configuration TLS si activée
+            {% if lions_security_tls_enabled %}
+            - name: tls-certs
+              mountPath: /etc/ssl/certs/app
+              readOnly: true
+            {% endif %}
+
+          # Contexte de sécurité du conteneur
           securityContext:
             allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: {{ lions_primereact_security_uid | default(1001) }}
+            runAsGroup: {{ lions_primereact_security_gid | default(1001) }}
             capabilities:
-              drop:
-                - ALL
-            readOnlyRootFilesystem: false
+              drop: ["ALL"]
+            readOnlyRootFilesystem: {% if lions_primereact_readonly_root | default(true) %}true{% else %}false{% endif %}
+            {% if lions_security_pod_security_standards == 'restricted' %}
+            seccompProfile:
+              type: RuntimeDefault
+            {% endif %}
+
+        # Sidecar pour les métriques si nécessaire
+        {% if lions_monitoring_enabled and lions_primereact_metrics_sidecar_enabled | default(false) %}
+        - name: metrics-exporter
+          image: "{{ lions_metrics_exporter_image | default('prom/node-exporter:v1.6.1') }}"
+          ports:
+            - name: metrics-exp
+              containerPort: 9100
+              protocol: TCP
+          resources:
+            requests:
+              cpu: "{{ lions_resources_small_cpu_request }}"
+              memory: "{{ lions_resources_small_memory_request }}"
+            limits:
+              cpu: "{{ lions_resources_small_cpu_limit }}"
+              memory: "{{ lions_resources_small_memory_limit }}"
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65534
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+        {% endif %}
+
+      # Configuration des volumes
       volumes:
+        # Volume temporaire avec configuration de sécurité
         - name: tmp-volume
-          emptyDir: {}
+          emptyDir:
+            sizeLimit: {{ lions_primereact_tmp_size | default('1Gi') }}
+            {% if lions_primereact_tmp_memory | default(false) %}
+            medium: Memory
+            {% endif %}
+
+        # Volume pour les logs
+        - name: logs-volume
+          emptyDir:
+            sizeLimit: {{ lions_primereact_logs_size | default('500Mi') }}
+
+        # Configuration depuis ConfigMap
         - name: config-volume
           configMap:
-            name: "{{ app_name }}-config"
+            name: "{{ lions_primereact_service_name | default(app_name) }}-config"
+            defaultMode: 0644
+
+        # Cache persistant si activé
+        {% if lions_primereact_cache_enabled | default(true) %}
+        - name: cache-volume
+          {% if lions_primereact_cache_persistent | default(false) %}
+          persistentVolumeClaim:
+            claimName: "{{ lions_primereact_service_name | default(app_name) }}-cache"
+          {% else %}
+          emptyDir:
+            sizeLimit: {{ lions_primereact_cache_size | default('1Gi') }}
+          {% endif %}
+        {% endif %}
+
+        # Certificats TLS
+        {% if lions_security_tls_enabled %}
+        - name: tls-certs
+          secret:
+            secretName: "{{ lions_primereact_service_name | default(app_name) }}-tls"
+            defaultMode: 0400
+        {% endif %}
+
+      # Configuration de l'affinité selon l'environnement
       affinity:
+        # Anti-affinité pour éviter que les pods soient sur le même nœud
         podAntiAffinity:
+          {% if lions_environment == 'production' %}
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app.kubernetes.io/name
+                    operator: In
+                    values: ["{{ lions_primereact_service_name | default(app_name) }}"]
+              topologyKey: kubernetes.io/hostname
+          {% else %}
           preferredDuringSchedulingIgnoredDuringExecution:
             - weight: 100
               podAffinityTerm:
                 labelSelector:
                   matchExpressions:
-                    - key: app
+                    - key: app.kubernetes.io/name
                       operator: In
-                      values:
-                        - "{{ app_name }}"
+                      values: ["{{ lions_primereact_service_name | default(app_name) }}"]
                 topologyKey: kubernetes.io/hostname
-      terminationGracePeriodSeconds: 30
+          {% endif %}
+
+        # Affinité avec les services backend si configurée
+        {% if lions_primereact_backend_affinity_enabled | default(false) %}
+        podAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 50
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: lions.dev/tier
+                      operator: In
+                      values: ["backend"]
+                topologyKey: kubernetes.io/hostname
+        {% endif %}
+
+      # Configuration des tolérances selon l'environnement
+      {% if lions_primereact_tolerations_enabled | default(false) %}
+      tolerations:
+        {% for toleration in lions_primereact_tolerations | default([]) %}
+        - key: "{{ toleration.key }}"
+          operator: "{{ toleration.operator | default('Equal') }}"
+          value: "{{ toleration.value | default('') }}"
+          effect: "{{ toleration.effect }}"
+          {% if toleration.tolerationSeconds is defined %}
+          tolerationSeconds: {{ toleration.tolerationSeconds }}
+          {% endif %}
+        {% endfor %}
+      {% endif %}
+
+      # Sélecteur de nœud si configuré
+      {% if lions_primereact_node_selector | default({}) %}
+      nodeSelector:
+        {% for key, value in lions_primereact_node_selector.items() %}
+        {{ key }}: "{{ value }}"
+        {% endfor %}
+      {% endif %}
+
+      # Configuration de la terminaison gracieuse
+      terminationGracePeriodSeconds: {{ lions_primereact_termination_grace_period | default(30) }}
+
+      # Configuration DNS
+      {% if lions_primereact_dns_config_enabled | default(false) %}
+      dnsPolicy: "{{ lions_primereact_dns_policy | default('ClusterFirst') }}"
+      {% if lions_primereact_dns_config is defined %}
+      dnsConfig:
+        {{- lions_primereact_dns_config | to_nice_yaml(indent=2) | indent(8) }}
+      {% endif %}
+      {% endif %}
+
+      # Configuration du restart policy
+      restartPolicy: Always
+
+      # Configuration de la priorité du pod
+      {% if lions_environment == 'production' %}
+      priorityClassName: "{{ lions_primereact_priority_class | default('high-priority') }}"
+      {% endif %}
+
+# =========================================================================
+# FIN DU TEMPLATE DEPLOYMENT PRIMEREACT
+# =========================================================================

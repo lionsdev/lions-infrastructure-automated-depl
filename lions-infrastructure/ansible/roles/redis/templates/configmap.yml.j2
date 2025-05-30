@@ -1,102 +1,445 @@
 ---
-# Titre: Template de ConfigMap Kubernetes pour Redis
-# Description: Définit la ConfigMap Kubernetes pour Redis
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-08
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - REDIS CONFIGMAP TEMPLATE
+# =========================================================================
+# Description: Template Jinja2 pour ConfigMap Kubernetes Redis
+# Version: 5.0.0
+# Maintainer: DevOps Team
+# Documentation: https://docs.lions.dev/infrastructure/redis
+# Conformité: Kubernetes 1.30+, Redis 7.2+
+# =========================================================================
 
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: "{{ app_name }}-config"
-  namespace: "{{ app_namespace }}"
+  name: "{{ lions_redis_service_name | default(lions_redis_service_name_default) }}-config"
+  namespace: "{{ lions_redis_namespace | default(lions_redis_namespace_default) }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "redis"
+    # Labels standards LIONS Infrastructure
+    app.kubernetes.io/name: "{{ lions_redis_service_name | default(lions_redis_service_name_default) }}"
+    app.kubernetes.io/instance: "{{ lions_redis_service_name | default(lions_redis_service_name_default) }}-{{ lions_environment }}"
+    app.kubernetes.io/version: "{{ lions_redis_version | default(lions_redis_version_default) }}"
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: lions-infrastructure
+    app.kubernetes.io/managed-by: ansible
+
+    # Labels environnement
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/deployment-mode: "{{ lions_deployment_mode | default('single') }}"
+    lions.dev/tier: database
+    lions.dev/technology: redis
+    lions.dev/backup-policy: "{{ lions_backup_enabled | string | lower }}"
+
+    # Labels monitoring
+    lions.dev/monitoring-enabled: "{{ lions_monitoring_enabled | string | lower }}"
+    lions.dev/metrics-scrape: "{{ lions_redis_prometheus_scrape | default(true) | string | lower }}"
+
+    # Labels sécurité
+    lions.dev/security-context: "{{ lions_redis_security_context | default('restricted') }}"
+    lions.dev/tls-enabled: "{{ lions_redis_tls_enabled | default(lions_security_tls_enabled) | string | lower }}"
+
   annotations:
-    description: "ConfigMap pour Redis {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    # Annotations de description
+    description: "Redis ConfigMap pour environnement {{ lions_environment }}"
+    lions.dev/service-description: "Configuration centralisée pour Redis {{ lions_redis_version | default(lions_redis_version_default) }}"
+    lions.dev/config-version: "5.0.0"
+    lions.dev/last-updated: "{{ ansible_date_time.iso8601 }}"
+    lions.dev/maintainer: "{{ lions_config_maintainer | default('devops@lions.dev') }}"
+
+    # Annotations de configuration
+    lions.dev/config-checksum: "{{ lions_redis_config_content | hash('sha256') }}"
+    lions.dev/deployment-strategy: "{{ lions_redis_deployment_strategy | default('RollingUpdate') }}"
+
+    # Annotations de monitoring
+    prometheus.io/scrape: "{{ lions_redis_prometheus_scrape | default(true) | string | lower }}"
+    prometheus.io/port: "{{ lions_redis_prometheus_port | default('9121') }}"
+    prometheus.io/path: "{{ lions_redis_prometheus_path | default('/metrics') }}"
+
+    # Annotations de sécurité
+    lions.dev/security-scan-date: "{{ ansible_date_time.date }}"
+    lions.dev/vulnerability-scan: "enabled"
+
 data:
-  # Variables d'environnement pour Redis
-  REDIS_PORT: "{{ redis_default_port }}"
-  REDIS_APPLICATION_NAME: "{{ app_name }}"
-  REDIS_APPLICATION_VERSION: "{{ app_version }}"
-  
-  # Configuration de Redis
-  REDIS_MAXMEMORY: "{{ redis_maxmemory }}"
-  REDIS_MAXMEMORY_POLICY: "{{ redis_maxmemory_policy }}"
-  REDIS_APPENDONLY: "{{ redis_appendonly }}"
-  REDIS_APPENDFSYNC: "{{ redis_appendfsync }}"
-  REDIS_DATABASES: "{{ redis_databases }}"
-  REDIS_TCP_KEEPALIVE: "{{ redis_tcp_keepalive }}"
-  
-  # Configuration du cluster Redis
-  REDIS_CLUSTER_ENABLED: "{{ redis_cluster_enabled | string | lower }}"
-{% if redis_cluster_enabled | bool %}
-  REDIS_CLUSTER_REPLICAS: "{{ redis_cluster_replicas }}"
+  # =========================================================================
+  # VARIABLES D'ENVIRONNEMENT REDIS
+  # =========================================================================
+
+  # Configuration de base
+  REDIS_PORT: "{{ lions_redis_port | default(6379) }}"
+  REDIS_SERVICE_NAME: "{{ lions_redis_service_name | default(lions_redis_service_name_default) }}"
+  REDIS_VERSION: "{{ lions_redis_version | default(lions_redis_version_default) }}"
+  REDIS_ENVIRONMENT: "{{ lions_environment }}"
+
+  # Configuration réseau
+  REDIS_BIND_ADDRESS: "{{ lions_redis_bind_address | default('0.0.0.0') }}"
+  REDIS_PROTECTED_MODE: "{{ lions_redis_protected_mode | default(true) | string | lower }}"
+  REDIS_TCP_KEEPALIVE: "{{ lions_redis_tcp_keepalive | default(300) }}"
+  REDIS_TCP_BACKLOG: "{{ lions_redis_tcp_backlog | default(511) }}"
+
+  # Configuration de mémoire
+  REDIS_MAXMEMORY: "{{ lions_redis_maxmemory | default('1gb') }}"
+  REDIS_MAXMEMORY_POLICY: "{{ lions_redis_maxmemory_policy | default('allkeys-lru') }}"
+  REDIS_MAXMEMORY_SAMPLES: "{{ lions_redis_maxmemory_samples | default(5) }}"
+
+  # Configuration de persistance
+  REDIS_APPENDONLY: "{{ lions_redis_appendonly | default(true) | string | lower }}"
+  REDIS_APPENDFSYNC: "{{ lions_redis_appendfsync | default('everysec') }}"
+  REDIS_SAVE_ENABLED: "{{ lions_redis_save_enabled | default(true) | string | lower }}"
+  REDIS_RDB_COMPRESSION: "{{ lions_redis_rdb_compression | default(true) | string | lower }}"
+  REDIS_RDB_CHECKSUM: "{{ lions_redis_rdb_checksum | default(true) | string | lower }}"
+
+  # Configuration des bases de données
+  REDIS_DATABASES: "{{ lions_redis_databases | default(16) }}"
+
+  # Configuration de sécurité
+  REDIS_TLS_ENABLED: "{{ lions_redis_tls_enabled | default(lions_security_tls_enabled) | string | lower }}"
+  REDIS_AUTH_ENABLED: "{{ lions_redis_auth_enabled | default(true) | string | lower }}"
+  REDIS_ACL_ENABLED: "{{ lions_redis_acl_enabled | default(true) | string | lower }}"
+
+  # Configuration de performance
+  REDIS_IO_THREADS: "{{ lions_redis_io_threads | default(4) }}"
+  REDIS_IO_THREADS_DO_READS: "{{ lions_redis_io_threads_do_reads | default(true) | string | lower }}"
+  REDIS_LAZY_FREEING: "{{ lions_redis_lazy_freeing | default(true) | string | lower }}"
+
+  # Configuration cluster
+  REDIS_CLUSTER_ENABLED: "{{ lions_redis_cluster_enabled | default(false) | string | lower }}"
+{% if lions_redis_cluster_enabled | default(false) | bool %}
+  REDIS_CLUSTER_REPLICAS: "{{ lions_redis_cluster_replicas | default(1) }}"
+  REDIS_CLUSTER_NODE_TIMEOUT: "{{ lions_redis_cluster_node_timeout | default(15000) }}"
+  REDIS_CLUSTER_MIGRATION_BARRIER: "{{ lions_redis_cluster_migration_barrier | default(1) }}"
 {% endif %}
-  
-  # Configuration de la sécurité
-  REDIS_TLS_ENABLED: "{{ redis_tls_enabled | string | lower }}"
-  REDIS_PROTECTED_MODE: "{{ redis_protected_mode | string | lower }}"
-  REDIS_BIND_ALL: "{{ redis_bind_all | string | lower }}"
-  
-  # Configuration du monitoring
-  REDIS_PROMETHEUS_SCRAPE: "{{ redis_prometheus_scrape | string | lower }}"
-  REDIS_PROMETHEUS_PORT: "{{ redis_prometheus_port }}"
-  REDIS_PROMETHEUS_PATH: "{{ redis_prometheus_path }}"
-  
-  # Fichier de configuration Redis (redis.conf)
+
+  # Configuration de monitoring
+  REDIS_PROMETHEUS_ENABLED: "{{ lions_redis_prometheus_enabled | default(lions_monitoring_enabled) | string | lower }}"
+  REDIS_PROMETHEUS_PORT: "{{ lions_redis_prometheus_port | default('9121') }}"
+  REDIS_PROMETHEUS_PATH: "{{ lions_redis_prometheus_path | default('/metrics') }}"
+  REDIS_PROMETHEUS_NAMESPACE: "{{ lions_redis_prometheus_namespace | default('redis') }}"
+
+  # Configuration de logging
+  REDIS_LOG_LEVEL: "{{ lions_redis_log_level | default(lions_log_level | lower) }}"
+  REDIS_SYSLOG_ENABLED: "{{ lions_redis_syslog_enabled | default(false) | string | lower }}"
+  REDIS_SLOW_LOG_ENABLED: "{{ lions_redis_slow_log_enabled | default(true) | string | lower }}"
+  REDIS_SLOW_LOG_SLOWER_THAN: "{{ lions_redis_slow_log_slower_than | default(10000) }}"
+  REDIS_SLOW_LOG_MAX_LEN: "{{ lions_redis_slow_log_max_len | default(128) }}"
+
+  # Configuration de backup
+  REDIS_BACKUP_ENABLED: "{{ lions_redis_backup_enabled | default(lions_backup_enabled) | string | lower }}"
+  REDIS_BACKUP_SCHEDULE: "{{ lions_redis_backup_schedule | default(lions_backup_schedule) }}"
+
+  # Variables d'environnement spécifiques
+{% set redis_env_config = {
+    'development': {
+        'log_level': 'debug',
+        'slow_log_enabled': true,
+        'latency_monitoring': true,
+        'maxmemory_policy': 'noeviction'
+    },
+    'staging': {
+        'log_level': 'notice',
+        'slow_log_enabled': true,
+        'latency_monitoring': true,
+        'maxmemory_policy': 'allkeys-lru'
+    },
+    'production': {
+        'log_level': 'warning',
+        'slow_log_enabled': false,
+        'latency_monitoring': false,
+        'maxmemory_policy': 'allkeys-lru'
+    }
+} %}
+{% set current_env_config = redis_env_config[lions_environment] | default(redis_env_config['development']) %}
+
+  REDIS_ENVIRONMENT_LOG_LEVEL: "{{ current_env_config.log_level }}"
+  REDIS_LATENCY_MONITORING: "{{ current_env_config.latency_monitoring | string | lower }}"
+
+  # =========================================================================
+  # FICHIER DE CONFIGURATION REDIS (redis.conf)
+  # =========================================================================
   redis.conf: |
-    # Configuration Redis générée par LIONS Infrastructure
-    
-    # Paramètres réseau
-    port {{ redis_default_port }}
-    bind {% if redis_bind_all %}0.0.0.0{% else %}127.0.0.1{% endif %}
-    protected-mode {{ "yes" if redis_protected_mode else "no" }}
-    tcp-keepalive {{ redis_tcp_keepalive }}
-    
-    # Paramètres de base
+    # =========================================================================
+    # REDIS CONFIGURATION - LIONS INFRASTRUCTURE 5.0
+    # =========================================================================
+    # Environnement: {{ lions_environment }}
+    # Version Redis: {{ lions_redis_version | default(lions_redis_version_default) }}
+    # Généré le: {{ ansible_date_time.iso8601 }}
+    # =========================================================================
+
+    # -------------------------------------------------------------------------
+    # CONFIGURATION RÉSEAU
+    # -------------------------------------------------------------------------
+    port {{ lions_redis_port | default(6379) }}
+    bind {{ lions_redis_bind_address | default('0.0.0.0') }}
+    protected-mode {{ "yes" if lions_redis_protected_mode | default(true) else "no" }}
+    tcp-keepalive {{ lions_redis_tcp_keepalive | default(300) }}
+    tcp-backlog {{ lions_redis_tcp_backlog | default(511) }}
+    timeout {{ lions_redis_timeout | default(0) }}
+
+    # -------------------------------------------------------------------------
+    # CONFIGURATION GÉNÉRAL
+    # -------------------------------------------------------------------------
     daemonize no
     supervised no
     pidfile /var/run/redis/redis-server.pid
-    loglevel {% if app_environment == 'production' %}notice{% elif app_environment == 'staging' %}notice{% else %}verbose{% endif %}
+
+    # Configuration des bases de données
+    databases {{ lions_redis_databases | default(16) }}
+
+    # -------------------------------------------------------------------------
+    # CONFIGURATION LOGGING
+    # -------------------------------------------------------------------------
+    loglevel {{ current_env_config.log_level }}
     logfile ""
-    databases {{ redis_databases }}
-    
-    # Paramètres de persistance
+    syslog-enabled {{ "yes" if lions_redis_syslog_enabled | default(false) else "no" }}
+{% if lions_redis_syslog_enabled | default(false) %}
+    syslog-ident lions-redis-{{ lions_environment }}
+    syslog-facility local0
+{% endif %}
+
+    # Configuration des logs lents
+{% if lions_redis_slow_log_enabled | default(true) %}
+    slowlog-log-slower-than {{ lions_redis_slow_log_slower_than | default(10000) }}
+    slowlog-max-len {{ lions_redis_slow_log_max_len | default(128) }}
+{% else %}
+    slowlog-log-slower-than -1
+{% endif %}
+
+    # -------------------------------------------------------------------------
+    # CONFIGURATION MÉMOIRE
+    # -------------------------------------------------------------------------
+    maxmemory {{ lions_redis_maxmemory | default('1gb') }}
+    maxmemory-policy {{ current_env_config.maxmemory_policy }}
+    maxmemory-samples {{ lions_redis_maxmemory_samples | default(5) }}
+
+    # -------------------------------------------------------------------------
+    # CONFIGURATION PERSISTANCE
+    # -------------------------------------------------------------------------
     dir /data
-    appendonly {{ redis_appendonly }}
-    appendfsync {{ redis_appendfsync }}
-    
-    # Paramètres de mémoire
-    maxmemory {{ redis_maxmemory }}
-    maxmemory-policy {{ redis_maxmemory_policy }}
-    
-    # Paramètres de sécurité
-{% if redis_password_enabled | bool %}
+
+    # Configuration RDB
+{% if lions_redis_save_enabled | default(true) %}
+    save 900 1
+    save 300 10
+    save 60 10000
+{% else %}
+    save ""
+{% endif %}
+
+    stop-writes-on-bgsave-error {{ "yes" if lions_redis_stop_writes_on_bgsave_error | default(true) else "no" }}
+    rdbcompression {{ "yes" if lions_redis_rdb_compression | default(true) else "no" }}
+    rdbchecksum {{ "yes" if lions_redis_rdb_checksum | default(true) else "no" }}
+    dbfilename dump.rdb
+
+    # Configuration AOF
+    appendonly {{ "yes" if lions_redis_appendonly | default(true) else "no" }}
+    appendfilename "appendonly.aof"
+    appendfsync {{ lions_redis_appendfsync | default('everysec') }}
+    no-appendfsync-on-rewrite {{ "yes" if lions_redis_no_appendfsync_on_rewrite | default(false) else "no" }}
+    auto-aof-rewrite-percentage {{ lions_redis_auto_aof_rewrite_percentage | default(100) }}
+    auto-aof-rewrite-min-size {{ lions_redis_auto_aof_rewrite_min_size | default('64mb') }}
+    aof-load-truncated {{ "yes" if lions_redis_aof_load_truncated | default(true) else "no" }}
+    aof-use-rdb-preamble {{ "yes" if lions_redis_aof_use_rdb_preamble | default(true) else "no" }}
+
+    # -------------------------------------------------------------------------
+    # CONFIGURATION SÉCURITÉ
+    # -------------------------------------------------------------------------
+{% if lions_redis_auth_enabled | default(true) %}
+    # Authentification par mot de passe (récupéré depuis les secrets)
     requirepass ${REDIS_PASSWORD}
 {% endif %}
-{% if redis_tls_enabled | bool %}
-    tls-port {{ redis_default_port }}
+
+{% if lions_redis_acl_enabled | default(true) %}
+    # Configuration ACL
+    aclfile /etc/redis/users.acl
+{% endif %}
+
+{% if lions_redis_tls_enabled | default(lions_security_tls_enabled) %}
+    # Configuration TLS
+    tls-port {{ lions_redis_port | default(6379) }}
+    port 0
     tls-cert-file /etc/redis/tls/tls.crt
     tls-key-file /etc/redis/tls/tls.key
     tls-ca-cert-file /etc/redis/tls/ca.crt
     tls-auth-clients yes
+    tls-protocols "TLSv1.2 TLSv1.3"
+    tls-ciphers "ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20:!aNULL:!MD5:!DSS"
+    tls-ciphersuites "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256"
 {% endif %}
-    
-    # Paramètres de cluster
-{% if redis_cluster_enabled | bool %}
+
+    # -------------------------------------------------------------------------
+    # CONFIGURATION PERFORMANCE
+    # -------------------------------------------------------------------------
+    # Threads I/O
+    io-threads {{ lions_redis_io_threads | default(4) }}
+    io-threads-do-reads {{ "yes" if lions_redis_io_threads_do_reads | default(true) else "no" }}
+
+    # Lazy freeing
+    lazyfree-lazy-eviction {{ "yes" if lions_redis_lazy_freeing | default(true) else "no" }}
+    lazyfree-lazy-expire {{ "yes" if lions_redis_lazy_freeing | default(true) else "no" }}
+    lazyfree-lazy-server-del {{ "yes" if lions_redis_lazy_freeing | default(true) else "no" }}
+    replica-lazy-flush {{ "yes" if lions_redis_lazy_freeing | default(true) else "no" }}
+
+    # Configuration des clients
+    maxclients {{ lions_redis_maxclients | default(10000) }}
+
+    # -------------------------------------------------------------------------
+    # CONFIGURATION MONITORING
+    # -------------------------------------------------------------------------
+{% if current_env_config.latency_monitoring %}
+    latency-monitor-threshold {{ lions_redis_latency_threshold | default(100) }}
+{% endif %}
+
+    # -------------------------------------------------------------------------
+    # CONFIGURATION CLUSTER
+    # -------------------------------------------------------------------------
+{% if lions_redis_cluster_enabled | default(false) %}
     cluster-enabled yes
-    cluster-config-file /data/nodes.conf
-    cluster-node-timeout 5000
-    cluster-replica-validity-factor 10
-    cluster-migration-barrier 1
-    cluster-require-full-coverage yes
-    cluster-replica-no-failover no
+    cluster-config-file /data/nodes-{{ lions_environment }}.conf
+    cluster-node-timeout {{ lions_redis_cluster_node_timeout | default(15000) }}
+    cluster-replica-validity-factor {{ lions_redis_cluster_replica_validity_factor | default(10) }}
+    cluster-migration-barrier {{ lions_redis_cluster_migration_barrier | default(1) }}
+    cluster-require-full-coverage {{ "yes" if lions_redis_cluster_require_full_coverage | default(true) else "no" }}
+    cluster-replica-no-failover {{ "yes" if lions_redis_cluster_replica_no_failover | default(false) else "no" }}
+    cluster-allow-reads-when-down {{ "yes" if lions_redis_cluster_allow_reads_when_down | default(false) else "no" }}
 {% endif %}
-    
-    # Paramètres de performance
-    io-threads 4
-    io-threads-do-reads yes
+
+    # -------------------------------------------------------------------------
+    # CONFIGURATION ENVIRONNEMENT SPÉCIFIQUE
+    # -------------------------------------------------------------------------
+{% if lions_environment == 'development' %}
+    # Configuration développement
+    notify-keyspace-events "Ex"
+
+{% elif lions_environment == 'staging' %}
+    # Configuration staging
+    notify-keyspace-events "Ex"
+
+{% elif lions_environment == 'production' %}
+    # Configuration production - optimisations de performance
+    hash-max-ziplist-entries 512
+    hash-max-ziplist-value 64
+    list-max-ziplist-size -2
+    list-compress-depth 0
+    set-max-intset-entries 512
+    zset-max-ziplist-entries 128
+    zset-max-ziplist-value 64
+    hll-sparse-max-bytes 3000
+    stream-node-max-bytes 4096
+    stream-node-max-entries 100
+
+{% endif %}
+
+    # -------------------------------------------------------------------------
+    # CONFIGURATION FINALE
+    # -------------------------------------------------------------------------
+    # Désactiver certaines commandes dangereuses en production
+{% if lions_environment == 'production' %}
+    rename-command FLUSHDB ""
+    rename-command FLUSHALL ""
+    rename-command EVAL ""
+    rename-command DEBUG ""
+    rename-command CONFIG ""
+{% endif %}
+
+    # =========================================================================
+    # FIN DE CONFIGURATION REDIS
+    # =========================================================================
+
+  # =========================================================================
+  # CONFIGURATION ACL REDIS (users.acl)
+  # =========================================================================
+{% if lions_redis_acl_enabled | default(true) %}
+  users.acl: |
+    # =========================================================================
+    # REDIS ACL CONFIGURATION - LIONS INFRASTRUCTURE 5.0
+    # =========================================================================
+
+    # Utilisateur par défaut (désactivé pour sécurité)
+    user default off
+
+    # Utilisateur admin (accès complet)
+    user lions-admin on >${REDIS_ADMIN_PASSWORD} ~* &* +@all
+
+    # Utilisateur application (accès limité)
+    user lions-app on >${REDIS_APP_PASSWORD} ~{{ lions_redis_app_key_pattern | default('app:*') }} +@read +@write +@list +@hash +@set +@sorted_set +@stream +@string +@bitmap +@hyperloglog -@dangerous
+
+    # Utilisateur monitoring (lecture seule)
+    user lions-monitoring on >${REDIS_MONITORING_PASSWORD} ~* +@read +info +ping +client +config|get
+
+    # Utilisateur backup (accès pour sauvegarde)
+    user lions-backup on >${REDIS_BACKUP_PASSWORD} ~* +@read +bgsave +lastsave +dbsize
+{% endif %}
+
+  # =========================================================================
+  # SCRIPT DE VÉRIFICATION DE SANTÉ
+  # =========================================================================
+  healthcheck.sh: |
+    #!/bin/bash
+    # Script de vérification de santé Redis
+
+    set -euo pipefail
+
+    # Configuration
+    REDIS_HOST="${REDIS_HOST:-localhost}"
+    REDIS_PORT="${REDIS_PORT:-6379}"
+    TIMEOUT="${HEALTH_CHECK_TIMEOUT:-5}"
+
+    # Fonction de log
+    log() {
+        echo "$(date '+%Y-%m-%d %H:%M:%S') [HEALTHCHECK] $*"
+    }
+
+    # Vérification de la connectivité
+    if ! timeout "$TIMEOUT" redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" ping > /dev/null 2>&1; then
+        log "ERROR: Redis ne répond pas sur $REDIS_HOST:$REDIS_PORT"
+        exit 1
+    fi
+
+    # Vérification de la mémoire
+    MEMORY_USAGE=$(redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" info memory | grep used_memory_human | cut -d: -f2 | tr -d '\r\n')
+    log "INFO: Utilisation mémoire Redis: $MEMORY_USAGE"
+
+    # Vérification du nombre de clients connectés
+    CONNECTED_CLIENTS=$(redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" info clients | grep connected_clients | cut -d: -f2 | tr -d '\r\n')
+    log "INFO: Clients connectés: $CONNECTED_CLIENTS"
+
+    log "SUCCESS: Redis est en bonne santé"
+    exit 0
+
+  # =========================================================================
+  # SCRIPT DE BACKUP
+  # =========================================================================
+{% if lions_redis_backup_enabled | default(lions_backup_enabled) %}
+  backup.sh: |
+    #!/bin/bash
+    # Script de backup Redis
+
+    set -euo pipefail
+
+    # Configuration
+    BACKUP_DIR="${BACKUP_DIR:-/backup}"
+    RETENTION_DAYS="${LIONS_BACKUP_RETENTION_DAYS:-{{ lions_backup_retention_days | default(30) }}}"
+    TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+    BACKUP_FILE="redis_backup_${LIONS_ENVIRONMENT}_${TIMESTAMP}.rdb"
+
+    # Fonction de log
+    log() {
+        echo "$(date '+%Y-%m-%d %H:%M:%S') [BACKUP] $*"
+    }
+
+    # Création du répertoire de backup
+    mkdir -p "$BACKUP_DIR"
+
+    # Backup RDB
+    log "INFO: Démarrage du backup Redis"
+    redis-cli --rdb "$BACKUP_DIR/$BACKUP_FILE"
+
+    # Compression
+    log "INFO: Compression du backup"
+    gzip "$BACKUP_DIR/$BACKUP_FILE"
+
+    # Nettoyage des anciens backups
+    log "INFO: Nettoyage des backups de plus de $RETENTION_DAYS jours"
+    find "$BACKUP_DIR" -name "redis_backup_${LIONS_ENVIRONMENT}_*.rdb.gz" -mtime +"$RETENTION_DAYS" -delete
+
+    log "SUCCESS: Backup terminé: $BACKUP_FILE.gz"
+{% endif %}

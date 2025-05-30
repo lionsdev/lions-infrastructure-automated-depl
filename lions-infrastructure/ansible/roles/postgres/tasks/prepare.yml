@@ -1,149 +1,540 @@
 ---
-# Titre: Préparation des ressources pour PostgreSQL
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - POSTGRESQL PREPARATION TASKS
+# =========================================================================
 # Description: Prépare les ressources nécessaires pour déployer PostgreSQL
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# Auteur: DevOps Team - LIONS Infrastructure
+# Date: "{{ ansible_date_time.date }}"
+# Version: 5.0.0
+# Documentation: https://docs.lions.dev/infrastructure/postgres/preparation
+# =========================================================================
 
-- name: Création du répertoire temporaire pour les templates
+# =========================================================================
+# VALIDATION DES PRÉREQUIS
+# =========================================================================
+- name: "🔍 [POSTGRES-PREP] Validation des variables d'environnement critiques"
+  assert:
+    that:
+      - lions_postgres_enabled is defined
+      - lions_postgres_namespace is defined
+      - lions_postgres_service_name is defined
+      - lions_postgres_version is defined
+      - lions_postgres_storage_size is defined
+      - lions_environment is defined
+    fail_msg: "❌ Variables d'environnement LIONS PostgreSQL manquantes"
+    success_msg: "✅ Variables d'environnement PostgreSQL validées"
+  tags:
+    - validation
+    - postgres
+    - preparation
+
+- name: "🔍 [POSTGRES-PREP] Vérification de l'état du cluster Kubernetes"
+  k8s_info:
+    api_version: v1
+    kind: Node
+  register: k8s_cluster_status
+  failed_when: false
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file | default('/home/' + ansible_user + '/.kube/config') }}"
+  tags:
+    - validation
+    - k8s
+
+- name: "❌ [POSTGRES-PREP] Échec - Cluster Kubernetes inaccessible"
+  fail:
+    msg: "Le cluster Kubernetes n'est pas accessible. Vérifiez la configuration."
+  when: k8s_cluster_status.failed
+  tags:
+    - validation
+    - k8s
+
+- name: "✅ [POSTGRES-PREP] Cluster Kubernetes opérationnel ({{ k8s_cluster_status.resources | length }} nœuds)"
+  debug:
+    msg: "Cluster K8s accessible avec {{ k8s_cluster_status.resources | length }} nœud(s)"
+  tags:
+    - validation
+    - k8s
+
+# =========================================================================
+# CRÉATION DU NAMESPACE ET VÉRIFICATIONS
+# =========================================================================
+- name: "🏗️ [POSTGRES-PREP] Création/Vérification du namespace {{ lions_postgres_namespace }}"
+  k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ lions_postgres_namespace }}"
+        labels:
+          name: "{{ lions_postgres_namespace }}"
+          app.kubernetes.io/name: postgresql
+          app.kubernetes.io/component: database
+          app.kubernetes.io/part-of: lions-infrastructure
+          app.kubernetes.io/managed-by: ansible
+          lions.dev/environment: "{{ lions_environment }}"
+          lions.dev/version: "{{ lions_config_version | default('5.0.0') }}"
+        annotations:
+          lions.dev/description: "Namespace pour les services de base de données PostgreSQL"
+          lions.dev/created-by: "lions-infrastructure-ansible"
+          lions.dev/creation-date: "{{ ansible_date_time.iso8601 }}"
+  register: postgres_namespace_result
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file | default('/home/' + ansible_user + '/.kube/config') }}"
+  tags:
+    - namespace
+    - postgres
+
+- name: "🔍 [POSTGRES-PREP] Vérification des ressources système requises"
+  k8s_info:
+    api_version: v1
+    kind: Node
+  register: cluster_nodes
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file | default('/home/' + ansible_user + '/.kube/config') }}"
+  tags:
+    - validation
+    - resources
+
+- name: "⚠️ [POSTGRES-PREP] Avertissement - Ressources système limitées"
+  debug:
+    msg: |
+      AVERTISSEMENT: Cluster à nœud unique détecté.
+      Pour la production, considérez un déploiement multi-nœuds pour PostgreSQL HA.
+  when: cluster_nodes.resources | length == 1 and lions_environment == 'production'
+  tags:
+    - validation
+    - resources
+
+# =========================================================================
+# PRÉPARATION DES RÉPERTOIRES DE TRAVAIL
+# =========================================================================
+- name: "📁 [POSTGRES-PREP] Création du répertoire de travail temporaire"
   tempfile:
     state: directory
-    suffix: postgres-deploy
-  register: temp_dir
+    suffix: ".lions-postgres-{{ lions_environment }}"
+    prefix: "postgres-deploy-"
+  register: postgres_temp_dir
   changed_when: false
+  tags:
+    - preparation
+    - filesystem
 
-- name: Génération des fichiers de configuration Kubernetes
+- name: "📋 [POSTGRES-PREP] Enregistrement du répertoire de travail"
+  set_fact:
+    postgres_work_dir: "{{ postgres_temp_dir.path }}"
+    postgres_manifest_files:
+      - name: serviceaccount
+        template: serviceaccount.yml.j2
+        required: true
+      - name: configmap
+        template: configmap.yml.j2
+        required: true
+      - name: persistentvolumeclaim
+        template: persistentvolumeclaim.yml.j2
+        required: true
+      - name: service
+        template: service.yml.j2
+        required: true
+      - name: statefulset
+        template: statefulset.yml.j2
+        required: true
+      - name: servicemonitor
+        template: servicemonitor.yml.j2
+        required: "{{ lions_monitoring_enabled | default(false) | bool }}"
+  tags:
+    - preparation
+
+# =========================================================================
+# GÉNÉRATION DES MANIFESTES KUBERNETES
+# =========================================================================
+- name: "🔧 [POSTGRES-PREP] Génération des manifestes Kubernetes"
   template:
-    src: "{{ item.src }}"
-    dest: "{{ temp_dir.path }}/{{ item.dest }}"
-  loop:
-    - { src: "statefulset.yml.j2", dest: "statefulset.yml" }
-    - { src: "service.yml.j2", dest: "service.yml" }
-    - { src: "configmap.yml.j2", dest: "configmap.yml" }
-    - { src: "serviceaccount.yml.j2", dest: "serviceaccount.yml" }
-    - { src: "servicemonitor.yml.j2", dest: "servicemonitor.yml" }
-    - { src: "persistentvolumeclaim.yml.j2", dest: "persistentvolumeclaim.yml" }
-  register: templates_generated
+    src: "{{ item.template }}"
+    dest: "{{ postgres_work_dir }}/{{ item.name }}.yml"
+    mode: '0644'
+    backup: false
+  loop: "{{ postgres_manifest_files }}"
+  when: item.required | bool
+  register: postgres_templates_generated
+  tags:
+    - templates
+    - manifests
 
-- name: Vérification des fichiers générés
+- name: "🔍 [POSTGRES-PREP] Validation des manifestes générés"
   stat:
-    path: "{{ temp_dir.path }}/{{ item }}"
-  loop:
-    - "statefulset.yml"
-    - "service.yml"
-    - "configmap.yml"
-    - "serviceaccount.yml"
-    - "servicemonitor.yml"
-    - "persistentvolumeclaim.yml"
-  register: files_check
+    path: "{{ postgres_work_dir }}/{{ item.name }}.yml"
+  loop: "{{ postgres_manifest_files }}"
+  when: item.required | bool
+  register: postgres_manifest_validation
+  tags:
+    - validation
+    - manifests
 
-- name: Vérification que tous les fichiers existent
-  assert:
-    that: "item.stat.exists"
-    fail_msg: "Le fichier {{ item.invocation.module_args.path }} n'existe pas"
-  loop: "{{ files_check.results }}"
+- name: "❌ [POSTGRES-PREP] Échec - Manifestes manquants"
+  fail:
+    msg: "Le manifeste {{ item.item.name }}.yml n'a pas été généré correctement"
+  loop: "{{ postgres_manifest_validation.results }}"
+  when:
+    - item.item.required | bool
+    - not item.stat.exists
+  tags:
+    - validation
+    - manifests
 
-- name: Création du compte de service
-  k8s:
-    state: present
-    src: "{{ temp_dir.path }}/serviceaccount.yml"
-  register: serviceaccount_result
-  environment:
-    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+- name: "✅ [POSTGRES-PREP] Manifestes Kubernetes générés avec succès"
+  debug:
+    msg: "Tous les manifestes requis ont été générés dans {{ postgres_work_dir }}"
+  tags:
+    - manifests
 
-- name: Création du ConfigMap pour la configuration de PostgreSQL
-  k8s:
-    state: present
-    src: "{{ temp_dir.path }}/configmap.yml"
-  register: configmap_result
-  environment:
-    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+# =========================================================================
+# GESTION DES SECRETS - INTÉGRATION VAULT
+# =========================================================================
+- name: "🔐 [POSTGRES-PREP] Vérification de l'intégration Vault"
+  uri:
+    url: "{{ lions_vault_addr | default('http://localhost:8200') }}/v1/sys/health"
+    method: GET
+    status_code: [200, 429, 472, 473, 501, 503]
+    timeout: 10
+  register: vault_health_check
+  failed_when: false
+  when: lions_vault_enabled | default(false) | bool
+  tags:
+    - vault
+    - secrets
 
-- name: Vérification de l'existence du secret pour l'administrateur PostgreSQL
+- name: "🔐 [POSTGRES-PREP] Configuration de la récupération des secrets via Vault"
+  set_fact:
+    postgres_use_vault: "{{ lions_vault_enabled | default(false) | bool and not vault_health_check.failed }}"
+    postgres_admin_secret_name: "{{ lions_postgres_service_name }}-admin-credentials"
+    postgres_user_secret_name: "{{ lions_postgres_service_name }}-user-credentials"
+    postgres_replication_secret_name: "{{ lions_postgres_service_name }}-replication-credentials"
+  tags:
+    - secrets
+    - configuration
+
+# =========================================================================
+# GESTION DES SECRETS ADMINISTRATEUR
+# =========================================================================
+- name: "🔍 [POSTGRES-PREP] Vérification du secret administrateur existant"
   k8s_info:
     api_version: v1
     kind: Secret
-    namespace: "{{ app_namespace }}"
-    name: "{{ postgres_admin_password_secret }}"
-  register: admin_secret_info
-  ignore_errors: yes
+    namespace: "{{ lions_postgres_namespace }}"
+    name: "{{ postgres_admin_secret_name }}"
+  register: postgres_admin_secret_check
   environment:
-    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+    KUBECONFIG: "{{ lions_k8s_config_file | default('/home/' + ansible_user + '/.kube/config') }}"
+  tags:
+    - secrets
+    - validation
 
-- name: Avertissement si le secret administrateur n'existe pas
-  debug:
-    msg: "AVERTISSEMENT: Le secret pour l'administrateur PostgreSQL n'existe pas. Utilisez kubectl pour créer le secret {{ postgres_admin_password_secret }}."
-  when: admin_secret_info is failed or admin_secret_info.resources | length == 0
+- name: "🔐 [POSTGRES-PREP] Récupération du mot de passe administrateur depuis Vault"
+  vault_secret:
+    vault_addr: "{{ lions_vault_addr }}"
+    vault_token: "{{ vault_token | default(lookup('env', 'VAULT_TOKEN')) }}"
+    secret_path: "secret/data/postgres/admin"
+    secret_key: "password"
+  register: postgres_admin_password_from_vault
+  when:
+    - postgres_use_vault | bool
+    - postgres_admin_secret_check.resources | length == 0
+  failed_when: false
+  no_log: true
+  tags:
+    - vault
+    - secrets
 
-- name: Création d'un secret temporaire pour l'administrateur PostgreSQL si nécessaire
+- name: "🔐 [POSTGRES-PREP] Génération sécurisée du mot de passe administrateur"
+  set_fact:
+    postgres_admin_password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits,!@#$%^&*') }}"
+  when:
+    - postgres_admin_secret_check.resources | length == 0
+    - not postgres_use_vault | bool or postgres_admin_password_from_vault.failed | default(false)
+  no_log: true
+  tags:
+    - secrets
+    - security
+
+- name: "🔐 [POSTGRES-PREP] Utilisation du mot de passe depuis Vault"
+  set_fact:
+    postgres_admin_password: "{{ postgres_admin_password_from_vault.secret_value }}"
+  when:
+    - postgres_use_vault | bool
+    - not postgres_admin_password_from_vault.failed | default(true)
+  no_log: true
+  tags:
+    - vault
+    - secrets
+
+- name: "🔐 [POSTGRES-PREP] Création du secret administrateur PostgreSQL"
   k8s:
     state: present
     definition:
       apiVersion: v1
       kind: Secret
       metadata:
-        name: "{{ postgres_admin_password_secret }}"
-        namespace: "{{ app_namespace }}"
+        name: "{{ postgres_admin_secret_name }}"
+        namespace: "{{ lions_postgres_namespace }}"
         labels:
-          app: "{{ app_name }}"
-          environment: "{{ app_environment }}"
+          app.kubernetes.io/name: postgresql
+          app.kubernetes.io/component: database
+          app.kubernetes.io/part-of: lions-infrastructure
+          app.kubernetes.io/managed-by: ansible
+          lions.dev/environment: "{{ lions_environment }}"
+          lions.dev/secret-type: database-credentials
         annotations:
-          description: "Secret temporaire pour l'administrateur PostgreSQL. À remplacer par un secret sécurisé."
+          lions.dev/description: "Credentials pour l'administrateur PostgreSQL"
+          lions.dev/created-by: "lions-infrastructure-ansible"
+          lions.dev/creation-date: "{{ ansible_date_time.iso8601 }}"
+          lions.dev/vault-managed: "{{ postgres_use_vault | string }}"
       type: Opaque
       stringData:
-        password: "changeme"
-  register: temp_admin_secret_result
-  when: admin_secret_info is failed or admin_secret_info.resources | length == 0
-  ignore_errors: yes
+        username: "{{ lions_postgres_admin_user | default('postgres') }}"
+        password: "{{ postgres_admin_password }}"
+        database: "{{ lions_postgres_database }}"
+  when: postgres_admin_secret_check.resources | length == 0
+  register: postgres_admin_secret_created
   environment:
-    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+    KUBECONFIG: "{{ lions_k8s_config_file | default('/home/' + ansible_user + '/.kube/config') }}"
+  no_log: true
+  tags:
+    - secrets
+    - creation
 
-- name: Avertissement pour le mot de passe temporaire
-  debug:
-    msg: "AVERTISSEMENT: Un mot de passe temporaire a été créé pour l'administrateur PostgreSQL. Veuillez le changer dès que possible."
-  when: temp_admin_secret_result is succeeded
+# =========================================================================
+# GESTION DES SECRETS RÉPLICATION (HAUTE DISPONIBILITÉ)
+# =========================================================================
+- name: "🔍 [POSTGRES-PREP] Vérification des besoins de réplication"
+  set_fact:
+    postgres_requires_replication: "{{ lions_postgres_ha_enabled | default(false) | bool or lions_environment == 'production' }}"
+  tags:
+    - ha
+    - replication
 
-- name: Vérification de l'existence du secret pour la réplication (si HA activé)
+- name: "🔍 [POSTGRES-PREP] Vérification du secret de réplication existant"
   k8s_info:
     api_version: v1
     kind: Secret
-    namespace: "{{ app_namespace }}"
-    name: "{{ postgres_ha_replication_password_secret }}"
-  register: replication_secret_info
-  ignore_errors: yes
-  when: postgres_ha_enabled | bool
+    namespace: "{{ lions_postgres_namespace }}"
+    name: "{{ postgres_replication_secret_name }}"
+  register: postgres_replication_secret_check
+  when: postgres_requires_replication | bool
   environment:
-    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+    KUBECONFIG: "{{ lions_k8s_config_file | default('/home/' + ansible_user + '/.kube/config') }}"
+  tags:
+    - secrets
+    - replication
 
-- name: Avertissement si le secret de réplication n'existe pas
-  debug:
-    msg: "AVERTISSEMENT: Le secret pour la réplication PostgreSQL n'existe pas. Utilisez kubectl pour créer le secret {{ postgres_ha_replication_password_secret }}."
-  when: postgres_ha_enabled | bool and (replication_secret_info is failed or replication_secret_info.resources | length == 0)
+- name: "🔐 [POSTGRES-PREP] Récupération du mot de passe de réplication depuis Vault"
+  vault_secret:
+    vault_addr: "{{ lions_vault_addr }}"
+    vault_token: "{{ vault_token | default(lookup('env', 'VAULT_TOKEN')) }}"
+    secret_path: "secret/data/postgres/replication"
+    secret_key: "password"
+  register: postgres_replication_password_from_vault
+  when:
+    - postgres_requires_replication | bool
+    - postgres_use_vault | bool
+    - postgres_replication_secret_check.resources | length == 0
+  failed_when: false
+  no_log: true
+  tags:
+    - vault
+    - secrets
+    - replication
 
-- name: Création d'un secret temporaire pour la réplication si nécessaire
+- name: "🔐 [POSTGRES-PREP] Génération sécurisée du mot de passe de réplication"
+  set_fact:
+    postgres_replication_password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits,!@#$%^&*') }}"
+  when:
+    - postgres_requires_replication | bool
+    - postgres_replication_secret_check.resources | length == 0
+    - not postgres_use_vault | bool or postgres_replication_password_from_vault.failed | default(false)
+  no_log: true
+  tags:
+    - secrets
+    - replication
+
+- name: "🔐 [POSTGRES-PREP] Création du secret de réplication PostgreSQL"
   k8s:
     state: present
     definition:
       apiVersion: v1
       kind: Secret
       metadata:
-        name: "{{ postgres_ha_replication_password_secret }}"
-        namespace: "{{ app_namespace }}"
+        name: "{{ postgres_replication_secret_name }}"
+        namespace: "{{ lions_postgres_namespace }}"
         labels:
-          app: "{{ app_name }}"
-          environment: "{{ app_environment }}"
+          app.kubernetes.io/name: postgresql
+          app.kubernetes.io/component: database
+          app.kubernetes.io/part-of: lions-infrastructure
+          app.kubernetes.io/managed-by: ansible
+          lions.dev/environment: "{{ lions_environment }}"
+          lions.dev/secret-type: replication-credentials
         annotations:
-          description: "Secret temporaire pour la réplication PostgreSQL. À remplacer par un secret sécurisé."
+          lions.dev/description: "Credentials pour la réplication PostgreSQL"
+          lions.dev/created-by: "lions-infrastructure-ansible"
+          lions.dev/creation-date: "{{ ansible_date_time.iso8601 }}"
+          lions.dev/vault-managed: "{{ postgres_use_vault | string }}"
       type: Opaque
       stringData:
-        password: "changeme"
-  register: temp_replication_secret_result
-  when: postgres_ha_enabled | bool and (replication_secret_info is failed or replication_secret_info.resources | length == 0)
-  ignore_errors: yes
+        username: "replicator"
+        password: "{{ postgres_replication_password }}"
+  when:
+    - postgres_requires_replication | bool
+    - postgres_replication_secret_check.resources | length == 0
+  register: postgres_replication_secret_created
   environment:
-    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+    KUBECONFIG: "{{ lions_k8s_config_file | default('/home/' + ansible_user + '/.kube/config') }}"
+  no_log: true
+  tags:
+    - secrets
+    - replication
 
-- name: Avertissement pour le mot de passe de réplication temporaire
+# =========================================================================
+# CRÉATION DES RESSOURCES DE BASE
+# =========================================================================
+- name: "👤 [POSTGRES-PREP] Création du ServiceAccount PostgreSQL"
+  k8s:
+    state: present
+    src: "{{ postgres_work_dir }}/serviceaccount.yml"
+  register: postgres_serviceaccount_result
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file | default('/home/' + ansible_user + '/.kube/config') }}"
+  tags:
+    - serviceaccount
+    - rbac
+
+- name: "📋 [POSTGRES-PREP] Création du ConfigMap de configuration"
+  k8s:
+    state: present
+    src: "{{ postgres_work_dir }}/configmap.yml"
+  register: postgres_configmap_result
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file | default('/home/' + ansible_user + '/.kube/config') }}"
+  tags:
+    - configmap
+    - configuration
+
+# =========================================================================
+# GESTION DU STOCKAGE PERSISTANT
+# =========================================================================
+- name: "🗄️ [POSTGRES-PREP] Vérification de la classe de stockage"
+  k8s_info:
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+    name: "{{ lions_storage_class_default }}"
+  register: postgres_storage_class_check
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file | default('/home/' + ansible_user + '/.kube/config') }}"
+  tags:
+    - storage
+    - validation
+
+- name: "⚠️ [POSTGRES-PREP] Avertissement - Classe de stockage manquante"
   debug:
-    msg: "AVERTISSEMENT: Un mot de passe temporaire a été créé pour la réplication PostgreSQL. Veuillez le changer dès que possible."
-  when: temp_replication_secret_result is succeeded
+    msg: |
+      AVERTISSEMENT: La classe de stockage '{{ lions_storage_class_default }}' n'existe pas.
+      Le PVC utilisera la classe de stockage par défaut du cluster.
+  when: postgres_storage_class_check.resources | length == 0
+  tags:
+    - storage
+    - warning
+
+- name: "💾 [POSTGRES-PREP] Création du PVC pour PostgreSQL"
+  k8s:
+    state: present
+    src: "{{ postgres_work_dir }}/persistentvolumeclaim.yml"
+  register: postgres_pvc_result
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file | default('/home/' + ansible_user + '/.kube/config') }}"
+  tags:
+    - storage
+    - pvc
+
+- name: "🔍 [POSTGRES-PREP] Vérification du statut du PVC"
+  k8s_info:
+    api_version: v1
+    kind: PersistentVolumeClaim
+    namespace: "{{ lions_postgres_namespace }}"
+    name: "{{ lions_postgres_service_name }}-data"
+  register: postgres_pvc_status
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file | default('/home/' + ansible_user + '/.kube/config') }}"
+  tags:
+    - storage
+    - validation
+
+- name: "⏳ [POSTGRES-PREP] Attente de la liaison du PVC"
+  k8s_info:
+    api_version: v1
+    kind: PersistentVolumeClaim
+    namespace: "{{ lions_postgres_namespace }}"
+    name: "{{ lions_postgres_service_name }}-data"
+    wait: true
+    wait_condition:
+      type: Bound
+      status: "True"
+    wait_timeout: 300
+  register: postgres_pvc_bound
+  failed_when: false
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file | default('/home/' + ansible_user + '/.kube/config') }}"
+  tags:
+    - storage
+    - waiting
+
+- name: "⚠️ [POSTGRES-PREP] Avertissement - PVC non lié"
+  debug:
+    msg: |
+      AVERTISSEMENT: Le PVC PostgreSQL n'est pas encore lié à un PV.
+      Cela peut indiquer un problème de provisioning de stockage.
+      Statut actuel: {{ postgres_pvc_status.resources[0].status.phase | default('Unknown') }}
+  when: postgres_pvc_bound.failed | default(false)
+  tags:
+    - storage
+    - warning
+
+# =========================================================================
+# RÉSUMÉ DE LA PRÉPARATION
+# =========================================================================
+- name: "📊 [POSTGRES-PREP] Récapitulatif de la préparation"
+  debug:
+    msg: |
+      ═══════════════════════════════════════════════════════════════
+      🐘 PRÉPARATION POSTGRESQL TERMINÉE
+      ═══════════════════════════════════════════════════════════════
+      📍 Environnement: {{ lions_environment }}
+      🏷️  Namespace: {{ lions_postgres_namespace }}
+      🔧 Version PostgreSQL: {{ lions_postgres_version }}
+      💾 Taille de stockage: {{ lions_postgres_storage_size }}
+      🔐 Gestion des secrets: {{ 'Vault' if postgres_use_vault else 'Kubernetes' }}
+      🔄 Réplication HA: {{ 'Activée' if postgres_requires_replication else 'Désactivée' }}
+      📁 Répertoire de travail: {{ postgres_work_dir }}
+      ═══════════════════════════════════════════════════════════════
+  tags:
+    - summary
+
+# =========================================================================
+# NETTOYAGE CONDITIONNEL
+# =========================================================================
+- name: "🧹 [POSTGRES-PREP] Nettoyage du répertoire temporaire"
+  file:
+    path: "{{ postgres_work_dir }}"
+    state: absent
+  when:
+    - lions_debug_mode | default(false) | bool == false
+    - postgres_cleanup_temp_files | default(true) | bool
+  changed_when: false
+  tags:
+    - cleanup
+
+- name: "🐛 [POSTGRES-PREP] Conservation des fichiers temporaires (mode debug)"
+  debug:
+    msg: "Mode debug activé - Fichiers temporaires conservés dans: {{ postgres_work_dir }}"
+  when: lions_debug_mode | default(false) | bool
+  tags:
+    - debug
+    - cleanup

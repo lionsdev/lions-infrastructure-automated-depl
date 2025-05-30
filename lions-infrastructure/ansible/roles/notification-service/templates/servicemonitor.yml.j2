@@ -1,48 +1,272 @@
 ---
-# Titre: Template de ServiceMonitor Kubernetes pour le service de notification
-# Description: Définit le ServiceMonitor Kubernetes pour le service de notification
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-08
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - SERVICEMONITOR NOTIFICATION SERVICE
+# =========================================================================
+# Description: Template ServiceMonitor Kubernetes pour le monitoring du service de notification
+# Composant: Notification Service Multi-Channel Communication
+# Version: 5.0.0
+# Maintainer: DevOps Team LIONS
+# Documentation: https://docs.lions.dev/infrastructure/monitoring/notification
+# Dépendances: Prometheus Operator, Notification Service
+# =========================================================================
 
+{% if notification_monitoring.enabled | default(true) | bool %}
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: "{{ app_name }}"
-  namespace: "{{ app_namespace }}"
+  name: "{{ notification_service_name }}-monitor"
+  namespace: "{{ notification_namespace }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "notification-service"
-    prometheus: "kube-prometheus"
+    # Labels standardisés LIONS
+    app.kubernetes.io/name: "{{ notification_service_name }}"
+    app.kubernetes.io/instance: "{{ notification_service_name }}-{{ notification_environment }}"
+    app.kubernetes.io/version: "{{ notification_service_meta.version }}"
+    app.kubernetes.io/component: "notification-service"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+
+    # Labels spécifiques LIONS
+    lions.dev/environment: "{{ notification_environment }}"
+    lions.dev/tier: "application"
+    lions.dev/monitoring-enabled: "true"
+    lions.dev/backup-enabled: "{{ notification_storage.backup_enabled | default('false') }}"
+
+    # Labels Prometheus
+    prometheus.io/scrape: "true"
+    prometheus.io/instance: "{{ notification_service_name }}"
+    monitoring.coreos.com/prometheus: "{{ notification_monitoring.prometheus.instance | default('kube-prometheus') }}"
+
+    # Labels de release et versioning
+    helm.sh/chart: "notification-service-{{ notification_service_meta.chart_version | default('1.0.0') }}"
+    version: "{{ notification_service_meta.version }}"
+
+    # Labels spécifiques aux notifications
+    notification.lions.dev/email-enabled: "{{ notification_app_config.channels.email.enabled | default('false') | string }}"
+    notification.lions.dev/slack-enabled: "{{ notification_app_config.channels.slack.enabled | default('false') | string }}"
+    notification.lions.dev/sms-enabled: "{{ notification_app_config.channels.sms.enabled | default('false') | string }}"
+    notification.lions.dev/webhook-enabled: "{{ notification_app_config.channels.webhook.enabled | default('false') | string }}"
+
   annotations:
-    description: "ServiceMonitor pour le service de notification {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    # Annotations de documentation
+    lions.dev/description: "ServiceMonitor pour le monitoring des métriques du service de notification"
+    lions.dev/documentation: "https://docs.lions.dev/infrastructure/monitoring/notification"
+    lions.dev/support-contact: "{{ notification_service_meta.maintainer | default('devops@lions.dev') }}"
+    lions.dev/deployment-date: "{{ ansible_date_time.iso8601 }}"
+
+    # Annotations de monitoring
+    prometheus.io/path: "{{ notification_endpoints.metrics }}"
+    prometheus.io/port: "{{ notification_network.service.port | default('8080') }}"
+    prometheus.io/scheme: "{{ 'https' if notification_tls.enabled else 'http' }}"
+
+    # Annotations de configuration
+    config.kubernetes.io/local-config: "true"
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {
+        "component": "notification-servicemonitor",
+        "version": "5.0.0",
+        "environment": "{{ notification_environment }}",
+        "timestamp": "{{ ansible_date_time.iso8601 }}",
+        "channels": {{ notification_app_config.channels.keys() | list | to_json }}
+      }
+
+    # Annotations spécifiques
+    notification.lions.dev/metrics-version: "{{ notification_monitoring.metrics_version | default('v1') }}"
+    notification.lions.dev/scrape-config: "{{ notification_monitoring.scrape_config | default('standard') }}"
+
 spec:
+  # Sélection du service à monitorer
   selector:
     matchLabels:
-      app: "{{ app_name }}"
+      app.kubernetes.io/name: "{{ notification_service_name }}"
+      app.kubernetes.io/instance: "{{ notification_service_name }}-{{ notification_environment }}"
+      lions.dev/monitoring-enabled: "true"
+
+  # Sélection du namespace
   namespaceSelector:
     matchNames:
-      - "{{ app_namespace }}"
+      - "{{ notification_namespace }}"
+
+  # Configuration des endpoints de monitoring
   endpoints:
-    - port: http
-      path: "{{ notification_prometheus_path }}"
-      interval: 30s
-      scrapeTimeout: 10s
-      honorLabels: true
+    # Endpoint principal des métriques
+    - port: "{{ 'metrics' if notification_monitoring.prometheus.separate_port else 'http' }}"
+      path: "{{ notification_endpoints.metrics }}"
+      scheme: "{{ 'https' if notification_tls.enabled else 'http' }}"
+
+      # Configuration des intervalles
+      interval: "{{ notification_monitoring.prometheus.scrape_interval | default('30s') }}"
+      scrapeTimeout: "{{ notification_monitoring.prometheus.scrape_timeout | default('25s') }}"
+
+      # Configuration avancée
+      honorLabels: {{ notification_monitoring.prometheus.honor_labels | default(true) | bool }}
+      honorTimestamps: {{ notification_monitoring.prometheus.honor_timestamps | default(true) | bool }}
+
+      # Configuration TLS si activée
+{% if notification_tls.enabled | default(false) | bool %}
+      tlsConfig:
+        serverName: "{{ notification_service_name }}.{{ notification_namespace }}.svc.cluster.local"
+        insecureSkipVerify: {{ notification_monitoring.tls_skip_verify | default(false) | bool }}
+{% if notification_tls.ca_file is defined %}
+        caFile: "{{ notification_tls.ca_file }}"
+{% endif %}
+{% if notification_tls.cert_file is defined %}
+        certFile: "{{ notification_tls.cert_file }}"
+        keyFile: "{{ notification_tls.key_file }}"
+{% endif %}
+{% endif %}
+
+      # Configuration de l'authentification si nécessaire
+{% if notification_monitoring.auth.enabled | default(false) | bool %}
+      basicAuth:
+        username:
+          name: "{{ notification_monitoring.auth.secret | default('notification-metrics-auth') }}"
+          key: username
+        password:
+          name: "{{ notification_monitoring.auth.secret | default('notification-metrics-auth') }}"
+          key: password
+{% endif %}
+
+      # Relabeling des métriques - Optimisé pour le service de notification
+      metricRelabelings:
+        # Préservation des métriques spécifiques aux notifications
+        - sourceLabels: [__name__]
+          regex: '^notification_.*'
+          action: keep
+
+        # Préservation des métriques de delivery par canal
+        - sourceLabels: [__name__]
+          regex: '^(email|slack|sms|webhook)_(sent|failed|queue_size|delivery_time).*'
+          action: keep
+
+        # Préservation des métriques de templates
+        - sourceLabels: [__name__]
+          regex: '^template_(render_time|cache_hits|cache_misses|errors).*'
+          action: keep
+
+        # Préservation des métriques de queue
+        - sourceLabels: [__name__]
+          regex: '^queue_(size|processing_time|retry_count|dead_letter).*'
+          action: keep
+
+        # Préservation des métriques Spring Boot Actuator
+        - sourceLabels: [__name__]
+          regex: '^(http_server_requests|jvm_|tomcat_|spring_|hikari_).*'
+          action: keep
+
+        # Préservation des métriques Go runtime (si applicable)
+        - sourceLabels: [__name__]
+          regex: '^(go_memstats_|go_gc_|go_goroutines|go_threads)'
+          action: keep
+
+        # Préservation des métriques de processus système
+        - sourceLabels: [__name__]
+          regex: '^process_(cpu_seconds_total|resident_memory_bytes|virtual_memory_bytes|open_fds|max_fds|start_time_seconds)'
+          action: keep
+
+        # Préservation des métriques HTTP génériques
+        - sourceLabels: [__name__]
+          regex: '^http_(requests_total|request_duration_seconds.*|request_size_bytes.*|response_size_bytes.*)'
+          action: keep
+
+        # Préservation des métriques Prometheus client
+        - sourceLabels: [__name__]
+          regex: '^promhttp_(metric_handler_requests_total|metric_handler_requests_in_flight)'
+          action: keep
+
+        # Ajout du label d'environnement
+        - targetLabel: lions_environment
+          replacement: "{{ notification_environment }}"
+
+        # Ajout du label de cluster
+        - targetLabel: lions_cluster
+          replacement: "{{ notification_cluster_name | default('lions-k3s') }}"
+
+        # Ajout du label de service type
+        - targetLabel: service_type
+          replacement: "notification"
+
+        # Ajout de labels spécifiques aux canaux activés
+        - targetLabel: email_enabled
+          replacement: "{{ notification_app_config.channels.email.enabled | default('false') | string }}"
+
+        - targetLabel: slack_enabled
+          replacement: "{{ notification_app_config.channels.slack.enabled | default('false') | string }}"
+
+        - targetLabel: sms_enabled
+          replacement: "{{ notification_app_config.channels.sms.enabled | default('false') | string }}"
+
+        - targetLabel: webhook_enabled
+          replacement: "{{ notification_app_config.channels.webhook.enabled | default('false') | string }}"
+
+      # Relabeling des labels de service
       relabelings:
+        # Préservation des métadonnées du pod
         - sourceLabels: [__meta_kubernetes_pod_name]
           action: replace
           targetLabel: pod
+
         - sourceLabels: [__meta_kubernetes_namespace]
           action: replace
-          targetLabel: namespace
+          targetLabel: kubernetes_namespace
+
         - sourceLabels: [__meta_kubernetes_service_name]
           action: replace
-          targetLabel: service
+          targetLabel: kubernetes_service_name
+
+        # Ajout de l'adresse du pod
+        - sourceLabels: [__meta_kubernetes_pod_ip]
+          action: replace
+          targetLabel: pod_ip
+
+        # Ajout du nom du noeud
+        - sourceLabels: [__meta_kubernetes_pod_node_name]
+          action: replace
+          targetLabel: node_name
+
+        # Ajout des labels du service
+        - sourceLabels: [__meta_kubernetes_service_label_lions_dev_environment]
+          action: replace
+          targetLabel: environment
+
+        - sourceLabels: [__meta_kubernetes_service_label_app_kubernetes_io_version]
+          action: replace
+          targetLabel: version
+
+        # Ajout de labels personnalisés pour les notifications
+        - targetLabel: notification_service
+          replacement: "{{ notification_service_name }}"
+
+        - targetLabel: notification_instance
+          replacement: "{{ notification_service_name }}-{{ notification_environment }}"
+
+{% if notification_monitoring.additional_endpoints | default([]) | length > 0 %}
+{% for endpoint in notification_monitoring.additional_endpoints %}
+    # Endpoint supplémentaire : {{ endpoint.name }}
+    - port: "{{ endpoint.port }}"
+      path: "{{ endpoint.path }}"
+      scheme: "{{ endpoint.scheme | default('http') }}"
+      interval: "{{ endpoint.interval | default('30s') }}"
+      scrapeTimeout: "{{ endpoint.timeout | default('25s') }}"
+      honorLabels: {{ endpoint.honor_labels | default(true) | bool }}
+{% endfor %}
+{% endif %}
+
+  # Propagation des labels du service vers les métriques
   targetLabels:
-    - app
-    - version
-    - environment
-    - technology
+    - app.kubernetes.io/name
+    - app.kubernetes.io/version
+    - app.kubernetes.io/component
+    - lions.dev/environment
+    - notification.lions.dev/email-enabled
+    - notification.lions.dev/slack-enabled
+    - notification.lions.dev/sms-enabled
+    - notification.lions.dev/webhook-enabled
+
+  # Limites de collecte
+  sampleLimit: {{ notification_monitoring.sample_limit | default(10000) }}
+  targetLimit: {{ notification_monitoring.target_limit | default(100) }}
+  labelLimit: {{ notification_monitoring.label_limit | default(50) }}
+  labelNameLengthLimit: {{ notification_monitoring.label_name_length_limit | default(100) }}
+  labelValueLengthLimit: {{ notification_monitoring.label_value_length_limit | default(200) }}
+
+{% endif %}

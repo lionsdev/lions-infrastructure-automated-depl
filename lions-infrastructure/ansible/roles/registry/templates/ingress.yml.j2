@@ -1,49 +1,266 @@
 ---
-# Titre: Template d'Ingress Kubernetes pour la registry de conteneurs
-# Description: Définit l'Ingress Kubernetes pour la registry de conteneurs Docker avec Traefik
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-10
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - TEMPLATE INGRESS REGISTRY
+# =========================================================================
+# Description: Template d'Ingress Kubernetes pour le service Registry Docker
+# Auteur: Équipe DevOps LIONS Infrastructure
+# Date: {{ ansible_date_time.date }}
+# Version: 5.0.0
+# Documentation: https://docs.lions.dev/infrastructure/services/registry
+# =========================================================================
 
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: "{{ app_name | default('registry') }}"
-  namespace: "{{ app_namespace | default('registry') }}"
+  name: "{{ lions_registry_service_name | default(lookup('env', 'LIONS_REGISTRY_SERVICE_NAME') | default('registry', true)) }}"
+  namespace: "{{ lions_registry_namespace | default(lookup('env', 'LIONS_REGISTRY_NAMESPACE') | default('development', true)) }}"
   labels:
-    app: "{{ app_name | default('registry') }}"
-    version: "{{ app_version | default('latest') }}"
-    environment: "{{ app_environment | default('development') }}"
-    technology: "registry"
+    # Labels standardisés LIONS Infrastructure
+    app.kubernetes.io/name: "{{ lions_registry_service_name | default(lookup('env', 'LIONS_REGISTRY_SERVICE_NAME') | default('registry', true)) }}"
+    app.kubernetes.io/instance: "{{ lions_registry_service_name | default(lookup('env', 'LIONS_REGISTRY_SERVICE_NAME') | default('registry', true)) }}-{{ lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT') | default('development', true)) }}"
+    app.kubernetes.io/version: "{{ lions_registry_version | default(lookup('env', 'LIONS_REGISTRY_VERSION') | default('2.8', true)) }}"
+    app.kubernetes.io/component: "container-registry"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+
+    # Labels métier LIONS
+    lions.dev/service-type: "infrastructure"
+    lions.dev/environment: "{{ lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT') | default('development', true)) }}"
+    lions.dev/version: "5.0.0"
+    lions.dev/owner: "devops-team"
+    lions.dev/criticality: "{% if lions_environment == 'production' %}high{% elif lions_environment == 'staging' %}medium{% else %}low{% endif %}"
+
+    # Labels de monitoring
+    monitoring.lions.dev/enabled: "{{ lions_monitoring_enabled | default(lookup('env', 'LIONS_MONITORING_ENABLED') | default('true', true)) }}"
+    monitoring.lions.dev/scrape: "true"
+    monitoring.lions.dev/path: "/metrics"
+
+    # Labels de sécurité
+    security.lions.dev/tls-enabled: "{{ lions_security_tls_enabled | default(lookup('env', 'LIONS_SECURITY_TLS_ENABLED') | default('true', true)) }}"
+    security.lions.dev/network-policies: "{{ lions_security_network_policies | default(lookup('env', 'LIONS_SECURITY_NETWORK_POLICIES') | default('true', true)) }}"
+
   annotations:
-    description: "Ingress pour la registry {{ app_name | default('registry') }} ({{ app_version | default('latest') }}) en environnement {{ app_environment | default('development') }}"
-    # Annotations spécifiques à Traefik
-    traefik.ingress.kubernetes.io/router.entrypoints: "websecure"
+    # Métadonnées de déploiement
+    meta.helm.sh/release-name: "lions-registry-{{ lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT') | default('development', true)) }}"
+    meta.helm.sh/release-namespace: "{{ lions_registry_namespace | default(lookup('env', 'LIONS_REGISTRY_NAMESPACE') | default('development', true)) }}"
+
+    # Documentation et liens
+    documentation.lions.dev/url: "https://docs.lions.dev/services/registry"
+    contact.lions.dev/team: "devops@lions.dev"
+    support.lions.dev/channel: "#infrastructure-support"
+
+    # Configuration Traefik - Point d'entrée
+    traefik.ingress.kubernetes.io/router.entrypoints: "{% if lions_security_tls_enabled | default(lookup('env', 'LIONS_SECURITY_TLS_ENABLED') | default('true', true)) | bool %}websecure{% else %}web{% endif %}"
+    {% if lions_security_tls_enabled | default(lookup('env', 'LIONS_SECURITY_TLS_ENABLED') | default('true', true)) | bool %}
     traefik.ingress.kubernetes.io/router.tls: "true"
-    # Annotations de sécurité
     traefik.ingress.kubernetes.io/ssl-redirect: "true"
     traefik.ingress.kubernetes.io/ssl-permanent-redirect: "true"
-    # Annotations pour les en-têtes de sécurité
-    traefik.ingress.kubernetes.io/headers-customrequestheaders: "X-Forwarded-Proto:https||X-Forwarded-Port:443"
-    traefik.ingress.kubernetes.io/headers-customresponseheaders: "X-Content-Type-Options:nosniff||X-Frame-Options:SAMEORIGIN||X-XSS-Protection:1; mode=block"
-    # Annotations pour la compression
+    {% endif %}
+
+    # Configuration Traefik - Sécurité avancée
+    traefik.ingress.kubernetes.io/headers-customrequestheaders: |
+      X-Forwarded-Proto:https||
+      X-Forwarded-Port:443||
+      X-Real-IP:true||
+      X-Forwarded-For:true
+
+    traefik.ingress.kubernetes.io/headers-customresponseheaders: |
+      X-Content-Type-Options:nosniff||
+      X-Frame-Options:DENY||
+      X-XSS-Protection:1; mode=block||
+      Strict-Transport-Security:max-age=31536000; includeSubDomains||
+      Content-Security-Policy:default-src 'self'||
+      Referrer-Policy:strict-origin-when-cross-origin||
+      Permissions-Policy:geolocation=(),microphone=(),camera=()
+
+    # Configuration Traefik - Performance
     traefik.ingress.kubernetes.io/compress: "true"
-    # Annotations pour les timeouts
-    traefik.ingress.kubernetes.io/request-timeout: "300"
+    traefik.ingress.kubernetes.io/buffering-maxRequestBodyBytes: "0"  # Pas de limite pour les images Docker
+    traefik.ingress.kubernetes.io/buffering-maxResponseBodyBytes: "0"
+
+    # Configuration Traefik - Timeouts
+    traefik.ingress.kubernetes.io/request-timeout: "{{ lions_timeout_default | default(lookup('env', 'LIONS_TIMEOUT_DEFAULT') | default('300', true)) }}"
+    traefik.ingress.kubernetes.io/response-timeout: "300"
+    traefik.ingress.kubernetes.io/idle-timeout: "300"
+
+    # Configuration Traefik - Rate limiting (environnement spécifique)
+    {% if lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT') | default('development', true)) == 'production' %}
+    traefik.ingress.kubernetes.io/ratelimit-average: "10"
+    traefik.ingress.kubernetes.io/ratelimit-burst: "20"
+    {% elif lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT') | default('development', true)) == 'staging' %}
+    traefik.ingress.kubernetes.io/ratelimit-average: "20"
+    traefik.ingress.kubernetes.io/ratelimit-burst: "40"
+    {% endif %}
+
+    # Configuration spécifique Registry Docker
+    traefik.ingress.kubernetes.io/headers-customrequestheaders-Docker-Content-Digest: ""
+    traefik.ingress.kubernetes.io/headers-customrequestheaders-Docker-Distribution-Api-Version: "registry/2.0"
+
+    # Configuration middleware Traefik personnalisé
+    traefik.ingress.kubernetes.io/router.middlewares: |
+      {{ lions_registry_namespace | default(lookup('env', 'LIONS_REGISTRY_NAMESPACE') | default('development', true)) }}-registry-auth@kubernetescrd,
+      {{ lions_registry_namespace | default(lookup('env', 'LIONS_REGISTRY_NAMESPACE') | default('development', true)) }}-registry-headers@kubernetescrd
+      {% if lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT') | default('development', true)) == 'production' %},{{ lions_registry_namespace | default(lookup('env', 'LIONS_REGISTRY_NAMESPACE') | default('development', true)) }}-registry-ratelimit@kubernetescrd{% endif %}
+
 spec:
-  ingressClassName: traefik
+  # Classe d'Ingress
+  ingressClassName: "{{ lions_ingress_class | default('traefik') }}"
+
+  # Configuration TLS
+  {% if lions_security_tls_enabled | default(lookup('env', 'LIONS_SECURITY_TLS_ENABLED') | default('true', true)) | bool %}
   tls:
-  - hosts:
-    - "{{ app_name | default('registry') }}.{{ app_environment | default('development') }}.lions.dev"
-    secretName: "{{ app_name | default('registry') }}-tls"
+    - hosts:
+        - "{{ lions_registry_service_name | default(lookup('env', 'LIONS_REGISTRY_SERVICE_NAME') | default('registry', true)) }}.{{ lions_dns_full_domain | default(lookup('env', 'LIONS_DNS_FULL_DOMAIN') | default('dev.lions.local', true)) }}"
+    {% if lions_dns_wildcard_enabled | default(lookup('env', 'LIONS_DNS_WILDCARD_ENABLED') | default('true', true)) | bool %}
+        - "*.{{ lions_registry_service_name | default(lookup('env', 'LIONS_REGISTRY_SERVICE_NAME') | default('registry', true)) }}.{{ lions_dns_full_domain | default(lookup('env', 'LIONS_DNS_FULL_DOMAIN') | default('dev.lions.local', true)) }}"
+    {% endif %}
+      secretName: "{{ lions_registry_service_name | default(lookup('env', 'LIONS_REGISTRY_SERVICE_NAME') | default('registry', true)) }}-tls-{{ lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT') | default('development', true)) }}"
+  {% endif %}
+
+  # Règles de routage
   rules:
-  - host: "{{ app_name | default('registry') }}.{{ app_environment | default('development') }}.lions.dev"
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: "{{ app_name | default('registry') }}"
-            port:
-              number: {{ registry_default_port | default(5000) }}
+    # Règle principale pour le service registry
+    - host: "{{ lions_registry_service_name | default(lookup('env', 'LIONS_REGISTRY_SERVICE_NAME') | default('registry', true)) }}.{{ lions_dns_full_domain | default(lookup('env', 'LIONS_DNS_FULL_DOMAIN') | default('dev.lions.local', true)) }}"
+      http:
+        paths:
+          # API Registry v2
+          - path: /v2
+            pathType: Prefix
+            backend:
+              service:
+                name: "{{ lions_registry_service_name | default(lookup('env', 'LIONS_REGISTRY_SERVICE_NAME') | default('registry', true)) }}"
+                port:
+                  number: {{ lions_registry_port | default(lookup('env', 'LIONS_REGISTRY_PORT') | default('5000', true)) | int }}
+
+          # Interface Web (si activée)
+      {% if lions_registry_web_enabled | default(false) | bool %}
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: "{{ lions_registry_service_name | default(lookup('env', 'LIONS_REGISTRY_SERVICE_NAME') | default('registry', true)) }}-web"
+                port:
+                  number: {{ lions_registry_web_port | default('80') | int }}
+      {% else %}
+          # Redirection vers /v2 par défaut
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: "{{ lions_registry_service_name | default(lookup('env', 'LIONS_REGISTRY_SERVICE_NAME') | default('registry', true)) }}"
+                port:
+                  number: {{ lions_registry_port | default(lookup('env', 'LIONS_REGISTRY_PORT') | default('5000', true)) | int }}
+      {% endif %}
+
+          # Health check endpoint
+          - path: /health
+            pathType: Exact
+            backend:
+              service:
+                name: "{{ lions_registry_service_name | default(lookup('env', 'LIONS_REGISTRY_SERVICE_NAME') | default('registry', true)) }}"
+                port:
+                  number: {{ lions_registry_port | default(lookup('env', 'LIONS_REGISTRY_PORT') | default('5000', true)) | int }}
+
+          # Metrics endpoint (si monitoring activé)
+      {% if lions_monitoring_enabled | default(lookup('env', 'LIONS_MONITORING_ENABLED') | default('true', true)) | bool %}
+          - path: /metrics
+            pathType: Exact
+            backend:
+              service:
+                name: "{{ lions_registry_service_name | default(lookup('env', 'LIONS_REGISTRY_SERVICE_NAME') | default('registry', true)) }}"
+                port:
+                  number: {{ lions_registry_metrics_port | default('5001') | int }}
+      {% endif %}
+
+  {% if lions_dns_wildcard_enabled | default(lookup('env', 'LIONS_DNS_WILDCARD_ENABLED') | default('true', true)) | bool %}
+    # Règle wildcard pour les sous-domaines (si activée)
+    - host: "*.{{ lions_registry_service_name | default(lookup('env', 'LIONS_REGISTRY_SERVICE_NAME') | default('registry', true)) }}.{{ lions_dns_full_domain | default(lookup('env', 'LIONS_DNS_FULL_DOMAIN') | default('dev.lions.local', true)) }}"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: "{{ lions_registry_service_name | default(lookup('env', 'LIONS_REGISTRY_SERVICE_NAME') | default('registry', true)) }}"
+                port:
+                  number: {{ lions_registry_port | default(lookup('env', 'LIONS_REGISTRY_PORT') | default('5000', true)) | int }}
+  {% endif %}
+
+---
+# =========================================================================
+# MIDDLEWARE TRAEFIK - AUTHENTIFICATION REGISTRY
+# =========================================================================
+{% if lions_security_tls_enabled | default(lookup('env', 'LIONS_SECURITY_TLS_ENABLED') | default('true', true)) | bool %}
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: "{{ lions_registry_service_name | default(lookup('env', 'LIONS_REGISTRY_SERVICE_NAME') | default('registry', true)) }}-auth"
+  namespace: "{{ lions_registry_namespace | default(lookup('env', 'LIONS_REGISTRY_NAMESPACE') | default('development', true)) }}"
+  labels:
+    app.kubernetes.io/name: "{{ lions_registry_service_name | default(lookup('env', 'LIONS_REGISTRY_SERVICE_NAME') | default('registry', true)) }}"
+    app.kubernetes.io/component: "middleware"
+    lions.dev/service-type: "security"
+spec:
+  basicAuth:
+    secret: "{{ lions_registry_service_name | default(lookup('env', 'LIONS_REGISTRY_SERVICE_NAME') | default('registry', true)) }}-auth"
+    {% if lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT') | default('development', true)) == 'production' %}
+    realm: "LIONS Registry - Accès Autorisé Uniquement"
+    {% else %}
+    realm: "LIONS Registry - {{ lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT') | default('development', true)) | title }}"
+    {% endif %}
+
+---
+# =========================================================================
+# MIDDLEWARE TRAEFIK - EN-TÊTES PERSONNALISÉS
+# =========================================================================
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: "{{ lions_registry_service_name | default(lookup('env', 'LIONS_REGISTRY_SERVICE_NAME') | default('registry', true)) }}-headers"
+  namespace: "{{ lions_registry_namespace | default(lookup('env', 'LIONS_REGISTRY_NAMESPACE') | default('development', true)) }}"
+  labels:
+    app.kubernetes.io/name: "{{ lions_registry_service_name | default(lookup('env', 'LIONS_REGISTRY_SERVICE_NAME') | default('registry', true)) }}"
+    app.kubernetes.io/component: "middleware"
+    lions.dev/service-type: "security"
+spec:
+  headers:
+    customRequestHeaders:
+      X-Forwarded-Proto: "https"
+      X-Forwarded-Port: "443"
+    customResponseHeaders:
+      X-Registry-Version: "{{ lions_registry_version | default(lookup('env', 'LIONS_REGISTRY_VERSION') | default('2.8', true)) }}"
+      X-Lions-Environment: "{{ lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT') | default('development', true)) }}"
+      Docker-Distribution-Api-Version: "registry/2.0"
+    contentTypeNosniff: true
+    frameDeny: true
+    browserXssFilter: true
+    {% if lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT') | default('development', true)) == 'production' %}
+    stsSeconds: 31536000
+    stsIncludeSubdomains: true
+    stsPreload: true
+    {% endif %}
+
+{% if lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT') | default('development', true)) == 'production' %}
+---
+# =========================================================================
+# MIDDLEWARE TRAEFIK - LIMITATION DE DÉBIT (PRODUCTION UNIQUEMENT)
+# =========================================================================
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: "{{ lions_registry_service_name | default(lookup('env', 'LIONS_REGISTRY_SERVICE_NAME') | default('registry', true)) }}-ratelimit"
+  namespace: "{{ lions_registry_namespace | default(lookup('env', 'LIONS_REGISTRY_NAMESPACE') | default('development', true)) }}"
+  labels:
+    app.kubernetes.io/name: "{{ lions_registry_service_name | default(lookup('env', 'LIONS_REGISTRY_SERVICE_NAME') | default('registry', true)) }}"
+    app.kubernetes.io/component: "middleware"
+    lions.dev/service-type: "security"
+spec:
+  rateLimit:
+    average: 10
+    burst: 20
+    period: 1m
+    sourceCriterion:
+      ipStrategy:
+        depth: 1
+{% endif %}
+{% endif %}

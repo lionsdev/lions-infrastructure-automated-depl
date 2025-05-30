@@ -1,112 +1,428 @@
 ---
-# Titre: Déploiement d'applications PrimeReact
-# Description: Déploie une application PrimeReact sur Kubernetes
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - DÉPLOIEMENT PRIMEREACT
+# =========================================================================
+# Description: Déploiement sécurisé d'applications PrimeReact sur Kubernetes
+# Version: 5.0.0
+# Auteur: LIONS DevOps Team
+# Date: 2025-05-30
+# Documentation: https://docs.lions.dev/components/primereact
+# =========================================================================
 
-- name: Déploiement de l'application PrimeReact
-  k8s:
-    state: present
-    src: "{{ temp_dir.path }}/deployment.yml"
-  register: deployment_result
+# =========================================================================
+# VALIDATION PRÉ-DÉPLOIEMENT
+# =========================================================================
+- name: "🔍 Validation de la configuration PrimeReact"
+  block:
+    - name: "Vérification de l'activation du service PrimeReact"
+      assert:
+        that:
+          - primereact_config.enabled | default(false) | bool
+        fail_msg: "❌ Le service PrimeReact n'est pas activé dans la configuration"
+        success_msg: "✅ Service PrimeReact activé"
 
-- name: Création du service pour l'application
-  k8s:
-    state: present
-    src: "{{ temp_dir.path }}/service.yml"
-  register: service_result
+    - name: "Validation des variables d'environnement critiques"
+      assert:
+        that:
+          - primereact_config.namespace is defined
+          - primereact_config.app_name is defined
+          - primereact_config.version is defined
+          - primereact_config.port is defined
+        fail_msg: "❌ Variables de configuration PrimeReact manquantes"
+        success_msg: "✅ Configuration PrimeReact validée"
 
-- name: Création de l'ingress pour l'application
-  k8s:
-    state: present
-    src: "{{ temp_dir.path }}/ingress.yml"
-  register: ingress_result
-  when: app_environment != 'development' or (extra_params.create_ingress | default(true) | bool)
+    - name: "Vérification de la disponibilité du namespace"
+      k8s_info:
+        api_version: v1
+        kind: Namespace
+        name: "{{ primereact_config.namespace }}"
+      register: namespace_check
 
-- name: Attente du déploiement
-  k8s_info:
-    api_version: apps/v1
-    kind: Deployment
-    namespace: "{{ app_namespace }}"
-    name: "{{ app_name }}"
-  register: deployment_status
-  until: deployment_status.resources[0].status.availableReplicas is defined and deployment_status.resources[0].status.availableReplicas == deployment_status.resources[0].spec.replicas
-  retries: 30
-  delay: 10
-  ignore_errors: yes
+    - name: "Validation de l'existence du namespace"
+      assert:
+        that:
+          - namespace_check.resources | length > 0
+        fail_msg: "❌ Le namespace {{ primereact_config.namespace }} n'existe pas"
+        success_msg: "✅ Namespace {{ primereact_config.namespace }} disponible"
 
-- name: Vérification du statut du déploiement
-  fail:
-    msg: "Le déploiement de l'application {{ app_name }} a échoué. Veuillez vérifier les logs pour plus d'informations."
-  when: deployment_status is failed or deployment_status.resources | length == 0
+  tags:
+    - validation
+    - primereact
 
-- name: Récupération des informations sur les pods
-  k8s_info:
-    api_version: v1
-    kind: Pod
-    namespace: "{{ app_namespace }}"
-    label_selectors:
-      - "app={{ app_name }}"
-  register: pods_info
+# =========================================================================
+# PRÉPARATION DU DÉPLOIEMENT
+# =========================================================================
+- name: "🏗️  Préparation de l'environnement de déploiement"
+  block:
+    - name: "Génération des manifestes Kubernetes"
+      include_tasks: prepare.yml
+      vars:
+        component_name: "{{ primereact_config.app_name }}"
+        component_namespace: "{{ primereact_config.namespace }}"
 
-- name: Affichage des informations sur les pods
-  debug:
-    msg: "Pod {{ item.metadata.name }} est dans l'état {{ item.status.phase }}"
-  loop: "{{ pods_info.resources }}"
-  loop_control:
-    label: "{{ item.metadata.name }}"
+    - name: "Vérification de la génération des templates"
+      stat:
+        path: "{{ temp_dir.path }}/{{ item }}"
+      register: template_files
+      loop:
+        - deployment.yml
+        - service.yml
+        - configmap.yml
+        - serviceaccount.yml
+      failed_when: not template_files.results | selectattr('stat.exists') | list
 
-- name: Attente de l'initialisation de l'application PrimeReact
-  pause:
-    seconds: "{{ primereact_init_delay | default(20) }}"
-  when: deployment_status is succeeded
+    - name: "Configuration des secrets pour PrimeReact"
+      include_tasks: "{{ role_path }}/../common/tasks/setup-secrets.yml"
+      vars:
+        app_name: "{{ primereact_config.app_name }}"
+        app_namespace: "{{ primereact_config.namespace }}"
+        secrets_config: "{{ primereact_config.secrets | default({}) }}"
+      when: primereact_config.secrets is defined
 
-- name: Vérification de l'état des pods après initialisation
-  k8s_info:
-    api_version: v1
-    kind: Pod
-    namespace: "{{ app_namespace }}"
-    label_selectors:
-      - "app={{ app_name }}"
-  register: pods_info_after_init
+  tags:
+    - preparation
+    - primereact
 
-- name: Affichage des informations sur les pods après initialisation
-  debug:
-    msg: "Pod {{ item.metadata.name }} est dans l'état {{ item.status.phase }} après initialisation"
-  loop: "{{ pods_info_after_init.resources }}"
-  loop_control:
-    label: "{{ item.metadata.name }}"
+# =========================================================================
+# DÉPLOIEMENT DES RESSOURCES KUBERNETES
+# =========================================================================
+- name: "🚀 Déploiement des ressources PrimeReact"
+  block:
+    - name: "Déploiement du ServiceAccount"
+      k8s:
+        state: present
+        src: "{{ temp_dir.path }}/serviceaccount.yml"
+        wait: true
+        wait_condition:
+          type: Ready
+          status: "True"
+        wait_timeout: "{{ lions_timeout_default | default(300) }}"
+      register: serviceaccount_result
 
-- name: Vérification des logs des pods pour détecter des erreurs
-  shell: "kubectl logs -n {{ app_namespace }} {{ item.metadata.name }} | grep -i error | tail -10"
-  loop: "{{ pods_info_after_init.resources }}"
-  register: pod_logs
-  ignore_errors: yes
-  changed_when: false
-  loop_control:
-    label: "{{ item.metadata.name }}"
+    - name: "Déploiement de la ConfigMap"
+      k8s:
+        state: present
+        src: "{{ temp_dir.path }}/configmap.yml"
+      register: configmap_result
 
-- name: Affichage des erreurs dans les logs (si présentes)
-  debug:
-    msg: "Erreurs détectées dans les logs de {{ item.item.metadata.name }}: {{ item.stdout }}"
-  loop: "{{ pod_logs.results }}"
-  when: item.stdout != ""
-  loop_control:
-    label: "{{ item.item.metadata.name }}"
+    - name: "Déploiement du Service"
+      k8s:
+        state: present
+        src: "{{ temp_dir.path }}/service.yml"
+        wait: true
+        wait_condition:
+          type: Ready
+          status: "True"
+        wait_timeout: "{{ lions_timeout_default | default(300) }}"
+      register: service_result
 
-- name: Vérification de la disponibilité de l'API
-  uri:
-    url: "http://{{ app_name }}.{{ app_namespace }}.svc.cluster.local/api/health"
-    method: GET
-    status_code: 200
-  register: api_check
-  ignore_errors: yes
-  retries: 5
-  delay: 10
-  until: api_check is succeeded
+    - name: "Déploiement de l'application PrimeReact"
+      k8s:
+        state: present
+        src: "{{ temp_dir.path }}/deployment.yml"
+        wait: true
+        wait_condition:
+          type: Available
+          status: "True"
+        wait_timeout: "{{ lions_timeout_deployment | default(1800) }}"
+      register: deployment_result
 
-- name: Avertissement si l'API n'est pas disponible
-  debug:
-    msg: "AVERTISSEMENT: L'API de l'application {{ app_name }} n'est pas disponible. Vérifiez les logs pour plus d'informations."
-  when: api_check is failed
+    - name: "Déploiement de l'Ingress (si activé)"
+      k8s:
+        state: present
+        src: "{{ temp_dir.path }}/ingress.yml"
+        wait: true
+        wait_timeout: "{{ lions_timeout_default | default(300) }}"
+      register: ingress_result
+      when:
+        - primereact_config.ingress.enabled | default(true) | bool
+        - lions_environment != 'development' or primereact_config.ingress.force_dev | default(false) | bool
+
+  rescue:
+    - name: "❌ Échec du déploiement - Collecte des informations de debug"
+      include_tasks: "{{ role_path }}/../common/tasks/debug-deployment.yml"
+      vars:
+        failed_app_name: "{{ primereact_config.app_name }}"
+        failed_namespace: "{{ primereact_config.namespace }}"
+
+    - name: "❌ Échec critique du déploiement PrimeReact"
+      fail:
+        msg: |
+          Le déploiement de PrimeReact a échoué.
+          Vérifiez les logs ci-dessus pour plus de détails.
+          Namespace: {{ primereact_config.namespace }}
+          Application: {{ primereact_config.app_name }}
+
+  tags:
+    - deployment
+    - primereact
+
+# =========================================================================
+# DÉPLOIEMENT DU MONITORING (SI ACTIVÉ)
+# =========================================================================
+- name: "📊 Configuration du monitoring PrimeReact"
+  block:
+    - name: "Déploiement du ServiceMonitor"
+      k8s:
+        state: present
+        src: "{{ temp_dir.path }}/servicemonitor.yml"
+        wait: true
+        wait_timeout: "{{ lions_timeout_default | default(300) }}"
+      register: servicemonitor_result
+
+    - name: "Configuration des alertes spécifiques"
+      include_tasks: monitoring.yml
+      vars:
+        monitoring_component: "{{ primereact_config.app_name }}"
+        monitoring_namespace: "{{ primereact_config.namespace }}"
+
+  when:
+    - lions_monitoring_enabled | default(true) | bool
+    - primereact_config.monitoring.enabled | default(true) | bool
+  tags:
+    - monitoring
+    - primereact
+
+# =========================================================================
+# VÉRIFICATIONS POST-DÉPLOIEMENT
+# =========================================================================
+- name: "🔍 Vérifications post-déploiement"
+  block:
+    - name: "Vérification du statut du déploiement"
+      k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        namespace: "{{ primereact_config.namespace }}"
+        name: "{{ primereact_config.app_name }}"
+      register: deployment_status
+      until:
+        - deployment_status.resources | length > 0
+        - deployment_status.resources[0].status.availableReplicas is defined
+        - deployment_status.resources[0].status.availableReplicas == (deployment_status.resources[0].spec.replicas | int)
+        - deployment_status.resources[0].status.readyReplicas is defined
+        - deployment_status.resources[0].status.readyReplicas == (deployment_status.resources[0].spec.replicas | int)
+      retries: "{{ (lions_timeout_deployment | default(1800) | int / 30) | int }}"
+      delay: 30
+
+    - name: "Récupération des informations détaillées sur les pods"
+      k8s_info:
+        api_version: v1
+        kind: Pod
+        namespace: "{{ primereact_config.namespace }}"
+        label_selectors:
+          - "app.kubernetes.io/name={{ primereact_config.app_name }}"
+          - "app.kubernetes.io/component=frontend"
+      register: pods_info
+
+    - name: "Validation de l'état des pods"
+      assert:
+        that:
+          - pods_info.resources | length > 0
+          - pods_info.resources | selectattr('status.phase', 'equalto', 'Running') | list | length > 0
+        fail_msg: "❌ Aucun pod PrimeReact n'est en cours d'exécution"
+        success_msg: "✅ Pods PrimeReact déployés avec succès"
+
+    - name: "Affichage du statut des pods"
+      debug:
+        msg: |
+          📋 Statut des pods PrimeReact:
+          - Pod: {{ item.metadata.name }}
+          - État: {{ item.status.phase }}
+          - Node: {{ item.spec.nodeName | default('Non assigné') }}
+          - IP: {{ item.status.podIP | default('Non assignée') }}
+          - Redémarrages: {{ item.status.containerStatuses[0].restartCount | default(0) }}
+      loop: "{{ pods_info.resources }}"
+      loop_control:
+        label: "{{ item.metadata.name }}"
+
+  tags:
+    - verification
+    - primereact
+
+# =========================================================================
+# TESTS DE SANTÉ DE L'APPLICATION
+# =========================================================================
+- name: "🏥 Tests de santé de l'application"
+  block:
+    - name: "Attente de l'initialisation complète"
+      pause:
+        seconds: "{{ primereact_config.init_delay | default(30) }}"
+
+    - name: "Test de connectivité interne (service)"
+      uri:
+        url: "http://{{ primereact_config.app_name }}.{{ primereact_config.namespace }}.svc.cluster.local:{{ primereact_config.port }}/health"
+        method: GET
+        status_code: [200, 404]  # 404 accepté si pas d'endpoint health
+        timeout: 30
+      register: internal_health_check
+      retries: 5
+      delay: 10
+      ignore_errors: true
+
+    - name: "Test de disponibilité de l'interface utilisateur"
+      uri:
+        url: "http://{{ primereact_config.app_name }}.{{ primereact_config.namespace }}.svc.cluster.local:{{ primereact_config.port }}/"
+        method: GET
+        status_code: [200, 302]
+        timeout: 30
+      register: ui_availability_check
+      retries: 5
+      delay: 10
+
+    - name: "Test de l'Ingress (si configuré)"
+      uri:
+        url: "{{ primereact_config.ingress.protocol | default('https') }}://{{ primereact_config.ingress.host | default(primereact_config.app_name + '.' + lions_dns_full_domain) }}"
+        method: GET
+        status_code: [200, 302, 503]  # 503 temporaire acceptable
+        timeout: 30
+        validate_certs: "{{ not (lions_security_tls_staging | default(true) | bool) }}"
+      register: external_access_check
+      retries: 3
+      delay: 15
+      ignore_errors: true
+      when:
+        - primereact_config.ingress.enabled | default(true) | bool
+        - lions_environment != 'development' or primereact_config.ingress.force_dev | default(false) | bool
+
+  rescue:
+    - name: "⚠️  Tests de santé partiellement échoués"
+      debug:
+        msg: |
+          ⚠️  Certains tests de santé ont échoué, mais l'application peut être fonctionnelle.
+          Vérifiez les détails ci-dessous et les logs de l'application.
+
+  tags:
+    - health-check
+    - primereact
+
+# =========================================================================
+# CONFIGURATION DE L'AUTOSCALING (SI ACTIVÉ)
+# =========================================================================
+- name: "⚖️  Configuration de l'autoscaling"
+  block:
+    - name: "Déploiement du HorizontalPodAutoscaler"
+      k8s:
+        state: present
+        definition:
+          apiVersion: autoscaling/v2
+          kind: HorizontalPodAutoscaler
+          metadata:
+            name: "{{ primereact_config.app_name }}-hpa"
+            namespace: "{{ primereact_config.namespace }}"
+            labels:
+              app.kubernetes.io/name: "{{ primereact_config.app_name }}"
+              app.kubernetes.io/component: frontend
+              app.kubernetes.io/part-of: lions-infrastructure
+              app.kubernetes.io/managed-by: ansible
+          spec:
+            scaleTargetRef:
+              apiVersion: apps/v1
+              kind: Deployment
+              name: "{{ primereact_config.app_name }}"
+            minReplicas: "{{ primereact_config.autoscaling.min_replicas | default(lions_autoscaling_min_replicas | default(1)) }}"
+            maxReplicas: "{{ primereact_config.autoscaling.max_replicas | default(lions_autoscaling_max_replicas | default(10)) }}"
+            metrics:
+              - type: Resource
+                resource:
+                  name: cpu
+                  target:
+                    type: Utilization
+                    averageUtilization: "{{ primereact_config.autoscaling.cpu_target | default(lions_autoscaling_cpu_target | default(70)) }}"
+              - type: Resource
+                resource:
+                  name: memory
+                  target:
+                    type: Utilization
+                    averageUtilization: "{{ primereact_config.autoscaling.memory_target | default(lions_autoscaling_memory_target | default(80)) }}"
+        wait: true
+        wait_timeout: "{{ lions_timeout_default | default(300) }}"
+
+  when:
+    - lions_autoscaling_enabled | default(true) | bool
+    - primereact_config.autoscaling.enabled | default(false) | bool
+  tags:
+    - autoscaling
+    - primereact
+
+# =========================================================================
+# RAPPORT DE DÉPLOIEMENT
+# =========================================================================
+- name: "📋 Génération du rapport de déploiement"
+  block:
+    - name: "Collecte des informations finales"
+      set_fact:
+        deployment_report:
+          application: "{{ primereact_config.app_name }}"
+          namespace: "{{ primereact_config.namespace }}"
+          version: "{{ primereact_config.version }}"
+          environment: "{{ lions_environment }}"
+          replicas: "{{ deployment_status.resources[0].status.availableReplicas | default(0) }}"
+          pods_ready: "{{ pods_info.resources | selectattr('status.phase', 'equalto', 'Running') | list | length }}"
+          service_type: "{{ service_result.result.spec.type | default('ClusterIP') }}"
+          ingress_enabled: "{{ primereact_config.ingress.enabled | default(true) | bool }}"
+          monitoring_enabled: "{{ primereact_config.monitoring.enabled | default(true) | bool }}"
+          autoscaling_enabled: "{{ primereact_config.autoscaling.enabled | default(false) | bool }}"
+          deployment_time: "{{ ansible_date_time.iso8601 }}"
+          internal_url: "http://{{ primereact_config.app_name }}.{{ primereact_config.namespace }}.svc.cluster.local:{{ primereact_config.port }}"
+          external_url: "{{ primereact_config.ingress.protocol | default('https') }}://{{ primereact_config.ingress.host | default(primereact_config.app_name + '.' + lions_dns_full_domain) }}"
+
+    - name: "📋 Affichage du rapport de déploiement"
+      debug:
+        msg: |
+          =========================================================================
+          🎉 DÉPLOIEMENT PRIMEREACT TERMINÉ AVEC SUCCÈS
+          =========================================================================
+          📱 Application: {{ deployment_report.application }}
+          🏷️  Version: {{ deployment_report.version }}
+          🏠 Namespace: {{ deployment_report.namespace }}
+          🌍 Environnement: {{ deployment_report.environment }}
+          📊 Réplicas actives: {{ deployment_report.replicas }}
+          🟢 Pods prêts: {{ deployment_report.pods_ready }}
+          
+          🔗 ACCÈS:
+          📡 URL interne: {{ deployment_report.internal_url }}
+          {% if deployment_report.ingress_enabled %}
+          🌐 URL externe: {{ deployment_report.external_url }}
+          {% endif %}
+          
+          📊 FONCTIONNALITÉS:
+          📈 Monitoring: {{ '✅' if deployment_report.monitoring_enabled else '❌' }}
+          ⚖️  Autoscaling: {{ '✅' if deployment_report.autoscaling_enabled else '❌' }}
+          🔒 Ingress: {{ '✅' if deployment_report.ingress_enabled else '❌' }}
+          
+          ⏰ Déployé le: {{ deployment_report.deployment_time }}
+          =========================================================================
+
+    - name: "💾 Sauvegarde du rapport de déploiement"
+      copy:
+        content: "{{ deployment_report | to_nice_yaml }}"
+        dest: "/tmp/lions-primereact-deployment-{{ ansible_date_time.epoch }}.yml"
+        mode: '0644'
+      delegate_to: localhost
+
+  tags:
+    - reporting
+    - primereact
+
+# =========================================================================
+# NETTOYAGE POST-DÉPLOIEMENT
+# =========================================================================
+- name: "🧹 Nettoyage des ressources temporaires"
+  block:
+    - name: "Suppression des fichiers temporaires"
+      file:
+        path: "{{ temp_dir.path }}"
+        state: absent
+      when: temp_dir is defined
+
+    - name: "Nettoyage du cache Ansible"
+      meta: clear_facts
+
+  always:
+    - name: "📝 Log final du déploiement"
+      debug:
+        msg: "✅ Déploiement PrimeReact terminé - {{ ansible_date_time.iso8601 }}"
+
+  tags:
+    - cleanup
+    - primereact

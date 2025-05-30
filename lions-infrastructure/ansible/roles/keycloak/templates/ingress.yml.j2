@@ -1,39 +1,358 @@
----
-# Titre: Template d'ingress Kubernetes pour Keycloak
-# Description: Définit l'ingress Kubernetes pour Keycloak
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - KEYCLOAK INGRESS TEMPLATE
+# =========================================================================
+# Description: Template d'ingress Kubernetes pour Keycloak avec configuration avancée
+# Version: 5.0.0
+# Maintainer: DevOps Team LIONS
+# Date: {{ ansible_date_time.iso8601 }}
+# Environment: {{ lions_environment | default('development') }}
+# =========================================================================
 
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: "{{ app_name }}"
-  namespace: "{{ app_namespace }}"
+  name: {{ keycloak_service_name | default('keycloak') }}
+  namespace: {{ keycloak_namespace | default(lions_keycloak_namespace | default('security')) }}
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "keycloak"
+    # Labels standards Kubernetes
+    app.kubernetes.io/name: keycloak
+    app.kubernetes.io/instance: {{ keycloak_service_name | default('keycloak') }}
+    app.kubernetes.io/version: {{ keycloak_version | default(lions_keycloak_version | default('22.0')) }}
+    app.kubernetes.io/component: identity-provider
+    app.kubernetes.io/part-of: lions-infrastructure
+    app.kubernetes.io/managed-by: ansible
+
+    # Labels LIONS spécifiques
+    lions.dev/environment: {{ lions_environment | default('development') }}
+    lions.dev/tier: security
+    lions.dev/deployment-mode: {{ lions_deployment_mode | default('single') }}
+    lions.dev/monitoring: "{{ 'true' if lions_monitoring_enabled | default(true) else 'false' }}"
+    lions.dev/backup: "{{ 'true' if lions_backup_enabled | default(true) else 'false' }}"
+
+    # Labels pour l'observabilité
+    version: {{ keycloak_version | default(lions_keycloak_version | default('22.0')) }}
+    technology: keycloak
+
+    # Labels pour la sécurité et la conformité
+    security.lions.dev/tls-enabled: "{{ 'true' if lions_security_tls_enabled | default(true) else 'false' }}"
+    security.lions.dev/network-policy: "{{ 'true' if lions_security_network_policies | default(true) else 'false' }}"
+
   annotations:
-    description: "Ingress pour Keycloak {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
-    {% for key, value in keycloak_ingress_annotations.items() %}
+    # Documentation et métadonnées
+    description: "Ingress pour Keycloak {{ keycloak_service_name | default('keycloak') }} v{{ keycloak_version | default(lions_keycloak_version | default('22.0')) }}"
+    documentation: "https://docs.lions.dev/security/keycloak"
+    contact: "{{ lions_config_maintainer | default('devops@lions.dev') }}"
+
+    # Configuration Traefik de base
+    traefik.ingress.kubernetes.io/router.entrypoints: {{ 'websecure' if lions_security_tls_enabled | default(true) else 'web' }}
+    {% if lions_security_tls_enabled | default(true) %}
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    {% if lions_security_tls_provider | default('letsencrypt') == 'letsencrypt' %}
+    traefik.ingress.kubernetes.io/router.tls.certresolver: {{ 'letsencrypt-staging' if lions_security_tls_staging | default(true) else 'letsencrypt-prod' }}
+    {% endif %}
+    {% endif %}
+
+    # Configuration de sécurité avancée
+    {% if keycloak_ingress_security_headers | default(true) %}
+    traefik.ingress.kubernetes.io/router.middlewares: >-
+      {{ keycloak_namespace | default(lions_keycloak_namespace | default('security')) }}-security-headers@kubernetescrd
+      {%- if keycloak_rate_limiting_enabled | default(true) -%}
+        ,{{ keycloak_namespace | default(lions_keycloak_namespace | default('security')) }}-rate-limit@kubernetescrd
+      {%- endif -%}
+      {%- if keycloak_auth_middleware_enabled | default(false) -%}
+        ,{{ keycloak_namespace | default(lions_keycloak_namespace | default('security')) }}-auth@kubernetescrd
+      {%- endif %}
+    {% endif %}
+
+    # Configuration de performance
+    {% if keycloak_ingress_compression | default(true) %}
+    traefik.ingress.kubernetes.io/router.middlewares: {{ keycloak_namespace | default(lions_keycloak_namespace | default('security')) }}-compress@kubernetescrd
+    {% endif %}
+
+    # Configuration de redirections
+    {% if keycloak_force_ssl_redirect | default(true) and lions_security_tls_enabled | default(true) %}
+    traefik.ingress.kubernetes.io/redirect.scheme: https
+    traefik.ingress.kubernetes.io/redirect.permanent: "true"
+    {% endif %}
+
+    # Configuration sticky sessions (pour la haute disponibilité)
+    {% if keycloak_sticky_sessions | default(false) %}
+    traefik.ingress.kubernetes.io/service.sticky.cookie: "true"
+    traefik.ingress.kubernetes.io/service.sticky.cookie.name: "KEYCLOAK_SESSION"
+    traefik.ingress.kubernetes.io/service.sticky.cookie.secure: "{{ 'true' if lions_security_tls_enabled | default(true) else 'false' }}"
+    traefik.ingress.kubernetes.io/service.sticky.cookie.httponly: "true"
+    traefik.ingress.kubernetes.io/service.sticky.cookie.samesite: "lax"
+    {% endif %}
+
+    # Configuration de timeout
+    traefik.ingress.kubernetes.io/router.timeout: {{ keycloak_ingress_timeout | default('300s') }}
+
+    # Configuration monitoring et observabilité
+    {% if lions_monitoring_enabled | default(true) %}
+    prometheus.io/scrape: "true"
+    prometheus.io/path: "/metrics"
+    prometheus.io/port: "{{ keycloak_metrics_port | default('9990') }}"
+    {% endif %}
+
+    # Configuration de load balancing
+    traefik.ingress.kubernetes.io/service.loadbalancer.method: {{ keycloak_load_balancer_method | default('roundrobin') }}
+
+    # Configuration CORS (si nécessaire)
+    {% if keycloak_cors_enabled | default(false) %}
+    traefik.ingress.kubernetes.io/router.middlewares: {{ keycloak_namespace | default(lions_keycloak_namespace | default('security')) }}-cors@kubernetescrd
+    {% endif %}
+
+    # Configuration de maintenance
+    {% if keycloak_maintenance_mode | default(false) %}
+    traefik.ingress.kubernetes.io/router.middlewares: {{ keycloak_namespace | default(lions_keycloak_namespace | default('security')) }}-maintenance@kubernetescrd
+    {% endif %}
+
+    # Annotations personnalisées (si définies)
+    {% if keycloak_custom_annotations is defined %}
+    {% for key, value in keycloak_custom_annotations.items() %}
     {{ key }}: "{{ value }}"
     {% endfor %}
+    {% endif %}
+
 spec:
-  ingressClassName: traefik
+  # Classe d'ingress (Traefik par défaut)
+  ingressClassName: {{ keycloak_ingress_class | default(lions_k8s_ingress_controller | default('traefik')) }}
+
+  # Configuration TLS
+  {% if lions_security_tls_enabled | default(true) %}
   tls:
     - hosts:
-        - "{{ app_domain }}"
-      secretName: "{{ app_name }}-tls"
+        - {{ keycloak_domain | default('keycloak.' + lions_dns_full_domain) }}
+        {% if keycloak_additional_domains is defined %}
+        {% for domain in keycloak_additional_domains %}
+        - {{ domain }}
+        {% endfor %}
+        {% endif %}
+      secretName: {{ keycloak_tls_secret_name | default(keycloak_service_name | default('keycloak') + '-tls') }}
+
+    # Certificats additionnels (si définis)
+    {% if keycloak_additional_tls_configs is defined %}
+    {% for tls_config in keycloak_additional_tls_configs %}
+    - hosts:
+        {% for host in tls_config.hosts %}
+        - {{ host }}
+        {% endfor %}
+      secretName: {{ tls_config.secret_name }}
+    {% endfor %}
+    {% endif %}
+  {% endif %}
+
+  # Règles de routage
   rules:
-    - host: "{{ app_domain }}"
+    # Domaine principal
+    - host: {{ keycloak_domain | default('keycloak.' + lions_dns_full_domain) }}
       http:
         paths:
-          - path: /
+          # Route principale Keycloak
+          - path: {{ keycloak_base_path | default('/') }}
+            pathType: {{ keycloak_path_type | default('Prefix') }}
+            backend:
+              service:
+                name: {{ keycloak_service_name | default('keycloak') }}
+                port:
+                  {% if keycloak_service_port_name is defined %}
+                  name: {{ keycloak_service_port_name }}
+                  {% else %}
+                  number: {{ keycloak_service_port | default(lions_keycloak_port | default(8080)) }}
+                  {% endif %}
+
+          # Route pour l'admin console (si séparée)
+          {% if keycloak_admin_console_separate | default(false) %}
+          - path: {{ keycloak_admin_path | default('/admin') }}
             pathType: Prefix
             backend:
               service:
-                name: "{{ app_name }}"
+                name: {{ keycloak_admin_service_name | default(keycloak_service_name | default('keycloak') + '-admin') }}
                 port:
-                  name: http
+                  number: {{ keycloak_admin_port | default(keycloak_service_port | default(lions_keycloak_port | default(8080))) }}
+          {% endif %}
+
+          # Routes pour les métriques (si exposées)
+          {% if keycloak_metrics_exposed | default(false) and lions_monitoring_enabled | default(true) %}
+          - path: {{ keycloak_metrics_path | default('/metrics') }}
+            pathType: Exact
+            backend:
+              service:
+                name: {{ keycloak_metrics_service_name | default(keycloak_service_name | default('keycloak') + '-metrics') }}
+                port:
+                  number: {{ keycloak_metrics_port | default('9990') }}
+          {% endif %}
+
+          # Routes pour les health checks
+          {% if keycloak_health_check_exposed | default(false) %}
+          - path: {{ keycloak_health_path | default('/health') }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ keycloak_service_name | default('keycloak') }}
+                port:
+                  number: {{ keycloak_service_port | default(lions_keycloak_port | default(8080)) }}
+          {% endif %}
+
+    # Domaines additionnels (si définis)
+    {% if keycloak_additional_domains is defined %}
+    {% for domain in keycloak_additional_domains %}
+    - host: {{ domain }}
+      http:
+        paths:
+          - path: {{ keycloak_base_path | default('/') }}
+            pathType: {{ keycloak_path_type | default('Prefix') }}
+            backend:
+              service:
+                name: {{ keycloak_service_name | default('keycloak') }}
+                port:
+                  {% if keycloak_service_port_name is defined %}
+                  name: {{ keycloak_service_port_name }}
+                  {% else %}
+                  number: {{ keycloak_service_port | default(lions_keycloak_port | default(8080)) }}
+                  {% endif %}
+    {% endfor %}
+    {% endif %}
+
+---
+# =========================================================================
+# MIDDLEWARE DE SÉCURITÉ POUR KEYCLOAK
+# =========================================================================
+{% if keycloak_ingress_security_headers | default(true) %}
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: security-headers
+  namespace: {{ keycloak_namespace | default(lions_keycloak_namespace | default('security')) }}
+  labels:
+    app.kubernetes.io/name: keycloak-middleware
+    app.kubernetes.io/part-of: lions-infrastructure
+    lions.dev/component: security-middleware
+spec:
+  headers:
+    customRequestHeaders:
+      X-Forwarded-Proto: "https"
+      X-Real-IP: ""
+    customResponseHeaders:
+      X-Frame-Options: "SAMEORIGIN"
+      X-Content-Type-Options: "nosniff"
+      X-XSS-Protection: "1; mode=block"
+      Referrer-Policy: "strict-origin-when-cross-origin"
+      {% if not keycloak_allow_embedding | default(false) %}
+      Content-Security-Policy: "frame-ancestors 'self'"
+      {% endif %}
+    sslRedirect: {{ lions_security_tls_enabled | default(true) | lower }}
+    stsSeconds: {{ keycloak_hsts_max_age | default(31536000) }}
+    stsIncludeSubdomains: true
+    stsPreload: true
+---
+{% endif %}
+
+{% if keycloak_rate_limiting_enabled | default(true) %}
+# =========================================================================
+# MIDDLEWARE DE LIMITATION DE DÉBIT
+# =========================================================================
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: rate-limit
+  namespace: {{ keycloak_namespace | default(lions_keycloak_namespace | default('security')) }}
+  labels:
+    app.kubernetes.io/name: keycloak-middleware
+    app.kubernetes.io/part-of: lions-infrastructure
+    lions.dev/component: rate-limiting
+spec:
+  rateLimit:
+    burst: {{ keycloak_rate_limit_burst | default(50) }}
+    average: {{ keycloak_rate_limit_average | default(100) }}
+    period: {{ keycloak_rate_limit_period | default('1m') }}
+    sourceCriterion:
+      ipStrategy:
+        depth: {{ keycloak_rate_limit_ip_depth | default(1) }}
+---
+{% endif %}
+
+{% if keycloak_ingress_compression | default(true) %}
+# =========================================================================
+# MIDDLEWARE DE COMPRESSION
+# =========================================================================
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: compress
+  namespace: {{ keycloak_namespace | default(lions_keycloak_namespace | default('security')) }}
+  labels:
+    app.kubernetes.io/name: keycloak-middleware
+    app.kubernetes.io/part-of: lions-infrastructure
+    lions.dev/component: compression
+spec:
+  compress:
+    excludedContentTypes:
+      - "text/event-stream"
+      - "application/grpc"
+    minResponseBodyBytes: {{ keycloak_compression_min_size | default(1024) }}
+---
+{% endif %}
+
+{% if keycloak_cors_enabled | default(false) %}
+# =========================================================================
+# MIDDLEWARE CORS
+# =========================================================================
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: cors
+  namespace: {{ keycloak_namespace | default(lions_keycloak_namespace | default('security')) }}
+  labels:
+    app.kubernetes.io/name: keycloak-middleware
+    app.kubernetes.io/part-of: lions-infrastructure
+    lions.dev/component: cors
+spec:
+  headers:
+    accessControlAllowCredentials: true
+    accessControlAllowHeaders:
+      - "Content-Type"
+      - "Authorization"
+      - "X-Requested-With"
+      {% if keycloak_cors_additional_headers is defined %}
+      {% for header in keycloak_cors_additional_headers %}
+      - "{{ header }}"
+      {% endfor %}
+      {% endif %}
+    accessControlAllowMethods:
+      - "GET"
+      - "POST"
+      - "PUT"
+      - "DELETE"
+      - "OPTIONS"
+    accessControlAllowOriginList:
+      {% for origin in keycloak_cors_allowed_origins | default(['*']) %}
+      - "{{ origin }}"
+      {% endfor %}
+    accessControlMaxAge: {{ keycloak_cors_max_age | default(3600) }}
+---
+{% endif %}
+
+{% if keycloak_maintenance_mode | default(false) %}
+# =========================================================================
+# MIDDLEWARE DE MAINTENANCE
+# =========================================================================
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: maintenance
+  namespace: {{ keycloak_namespace | default(lions_keycloak_namespace | default('security')) }}
+  labels:
+    app.kubernetes.io/name: keycloak-middleware
+    app.kubernetes.io/part-of: lions-infrastructure
+    lions.dev/component: maintenance
+spec:
+  errors:
+    status:
+      - "500-599"
+    service:
+      name: {{ keycloak_maintenance_service | default('maintenance-page') }}
+      port: 80
+    query: "/maintenance.html"
+---
+{% endif %}

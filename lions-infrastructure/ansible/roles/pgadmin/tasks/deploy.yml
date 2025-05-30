@@ -1,71 +1,364 @@
 ---
-# Titre: Déploiement de pgAdmin
-# Description: Déploie pgAdmin sur Kubernetes
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-10
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - PGADMIN DEPLOYMENT TASKS
+# =========================================================================
+# Description: Deploy pgAdmin 4 with enterprise-grade configuration
+# Version: 5.0.0
+# Maintainer: DevOps Team
+# Dependencies: PostgreSQL role, Vault integration
+# =========================================================================
 
-- name: Déploiement de pgAdmin
-  k8s:
+- name: "pgAdmin | Validate deployment prerequisites"
+  include_tasks: validate.yml
+  tags:
+    - pgadmin
+    - validation
+    - prerequisites
+
+- name: "pgAdmin | Ensure target namespace exists"
+  kubernetes.core.k8s:
+    api_version: v1
+    kind: Namespace
+    name: "{{ lions_pgadmin_namespace }}"
     state: present
-    src: "{{ temp_dir.path }}/deployment.yml"
-  register: deployment_result
+    wait: true
+    wait_timeout: "{{ lions_timeout_default }}"
   environment:
-    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+    KUBECONFIG: "{{ lions_k8s_config_file }}"
+  tags:
+    - pgadmin
+    - namespace
 
-- name: Création du service pour pgAdmin
-  k8s:
+- name: "pgAdmin | Create temporary directory for manifests"
+  ansible.builtin.tempfile:
+    state: directory
+    suffix: "_pgadmin_deploy"
+  register: pgadmin_temp_dir
+  tags:
+    - pgadmin
+    - preparation
+
+- name: "pgAdmin | Generate service account manifest"
+  ansible.builtin.template:
+    src: serviceaccount.yml.j2
+    dest: "{{ pgadmin_temp_dir.path }}/serviceaccount.yml"
+    mode: '0600'
+  tags:
+    - pgadmin
+    - rbac
+
+- name: "pgAdmin | Generate configuration map manifest"
+  ansible.builtin.template:
+    src: configmap.yml.j2
+    dest: "{{ pgladmin_temp_dir.path }}/configmap.yml"
+    mode: '0600'
+  tags:
+    - pgadmin
+    - configuration
+
+- name: "pgAdmin | Generate persistent volume claim manifest"
+  ansible.builtin.template:
+    src: persistentvolumeclaim.yml.j2
+    dest: "{{ pgadmin_temp_dir.path }}/pvc.yml"
+    mode: '0600'
+  when: lions_pgadmin_persistence_enabled | bool
+  tags:
+    - pgadmin
+    - storage
+
+- name: "pgAdmin | Generate deployment manifest"
+  ansible.builtin.template:
+    src: deployment.yml.j2
+    dest: "{{ pgadmin_temp_dir.path }}/deployment.yml"
+    mode: '0600'
+  tags:
+    - pgadmin
+    - deployment
+
+- name: "pgAdmin | Generate service manifest"
+  ansible.builtin.template:
+    src: service.yml.j2
+    dest: "{{ pgadmin_temp_dir.path }}/service.yml"
+    mode: '0600'
+  tags:
+    - pgadmin
+    - networking
+
+- name: "pgAdmin | Generate ingress manifest"
+  ansible.builtin.template:
+    src: ingress.yml.j2
+    dest: "{{ pgadmin_temp_dir.path }}/ingress.yml"
+    mode: '0600'
+  when: lions_security_tls_enabled | bool
+  tags:
+    - pgladmin
+    - networking
+    - tls
+
+- name: "pgAdmin | Generate service monitor manifest for Prometheus"
+  ansible.builtin.template:
+    src: servicemonitor.yml.j2
+    dest: "{{ pgadmin_temp_dir.path }}/servicemonitor.yml"
+    mode: '0600'
+  when: lions_monitoring_enabled | bool
+  tags:
+    - pgadmin
+    - monitoring
+
+- name: "pgAdmin | Deploy service account"
+  kubernetes.core.k8s:
     state: present
-    src: "{{ temp_dir.path }}/service.yml"
-  register: service_result
+    src: "{{ pgadmin_temp_dir.path }}/serviceaccount.yml"
+    wait: true
+    wait_timeout: "{{ lions_timeout_default }}"
   environment:
-    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+    KUBECONFIG: "{{ lions_k8s_config_file }}"
+  register: pgadmin_sa_result
+  tags:
+    - pgladmin
+    - rbac
 
-- name: Création de l'ingress pour pgAdmin
-  k8s:
+- name: "pgAdmin | Deploy configuration map"
+  kubernetes.core.k8s:
     state: present
-    src: "{{ temp_dir.path }}/ingress.yml"
-  register: ingress_result
-  failed_when: false
+    src: "{{ pgadmin_temp_dir.path }}/configmap.yml"
+    wait: true
+    wait_timeout: "{{ lions_timeout_default }}"
   environment:
-    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+    KUBECONFIG: "{{ lions_k8s_config_file }}"
+  register: pgadmin_configmap_result
+  tags:
+    - pgadmin
+    - configuration
 
-- name: Vérification du déploiement
-  k8s_info:
+- name: "pgAdmin | Deploy persistent volume claim"
+  kubernetes.core.k8s:
+    state: present
+    src: "{{ pgadmin_temp_dir.path }}/pvc.yml"
+    wait: true
+    wait_timeout: "{{ lions_timeout_default }}"
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file }}"
+  register: pgadmin_pvc_result
+  when: lions_pgadmin_persistence_enabled | bool
+  tags:
+    - pgadmin
+    - storage
+
+- name: "pgAdmin | Wait for PVC to be bound"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: PersistentVolumeClaim
+    name: "{{ lions_pgadmin_service_name }}-pvc"
+    namespace: "{{ lions_pgadmin_namespace }}"
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file }}"
+  register: pgadmin_pvc_info
+  until: pgadmin_pvc_info.resources[0].status.phase == "Bound"
+  retries: "{{ (lions_timeout_default | int / 10) | int }}"
+  delay: 10
+  when:
+    - lions_pgadmin_persistence_enabled | bool
+    - pgadmin_pvc_result.changed
+  tags:
+    - pgadmin
+    - storage
+    - validation
+
+- name: "pgAdmin | Deploy application"
+  kubernetes.core.k8s:
+    state: present
+    src: "{{ pgadmin_temp_dir.path }}/deployment.yml"
+    wait: true
+    wait_timeout: "{{ lions_timeout_deployment }}"
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file }}"
+  register: pgadmin_deployment_result
+  tags:
+    - pgadmin
+    - deployment
+
+- name: "pgAdmin | Deploy service"
+  kubernetes.core.k8s:
+    state: present
+    src: "{{ pgadmin_temp_dir.path }}/service.yml"
+    wait: true
+    wait_timeout: "{{ lions_timeout_default }}"
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file }}"
+  register: pgadmin_service_result
+  tags:
+    - pgladmin
+    - networking
+
+- name: "pgAdmin | Deploy ingress"
+  kubernetes.core.k8s:
+    state: present
+    src: "{{ pgadmin_temp_dir.path }}/ingress.yml"
+    wait: true
+    wait_timeout: "{{ lions_timeout_default }}"
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file }}"
+  register: pgadmin_ingress_result
+  when: lions_security_tls_enabled | bool
+  tags:
+    - pgladmin
+    - networking
+    - tls
+
+- name: "pgAdmin | Deploy service monitor"
+  kubernetes.core.k8s:
+    state: present
+    src: "{{ pgadmin_temp_dir.path }}/servicemonitor.yml"
+    wait: true
+    wait_timeout: "{{ lions_timeout_default }}"
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file }}"
+  register: pgadmin_monitor_result
+  when: lions_monitoring_enabled | bool
+  tags:
+    - pgladmin
+    - monitoring
+
+- name: "pgAdmin | Wait for deployment to be ready"
+  kubernetes.core.k8s_info:
     api_version: apps/v1
     kind: Deployment
-    name: "{{ app_name }}"
-    namespace: "{{ app_namespace }}"
-  register: deployment_info
-  until: deployment_info.resources | length > 0 and deployment_info.resources[0].status.availableReplicas is defined and deployment_info.resources[0].status.availableReplicas > 0
-  retries: 30
-  delay: 10
-  failed_when: false
+    name: "{{ lions_pgadmin_service_name }}"
+    namespace: "{{ lions_pgadmin_namespace }}"
   environment:
-    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+    KUBECONFIG: "{{ lions_k8s_config_file }}"
+  register: pgadmin_deployment_info
+  until: >
+    pgadmin_deployment_info.resources | length > 0 and
+    pgadmin_deployment_info.resources[0].status.readyReplicas is defined and
+    pgadmin_deployment_info.resources[0].status.readyReplicas == pgadmin_deployment_info.resources[0].spec.replicas
+  retries: "{{ (lions_timeout_deployment | int / 10) | int }}"
+  delay: 10
+  tags:
+    - pgadmin
+    - validation
+    - health-check
 
-- name: Échec si le déploiement n'est pas réussi
-  fail:
-    msg: "Le déploiement de pgAdmin a échoué. Veuillez vérifier les logs pour plus d'informations."
-  when: deployment_info.resources | length == 0 or deployment_info.resources[0].status.availableReplicas is not defined or deployment_info.resources[0].status.availableReplicas == 0
-
-- name: Récupération des informations sur les pods
-  k8s_info:
+- name: "pgAdmin | Verify deployment health"
+  kubernetes.core.k8s_info:
     api_version: v1
     kind: Pod
-    namespace: "{{ app_namespace }}"
+    namespace: "{{ lions_pgadmin_namespace }}"
     label_selectors:
-      - app={{ app_name }}
-  register: pods_info
+      - "app={{ lions_pgadmin_service_name }}"
+      - "component=database-admin"
   environment:
-    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+    KUBECONFIG: "{{ lions_k8s_config_file }}"
+  register: pgadmin_pods_info
+  tags:
+    - pgadmin
+    - validation
+    - health-check
 
-- name: Affichage des informations sur les pods
-  debug:
-    var: pods_info.resources[0].metadata.name
-  when: pods_info.resources | length > 0
+- name: "pgAdmin | Fail if no healthy pods found"
+  ansible.builtin.fail:
+    msg: >
+      pgAdmin deployment failed: No healthy pods found.
+      Expected: {{ lions_pgadmin_replicas | default(1) }} pod(s),
+      Found: {{ pgadmin_pods_info.resources | selectattr('status.phase', 'equalto', 'Running') | list | length }} running pod(s).
+      Please check deployment logs and configuration.
+  when: >
+    pgadmin_pods_info.resources | length == 0 or
+    (pgadmin_pods_info.resources | selectattr('status.phase', 'equalto', 'Running') | list | length) < (lions_pgadmin_replicas | default(1) | int)
+  tags:
+    - pgadmin
+    - validation
+    - health-check
 
-- name: Attente de l'initialisation de pgAdmin
-  pause:
-    seconds: "{{ pgadmin_init_delay | default(30) }}"
-  when: deployment_result.changed
+- name: "pgAdmin | Perform application health check"
+  ansible.builtin.uri:
+    url: "http://{{ lions_pgadmin_service_name }}.{{ lions_pgadmin_namespace }}.svc.cluster.local:{{ lions_pgadmin_port }}/misc/ping"
+    method: GET
+    status_code: [200, 302]
+    timeout: 30
+  register: pgadmin_health_check
+  retries: 10
+  delay: 15
+  until: pgadmin_health_check.status in [200, 302]
+  when: pgadmin_deployment_result.changed
+  tags:
+    - pgadmin
+    - validation
+    - health-check
+
+- name: "pgAdmin | Wait for application initialization"
+  ansible.builtin.pause:
+    seconds: "{{ lions_pgadmin_init_delay | default(45) }}"
+  when: pgadmin_deployment_result.changed
+  tags:
+    - pgadmin
+    - initialization
+
+- name: "pgAdmin | Validate service endpoints"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Endpoints
+    name: "{{ lions_pgadmin_service_name }}"
+    namespace: "{{ lions_pgadmin_namespace }}"
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file }}"
+  register: pgadmin_endpoints_info
+  tags:
+    - pgadmin
+    - validation
+    - networking
+
+- name: "pgAdmin | Validate ingress configuration"
+  kubernetes.core.k8s_info:
+    api_version: networking.k8s.io/v1
+    kind: Ingress
+    name: "{{ lions_pgadmin_service_name }}"
+    namespace: "{{ lions_pgadmin_namespace }}"
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file }}"
+  register: pgadmin_ingress_info
+  when: lions_security_tls_enabled | bool
+  tags:
+    - pgadmin
+    - validation
+    - networking
+    - tls
+
+- name: "pgAdmin | Log deployment success information"
+  ansible.builtin.debug:
+    msg:
+      - "✅ pgAdmin deployment completed successfully"
+      - "🌐 Service: {{ lions_pgadmin_service_name }}.{{ lions_pgadmin_namespace }}.svc.cluster.local:{{ lions_pgadmin_port }}"
+      - "📊 Pods: {{ pgadmin_pods_info.resources | selectattr('status.phase', 'equalto', 'Running') | list | length }}/{{ lions_pgadmin_replicas | default(1) }} running"
+      - "🔗 Endpoints: {{ pgadmin_endpoints_info.resources[0].subsets | length if pgladmin_endpoints_info.resources else 0 }} available"
+      - "🛡️  Ingress: {% if lions_security_tls_enabled and pgadmin_ingress_info.resources %}https://pgadmin.{{ lions_dns_full_domain }}{% else %}Not configured{% endif %}"
+      - "📈 Monitoring: {% if lions_monitoring_enabled %}ServiceMonitor deployed{% else %}Disabled{% endif %}"
+  tags:
+    - pgadmin
+    - information
+
+- name: "pgAdmin | Clean up temporary directory"
+  ansible.builtin.file:
+    path: "{{ pgadmin_temp_dir.path }}"
+    state: absent
+  when: not (lions_debug_mode | bool)
+  tags:
+    - pgadmin
+    - cleanup
+
+- name: "pgAdmin | Record deployment metrics"
+  ansible.builtin.set_fact:
+    pgadmin_deployment_metrics:
+      deployment_time: "{{ ansible_date_time.epoch }}"
+      version: "{{ lions_pgadmin_version }}"
+      replicas: "{{ lions_pgadmin_replicas | default(1) }}"
+      namespace: "{{ lions_pgadmin_namespace }}"
+      persistent_storage: "{{ lions_pgadmin_persistence_enabled | bool }}"
+      monitoring_enabled: "{{ lions_monitoring_enabled | bool }}"
+      tls_enabled: "{{ lions_security_tls_enabled | bool }}"
+      health_status: "healthy"
+  tags:
+    - pgadmin
+    - metrics
+    -

@@ -1,76 +1,552 @@
 ---
-# Titre: Configuration du monitoring pour la registry de conteneurs
-# Description: Configure le monitoring pour la registry de conteneurs Docker
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-10
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - MONITORING REGISTRY
+# =========================================================================
+# Titre: Configuration du monitoring pour Registry de conteneurs
+# Description: Déploie et configure le monitoring complet pour Registry Docker
+# Auteur: Équipe LIONS Infrastructure DevOps
+# Date: "{{ ansible_date_time.date }}"
+# Version: 5.0.0
+# Documentation: https://docs.lions.dev/roles/registry/monitoring
+# =========================================================================
 
-- name: Vérification de l'existence de Prometheus
-  k8s_info:
+# =========================================================================
+# VALIDATION DE L'ENVIRONNEMENT MONITORING
+# =========================================================================
+- name: "Registry Monitoring | Validation de la configuration monitoring"
+  assert:
+    that:
+      - lions_monitoring_enabled | default(false) | bool
+      - lions_prometheus_enabled | default(false) | bool
+      - lions_registry_enabled | default(false) | bool
+    fail_msg: "Le monitoring doit être activé pour configurer le monitoring Registry"
+    success_msg: "Configuration monitoring validée pour Registry"
+  tags:
+    - validation
+    - monitoring
+    - registry
+
+- name: "Registry Monitoring | Debug - Variables de monitoring"
+  debug:
+    msg:
+      - "Namespace monitoring: {{ lions_monitoring_namespace }}"
+      - "Registry namespace: {{ lions_registry_namespace }}"
+      - "Service name: {{ lions_registry_service_name }}"
+      - "Monitoring activé: {{ lions_monitoring_enabled }}"
+      - "Prometheus activé: {{ lions_prometheus_enabled }}"
+  when: lions_debug_mode | default(false) | bool
+  tags:
+    - debug
+    - monitoring
+
+# =========================================================================
+# VÉRIFICATION DES PRÉREQUIS PROMETHEUS
+# =========================================================================
+- name: "Registry Monitoring | Vérification de l'existence du namespace monitoring"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: "{{ lions_monitoring_namespace }}"
+  register: monitoring_namespace_info
+  failed_when: false
+  tags:
+    - validation
+    - prometheus
+
+- name: "Registry Monitoring | Création du namespace monitoring si nécessaire"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ lions_monitoring_namespace }}"
+        labels:
+          name: "{{ lions_monitoring_namespace }}"
+          managed-by: "lions-infrastructure"
+          environment: "{{ lions_environment }}"
+  when: monitoring_namespace_info.resources | length == 0
+  tags:
+    - namespace
+    - prometheus
+
+- name: "Registry Monitoring | Vérification de l'existence de Prometheus"
+  kubernetes.core.k8s_info:
     api_version: v1
     kind: Service
-    namespace: monitoring
-    name: prometheus-kube-prometheus-prometheus
-  register: prometheus_info
+    namespace: "{{ lions_monitoring_namespace }}"
+    name: "prometheus-kube-prometheus-prometheus"
+  register: prometheus_service_info
   failed_when: false
+  tags:
+    - validation
+    - prometheus
 
-- name: Avertissement si Prometheus n'est pas trouvé
-  debug:
-    msg: "AVERTISSEMENT: Le service Prometheus n'a pas été trouvé. Le monitoring de la registry ne sera pas configuré."
-  when: prometheus_info.resources | length == 0
+- name: "Registry Monitoring | Vérification de l'existence de l'opérateur Prometheus"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ lions_monitoring_namespace }}"
+    label_selectors:
+      - "app.kubernetes.io/name=prometheus-operator"
+  register: prometheus_operator_info
+  failed_when: false
+  tags:
+    - validation
+    - prometheus
 
-- name: Création du ServiceMonitor pour la registry
-  k8s:
-    state: present
-    src: "{{ temp_dir.path }}/servicemonitor.yml"
-  register: servicemonitor_result
+- name: "Registry Monitoring | Avertissement si Prometheus non disponible"
+  fail:
+    msg: |
+      ERREUR CRITIQUE: L'infrastructure de monitoring Prometheus n'est pas disponible.
+      
+      Vérifications effectuées:
+      - Service Prometheus: {{ 'TROUVÉ' if prometheus_service_info.resources | length > 0 else 'MANQUANT' }}
+      - Opérateur Prometheus: {{ 'TROUVÉ' if prometheus_operator_info.resources | length > 0 else 'MANQUANT' }}
+      
+      Actions requises:
+      1. Déployer l'infrastructure de monitoring: ansible-playbook deploy-infrastructure-services.yml
+      2. Vérifier les logs: kubectl logs -n {{ lions_monitoring_namespace }} -l app.kubernetes.io/name=prometheus-operator
+      3. Consulter la documentation: https://docs.lions.dev/monitoring/prometheus-setup
   when:
-    - prometheus_info.resources | length > 0
-    - registry_prometheus_scrape | default(true) | bool
+    - prometheus_service_info.resources | length == 0 or prometheus_operator_info.resources | length == 0
+    - not lions_dry_run | default(false) | bool
+  tags:
+    - validation
+    - prometheus
 
-- name: Configuration des règles d'alerte pour la registry
-  k8s:
+# =========================================================================
+# VÉRIFICATION DE L'EXISTENCE DU SERVICE REGISTRY
+# =========================================================================
+- name: "Registry Monitoring | Vérification de l'existence du service Registry"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Service
+    namespace: "{{ lions_registry_namespace }}"
+    name: "{{ lions_registry_service_name }}"
+  register: registry_service_info
+  failed_when: false
+  tags:
+    - validation
+    - registry
+
+- name: "Registry Monitoring | Avertissement si service Registry non trouvé"
+  debug:
+    msg: |
+      AVERTISSEMENT: Le service Registry '{{ lions_registry_service_name }}' 
+      n'a pas été trouvé dans le namespace '{{ lions_registry_namespace }}'.
+      Le monitoring sera configuré mais ne sera actif qu'après le déploiement de Registry.
+  when: registry_service_info.resources | length == 0
+  tags:
+    - validation
+    - registry
+
+# =========================================================================
+# GÉNÉRATION DES TEMPLATES DE MONITORING
+# =========================================================================
+- name: "Registry Monitoring | Création du répertoire temporaire pour les templates"
+  tempfile:
+    state: directory
+    suffix: "-registry-monitoring"
+  register: registry_monitoring_temp_dir
+  tags:
+    - templates
+    - monitoring
+
+- name: "Registry Monitoring | Génération du ServiceMonitor Registry"
+  template:
+    src: "servicemonitor.yml.j2"
+    dest: "{{ registry_monitoring_temp_dir.path }}/servicemonitor.yml"
+    mode: '0640'
+  vars:
+    # Variables pour le template ServiceMonitor
+    service_monitor_name: "{{ lions_registry_service_name }}-monitor"
+    service_monitor_namespace: "{{ lions_monitoring_namespace }}"
+    target_namespace: "{{ lions_registry_namespace }}"
+    target_service: "{{ lions_registry_service_name }}"
+    target_port: "{{ lions_registry_port }}"
+    scrape_interval: "{{ lions_prometheus_scrape_interval | default('30s') }}"
+    scrape_timeout: "{{ lions_prometheus_scrape_timeout | default('10s') }}"
+    metrics_path: "{{ lions_registry_metrics_path | default('/metrics') }}"
+  tags:
+    - templates
+    - servicemonitor
+
+# =========================================================================
+# DÉPLOIEMENT DU SERVICEMONITOR
+# =========================================================================
+- name: "Registry Monitoring | Déploiement du ServiceMonitor Registry"
+  kubernetes.core.k8s:
+    state: present
+    src: "{{ registry_monitoring_temp_dir.path }}/servicemonitor.yml"
+    wait: true
+    wait_condition:
+      type: Progressing
+      status: "True"
+      reason: ReplicaSetUpdated
+    wait_timeout: "{{ lions_timeout_deployment | default(600) }}"
+  register: servicemonitor_deployment_result
+  when:
+    - prometheus_service_info.resources | length > 0
+    - prometheus_operator_info.resources | length > 0
+    - lions_registry_prometheus_monitoring | default(true) | bool
+    - not lions_dry_run | default(false) | bool
+  tags:
+    - deployment
+    - servicemonitor
+    - monitoring
+
+# =========================================================================
+# CONFIGURATION DES RÈGLES D'ALERTE PROMETHEUS
+# =========================================================================
+- name: "Registry Monitoring | Déploiement des règles d'alerte Registry"
+  kubernetes.core.k8s:
     state: present
     definition:
       apiVersion: monitoring.coreos.com/v1
       kind: PrometheusRule
       metadata:
-        name: "{{ app_name | default('registry') }}-alerts"
-        namespace: monitoring
+        name: "{{ lions_registry_service_name }}-alerts"
+        namespace: "{{ lions_monitoring_namespace }}"
         labels:
-          app: "{{ app_name | default('registry') }}"
-          technology: "registry"
-          prometheus: kube-prometheus
+          app: "{{ lions_registry_service_name }}"
+          component: "registry"
+          technology: "docker-registry"
+          prometheus: "kube-prometheus"
+          managed-by: "lions-infrastructure"
+          environment: "{{ lions_environment }}"
+          version: "{{ lions_registry_version }}"
       spec:
         groups:
-          - name: registry.rules
+          - name: "{{ lions_registry_service_name }}.availability"
+            interval: "{{ lions_prometheus_evaluation_interval | default('30s') }}"
             rules:
-              - alert: RegistryInstanceDown
-                expr: absent(up{job="{{ app_name | default('registry') }}"})
-                for: 5m
+              # Alerte de disponibilité critique
+              - alert: "RegistryInstanceDown"
+                expr: 'absent(up{job="{{ lions_registry_service_name }}", namespace="{{ lions_registry_namespace }}"})'
+                for: "{{ lions_alert_registry_down_duration | default('2m') }}"
                 labels:
-                  severity: critical
+                  severity: "critical"
+                  component: "registry"
+                  service: "{{ lions_registry_service_name }}"
+                  environment: "{{ lions_environment }}"
                 annotations:
-                  summary: "Instance registry {{ app_name | default('registry') }} down"
-                  description: "L'instance registry {{ app_name | default('registry') }} est indisponible depuis 5 minutes."
+                  summary: "Registry {{ lions_registry_service_name }} instance indisponible"
+                  description: |
+                    L'instance Registry {{ lions_registry_service_name }} dans le namespace {{ lions_registry_namespace }} 
+                    est indisponible depuis {{ lions_alert_registry_down_duration | default('2m') }}.
+                    
+                    Actions immédiates:
+                    1. Vérifier le statut des pods: kubectl get pods -n {{ lions_registry_namespace }} -l app={{ lions_registry_service_name }}
+                    2. Consulter les logs: kubectl logs -n {{ lions_registry_namespace }} -l app={{ lions_registry_service_name }} --tail=100
+                    3. Vérifier les événements: kubectl get events -n {{ lions_registry_namespace }} --sort-by='.lastTimestamp'
                   runbook_url: "https://docs.lions.dev/runbooks/registry-down"
-              - alert: RegistryHighStorageUsage
-                expr: container_fs_usage_bytes{container="{{ app_name | default('registry') }}"} / container_fs_limit_bytes{container="{{ app_name | default('registry') }}"} > 0.85
-                for: 10m
-                labels:
-                  severity: warning
-                annotations:
-                  summary: "Utilisation élevée du stockage de la registry"
-                  description: "La registry {{ app_name | default('registry') }} utilise plus de 85% de son espace de stockage alloué."
-                  runbook_url: "https://docs.lions.dev/runbooks/registry-storage"
-  register: prometheusrule_result
-  when:
-    - prometheus_info.resources | length > 0
-    - registry_prometheus_scrape | default(true) | bool
+                  dashboard_url: "https://grafana.{{ lions_dns_full_domain }}/d/registry-overview"
 
-- name: Affichage des informations sur le monitoring
-  debug:
-    msg: "Le monitoring a été configuré pour la registry. ServiceMonitor: {{ servicemonitor_result.changed | default(false) }}, PrometheusRule: {{ prometheusrule_result.changed | default(false) }}"
+              # Alerte de haute latence
+              - alert: "RegistryHighLatency"
+                expr: 'histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{job="{{ lions_registry_service_name }}"}[5m])) > {{ lions_alert_registry_latency_threshold | default("2") }}'
+                for: "{{ lions_alert_registry_latency_duration | default('5m') }}"
+                labels:
+                  severity: "warning"
+                  component: "registry"
+                  service: "{{ lions_registry_service_name }}"
+                  environment: "{{ lions_environment }}"
+                annotations:
+                  summary: "Registry {{ lions_registry_service_name }} latence élevée"
+                  description: |
+                    La latence du 95e percentile de Registry {{ lions_registry_service_name }} 
+                    est supérieure à {{ lions_alert_registry_latency_threshold | default("2") }}s pendant {{ lions_alert_registry_latency_duration | default('5m') }}.
+                    
+                    Valeur actuelle: {{ "{{ $value }}" }}s
+                  runbook_url: "https://docs.lions.dev/runbooks/registry-performance"
+
+          - name: "{{ lions_registry_service_name }}.resources"
+            interval: "{{ lions_prometheus_evaluation_interval | default('30s') }}"
+            rules:
+              # Alerte utilisation stockage élevée
+              - alert: "RegistryHighStorageUsage"
+                expr: |
+                  (
+                    container_fs_usage_bytes{
+                      namespace="{{ lions_registry_namespace }}",
+                      pod=~"{{ lions_registry_service_name }}-.*",
+                      container="{{ lions_registry_service_name }}"
+                    } / 
+                    container_fs_limit_bytes{
+                      namespace="{{ lions_registry_namespace }}",
+                      pod=~"{{ lions_registry_service_name }}-.*",
+                      container="{{ lions_registry_service_name }}"
+                    }
+                  ) * 100 > {{ lions_alert_registry_storage_threshold | default("85") }}
+                for: "{{ lions_alert_registry_storage_duration | default('10m') }}"
+                labels:
+                  severity: "warning"
+                  component: "registry"
+                  service: "{{ lions_registry_service_name }}"
+                  environment: "{{ lions_environment }}"
+                annotations:
+                  summary: "Registry {{ lions_registry_service_name }} utilisation stockage élevée"
+                  description: |
+                    Registry {{ lions_registry_service_name }} utilise {{ "{{ $value }}" }}% de son espace de stockage alloué.
+                    Seuil d'alerte: {{ lions_alert_registry_storage_threshold | default("85") }}%
+                    
+                    Actions recommandées:
+                    1. Nettoyer les images obsolètes: docker system prune
+                    2. Vérifier la politique de rétention des images
+                    3. Considérer l'augmentation de l'espace de stockage
+                  runbook_url: "https://docs.lions.dev/runbooks/registry-storage"
+
+              # Alerte utilisation mémoire élevée
+              - alert: "RegistryHighMemoryUsage"
+                expr: |
+                  (
+                    container_memory_working_set_bytes{
+                      namespace="{{ lions_registry_namespace }}",
+                      pod=~"{{ lions_registry_service_name }}-.*",
+                      container="{{ lions_registry_service_name }}"
+                    } / 
+                    container_spec_memory_limit_bytes{
+                      namespace="{{ lions_registry_namespace }}",
+                      pod=~"{{ lions_registry_service_name }}-.*",
+                      container="{{ lions_registry_service_name }}"
+                    }
+                  ) * 100 > {{ lions_alert_registry_memory_threshold | default("80") }}
+                for: "{{ lions_alert_registry_memory_duration | default('5m') }}"
+                labels:
+                  severity: "warning"
+                  component: "registry"
+                  service: "{{ lions_registry_service_name }}"
+                  environment: "{{ lions_environment }}"
+                annotations:
+                  summary: "Registry {{ lions_registry_service_name }} utilisation mémoire élevée"
+                  description: |
+                    Registry {{ lions_registry_service_name }} utilise {{ "{{ $value }}" }}% de sa mémoire allouée.
+                    Seuil d'alerte: {{ lions_alert_registry_memory_threshold | default("80") }}%
+                  runbook_url: "https://docs.lions.dev/runbooks/registry-memory"
+
+              # Alerte utilisation CPU élevée
+              - alert: "RegistryHighCPUUsage"
+                expr: |
+                  (
+                    rate(container_cpu_usage_seconds_total{
+                      namespace="{{ lions_registry_namespace }}",
+                      pod=~"{{ lions_registry_service_name }}-.*",
+                      container="{{ lions_registry_service_name }}"
+                    }[5m]) / 
+                    container_spec_cpu_quota{
+                      namespace="{{ lions_registry_namespace }}",
+                      pod=~"{{ lions_registry_service_name }}-.*",
+                      container="{{ lions_registry_service_name }}"
+                    } * 
+                    container_spec_cpu_period{
+                      namespace="{{ lions_registry_namespace }}",
+                      pod=~"{{ lions_registry_service_name }}-.*",
+                      container="{{ lions_registry_service_name }}"
+                    }
+                  ) * 100 > {{ lions_alert_registry_cpu_threshold | default("80") }}
+                for: "{{ lions_alert_registry_cpu_duration | default('10m') }}"
+                labels:
+                  severity: "warning"
+                  component: "registry"
+                  service: "{{ lions_registry_service_name }}"
+                  environment: "{{ lions_environment }}"
+                annotations:
+                  summary: "Registry {{ lions_registry_service_name }} utilisation CPU élevée"
+                  description: |
+                    Registry {{ lions_registry_service_name }} utilise {{ "{{ $value }}" }}% de son CPU alloué.
+                    Seuil d'alerte: {{ lions_alert_registry_cpu_threshold | default("80") }}%
+                  runbook_url: "https://docs.lions.dev/runbooks/registry-cpu"
+
+          - name: "{{ lions_registry_service_name }}.security"
+            interval: "{{ lions_prometheus_evaluation_interval | default('30s') }}"
+            rules:
+              # Alerte tentatives d'accès non autorisées
+              - alert: "RegistryUnauthorizedAccess"
+                expr: 'rate(http_requests_total{job="{{ lions_registry_service_name }}", code="401"}[5m]) > {{ lions_alert_registry_unauthorized_threshold | default("0.1") }}'
+                for: "{{ lions_alert_registry_unauthorized_duration | default('2m') }}"
+                labels:
+                  severity: "warning"
+                  component: "registry"
+                  service: "{{ lions_registry_service_name }}"
+                  environment: "{{ lions_environment }}"
+                  security: "true"
+                annotations:
+                  summary: "Registry {{ lions_registry_service_name }} tentatives d'accès non autorisées"
+                  description: |
+                    Détection de {{ "{{ $value }}" }} tentatives d'accès non autorisées par seconde 
+                    sur Registry {{ lions_registry_service_name }}.
+                    
+                    Actions de sécurité:
+                    1. Analyser les logs d'accès
+                    2. Vérifier les configurations d'authentification
+                    3. Considérer le blocage des IPs suspectes
+                  runbook_url: "https://docs.lions.dev/runbooks/registry-security"
+  register: prometheusrule_deployment_result
   when:
-    - prometheus_info.resources | length > 0
-    - registry_prometheus_scrape | default(true) | bool
+    - prometheus_service_info.resources | length > 0
+    - prometheus_operator_info.resources | length > 0
+    - lions_registry_prometheus_monitoring | default(true) | bool
+    - not lions_dry_run | default(false) | bool
+  tags:
+    - deployment
+    - prometheusrule
+    - alerts
+
+# =========================================================================
+# CONFIGURATION DES TABLEAUX DE BORD GRAFANA
+# =========================================================================
+- name: "Registry Monitoring | Configuration du ConfigMap pour tableau de bord Grafana"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ lions_registry_service_name }}-grafana-dashboard"
+        namespace: "{{ lions_monitoring_namespace }}"
+        labels:
+          app: "{{ lions_registry_service_name }}"
+          component: "registry"
+          grafana_dashboard: "1"
+          managed-by: "lions-infrastructure"
+          environment: "{{ lions_environment }}"
+      data:
+        registry-overview.json: |
+          {
+            "dashboard": {
+              "id": null,
+              "title": "Registry {{ lions_registry_service_name | title }} - {{ lions_environment | title }}",
+              "tags": ["registry", "{{ lions_environment }}", "lions"],
+              "timezone": "{{ lions_grafana_timezone | default('UTC') }}",
+              "refresh": "{{ lions_grafana_refresh_interval | default('30s') }}",
+              "time": {
+                "from": "now-1h",
+                "to": "now"
+              },
+              "timepicker": {
+                "refresh_intervals": ["5s", "10s", "30s", "1m", "5m", "15m", "30m", "1h", "2h", "1d"]
+              },
+              "annotations": {
+                "list": [
+                  {
+                    "builtIn": 1,
+                    "datasource": "-- Grafana --",
+                    "enable": true,
+                    "hide": true,
+                    "iconColor": "rgba(0, 211, 255, 1)",
+                    "name": "Annotations & Alerts",
+                    "type": "dashboard"
+                  }
+                ]
+              },
+              "panels": [
+                {
+                  "title": "Registry Status",
+                  "type": "stat",
+                  "targets": [
+                    {
+                      "expr": "up{job=\"{{ lions_registry_service_name }}\", namespace=\"{{ lions_registry_namespace }}\"}",
+                      "legendFormat": "Registry Status"
+                    }
+                  ],
+                  "fieldConfig": {
+                    "defaults": {
+                      "mappings": [
+                        {"options": {"0": {"text": "DOWN", "color": "red"}}, "type": "value"},
+                        {"options": {"1": {"text": "UP", "color": "green"}}, "type": "value"}
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          }
+  when:
+    - lions_grafana_enabled | default(false) | bool
+    - lions_registry_grafana_dashboard | default(true) | bool
+    - not lions_dry_run | default(false) | bool
+  tags:
+    - grafana
+    - dashboard
+
+# =========================================================================
+# VÉRIFICATION ET VALIDATION DU DÉPLOIEMENT
+# =========================================================================
+- name: "Registry Monitoring | Vérification du déploiement ServiceMonitor"
+  kubernetes.core.k8s_info:
+    api_version: monitoring.coreos.com/v1
+    kind: ServiceMonitor
+    namespace: "{{ lions_monitoring_namespace }}"
+    name: "{{ lions_registry_service_name }}-monitor"
+  register: servicemonitor_verification
+  retries: 3
+  delay: 10
+  until: servicemonitor_verification.resources | length > 0
+  when:
+    - servicemonitor_deployment_result is defined
+    - servicemonitor_deployment_result.changed | default(false)
+    - not lions_dry_run | default(false) | bool
+  tags:
+    - verification
+    - servicemonitor
+
+- name: "Registry Monitoring | Vérification du déploiement PrometheusRule"
+  kubernetes.core.k8s_info:
+    api_version: monitoring.coreos.com/v1
+    kind: PrometheusRule
+    namespace: "{{ lions_monitoring_namespace }}"
+    name: "{{ lions_registry_service_name }}-alerts"
+  register: prometheusrule_verification
+  retries: 3
+  delay: 10
+  until: prometheusrule_verification.resources | length > 0
+  when:
+    - prometheusrule_deployment_result is defined
+    - prometheusrule_deployment_result.changed | default(false)
+    - not lions_dry_run | default(false) | bool
+  tags:
+    - verification
+    - prometheusrule
+
+# =========================================================================
+# NETTOYAGE DES RESSOURCES TEMPORAIRES
+# =========================================================================
+- name: "Registry Monitoring | Nettoyage du répertoire temporaire"
+  file:
+    path: "{{ registry_monitoring_temp_dir.path }}"
+    state: absent
+  when: registry_monitoring_temp_dir is defined
+  tags:
+    - cleanup
+
+# =========================================================================
+# RAPPORT DE DÉPLOIEMENT MONITORING
+# =========================================================================
+- name: "Registry Monitoring | Génération du rapport de déploiement"
+  debug:
+    msg:
+      - "==========================================================================="
+      - "RAPPORT DE DÉPLOIEMENT MONITORING REGISTRY"
+      - "==========================================================================="
+      - "Service: {{ lions_registry_service_name }}"
+      - "Namespace cible: {{ lions_registry_namespace }}"
+      - "Namespace monitoring: {{ lions_monitoring_namespace }}"
+      - "Environnement: {{ lions_environment }}"
+      - "Version Registry: {{ lions_registry_version }}"
+      - "==========================================================================="
+      - "ServiceMonitor déployé: {{ servicemonitor_deployment_result.changed | default('N/A') }}"
+      - "PrometheusRule déployé: {{ prometheusrule_deployment_result.changed | default('N/A') }}"
+      - "Dashboard Grafana configuré: {{ lions_grafana_enabled and lions_registry_grafana_dashboard | default(false) }}"
+      - "==========================================================================="
+      - "URLs d'accès:"
+      - "  - Prometheus: https://prometheus.{{ lions_dns_full_domain }}"
+      - "  - Grafana: https://grafana.{{ lions_dns_full_domain }}"
+      - "  - Registry: https://registry.{{ lions_dns_full_domain }}"
+      - "==========================================================================="
+      - "Documentation: https://docs.lions.dev/roles/registry/monitoring"
+      - "Runbooks: https://docs.lions.dev/runbooks/registry"
+      - "==========================================================================="
+  tags:
+    - reporting
+    - summary

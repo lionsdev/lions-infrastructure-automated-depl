@@ -1,96 +1,407 @@
 ---
-# Titre: Variables pour le déploiement de Redis
-# Description: Variables spécifiques à Redis
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-08
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - VARIABLES REDIS
+# =========================================================================
+# Description: Variables spécifiques pour le déploiement Redis
+# Composant: Base de données en mémoire Redis
+# Version: 5.0.0
+# Maintainer: DevOps Team LIONS
+# Documentation: https://docs.lions.dev/infrastructure/services/redis
+# =========================================================================
 
-# Configuration par défaut pour Redis
-redis_version: "7.0"
-redis_default_port: 6379
-redis_health_path: "/healthz"
-redis_metrics_path: "/metrics"
-redis_password_enabled: true
-redis_password_secret: "redis-password"
+# =========================================================================
+# MÉTADONNÉES DE CONFIGURATION
+# =========================================================================
+lions_redis_config_version: "5.0.0"
+lions_redis_config_schema: "1.0"
+lions_redis_maintainer: "{{ lions_config_maintainer | default('devops@lions.dev') }}"
+lions_redis_last_updated: "{{ ansible_date_time.iso8601 }}"
 
-# Configuration des sondes de santé
-redis_readiness_probe:
-  exec:
-    command:
-      - /bin/sh
-      - -c
-      - redis-cli ping
-  initialDelaySeconds: 30
-  periodSeconds: 10
-  timeoutSeconds: 5
-  failureThreshold: 3
+# =========================================================================
+# CONFIGURATION DE BASE REDIS
+# =========================================================================
+# Version et image
+lions_redis_version: "{{ lookup('env', 'LIONS_REDIS_VERSION') | default('7.2', true) }}"
+lions_redis_image_registry: "{{ lookup('env', 'LIONS_REGISTRY_URL') | default('docker.io', true) }}"
+lions_redis_image_repository: "redis"
+lions_redis_image_tag: "{{ lions_redis_version }}-alpine"
+lions_redis_image_pull_policy: "{{ lookup('env', 'LIONS_IMAGE_PULL_POLICY') | default('IfNotPresent', true) }}"
 
-redis_liveness_probe:
-  exec:
-    command:
-      - /bin/sh
-      - -c
-      - redis-cli ping
-  initialDelaySeconds: 60
-  periodSeconds: 20
-  timeoutSeconds: 5
-  failureThreshold: 3
+# Configuration du service
+lions_redis_namespace: "{{ lookup('env', 'LIONS_REDIS_NAMESPACE') | default('database', true) }}"
+lions_redis_service_name: "{{ lookup('env', 'LIONS_REDIS_SERVICE_NAME') | default('redis', true) }}"
+lions_redis_service_port: "{{ lookup('env', 'LIONS_REDIS_PORT') | default(6379, true) | int }}"
+lions_redis_service_type: "{{ lookup('env', 'LIONS_REDIS_SERVICE_TYPE') | default('ClusterIP', true) }}"
 
-# Configuration du monitoring
-redis_prometheus_port: 9121
-redis_prometheus_path: "/metrics"
-redis_prometheus_scrape: true
-redis_init_delay: 30
+# =========================================================================
+# CONFIGURATION DES RESSOURCES
+# =========================================================================
+# Récupération de l'environnement
+lions_redis_environment: "{{ lookup('env', 'LIONS_ENVIRONMENT') | default('development', true) }}"
 
-# Configuration des ressources par environnement
-redis_resources:
+# Configuration des ressources selon l'environnement
+lions_redis_resources_config:
   development:
     requests:
-      cpu: "100m"
-      memory: "256Mi"
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_CPU_REQUEST') | default('100m', true) }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_MEMORY_REQUEST') | default('128Mi', true) }}"
     limits:
-      cpu: "500m"
-      memory: "512Mi"
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_CPU_LIMIT') | default('500m', true) }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_MEMORY_LIMIT') | default('512Mi', true) }}"
   staging:
     requests:
-      cpu: "200m"
-      memory: "512Mi"
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_CPU_REQUEST') | default('200m', true) }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_MEMORY_REQUEST') | default('512Mi', true) }}"
     limits:
-      cpu: "1000m"
-      memory: "1Gi"
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_CPU_LIMIT') | default('1000m', true) }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_MEMORY_LIMIT') | default('2Gi', true) }}"
   production:
     requests:
-      cpu: "500m"
-      memory: "1Gi"
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_CPU_REQUEST') | default('500m', true) }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_MEMORY_REQUEST') | default('1Gi', true) }}"
     limits:
-      cpu: "2000m"
-      memory: "2Gi"
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_CPU_LIMIT') | default('2000m', true) }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_MEMORY_LIMIT') | default('4Gi', true) }}"
 
-# Configuration des réplicas par environnement (pour les déploiements en mode HA)
-redis_replicas:
+# Application des ressources selon l'environnement
+lions_redis_resources: "{{ lions_redis_resources_config[lions_redis_environment] }}"
+
+# =========================================================================
+# CONFIGURATION DES RÉPLICAS ET HAUTE DISPONIBILITÉ
+# =========================================================================
+lions_redis_ha_enabled: "{{ lookup('env', 'LIONS_REDIS_HA_ENABLED') | default('false', true) | bool }}"
+lions_redis_cluster_enabled: "{{ lookup('env', 'LIONS_REDIS_CLUSTER_ENABLED') | default('false', true) | bool }}"
+
+# Configuration des réplicas par environnement
+lions_redis_replicas_config:
   development: 1
-  staging: 1
-  production: 3
+  staging: "{{ lions_redis_ha_enabled | ternary(3, 1) }}"
+  production: "{{ lions_redis_ha_enabled | ternary(5, 1) }}"
 
-# Configuration de la persistance
-redis_persistent_storage: true
-redis_storage_size: "10Gi"
-redis_storage_class: "local-path"
-
-# Configuration de Redis
-redis_maxmemory: "512mb"
-redis_maxmemory_policy: "allkeys-lru"
-redis_appendonly: "yes"
-redis_appendfsync: "everysec"
-redis_databases: 16
-redis_tcp_keepalive: 300
+lions_redis_replicas: "{{ lions_redis_replicas_config[lions_redis_environment] }}"
 
 # Configuration du cluster Redis
-redis_cluster_enabled: "{{ app_environment == 'production' }}"
-redis_cluster_replicas: 1
+lions_redis_cluster_replicas: "{{ lookup('env', 'LIONS_REDIS_CLUSTER_REPLICAS') | default(1, true) | int }}"
+lions_redis_cluster_require_full_coverage: "{{ lookup('env', 'LIONS_REDIS_CLUSTER_REQUIRE_FULL_COVERAGE') | default('true', true) | bool }}"
 
-# Configuration de la sécurité
-redis_tls_enabled: false
-redis_tls_secret: "redis-tls"
-redis_protected_mode: true
-redis_bind_all: false
+# =========================================================================
+# CONFIGURATION DE LA PERSISTANCE
+# =========================================================================
+lions_redis_persistence_enabled: "{{ lookup('env', 'LIONS_REDIS_PERSISTENCE_ENABLED') | default('true', true) | bool }}"
+lions_redis_storage_size: "{{ lookup('env', 'LIONS_REDIS_STORAGE_SIZE') | default('5Gi', true) }}"
+lions_redis_storage_class: "{{ lookup('env', 'LIONS_STORAGE_CLASS_DEFAULT') | default('local-path', true) }}"
+lions_redis_storage_access_mode: "{{ lookup('env', 'LIONS_REDIS_STORAGE_ACCESS_MODE') | default('ReadWriteOnce', true) }}"
+
+# Configuration de la rétention des données
+lions_redis_data_retention_policy: "{{ lookup('env', 'LIONS_REDIS_DATA_RETENTION_POLICY') | default('allkeys-lru', true) }}"
+lions_redis_max_memory: "{{ lookup('env', 'LIONS_REDIS_MAX_MEMORY') | default('1gb', true) }}"
+
+# =========================================================================
+# CONFIGURATION REDIS SPÉCIFIQUE
+# =========================================================================
+# Configuration générale
+lions_redis_databases: "{{ lookup('env', 'LIONS_REDIS_DATABASES') | default(16, true) | int }}"
+lions_redis_tcp_keepalive: "{{ lookup('env', 'LIONS_REDIS_TCP_KEEPALIVE') | default(300, true) | int }}"
+lions_redis_timeout: "{{ lookup('env', 'LIONS_REDIS_TIMEOUT') | default(0, true) | int }}"
+
+# Configuration de persistance
+lions_redis_appendonly: "{{ lookup('env', 'LIONS_REDIS_APPENDONLY') | default('yes', true) }}"
+lions_redis_appendfsync: "{{ lookup('env', 'LIONS_REDIS_APPENDFSYNC') | default('everysec', true) }}"
+lions_redis_save_config: "{{ lookup('env', 'LIONS_REDIS_SAVE_CONFIG') | default('900 1 300 10 60 10000', true) }}"
+
+# Configuration de mémoire
+lions_redis_maxmemory_policy: "{{ lookup('env', 'LIONS_REDIS_MAXMEMORY_POLICY') | default('allkeys-lru', true) }}"
+lions_redis_lazyfree_lazy_eviction: "{{ lookup('env', 'LIONS_REDIS_LAZYFREE_LAZY_EVICTION') | default('yes', true) }}"
+
+# =========================================================================
+# CONFIGURATION DE SÉCURITÉ
+# =========================================================================
+# Authentification
+lions_redis_auth_enabled: "{{ lookup('env', 'LIONS_REDIS_AUTH_ENABLED') | default('true', true) | bool }}"
+lions_redis_password_secret: "{{ lookup('env', 'LIONS_REDIS_PASSWORD_SECRET') | default('redis-password', true) }}"
+lions_redis_password_key: "{{ lookup('env', 'LIONS_REDIS_PASSWORD_KEY') | default('redis-password', true) }}"
+
+# Configuration réseau
+lions_redis_protected_mode: "{{ lookup('env', 'LIONS_REDIS_PROTECTED_MODE') | default('yes', true) }}"
+lions_redis_bind_all: "{{ lookup('env', 'LIONS_REDIS_BIND_ALL') | default('false', true) | bool }}"
+lions_redis_bind_address: "{{ lookup('env', 'LIONS_REDIS_BIND_ADDRESS') | default('0.0.0.0', true) }}"
+
+# Configuration TLS
+lions_redis_tls_enabled: "{{ lookup('env', 'LIONS_SECURITY_TLS_ENABLED') | default('false', true) | bool }}"
+lions_redis_tls_secret: "{{ lookup('env', 'LIONS_REDIS_TLS_SECRET') | default('redis-tls', true) }}"
+lions_redis_tls_port: "{{ lookup('env', 'LIONS_REDIS_TLS_PORT') | default(6380, true) | int }}"
+
+# =========================================================================
+# CONFIGURATION DES SONDES DE SANTÉ
+# =========================================================================
+# Sonde de démarrage
+lions_redis_startup_probe:
+  exec:
+    command:
+      - /bin/sh
+      - -c
+      - "{{ lions_redis_auth_enabled | ternary('redis-cli -a $REDIS_PASSWORD ping', 'redis-cli ping') }}"
+  initialDelaySeconds: "{{ lookup('env', 'LIONS_REDIS_STARTUP_INITIAL_DELAY') | default(10, true) | int }}"
+  periodSeconds: "{{ lookup('env', 'LIONS_REDIS_STARTUP_PERIOD') | default(5, true) | int }}"
+  timeoutSeconds: "{{ lookup('env', 'LIONS_REDIS_STARTUP_TIMEOUT') | default(3, true) | int }}"
+  failureThreshold: "{{ lookup('env', 'LIONS_REDIS_STARTUP_FAILURE_THRESHOLD') | default(6, true) | int }}"
+
+# Sonde de disponibilité
+lions_redis_readiness_probe:
+  exec:
+    command:
+      - /bin/sh
+      - -c
+      - "{{ lions_redis_auth_enabled | ternary('redis-cli -a $REDIS_PASSWORD ping', 'redis-cli ping') }}"
+  initialDelaySeconds: "{{ lookup('env', 'LIONS_REDIS_READINESS_INITIAL_DELAY') | default(30, true) | int }}"
+  periodSeconds: "{{ lookup('env', 'LIONS_REDIS_READINESS_PERIOD') | default(10, true) | int }}"
+  timeoutSeconds: "{{ lookup('env', 'LIONS_REDIS_READINESS_TIMEOUT') | default(5, true) | int }}"
+  failureThreshold: "{{ lookup('env', 'LIONS_REDIS_READINESS_FAILURE_THRESHOLD') | default(3, true) | int }}"
+  successThreshold: "{{ lookup('env', 'LIONS_REDIS_READINESS_SUCCESS_THRESHOLD') | default(1, true) | int }}"
+
+# Sonde de vitalité
+lions_redis_liveness_probe:
+  exec:
+    command:
+      - /bin/sh
+      - -c
+      - "{{ lions_redis_auth_enabled | ternary('redis-cli -a $REDIS_PASSWORD ping', 'redis-cli ping') }}"
+  initialDelaySeconds: "{{ lookup('env', 'LIONS_REDIS_LIVENESS_INITIAL_DELAY') | default(60, true) | int }}"
+  periodSeconds: "{{ lookup('env', 'LIONS_REDIS_LIVENESS_PERIOD') | default(20, true) | int }}"
+  timeoutSeconds: "{{ lookup('env', 'LIONS_REDIS_LIVENESS_TIMEOUT') | default(5, true) | int }}"
+  failureThreshold: "{{ lookup('env', 'LIONS_REDIS_LIVENESS_FAILURE_THRESHOLD') | default(3, true) | int }}"
+
+# =========================================================================
+# CONFIGURATION DU MONITORING
+# =========================================================================
+lions_redis_monitoring_enabled: "{{ lookup('env', 'LIONS_MONITORING_ENABLED') | default('true', true) | bool }}"
+lions_redis_metrics_enabled: "{{ lookup('env', 'LIONS_REDIS_METRICS_ENABLED') | default('true', true) | bool }}"
+
+# Configuration Prometheus
+lions_redis_prometheus_exporter_enabled: "{{ lions_redis_metrics_enabled }}"
+lions_redis_prometheus_exporter_image: "{{ lions_redis_image_registry }}/oliver006/redis_exporter"
+lions_redis_prometheus_exporter_tag: "{{ lookup('env', 'LIONS_REDIS_EXPORTER_VERSION') | default('v1.45.0', true) }}"
+lions_redis_prometheus_port: "{{ lookup('env', 'LIONS_REDIS_PROMETHEUS_PORT') | default(9121, true) | int }}"
+lions_redis_prometheus_path: "{{ lookup('env', 'LIONS_REDIS_PROMETHEUS_PATH') | default('/metrics', true) }}"
+lions_redis_prometheus_scrape: "{{ lookup('env', 'LIONS_REDIS_PROMETHEUS_SCRAPE') | default('true', true) | bool }}"
+lions_redis_prometheus_interval: "{{ lookup('env', 'LIONS_REDIS_PROMETHEUS_INTERVAL') | default('30s', true) }}"
+
+# Configuration ServiceMonitor
+lions_redis_service_monitor_enabled: "{{ lions_redis_prometheus_exporter_enabled }}"
+lions_redis_service_monitor_labels:
+  app.kubernetes.io/name: "{{ lions_redis_service_name }}"
+  app.kubernetes.io/component: "database"
+  app.kubernetes.io/part-of: "lions-infrastructure"
+  lions.dev/environment: "{{ lions_redis_environment }}"
+  lions.dev/monitoring: "prometheus"
+
+# =========================================================================
+# CONFIGURATION DES LABELS ET ANNOTATIONS
+# =========================================================================
+# Labels communs
+lions_redis_common_labels:
+  app.kubernetes.io/name: "{{ lions_redis_service_name }}"
+  app.kubernetes.io/instance: "{{ lions_redis_service_name }}-{{ lions_redis_environment }}"
+  app.kubernetes.io/version: "{{ lions_redis_version }}"
+  app.kubernetes.io/component: "database"
+  app.kubernetes.io/part-of: "lions-infrastructure"
+  app.kubernetes.io/managed-by: "ansible"
+  lions.dev/environment: "{{ lions_redis_environment }}"
+  lions.dev/service-type: "database"
+
+# Sélecteurs
+lions_redis_selector_labels:
+  app.kubernetes.io/name: "{{ lions_redis_service_name }}"
+  app.kubernetes.io/instance: "{{ lions_redis_service_name }}-{{ lions_redis_environment }}"
+
+# Annotations communes
+lions_redis_common_annotations:
+  lions.dev/config-version: "{{ lions_redis_config_version }}"
+  lions.dev/deployment-timestamp: "{{ ansible_date_time.epoch }}"
+  lions.dev/maintainer: "{{ lions_redis_maintainer }}"
+  prometheus.io/scrape: "{{ lions_redis_prometheus_scrape | string }}"
+  prometheus.io/port: "{{ lions_redis_prometheus_port | string }}"
+  prometheus.io/path: "{{ lions_redis_prometheus_path }}"
+
+# =========================================================================
+# CONFIGURATION RÉSEAU ET SÉCURITÉ
+# =========================================================================
+# Configuration NetworkPolicy
+lions_redis_network_policy_enabled: "{{ lookup('env', 'LIONS_SECURITY_NETWORK_POLICIES') | default('true', true) | bool }}"
+lions_redis_network_policy_ingress_rules:
+  - from:
+      - namespaceSelector:
+          matchLabels:
+            name: "{{ lookup('env', 'LIONS_KEYCLOAK_NAMESPACE') | default('security', true) }}"
+      - namespaceSelector:
+          matchLabels:
+            name: "{{ lookup('env', 'LIONS_PRIMEREACT_NAMESPACE') | default('applications', true) }}"
+      - namespaceSelector:
+          matchLabels:
+            name: "{{ lookup('env', 'LIONS_PRIMEFACES_NAMESPACE') | default('applications', true) }}"
+      - namespaceSelector:
+          matchLabels:
+            name: "{{ lookup('env', 'LIONS_QUARKUS_NAMESPACE') | default('applications', true) }}"
+    ports:
+      - protocol: TCP
+        port: "{{ lions_redis_service_port }}"
+
+# Configuration PodSecurityPolicy
+lions_redis_pod_security_context:
+  runAsNonRoot: true
+  runAsUser: 999
+  runAsGroup: 999
+  fsGroup: 999
+  seccompProfile:
+    type: RuntimeDefault
+
+lions_redis_container_security_context:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 999
+  runAsGroup: 999
+  capabilities:
+    drop:
+      - ALL
+
+# =========================================================================
+# CONFIGURATION DE BACKUP
+# =========================================================================
+lions_redis_backup_enabled: "{{ lookup('env', 'LIONS_BACKUP_ENABLED') | default('true', true) | bool }}"
+lions_redis_backup_schedule: "{{ lookup('env', 'LIONS_REDIS_BACKUP_SCHEDULE') | default('0 2 * * *', true) }}"
+lions_redis_backup_retention_days: "{{ lookup('env', 'LIONS_BACKUP_RETENTION_DAYS') | default(30, true) | int }}"
+lions_redis_backup_storage_class: "{{ lookup('env', 'LIONS_BACKUP_STORAGE_CLASS') | default(lions_redis_storage_class, true) }}"
+
+# =========================================================================
+# VARIABLES D'ENVIRONNEMENT POUR LE CONTENEUR
+# =========================================================================
+lions_redis_env_vars:
+  - name: REDIS_PORT
+    value: "{{ lions_redis_service_port | string }}"
+  - name: REDIS_DATABASES
+    value: "{{ lions_redis_databases | string }}"
+  - name: REDIS_MAXMEMORY
+    value: "{{ lions_redis_max_memory }}"
+  - name: REDIS_MAXMEMORY_POLICY
+    value: "{{ lions_redis_maxmemory_policy }}"
+  - name: REDIS_APPENDONLY
+    value: "{{ lions_redis_appendonly }}"
+  - name: REDIS_APPENDFSYNC
+    value: "{{ lions_redis_appendfsync }}"
+  - name: REDIS_SAVE
+    value: "{{ lions_redis_save_config }}"
+  - name: REDIS_TCP_KEEPALIVE
+    value: "{{ lions_redis_tcp_keepalive | string }}"
+  - name: REDIS_TIMEOUT
+    value: "{{ lions_redis_timeout | string }}"
+  - name: REDIS_PROTECTED_MODE
+    value: "{{ lions_redis_protected_mode }}"
+
+# Variables d'environnement conditionnelles
+lions_redis_conditional_env_vars: >-
+  {{
+    (lions_redis_auth_enabled | bool) | ternary(
+      [
+        {
+          'name': 'REDIS_PASSWORD',
+          'valueFrom': {
+            'secretKeyRef': {
+              'name': lions_redis_password_secret,
+              'key': lions_redis_password_key
+            }
+          }
+        }
+      ],
+      []
+    )
+  }}
+
+# Combinaison des variables d'environnement
+lions_redis_all_env_vars: "{{ lions_redis_env_vars + lions_redis_conditional_env_vars }}"
+
+# =========================================================================
+# CONFIGURATION POUR LES TESTS
+# =========================================================================
+lions_redis_test_enabled: "{{ lookup('env', 'LIONS_REDIS_TEST_ENABLED') | default('true', true) | bool }}"
+lions_redis_test_timeout: "{{ lookup('env', 'LIONS_REDIS_TEST_TIMEOUT') | default(60, true) | int }}"
+lions_redis_test_commands:
+  - ping
+  - info server
+  - config get maxmemory
+  - config get databases
+
+# =========================================================================
+# VALIDATION DES VARIABLES
+# =========================================================================
+# Cette section sera utilisée par les tâches de validation
+lions_redis_required_vars:
+  - lions_redis_namespace
+  - lions_redis_service_name
+  - lions_redis_version
+  - lions_redis_storage_size
+
+lions_redis_valid_environments:
+  - development
+  - staging
+  - production
+
+lions_redis_valid_storage_classes:
+  - local-path
+  - fast-ssd
+  - standard
+  - premium-ssd
+
+# =========================================================================
+# CONFIGURATION SPÉCIFIQUE PAR ENVIRONNEMENT
+# =========================================================================
+# Surcharges automatiques selon l'environnement
+lions_redis_environment_overrides:
+  development:
+    debug_enabled: true
+    log_level: "debug"
+    persistence_enabled: false
+  staging:
+    debug_enabled: false
+    log_level: "notice"
+    persistence_enabled: true
+  production:
+    debug_enabled: false
+    log_level: "warning"
+    persistence_enabled: true
+    ha_enabled: true
+
+# Application des surcharges
+lions_redis_current_overrides: "{{ lions_redis_environment_overrides.get(lions_redis_environment, {}) }}"
+
+# =========================================================================
+# MÉTRIQUES ET ALERTES
+# =========================================================================
+lions_redis_alerts_enabled: "{{ lookup('env', 'LIONS_REDIS_ALERTS_ENABLED') | default('true', true) | bool }}"
+lions_redis_alert_thresholds:
+  memory_usage_high: "{{ lookup('env', 'LIONS_REDIS_ALERT_MEMORY_HIGH') | default(80, true) | int }}"
+  memory_usage_critical: "{{ lookup('env', 'LIONS_REDIS_ALERT_MEMORY_CRITICAL') | default(90, true) | int }}"
+  connection_count_high: "{{ lookup('env', 'LIONS_REDIS_ALERT_CONNECTIONS_HIGH') | default(100, true) | int }}"
+  response_time_high: "{{ lookup('env', 'LIONS_REDIS_ALERT_RESPONSE_TIME_HIGH') | default(5, true) | int }}"
+
+# =========================================================================
+# CONFIGURATION DE DEBUG
+# =========================================================================
+lions_redis_debug_mode: "{{ lookup('env', 'LIONS_DEBUG_MODE') | default('false', true) | bool }}"
+lions_redis_verbose_logging: "{{ lions_redis_debug_mode | bool }}"
+
+# Affichage des informations de debug si activé
+lions_redis_debug_info: |
+  {% if lions_redis_debug_mode | bool %}
+  🐛 Redis Debug Information:
+  - Namespace: {{ lions_redis_namespace }}
+  - Environment: {{ lions_redis_environment }}
+  - Version: {{ lions_redis_version }}
+  - Replicas: {{ lions_redis_replicas }}
+  - HA Enabled: {{ lions_redis_ha_enabled }}
+  - Persistence: {{ lions_redis_persistence_enabled }}
+  - Storage Size: {{ lions_redis_storage_size }}
+  - Monitoring: {{ lions_redis_monitoring_enabled }}
+  - TLS: {{ lions_redis_tls_enabled }}
+  - Auth: {{ lions_redis_auth_enabled }}
+  {% endif %}

@@ -1,39 +1,381 @@
----
-# Titre: Template d'ingress Kubernetes pour PrimeFaces
-# Description: Définit l'ingress Kubernetes pour une application PrimeFaces
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - PRIMEFACES INGRESS TEMPLATE
+# =========================================================================
+# Description: Template Kubernetes avancé pour l'ingress PrimeFaces
+# Composant: PrimeFaces Application Ingress
+# Version: 5.0.0
+# Maintainer: DevOps LIONS Team
+# Documentation: https://docs.lions.dev/infrastructure/primefaces/ingress
+# =========================================================================
 
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: "{{ app_name }}"
-  namespace: "{{ app_namespace }}"
+  name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+  namespace: "{{ lions_primefaces_namespace }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "primefaces"
+    # Labels Kubernetes standards
+    app.kubernetes.io/name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+    app.kubernetes.io/instance: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-{{ lions_environment }}"
+    app.kubernetes.io/version: "{{ lions_primefaces_app_version | default('latest') }}"
+    app.kubernetes.io/component: "ingress"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "lions-infrastructure-ansible"
+    
+    # Labels LIONS spécifiques
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/technology: "primefaces"
+    lions.dev/tier: "frontend"
+    lions.dev/ingress-controller: "{{ lions_ingress_controller }}"
+    lions.dev/data-classification: "{{ lions_primefaces_data_classification | default('internal') }}"
+    lions.dev/business-unit: "{{ lions_business_unit | default('infrastructure') }}"
+    lions.dev/cost-center: "{{ lions_cost_center | default('devops') }}"
+    lions.dev/tls-enabled: "{{ lions_security_tls_enabled | lower }}"
+    
+    # Labels pour l'observabilité
+    app: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+    version: "{{ lions_primefaces_app_version | default('latest') }}"
+    environment: "{{ lions_environment }}"
+    
   annotations:
-    description: "Ingress pour l'application {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
-    {% for key, value in primefaces_ingress_annotations.items() %}
+    # Annotations standards
+    description: "Ingress enterprise LIONS 5.0 pour l'application PrimeFaces {{ lions_primefaces_app_name | default(lions_primefaces_service_name) }} ({{ lions_primefaces_app_version | default('latest') }}) en environnement {{ lions_environment }}"
+    
+    # Annotations LIONS de gestion
+    lions.dev/created-by: "lions-infrastructure-ansible"
+    lions.dev/last-updated: "{{ ansible_date_time.iso8601 }}"
+    lions.dev/ingress-purpose: "{{ lions_primefaces_ingress_purpose | default('Exposition externe sécurisée de l application PrimeFaces') }}"
+    lions.dev/support-contact: "{{ lions_support_contact | default('devops@lions.dev') }}"
+    lions.dev/documentation-url: "https://docs.lions.dev/infrastructure/primefaces/ingress"
+    lions.dev/maintenance-window: "{{ lions_primefaces_maintenance_window | default('02:00-04:00 UTC') }}"
+    
+    # Configuration spécifique au contrôleur NGINX
+    {% if lions_ingress_controller == 'nginx' %}
+    # Configuration NGINX de base
+    nginx.ingress.kubernetes.io/rewrite-target: "{{ lions_primefaces_nginx_rewrite_target | default('/$1') }}"
+    nginx.ingress.kubernetes.io/use-regex: "{{ lions_primefaces_nginx_use_regex | default('true') }}"
+    nginx.ingress.kubernetes.io/proxy-body-size: "{{ lions_primefaces_nginx_max_body_size | default('64m') }}"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "{{ lions_primefaces_nginx_read_timeout | default('60') }}"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "{{ lions_primefaces_nginx_send_timeout | default('60') }}"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "{{ lions_primefaces_nginx_connect_timeout | default('60') }}"
+    
+    # Configuration SSL/TLS avancée
+    {% if lions_security_tls_enabled | bool %}
+    nginx.ingress.kubernetes.io/ssl-redirect: "{{ lions_primefaces_nginx_ssl_redirect | default('true') }}"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "{{ lions_primefaces_nginx_force_ssl_redirect | default('true') }}"
+    nginx.ingress.kubernetes.io/ssl-protocols: "{{ lions_primefaces_nginx_ssl_protocols | default('TLSv1.2 TLSv1.3') }}"
+    nginx.ingress.kubernetes.io/ssl-ciphers: "{{ lions_primefaces_nginx_ssl_ciphers | default('ECDHE-ECDSA-AES128-GCM-SHA256,ECDHE-RSA-AES128-GCM-SHA256,ECDHE-ECDSA-AES256-GCM-SHA384,ECDHE-RSA-AES256-GCM-SHA384') }}"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "{{ lions_primefaces_nginx_ssl_prefer_server_ciphers | default('on') }}"
+    {% endif %}
+    
+    # Configuration CORS
+    {% if lions_primefaces_cors_enabled | default(false) | bool %}
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "{{ lions_primefaces_cors_allow_origin | default('*') }}"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "{{ lions_primefaces_cors_allow_methods | default('GET,POST,PUT,DELETE,OPTIONS') }}"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "{{ lions_primefaces_cors_allow_headers | default('DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization') }}"
+    nginx.ingress.kubernetes.io/cors-allow-credentials: "{{ lions_primefaces_cors_allow_credentials | default('true') }}"
+    nginx.ingress.kubernetes.io/cors-max-age: "{{ lions_primefaces_cors_max_age | default('86400') }}"
+    {% endif %}
+    
+    # Configuration des headers de sécurité
+    {% if lions_primefaces_security_headers_enabled | default(true) | bool %}
+    nginx.ingress.kubernetes.io/server-snippet: |
+      add_header X-Frame-Options "{{ lions_primefaces_x_frame_options | default('SAMEORIGIN') }}" always;
+      add_header X-Content-Type-Options "{{ lions_primefaces_x_content_type_options | default('nosniff') }}" always;
+      add_header X-XSS-Protection "{{ lions_primefaces_x_xss_protection | default('1; mode=block') }}" always;
+      add_header Referrer-Policy "{{ lions_primefaces_referrer_policy | default('strict-origin-when-cross-origin') }}" always;
+      add_header Content-Security-Policy "{{ lions_primefaces_csp_policy | default('default-src self; script-src self unsafe-inline; style-src self unsafe-inline;') }}" always;
+      {% if lions_primefaces_hsts_enabled | default(true) | bool %}
+      add_header Strict-Transport-Security "{{ lions_primefaces_hsts_header | default('max-age=31536000; includeSubDomains; preload') }}" always;
+      {% endif %}
+    {% endif %}
+    
+    # Configuration de rate limiting
+    {% if lions_primefaces_rate_limiting_enabled | default(false) | bool %}
+    nginx.ingress.kubernetes.io/rate-limit: "{{ lions_primefaces_rate_limit | default('100') }}"
+    nginx.ingress.kubernetes.io/rate-limit-window: "{{ lions_primefaces_rate_limit_window | default('1m') }}"
+    nginx.ingress.kubernetes.io/rate-limit-connections: "{{ lions_primefaces_rate_limit_connections | default('10') }}"
+    {% endif %}
+    
+    # Configuration de whitelist IP
+    {% if lions_primefaces_ip_whitelist | default([]) | length > 0 %}
+    nginx.ingress.kubernetes.io/whitelist-source-range: "{{ lions_primefaces_ip_whitelist | join(',') }}"
+    {% endif %}
+    
+    # Configuration d'authentification
+    {% if lions_primefaces_basic_auth_enabled | default(false) | bool %}
+    nginx.ingress.kubernetes.io/auth-type: basic
+    nginx.ingress.kubernetes.io/auth-secret: "{{ lions_primefaces_basic_auth_secret }}"
+    nginx.ingress.kubernetes.io/auth-realm: "{{ lions_primefaces_basic_auth_realm | default('Authentication Required') }}"
+    {% endif %}
+    
+    # Configuration d'authentification externe (OAuth)
+    {% if lions_primefaces_oauth_auth_enabled | default(false) | bool %}
+    nginx.ingress.kubernetes.io/auth-url: "{{ lions_primefaces_oauth_auth_url }}"
+    nginx.ingress.kubernetes.io/auth-signin: "{{ lions_primefaces_oauth_signin_url }}"
+    nginx.ingress.kubernetes.io/auth-response-headers: "{{ lions_primefaces_oauth_response_headers | default('X-Auth-Request-User,X-Auth-Request-Email') }}"
+    {% endif %}
+    
+    # Configuration de session affinity
+    {% if lions_primefaces_session_affinity_enabled | default(false) | bool %}
+    nginx.ingress.kubernetes.io/affinity: "{{ lions_primefaces_nginx_affinity | default('cookie') }}"
+    nginx.ingress.kubernetes.io/session-cookie-name: "{{ lions_primefaces_session_cookie_name | default('lions-primefaces-session') }}"
+    nginx.ingress.kubernetes.io/session-cookie-max-age: "{{ lions_primefaces_session_cookie_max_age | default('86400') }}"
+    {% endif %}
+    
+    # Configuration de circuit breaker
+    {% if lions_primefaces_circuit_breaker_enabled | default(false) | bool %}
+    nginx.ingress.kubernetes.io/custom-http-errors: "{{ lions_primefaces_custom_http_errors | default('500,502,503,504') }}"
+    nginx.ingress.kubernetes.io/default-backend: "{{ lions_primefaces_default_backend | default('default-http-backend') }}"
+    {% endif %}
+    
+    {% endif %}
+    
+    # Configuration spécifique au contrôleur Traefik
+    {% if lions_ingress_controller == 'traefik' %}
+    # Configuration Traefik de base
+    traefik.ingress.kubernetes.io/router.entrypoints: "{{ lions_primefaces_traefik_entrypoints | default('web,websecure') }}"
+    traefik.ingress.kubernetes.io/router.rule: "{{ lions_primefaces_traefik_rule | default('Host(`' + lions_primefaces_hostname + '.' + lions_dns_full_domain + '`)') }}"
+    
+    # Configuration SSL/TLS
+    {% if lions_security_tls_enabled | bool %}
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.tls.certresolver: "{{ lions_primefaces_traefik_cert_resolver | default('letsencrypt') }}"
+    {% endif %}
+    
+    # Configuration de middleware
+    {% if lions_primefaces_traefik_middlewares | default([]) | length > 0 %}
+    traefik.ingress.kubernetes.io/router.middlewares: "{{ lions_primefaces_traefik_middlewares | join(',') }}"
+    {% endif %}
+    
+    # Configuration de load balancing
+    traefik.ingress.kubernetes.io/service.loadbalancer.method: "{{ lions_primefaces_traefik_lb_method | default('round_robin') }}"
+    traefik.ingress.kubernetes.io/service.loadbalancer.healthcheck.path: "{{ lions_primefaces_traefik_healthcheck_path | default('/actuator/health') }}"
+    traefik.ingress.kubernetes.io/service.loadbalancer.healthcheck.interval: "{{ lions_primefaces_traefik_healthcheck_interval | default('30s') }}"
+    
+    # Configuration de rate limiting
+    {% if lions_primefaces_rate_limiting_enabled | default(false) | bool %}
+    traefik.ingress.kubernetes.io/router.middlewares: "{{ lions_primefaces_namespace }}-{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-rate-limit@kubernetescrd"
+    {% endif %}
+    
+    {% endif %}
+    
+    # Configuration spécifique AWS ALB
+    {% if lions_cloud_provider == 'aws' and lions_ingress_controller == 'alb' %}
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: "{{ lions_primefaces_alb_scheme | default('internet-facing') }}"
+    alb.ingress.kubernetes.io/target-type: "{{ lions_primefaces_alb_target_type | default('ip') }}"
+    alb.ingress.kubernetes.io/load-balancer-name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-{{ lions_environment }}"
+    alb.ingress.kubernetes.io/group.name: "{{ lions_primefaces_alb_group | default('lions-primefaces') }}"
+    
+    # Configuration SSL/TLS pour ALB
+    {% if lions_security_tls_enabled | bool %}
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    alb.ingress.kubernetes.io/certificate-arn: "{{ lions_primefaces_aws_certificate_arn }}"
+    alb.ingress.kubernetes.io/ssl-policy: "{{ lions_primefaces_aws_ssl_policy | default('ELBSecurityPolicy-TLS-1-2-2017-01') }}"
+    {% endif %}
+    
+    # Configuration de health check
+    alb.ingress.kubernetes.io/healthcheck-path: "{{ lions_primefaces_alb_healthcheck_path | default('/actuator/health') }}"
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "{{ lions_primefaces_alb_healthcheck_interval | default('30') }}"
+    alb.ingress.kubernetes.io/healthcheck-timeout-seconds: "{{ lions_primefaces_alb_healthcheck_timeout | default('5') }}"
+    alb.ingress.kubernetes.io/healthy-threshold-count: "{{ lions_primefaces_alb_healthy_threshold | default('2') }}"
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: "{{ lions_primefaces_alb_unhealthy_threshold | default('3') }}"
+    
+    # Configuration de load balancing
+    alb.ingress.kubernetes.io/load-balancer-attributes: "{{ lions_primefaces_alb_attributes | default('idle_timeout.timeout_seconds=60,routing.http2.enabled=true') }}"
+    
+    {% endif %}
+    
+    # Configuration spécifique GCP GKE
+    {% if lions_cloud_provider == 'gcp' and lions_ingress_controller == 'gce' %}
+    kubernetes.io/ingress.class: gce
+    cloud.google.com/load-balancer-type: "{{ lions_primefaces_gcp_lb_type | default('External') }}"
+    
+    # Configuration SSL/TLS pour GCP
+    {% if lions_security_tls_enabled | bool %}
+    kubernetes.io/ingress.global-static-ip-name: "{{ lions_primefaces_gcp_static_ip }}"
+    networking.gke.io/managed-certificates: "{{ lions_primefaces_gcp_managed_cert | default(lions_primefaces_app_name | default(lions_primefaces_service_name) + '-ssl-cert') }}"
+    {% endif %}
+    
+    # Configuration backend
+    cloud.google.com/backend-config: '{"default": "{{ lions_primefaces_gcp_backend_config | default(lions_primefaces_app_name | default(lions_primefaces_service_name) + '-backend-config') }}"}'
+    
+    {% endif %}
+    
+    # Configuration monitoring et logging
+    {% if lions_monitoring_enabled | bool %}
+    prometheus.io/probe: "{{ lions_primefaces_prometheus_probe | default('true') }}"
+    prometheus.io/probe-path: "{{ lions_primefaces_prometheus_probe_path | default('/') }}"
+    {% endif %}
+    
+    # Configuration spécifique à l'environnement
+    {% if lions_environment == 'development' %}
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header X-Environment "development" always;
+      add_header X-Debug-Mode "enabled" always;
+    {% endif %}
+    
+    # Annotations personnalisées supplémentaires
+    {% if lions_primefaces_extra_ingress_annotations | default({}) %}
+    {% for key, value in lions_primefaces_extra_ingress_annotations.items() %}
     {{ key }}: "{{ value }}"
     {% endfor %}
+    {% endif %}
+
 spec:
-  ingressClassName: nginx
+  # Classe d'ingress appropriée
+  {% if lions_ingress_controller == 'nginx' %}
+  ingressClassName: "{{ lions_primefaces_ingress_class | default('nginx') }}"
+  {% elif lions_ingress_controller == 'traefik' %}
+  ingressClassName: "{{ lions_primefaces_ingress_class | default('traefik') }}"
+  {% elif lions_ingress_controller == 'alb' %}
+  ingressClassName: "{{ lions_primefaces_ingress_class | default('alb') }}"
+  {% elif lions_ingress_controller == 'gce' %}
+  ingressClassName: "{{ lions_primefaces_ingress_class | default('gce') }}"
+  {% else %}
+  ingressClassName: "{{ lions_primefaces_ingress_class | default(lions_ingress_controller) }}"
+  {% endif %}
+  
+  # Configuration TLS/SSL
+  {% if lions_security_tls_enabled | bool %}
   tls:
+    # Certificat principal
     - hosts:
-        - "{{ app_domain }}"
-      secretName: "{{ app_name }}-tls"
+        - "{{ lions_primefaces_hostname }}.{{ lions_dns_full_domain }}"
+        {% if lions_primefaces_additional_hostnames | default([]) | length > 0 %}
+        {% for hostname in lions_primefaces_additional_hostnames %}
+        - "{{ hostname }}.{{ lions_dns_full_domain }}"
+        {% endfor %}
+        {% endif %}
+      secretName: "{{ lions_primefaces_tls_secret_name | default(lions_primefaces_app_name | default(lions_primefaces_service_name) + '-tls') }}"
+    
+    # Certificats supplémentaires pour d'autres domaines
+    {% if lions_primefaces_additional_tls_configs | default([]) | length > 0 %}
+    {% for tls_config in lions_primefaces_additional_tls_configs %}
+    - hosts:
+        {% for host in tls_config.hosts %}
+        - "{{ host }}"
+        {% endfor %}
+      secretName: "{{ tls_config.secretName }}"
+    {% endfor %}
+    {% endif %}
+  {% endif %}
+  
+  # Règles de routage
   rules:
-    - host: "{{ app_domain }}"
+    # Règle principale
+    - host: "{{ lions_primefaces_hostname }}.{{ lions_dns_full_domain }}"
       http:
         paths:
-          - path: /
-            pathType: Prefix
+          # Path principal de l'application
+          - path: "{{ lions_primefaces_ingress_path | default('/') }}"
+            pathType: "{{ lions_primefaces_path_type | default('Prefix') }}"
             backend:
               service:
-                name: "{{ app_name }}"
+                name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
                 port:
-                  name: http
+                  {% if lions_primefaces_service_port_name | default('') %}
+                  name: "{{ lions_primefaces_service_port_name }}"
+                  {% else %}
+                  number: {{ lions_primefaces_service_port | default('80') }}
+                  {% endif %}
+          
+          # Path pour les API endpoints (si différent)
+          {% if lions_primefaces_api_path | default('') and lions_primefaces_api_path != lions_primefaces_ingress_path %}
+          - path: "{{ lions_primefaces_api_path }}"
+            pathType: "{{ lions_primefaces_api_path_type | default('Prefix') }}"
+            backend:
+              service:
+                name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+                port:
+                  {% if lions_primefaces_api_service_port_name | default('') %}
+                  name: "{{ lions_primefaces_api_service_port_name }}"
+                  {% else %}
+                  number: {{ lions_primefaces_api_service_port | default(lions_primefaces_service_port | default('80')) }}
+                  {% endif %}
+          {% endif %}
+          
+          # Path pour les métriques (si monitoring activé et path séparé)
+          {% if lions_monitoring_enabled | bool and lions_primefaces_metrics_external_path | default('') %}
+          - path: "{{ lions_primefaces_metrics_external_path }}"
+            pathType: "{{ lions_primefaces_metrics_path_type | default('Exact') }}"
+            backend:
+              service:
+                name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+                port:
+                  {% if lions_primefaces_metrics_service_port_name | default('') %}
+                  name: "{{ lions_primefaces_metrics_service_port_name }}"
+                  {% else %}
+                  number: {{ lions_primefaces_metrics_service_port | default(lions_primefaces_service_port | default('80')) }}
+                  {% endif %}
+          {% endif %}
+          
+          # Paths personnalisés supplémentaires
+          {% if lions_primefaces_extra_paths | default([]) | length > 0 %}
+          {% for path_config in lions_primefaces_extra_paths %}
+          - path: "{{ path_config.path }}"
+            pathType: "{{ path_config.pathType | default('Prefix') }}"
+            backend:
+              service:
+                name: "{{ path_config.serviceName | default(lions_primefaces_app_name | default(lions_primefaces_service_name)) }}"
+                port:
+                  {% if path_config.servicePortName | default('') %}
+                  name: "{{ path_config.servicePortName }}"
+                  {% else %}
+                  number: {{ path_config.servicePort | default(lions_primefaces_service_port | default('80')) }}
+                  {% endif %}
+          {% endfor %}
+          {% endif %}
+    
+    # Hostnames supplémentaires
+    {% if lions_primefaces_additional_hostnames | default([]) | length > 0 %}
+    {% for hostname in lions_primefaces_additional_hostnames %}
+    - host: "{{ hostname }}.{{ lions_dns_full_domain }}"
+      http:
+        paths:
+          - path: "{{ lions_primefaces_ingress_path | default('/') }}"
+            pathType: "{{ lions_primefaces_path_type | default('Prefix') }}"
+            backend:
+              service:
+                name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+                port:
+                  {% if lions_primefaces_service_port_name | default('') %}
+                  name: "{{ lions_primefaces_service_port_name }}"
+                  {% else %}
+                  number: {{ lions_primefaces_service_port | default('80') }}
+                  {% endif %}
+    {% endfor %}
+    {% endif %}
+    
+    # Règles personnalisées supplémentaires
+    {% if lions_primefaces_extra_ingress_rules | default([]) | length > 0 %}
+    {% for rule in lions_primefaces_extra_ingress_rules %}
+    - host: "{{ rule.host }}"
+      http:
+        paths:
+          {% for path in rule.paths %}
+          - path: "{{ path.path }}"
+            pathType: "{{ path.pathType | default('Prefix') }}"
+            backend:
+              service:
+                name: "{{ path.serviceName }}"
+                port:
+                  {% if path.servicePortName | default('') %}
+                  name: "{{ path.servicePortName }}"
+                  {% else %}
+                  number: {{ path.servicePort }}
+                  {% endif %}
+          {% endfor %}
+    {% endfor %}
+    {% endif %}
+  
+  # Configuration du backend par défaut (si spécifié)
+  {% if lions_primefaces_default_backend_enabled | default(false) | bool %}
+  defaultBackend:
+    service:
+      name: "{{ lions_primefaces_default_backend_service | default('default-http-backend') }}"
+      port:
+        number: {{ lions_primefaces_default_backend_port | default('80') }}
+  {% endif %}

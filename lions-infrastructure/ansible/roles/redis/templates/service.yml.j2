@@ -1,35 +1,223 @@
 ---
-# Titre: Template de Service Kubernetes pour Redis
-# Description: Définit le Service Kubernetes pour Redis
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-08
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - TEMPLATE SERVICE REDIS
+# =========================================================================
+# Description: Template Jinja2 pour le Service Kubernetes Redis
+# Composant: Redis Database Service
+# Version: 5.0.0
+# Maintainer: DevOps Team <devops@lions.dev>
+# Documentation: https://docs.lions.dev/infrastructure/redis/service
+# =========================================================================
 
 apiVersion: v1
 kind: Service
 metadata:
-  name: "{{ app_name }}"
-  namespace: "{{ app_namespace }}"
+  name: "{{ lions_redis_service_name | default('redis') }}-{{ lions_redis_instance_suffix | default('primary') }}"
+  namespace: "{{ lions_redis_namespace }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "redis"
+    # Labels principaux
+    app.kubernetes.io/name: "{{ lions_redis_service_name | default('redis') }}"
+    app.kubernetes.io/instance: "{{ lions_redis_instance_name | default(lions_redis_service_name) }}"
+    app.kubernetes.io/version: "{{ lions_redis_version }}"
+    app.kubernetes.io/component: "database"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+
+    # Labels LIONS spécifiques
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/deployment-mode: "{{ lions_deployment_mode | default('single') }}"
+    lions.dev/tier: "database"
+    lions.dev/technology: "redis"
+    lions.dev/monitoring: "{{ lions_monitoring_enabled | string | lower }}"
+    lions.dev/backup: "{{ lions_redis_backup_enabled | default(true) | string | lower }}"
+
+    # Labels de sécurité
+    lions.dev/security-level: "{{ lions_redis_security_level | default('standard') }}"
+    lions.dev/network-policy: "{{ lions_security_network_policies | string | lower }}"
+    lions.dev/tls-enabled: "{{ lions_redis_tls_enabled | default(false) | string | lower }}"
+
+{% if lions_redis_custom_labels is defined and lions_redis_custom_labels %}
+    # Labels personnalisés
+{% for key, value in lions_redis_custom_labels.items() %}
+    {{ key }}: "{{ value }}"
+{% endfor %}
+{% endif %}
+
   annotations:
-    description: "Service pour Redis {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    # Annotations de base
+    lions.dev/description: "Service Redis pour l'environnement {{ lions_environment }}"
+    lions.dev/version: "{{ lions_config_version | default('5.0.0') }}"
+    lions.dev/created-by: "{{ ansible_user | default('ansible') }}"
+    lions.dev/created-at: "{{ ansible_date_time.iso8601 }}"
+
+    # Annotations de configuration
+    lions.dev/redis-mode: "{{ lions_redis_mode | default('standalone') }}"
+    lions.dev/redis-persistence: "{{ lions_redis_persistence_enabled | default(true) | string | lower }}"
+    lions.dev/redis-memory-policy: "{{ lions_redis_memory_policy | default('allkeys-lru') }}"
+
+    # Annotations de monitoring
+{% if lions_monitoring_enabled | bool %}
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "{{ lions_redis_metrics_port | default(9121) }}"
+    prometheus.io/path: "/metrics"
+    prometheus.io/scheme: "{{ 'https' if lions_redis_tls_enabled | default(false) | bool else 'http' }}"
+{% endif %}
+
+    # Annotations de sécurité
+{% if lions_security_network_policies | bool %}
+    lions.dev/allowed-namespaces: "{{ lions_redis_allowed_namespaces | default([lions_redis_namespace]) | join(',') }}"
+{% endif %}
+
+{% if lions_redis_custom_annotations is defined and lions_redis_custom_annotations %}
+    # Annotations personnalisées
+{% for key, value in lions_redis_custom_annotations.items() %}
+    {{ key }}: "{{ value }}"
+{% endfor %}
+{% endif %}
+
 spec:
+  # Sélecteur pour cibler les pods Redis
   selector:
-    app: "{{ app_name }}"
+    app.kubernetes.io/name: "{{ lions_redis_service_name | default('redis') }}"
+    app.kubernetes.io/instance: "{{ lions_redis_instance_name | default(lions_redis_service_name) }}"
+{% if lions_redis_mode | default('standalone') == 'cluster' %}
+    lions.dev/redis-role: "{{ lions_redis_service_role | default('master') }}"
+{% endif %}
+
+  # Configuration des ports
   ports:
+    # Port principal Redis
     - name: redis
-      port: {{ redis_default_port }}
+      port: {{ lions_redis_port | default(6379) }}
       targetPort: redis
       protocol: TCP
-{% if redis_prometheus_scrape | bool %}
+{% if lions_redis_service_node_port is defined and lions_redis_service_type == 'NodePort' %}
+      nodePort: {{ lions_redis_service_node_port }}
+{% endif %}
+
+{% if lions_redis_tls_enabled | default(false) | bool %}
+    # Port TLS Redis
+    - name: redis-tls
+      port: {{ lions_redis_tls_port | default(6380) }}
+      targetPort: redis-tls
+      protocol: TCP
+{% endif %}
+
+{% if lions_redis_cluster_enabled | default(false) | bool %}
+    # Port de communication cluster
+    - name: cluster
+      port: {{ lions_redis_cluster_port | default(16379) }}
+      targetPort: cluster
+      protocol: TCP
+{% endif %}
+
+{% if lions_monitoring_enabled | bool and lions_redis_metrics_enabled | default(true) | bool %}
+    # Port des métriques Prometheus
     - name: metrics
-      port: {{ redis_prometheus_port }}
+      port: {{ lions_redis_metrics_port | default(9121) }}
       targetPort: metrics
       protocol: TCP
 {% endif %}
+
+{% if lions_redis_sentinel_enabled | default(false) | bool %}
+    # Port Sentinel
+    - name: sentinel
+      port: {{ lions_redis_sentinel_port | default(26379) }}
+      targetPort: sentinel
+      protocol: TCP
+{% endif %}
+
+  # Type de service
+  type: "{{ lions_redis_service_type | default('ClusterIP') }}"
+
+{% if lions_redis_service_type | default('ClusterIP') == 'LoadBalancer' %}
+  # Configuration LoadBalancer
+{% if lions_redis_load_balancer_ip is defined %}
+  loadBalancerIP: "{{ lions_redis_load_balancer_ip }}"
+{% endif %}
+{% if lions_redis_load_balancer_source_ranges is defined %}
+  loadBalancerSourceRanges:
+{% for range in lions_redis_load_balancer_source_ranges %}
+    - "{{ range }}"
+{% endfor %}
+{% endif %}
+{% endif %}
+
+{% if lions_redis_service_type | default('ClusterIP') == 'ExternalName' %}
+  # Configuration ExternalName
+  externalName: "{{ lions_redis_external_name }}"
+{% endif %}
+
+  # Configuration de session
+  sessionAffinity: "{{ lions_redis_session_affinity | default('None') }}"
+{% if lions_redis_session_affinity | default('None') == 'ClientIP' %}
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: {{ lions_redis_session_timeout | default(10800) }}
+{% endif %}
+
+{% if lions_redis_publish_not_ready_addresses | default(false) | bool %}
+  # Publier les adresses non prêtes (utile pour les clusters)
+  publishNotReadyAddresses: true
+{% endif %}
+
+{% if lions_redis_cluster_ip is defined %}
+  # IP de cluster spécifique
+  clusterIP: "{{ lions_redis_cluster_ip }}"
+{% elif lions_redis_headless_service | default(false) | bool %}
+  # Service headless pour StatefulSet
+  clusterIP: None
+{% endif %}
+
+{% if lions_redis_external_traffic_policy is defined and lions_redis_service_type in ['NodePort', 'LoadBalancer'] %}
+  # Politique de trafic externe
+  externalTrafficPolicy: "{{ lions_redis_external_traffic_policy }}"
+{% endif %}
+
+{% if lions_redis_health_check_node_port is defined and lions_redis_service_type == 'LoadBalancer' %}
+  # Port de vérification de santé
+  healthCheckNodePort: {{ lions_redis_health_check_node_port }}
+{% endif %}
+
+{% if lions_redis_ip_families is defined %}
+  # Familles d'IP (IPv4/IPv6)
+  ipFamilies:
+{% for family in lions_redis_ip_families %}
+    - {{ family }}
+{% endfor %}
+  ipFamilyPolicy: "{{ lions_redis_ip_family_policy | default('SingleStack') }}"
+{% endif %}
+
+---
+{% if lions_redis_headless_service_enabled | default(false) | bool and lions_redis_service_type != 'ClusterIP' %}
+# Service headless pour découverte de service
+apiVersion: v1
+kind: Service
+metadata:
+  name: "{{ lions_redis_service_name | default('redis') }}-headless"
+  namespace: "{{ lions_redis_namespace }}"
+  labels:
+    app.kubernetes.io/name: "{{ lions_redis_service_name | default('redis') }}"
+    app.kubernetes.io/instance: "{{ lions_redis_instance_name | default(lions_redis_service_name) }}"
+    app.kubernetes.io/version: "{{ lions_redis_version }}"
+    app.kubernetes.io/component: "database"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+    lions.dev/service-type: "headless"
+    lions.dev/environment: "{{ lions_environment }}"
+  annotations:
+    lions.dev/description: "Service headless pour découverte Redis"
+    lions.dev/purpose: "service-discovery"
+spec:
+  selector:
+    app.kubernetes.io/name: "{{ lions_redis_service_name | default('redis') }}"
+    app.kubernetes.io/instance: "{{ lions_redis_instance_name | default(lions_redis_service_name) }}"
+  ports:
+    - name: redis
+      port: {{ lions_redis_port | default(6379) }}
+      targetPort: redis
+      protocol: TCP
+  clusterIP: None
   type: ClusterIP
-  sessionAffinity: None
+  publishNotReadyAddresses: true
+{% endif %}

@@ -1,16 +1,16 @@
 ---
 # =========================================================================
-# LIONS INFRASTRUCTURE 5.0 - GITEA PERSISTENT VOLUME CLAIM
+# LIONS INFRASTRUCTURE 5.0 - NOTIFICATION SERVICE PERSISTENT VOLUME CLAIM
 # =========================================================================
-# Description: Template Kubernetes PersistentVolumeClaim pour Gitea
+# Description: Template Kubernetes PersistentVolumeClaim pour le service de notification
 # Version: 5.0.0
 # Maintainer: LIONS DevOps Team
-# Documentation: https://docs.lions.dev/infrastructure/storage/gitea
+# Documentation: https://docs.lions.dev/infrastructure/storage/notification
 # =========================================================================
 # Variables requises:
-#   - LIONS_GITEA_ENABLED: Active/désactive Gitea
-#   - LIONS_GITEA_NAMESPACE: Namespace de déploiement
-#   - LIONS_GITEA_STORAGE_SIZE: Taille du stockage
+#   - LIONS_NOTIFICATION_ENABLED: Active/désactive le service de notification
+#   - LIONS_NOTIFICATION_NAMESPACE: Namespace de déploiement
+#   - LIONS_NOTIFICATION_STORAGE_SIZE: Taille du stockage
 #   - LIONS_STORAGE_CLASS_DEFAULT: Classe de stockage par défaut
 #   - LIONS_ENVIRONMENT: Environnement de déploiement
 # =========================================================================
@@ -18,13 +18,13 @@
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: "{{ gitea_component_name | default('gitea') }}-pvc"
-  namespace: "{{ lookup('env', 'LIONS_GITEA_NAMESPACE') | default('development') }}"
+  name: "{{ notification_component_name | default('notification-service') }}-pvc"
+  namespace: "{{ lookup('env', 'LIONS_NOTIFICATION_NAMESPACE') | default('services') }}"
   labels:
     # Labels standards LIONS Infrastructure 5.0
-    app.kubernetes.io/name: "{{ gitea_component_name | default('gitea') }}"
-    app.kubernetes.io/instance: "{{ gitea_component_name | default('gitea') }}-{{ lookup('env', 'LIONS_ENVIRONMENT') | default('development') }}"
-    app.kubernetes.io/version: "{{ lookup('env', 'LIONS_GITEA_VERSION') | default('1.20.5') }}"
+    app.kubernetes.io/name: "{{ notification_component_name | default('notification-service') }}"
+    app.kubernetes.io/instance: "{{ notification_component_name | default('notification-service') }}-{{ lookup('env', 'LIONS_ENVIRONMENT') | default('development') }}"
+    app.kubernetes.io/version: "{{ lookup('env', 'LIONS_NOTIFICATION_VERSION') | default('1.0.0') }}"
     app.kubernetes.io/component: "storage"
     app.kubernetes.io/part-of: "lions-infrastructure"
     app.kubernetes.io/managed-by: "ansible"
@@ -33,13 +33,13 @@ metadata:
     lions.dev/environment: "{{ lookup('env', 'LIONS_ENVIRONMENT') | default('development') }}"
     lions.dev/project: "lions-infrastructure"
     lions.dev/version: "{{ lookup('env', 'LIONS_CONFIG_VERSION') | default('5.0.0') }}"
-    lions.dev/service-type: "git-repository"
+    lions.dev/service-type: "notification-service"
     lions.dev/data-classification: "internal"
     lions.dev/backup-policy: "{{ 'enabled' if (lookup('env', 'LIONS_BACKUP_ENABLED') | default('true') | bool) else 'disabled' }}"
 
     # Labels techniques
     storage.lions.dev/class: "{{ lookup('env', 'LIONS_STORAGE_CLASS_DEFAULT') | default('local-path') }}"
-    storage.lions.dev/size: "{{ lookup('env', 'LIONS_GITEA_STORAGE_SIZE') | default('10Gi') }}"
+    storage.lions.dev/size: "{{ lookup('env', 'LIONS_NOTIFICATION_STORAGE_SIZE') | default('1Gi') }}"
     storage.lions.dev/access-mode: "ReadWriteOnce"
     storage.lions.dev/reclaim-policy: "{{ lookup('env', 'LIONS_STORAGE_RECLAIM_POLICY') | default('Retain') }}"
 
@@ -49,8 +49,8 @@ metadata:
 
   annotations:
     # Annotations de documentation
-    description: "PersistentVolumeClaim pour Gitea - Service de gestion de dépôts Git"
-    documentation: "https://docs.lions.dev/infrastructure/storage/gitea"
+    description: "PersistentVolumeClaim pour le service de notification - Service de gestion des notifications"
+    documentation: "https://docs.lions.dev/infrastructure/storage/notification"
     support.contact: "{{ lookup('env', 'LIONS_CONFIG_MAINTAINER') | default('devops@lions.dev') }}"
 
     # Annotations de déploiement
@@ -91,13 +91,13 @@ spec:
   # Demande de ressources avec validation
   resources:
     requests:
-      storage: "{{ lookup('env', 'LIONS_GITEA_STORAGE_SIZE') | default('10Gi') }}"
+      storage: "{{ lookup('env', 'LIONS_NOTIFICATION_STORAGE_SIZE') | default('1Gi') }}"
 
   # Sélecteur de volume (optionnel pour liaison à un PV spécifique)
-{% if gitea_pv_selector is defined %}
+{% if notification_pv_selector is defined %}
   selector:
     matchLabels:
-      {{ gitea_pv_selector | to_nice_yaml | indent(6) }}
+      {{ notification_pv_selector | to_nice_yaml | indent(6) }}
 {% endif %}
 
 {% if lookup('env', 'LIONS_STORAGE_CLASS_DEFAULT') == 'local-path' %}
@@ -109,30 +109,31 @@ spec:
   # VALIDATION DU TEMPLATE
   # =========================================================================
   # Les conditions suivantes doivent être vérifiées avant le déploiement:
-  # 1. LIONS_GITEA_ENABLED doit être 'true'
-  # 2. LIONS_GITEA_NAMESPACE doit être défini
-  # 3. LIONS_GITEA_STORAGE_SIZE doit être un format valide (ex: 10Gi)
+  # 1. LIONS_NOTIFICATION_ENABLED doit être 'true'
+  # 2. LIONS_NOTIFICATION_NAMESPACE doit être défini
+  # 3. LIONS_NOTIFICATION_STORAGE_SIZE doit être un format valide (ex: 1Gi)
   # 4. La classe de stockage doit exister dans le cluster
   # =========================================================================
 
   # Validation Jinja2 (sera vérifiée lors du rendu du template)
-{% if not lookup('env', 'LIONS_GITEA_ENABLED') | default('false') | bool %}
-  # ERREUR: Gitea n'est pas activé dans la configuration
-  # Veuillez définir LIONS_GITEA_ENABLED=true dans votre fichier .env
+{% if not lookup('env', 'LIONS_NOTIFICATION_ENABLED') | default('false') | bool %}
+  # ERREUR: Le service de notification n'est pas activé dans la configuration
+  # Veuillez définir LIONS_NOTIFICATION_ENABLED=true dans votre fichier .env
 {% endif %}
 
-{% set storage_size = lookup('env', 'LIONS_GITEA_STORAGE_SIZE') | default('10Gi') %}
+{% set storage_size = lookup('env', 'LIONS_NOTIFICATION_STORAGE_SIZE') | default('1Gi') %}
 {% if not storage_size | regex_search('^[0-9]+[KMGT]i?$') %}
   # ERREUR: Format de taille de stockage invalide: {{ storage_size }}
-  # Format attendu: nombre suivi de K/M/G/T et optionnellement 'i' (ex: 10Gi, 500M)
+  # Format attendu: nombre suivi de K/M/G/T et optionnellement 'i' (ex: 1Gi, 500M)
 {% endif %}
 
 # =========================================================================
 # NOTES DE DÉPLOIEMENT
 # =========================================================================
-# - Ce PVC est optimisé pour les déploiements Gitea mono-instance
+# - Ce PVC est optimisé pour les déploiements du service de notification mono-instance
 # - Pour une configuration HA, considérez l'utilisation de ReadWriteMany
 # - La classe de stockage local-path est recommandée pour les tests
 # - Pour la production, utilisez une classe de stockage avec réplication
 # - Les sauvegardes automatiques sont configurées via les annotations
+# - Le stockage est utilisé pour les templates et les logs de notification
 # =========================================================================

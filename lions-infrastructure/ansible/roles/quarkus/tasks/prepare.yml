@@ -1,65 +1,375 @@
 ---
-# Titre: Préparation des ressources pour Quarkus
-# Description: Prépare les ressources nécessaires pour déployer une application Quarkus
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - PRÉPARATION QUARKUS
+# =========================================================================
+# Description: Préparation et validation des ressources pour déploiement Quarkus
+# Version: 5.0.0
+# Maintainer: DevOps Team LIONS
+# Date: "{{ ansible_date_time.iso8601 }}"
+# Environnement: "{{ lions_environment | default('development') }}"
+# =========================================================================
 
-- name: Création du répertoire temporaire pour les templates
-  tempfile:
-    state: directory
-    suffix: quarkus-deploy
-  register: temp_dir
-  changed_when: false
+- name: "📋 Initialisation des variables de préparation Quarkus"
+  set_fact:
+    quarkus_prep_config:
+      namespace: "{{ lions_quarkus_namespace }}"
+      app_name: "{{ lions_quarkus_service_name }}"
+      app_version: "{{ lions_quarkus_version | default('latest') }}"
+      environment: "{{ lions_environment }}"
+      debug_mode: "{{ lions_debug_mode | default(false) }}"
+      dry_run: "{{ lions_dry_run | default(false) }}"
+      timestamp: "{{ ansible_date_time.epoch }}"
+    quarkus_temp_config:
+      base_dir: "/tmp/lions-quarkus-{{ ansible_date_time.epoch }}"
+      templates_dir: "templates"
+      manifests_dir: "manifests"
+      cleanup_on_failure: true
+    quarkus_required_templates:
+      - name: "deployment"
+        src: "deployment.yml.j2"
+        dest: "deployment.yml"
+        required: true
+      - name: "service"
+        src: "service.yml.j2"
+        dest: "service.yml"
+        required: true
+      - name: "ingress"
+        src: "ingress.yml.j2"
+        dest: "ingress.yml"
+        required: "{{ lions_security_tls_enabled | default(true) }}"
+      - name: "ingress-traefik"
+        src: "ingress-traefik.yml.j2"
+        dest: "ingress-traefik.yml"
+        required: "{{ lions_k8s_traefik_enabled | default(true) }}"
+      - name: "configmap"
+        src: "configmap.yml.j2"
+        dest: "configmap.yml"
+        required: true
+      - name: "serviceaccount"
+        src: "serviceaccount.yml.j2"
+        dest: "serviceaccount.yml"
+        required: "{{ lions_security_rbac_enabled | default(true) }}"
+      - name: "servicemonitor"
+        src: "servicemonitor.yml.j2"
+        dest: "servicemonitor.yml"
+        required: "{{ lions_monitoring_enabled | default(true) }}"
+  tags:
+    - quarkus
+    - preparation
+    - initialization
 
-- name: Génération des fichiers de configuration Kubernetes
-  template:
-    src: "{{ item.src }}"
-    dest: "{{ temp_dir.path }}/{{ item.dest }}"
-  loop:
-    - { src: "deployment.yml.j2", dest: "deployment.yml" }
-    - { src: "service.yml.j2", dest: "service.yml" }
-    - { src: "ingress-traefik.yml.j2", dest: "ingress.yml" }
-    - { src: "configmap.yml.j2", dest: "configmap.yml" }
-    - { src: "serviceaccount.yml.j2", dest: "serviceaccount.yml" }
-    - { src: "servicemonitor.yml.j2", dest: "servicemonitor.yml" }
-  register: templates_generated
+- name: "🔍 Validation des prérequis pour Quarkus"
+  block:
+    - name: "Vérification de la disponibilité du cluster Kubernetes"
+      k8s_info:
+        api_version: v1
+        kind: Namespace
+        name: "{{ quarkus_prep_config.namespace }}"
+      register: quarkus_namespace_check
+      failed_when: false
 
-- name: Vérification des fichiers générés
-  stat:
-    path: "{{ temp_dir.path }}/{{ item }}"
-  loop:
-    - "deployment.yml"
-    - "service.yml"
-    - "ingress.yml"
-    - "configmap.yml"
-    - "serviceaccount.yml"
-    - "servicemonitor.yml"
-  register: files_check
-  failed_when: not item.stat.exists
+    - name: "Validation des variables critiques"
+      assert:
+        that:
+          - quarkus_prep_config.namespace is defined
+          - quarkus_prep_config.namespace | length > 0
+          - quarkus_prep_config.app_name is defined
+          - quarkus_prep_config.app_name | length > 0
+          - lions_quarkus_enabled | default(false) | bool
+        fail_msg: "❌ Variables critiques manquantes pour Quarkus"
+        success_msg: "✅ Variables critiques validées"
 
-- name: Création du compte de service
-  k8s:
-    state: present
-    src: "{{ temp_dir.path }}/serviceaccount.yml"
-  register: serviceaccount_result
+    - name: "Vérification de l'état du namespace"
+      debug:
+        msg: |
+          📊 État du namespace {{ quarkus_prep_config.namespace }}:
+          - Existe: {{ quarkus_namespace_check.resources | length > 0 }}
+          - État: {{ quarkus_namespace_check.resources[0].status.phase if quarkus_namespace_check.resources | length > 0 else 'Non trouvé' }}
 
-- name: Création du ConfigMap pour la configuration de l'application
-  k8s:
-    state: present
-    src: "{{ temp_dir.path }}/configmap.yml"
-  register: configmap_result
+  rescue:
+    - name: "❌ Échec de la validation des prérequis"
+      fail:
+        msg: "La validation des prérequis a échoué. Vérifiez la configuration et la connectivité Kubernetes."
 
-- name: Vérification de l'existence des secrets nécessaires
-  k8s_info:
-    api_version: v1
-    kind: Secret
-    namespace: "{{ app_namespace }}"
-    name: "{{ app_name }}-secrets"
-  register: secrets_info
-  ignore_errors: yes
+  tags:
+    - quarkus
+    - validation
+    - prerequisites
 
-- name: Avertissement si les secrets n'existent pas
-  debug:
-    msg: "AVERTISSEMENT: Les secrets pour l'application {{ app_name }} n'existent pas. Utilisez kubectl pour créer les secrets nécessaires."
-  when: secrets_info is failed or secrets_info.resources | length == 0
+- name: "📁 Création de la structure de répertoires temporaires"
+  block:
+    - name: "Création du répertoire de base temporaire"
+      file:
+        path: "{{ quarkus_temp_config.base_dir }}"
+        state: directory
+        mode: '0750'
+      register: quarkus_temp_base_dir
+      changed_when: false
+
+    - name: "Création des sous-répertoires"
+      file:
+        path: "{{ quarkus_temp_config.base_dir }}/{{ item }}"
+        state: directory
+        mode: '0750'
+      loop:
+        - "{{ quarkus_temp_config.templates_dir }}"
+        - "{{ quarkus_temp_config.manifests_dir }}"
+        - "logs"
+        - "backup"
+      changed_when: false
+
+    - name: "Enregistrement du répertoire temporaire"
+      set_fact:
+        quarkus_working_dir: "{{ quarkus_temp_base_dir.path }}"
+        cacheable: false
+
+  rescue:
+    - name: "❌ Échec de création des répertoires temporaires"
+      fail:
+        msg: "Impossible de créer la structure de répertoires temporaires dans {{ quarkus_temp_config.base_dir }}"
+
+  tags:
+    - quarkus
+    - preparation
+    - filesystem
+
+- name: "📝 Génération des manifestes Kubernetes pour Quarkus"
+  block:
+    - name: "Génération des templates requis"
+      template:
+        src: "{{ item.src }}"
+        dest: "{{ quarkus_working_dir }}/{{ quarkus_temp_config.manifests_dir }}/{{ item.dest }}"
+        mode: '0640'
+        backup: true
+      loop: "{{ quarkus_required_templates }}"
+      when: item.required | bool
+      register: quarkus_templates_generated
+      notify:
+        - "backup quarkus manifests"
+
+    - name: "Validation de la syntaxe YAML des manifestes"
+      include_tasks: validate_yaml_syntax.yml
+      vars:
+        manifest_file: "{{ quarkus_working_dir }}/{{ quarkus_temp_config.manifests_dir }}/{{ item.dest }}"
+      loop: "{{ quarkus_required_templates }}"
+      when: item.required | bool
+
+    - name: "Génération du résumé des manifestes"
+      template:
+        src: "manifest-summary.yml.j2"
+        dest: "{{ quarkus_working_dir }}/manifest-summary.yml"
+        mode: '0640'
+      vars:
+        generated_manifests: "{{ quarkus_templates_generated.results | selectattr('changed') | list }}"
+
+  rescue:
+    - name: "❌ Échec de génération des manifestes"
+      debug:
+        msg: "Erreur lors de la génération des manifestes Kubernetes pour {{ quarkus_prep_config.app_name }}"
+
+    - name: "Nettoyage en cas d'échec"
+      file:
+        path: "{{ quarkus_working_dir }}"
+        state: absent
+      when: quarkus_temp_config.cleanup_on_failure | bool
+
+    - name: "Arrêt du processus"
+      fail:
+        msg: "Génération des manifestes échouée. Vérifiez les templates et les variables."
+
+  tags:
+    - quarkus
+    - templates
+    - manifests
+
+- name: "🔒 Préparation des ressources de sécurité"
+  block:
+    - name: "Création du ServiceAccount"
+      k8s:
+        state: present
+        definition: "{{ lookup('file', quarkus_working_dir + '/' + quarkus_temp_config.manifests_dir + '/serviceaccount.yml') | from_yaml }}"
+        wait: true
+        wait_condition:
+          type: Ready
+          status: "True"
+        wait_timeout: "{{ lions_timeout_default | default(300) }}"
+      register: quarkus_serviceaccount_result
+      when: lions_security_rbac_enabled | default(true) | bool
+
+    - name: "Vérification des secrets d'application"
+      k8s_info:
+        api_version: v1
+        kind: Secret
+        namespace: "{{ quarkus_prep_config.namespace }}"
+        name: "{{ quarkus_prep_config.app_name }}-secrets"
+      register: quarkus_secrets_check
+
+    - name: "Création des secrets par défaut si nécessaires"
+      k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: "{{ quarkus_prep_config.app_name }}-secrets"
+            namespace: "{{ quarkus_prep_config.namespace }}"
+            labels:
+              app.kubernetes.io/name: "{{ quarkus_prep_config.app_name }}"
+              app.kubernetes.io/component: "application"
+              app.kubernetes.io/part-of: "lions-infrastructure"
+              app.kubernetes.io/managed-by: "ansible"
+              lions.dev/environment: "{{ quarkus_prep_config.environment }}"
+          type: Opaque
+          data:
+            # Secrets par défaut - À remplacer par les vraies valeurs
+            app-secret: "{{ 'changeme' | b64encode }}"
+      when:
+        - quarkus_secrets_check.resources | length == 0
+        - not lions_dry_run | default(false) | bool
+      register: quarkus_default_secrets_created
+
+  rescue:
+    - name: "⚠️ Avertissement pour les ressources de sécurité"
+      debug:
+        msg: |
+          ⚠️ Problème lors de la préparation des ressources de sécurité:
+          - ServiceAccount: {{ 'OK' if quarkus_serviceaccount_result is succeeded else 'ERREUR' }}
+          - Secrets: {{ 'Existants' if quarkus_secrets_check.resources | length > 0 else 'Créés par défaut' }}
+
+  tags:
+    - quarkus
+    - security
+    - rbac
+
+- name: "⚙️ Préparation de la configuration applicative"
+  block:
+    - name: "Création du ConfigMap principal"
+      k8s:
+        state: present
+        definition: "{{ lookup('file', quarkus_working_dir + '/' + quarkus_temp_config.manifests_dir + '/configmap.yml') | from_yaml }}"
+        wait: true
+        wait_timeout: "{{ lions_timeout_default | default(300) }}"
+      register: quarkus_configmap_result
+
+    - name: "Validation de la configuration Quarkus"
+      k8s_info:
+        api_version: v1
+        kind: ConfigMap
+        namespace: "{{ quarkus_prep_config.namespace }}"
+        name: "{{ quarkus_prep_config.app_name }}-config"
+      register: quarkus_config_validation
+
+    - name: "Génération du manifeste de validation des ressources"
+      template:
+        src: "resource-validation.yml.j2"
+        dest: "{{ quarkus_working_dir }}/resource-validation.yml"
+        mode: '0640'
+      vars:
+        validation_results:
+          serviceaccount: "{{ quarkus_serviceaccount_result | default({}) }}"
+          configmap: "{{ quarkus_configmap_result }}"
+          secrets: "{{ quarkus_secrets_check }}"
+
+  rescue:
+    - name: "❌ Échec de préparation de la configuration"
+      debug:
+        msg: "Erreur lors de la création des ressources de configuration pour {{ quarkus_prep_config.app_name }}"
+
+    - name: "Diagnostic des erreurs de configuration"
+      debug:
+        var: quarkus_configmap_result
+      when: quarkus_configmap_result is failed
+
+  tags:
+    - quarkus
+    - configuration
+    - configmap
+
+- name: "📊 Collecte des informations de préparation"
+  block:
+    - name: "Collecte des statistiques de préparation"
+      set_fact:
+        quarkus_preparation_summary:
+          status: "completed"
+          timestamp: "{{ ansible_date_time.iso8601 }}"
+          environment: "{{ quarkus_prep_config.environment }}"
+          namespace: "{{ quarkus_prep_config.namespace }}"
+          app_name: "{{ quarkus_prep_config.app_name }}"
+          working_directory: "{{ quarkus_working_dir }}"
+          generated_manifests: "{{ quarkus_templates_generated.results | selectattr('changed') | map(attribute='dest') | list }}"
+          resources_created:
+            serviceaccount: "{{ quarkus_serviceaccount_result is succeeded }}"
+            configmap: "{{ quarkus_configmap_result is succeeded }}"
+            secrets: "{{ quarkus_secrets_check.resources | length > 0 or quarkus_default_secrets_created is succeeded }}"
+          next_steps:
+            - "Exécuter les tâches de déploiement"
+            - "Vérifier les logs d'application"
+            - "Configurer le monitoring"
+        cacheable: false
+
+    - name: "Affichage du résumé de préparation"
+      debug:
+        msg: |
+          ✅ Préparation Quarkus terminée avec succès!
+          
+          📋 Résumé:
+          - Application: {{ quarkus_preparation_summary.app_name }}
+          - Namespace: {{ quarkus_preparation_summary.namespace }}
+          - Environnement: {{ quarkus_preparation_summary.environment }}
+          - Répertoire de travail: {{ quarkus_preparation_summary.working_directory }}
+          
+          📄 Manifestes générés: {{ quarkus_preparation_summary.generated_manifests | length }}
+          {{ quarkus_preparation_summary.generated_manifests | join(', ') }}
+          
+          🔧 Ressources créées:
+          - ServiceAccount: {{ '✅' if quarkus_preparation_summary.resources_created.serviceaccount else '❌' }}
+          - ConfigMap: {{ '✅' if quarkus_preparation_summary.resources_created.configmap else '❌' }}
+          - Secrets: {{ '✅' if quarkus_preparation_summary.resources_created.secrets else '❌' }}
+
+  rescue:
+    - name: "⚠️ Préparation complétée avec des avertissements"
+      debug:
+        msg: "La préparation s'est terminée mais avec des avertissements. Vérifiez les logs pour plus de détails."
+
+  always:
+    - name: "💾 Sauvegarde des logs de préparation"
+      copy:
+        content: "{{ quarkus_preparation_summary | to_nice_yaml }}"
+        dest: "{{ quarkus_working_dir }}/logs/preparation-summary-{{ ansible_date_time.epoch }}.yml"
+        mode: '0640'
+      when: quarkus_preparation_summary is defined
+
+  tags:
+    - quarkus
+    - summary
+    - reporting
+
+- name: "🧹 Nettoyage et finalisation"
+  block:
+    - name: "Conservation des manifestes importants"
+      synchronize:
+        src: "{{ quarkus_working_dir }}/{{ quarkus_temp_config.manifests_dir }}/"
+        dest: "{{ lions_storage_base_path | default('/opt/lions/storage') }}/manifests/quarkus/{{ quarkus_prep_config.environment }}/"
+        mode: push
+        archive: true
+        delete: false
+      delegate_to: localhost
+      when: not lions_dry_run | default(false) | bool
+
+    - name: "Mise à jour du registre des déploiements"
+      lineinfile:
+        path: "{{ lions_storage_base_path | default('/opt/lions/storage') }}/deployment-registry.log"
+        line: "{{ ansible_date_time.iso8601 }} PREPARE {{ quarkus_prep_config.app_name }} {{ quarkus_prep_config.namespace }} {{ quarkus_prep_config.environment }} SUCCESS"
+        create: true
+        mode: '0640'
+      when: not lions_dry_run | default(false) | bool
+
+  rescue:
+    - name: "⚠️ Avertissement de nettoyage"
+      debug:
+        msg: "Impossible de finaliser complètement le nettoyage, mais la préparation principale a réussi."
+
+  tags:
+    - quarkus
+    - cleanup
+    - finalization

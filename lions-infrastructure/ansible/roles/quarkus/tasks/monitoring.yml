@@ -1,225 +1,508 @@
 ---
-# Titre: Configuration du monitoring pour Quarkus
-# Description: Configure le monitoring pour une application Quarkus
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - QUARKUS MONITORING CONFIGURATION
+# =========================================================================
+# Description: Configuration avancée du monitoring pour les applications Quarkus
+# Version: 5.0.0
+# Date: 2025-05-28
+# Maintainer: DevOps Team LIONS
+# Documentation: https://docs.lions.dev/roles/quarkus/monitoring
+# =========================================================================
 
-- name: Vérification de l'existence de Prometheus Operator
-  k8s_info:
-    api_version: apiextensions.k8s.io/v1
-    kind: CustomResourceDefinition
-    name: servicemonitors.monitoring.coreos.com
-  register: prometheus_operator_check
-  ignore_errors: yes
+# =========================================================================
+# VALIDATION DES PRÉREQUIS MONITORING
+# =========================================================================
+- name: "Monitoring | Validation de la configuration Prometheus"
+  block:
+    - name: "Monitoring | Vérification de l'activation du monitoring"
+      assert:
+        that:
+          - lions_monitoring_enabled | default(false) | bool
+        fail_msg: "Le monitoring LIONS n'est pas activé (LIONS_MONITORING_ENABLED=false)"
+        success_msg: "✅ Monitoring LIONS activé"
 
-- name: Création du ServiceMonitor pour Prometheus
-  k8s:
-    state: present
-    src: "{{ temp_dir.path }}/servicemonitor.yml"
-  register: servicemonitor_result
-  when: 
-    - prometheus_operator_check is succeeded
-    - prometheus_operator_check.resources | length > 0
-    - quarkus_prometheus_scrape | bool
+    - name: "Monitoring | Vérification de l'activation du monitoring Quarkus"
+      assert:
+        that:
+          - quarkus_monitoring_enabled | default(true) | bool
+        fail_msg: "Le monitoring Quarkus n'est pas activé"
+        success_msg: "✅ Monitoring Quarkus activé"
 
-- name: Avertissement si Prometheus Operator n'est pas installé
-  debug:
-    msg: "AVERTISSEMENT: Prometheus Operator n'est pas installé. Le monitoring automatique ne sera pas configuré."
-  when: prometheus_operator_check is failed or prometheus_operator_check.resources | length == 0
+    - name: "Monitoring | Vérification de la disponibilité de Prometheus Operator"
+      kubernetes.core.k8s_info:
+        api_version: apiextensions.k8s.io/v1
+        kind: CustomResourceDefinition
+        name: servicemonitors.monitoring.coreos.com
+        wait: true
+        wait_timeout: "{{ lions_timeout_default | default(300) }}"
+      register: prometheus_operator_crd
+      failed_when: false
 
-- name: Configuration des règles d'alerte pour l'application
-  k8s:
-    state: present
-    definition:
-      apiVersion: monitoring.coreos.com/v1
-      kind: PrometheusRule
-      metadata:
-        name: "{{ app_name }}-alerts"
-        namespace: "{{ app_namespace }}"
-        labels:
-          app: "{{ app_name }}"
-          prometheus: k8s
-          role: alert-rules
-      spec:
-        groups:
-          - name: "{{ app_name }}.rules"
-            rules:
-              - alert: InstanceDown
-                expr: up{job="{{ app_name }}"} == 0
-                for: 5m
-                labels:
-                  severity: critical
-                annotations:
-                  summary: "Instance {{ app_name }} down"
-                  description: "{{ app_name }} instance has been down for more than 5 minutes."
-              - alert: HighMemoryUsage
-                expr: container_memory_usage_bytes{pod=~"{{ app_name }}.*"} / container_spec_memory_limit_bytes{pod=~"{{ app_name }}.*"} > 0.85
-                for: 10m
-                labels:
-                  severity: warning
-                annotations:
-                  summary: "High memory usage for {{ app_name }}"
-                  description: "{{ app_name }} is using more than 85% of its memory limit for more than 10 minutes."
-              - alert: HighCPUUsage
-                expr: container_cpu_usage_seconds_total{pod=~"{{ app_name }}.*"} / container_spec_cpu_quota{pod=~"{{ app_name }}.*"} > 0.85
-                for: 10m
-                labels:
-                  severity: warning
-                annotations:
-                  summary: "High CPU usage for {{ app_name }}"
-                  description: "{{ app_name }} is using more than 85% of its CPU limit for more than 10 minutes."
-              - alert: HighLatency
-                expr: http_server_requests_seconds_max{service="{{ app_name }}"} > 1
-                for: 5m
-                labels:
-                  severity: warning
-                annotations:
-                  summary: "High latency for {{ app_name }}"
-                  description: "{{ app_name }} has high latency (>1s) for more than 5 minutes."
-  when: 
-    - prometheus_operator_check is succeeded
-    - prometheus_operator_check.resources | length > 0
-    - quarkus_prometheus_scrape | bool
+    - name: "Monitoring | Vérification de l'installation de Prometheus Operator"
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: prometheus-operator
+        namespace: "{{ lions_monitoring_namespace | default('monitoring') }}"
+      register: prometheus_operator_deployment
+      failed_when: false
 
-- name: Configuration de Grafana Dashboard
-  k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: ConfigMap
-      metadata:
+    - name: "Monitoring | Définition du statut de Prometheus Operator"
+      set_fact:
+        prometheus_operator_available: >-
+          {{
+            (prometheus_operator_crd.resources | default([]) | length > 0) and
+            (prometheus_operator_deployment.resources | default([]) | length > 0)
+          }}
+
+    - name: "Monitoring | Information sur le statut de Prometheus Operator"
+      debug:
+        msg: >-
+          {% if prometheus_operator_available %}
+          ✅ Prometheus Operator disponible - Configuration du monitoring avancé
+          {% else %}
+          ⚠️  Prometheus Operator non disponible - Monitoring de base uniquement
+          {% endif %}
+
+  tags:
+    - monitoring
+    - validation
+    - prometheus
+
+# =========================================================================
+# CONFIGURATION SERVICEMONITOR PROMETHEUS
+# =========================================================================
+- name: "Monitoring | Configuration ServiceMonitor Prometheus"
+  block:
+    - name: "Monitoring | Préparation du template ServiceMonitor"
+      ansible.builtin.template:
+        src: servicemonitor.yml.j2
+        dest: "{{ temp_dir.path }}/servicemonitor.yml"
+        mode: '0644'
+      vars:
+        servicemonitor_config:
+          name: "{{ quarkus_service_name | default(app_name) }}"
+          namespace: "{{ quarkus_namespace | default(app_namespace) }}"
+          app_name: "{{ app_name }}"
+          service_name: "{{ quarkus_service_name | default(app_name) }}"
+          metrics_port: "{{ quarkus_metrics_port | default('8080') }}"
+          metrics_path: "{{ quarkus_metrics_path | default('/q/metrics') }}"
+          scrape_interval: "{{ quarkus_scrape_interval | default('30s') }}"
+          scrape_timeout: "{{ quarkus_scrape_timeout | default('10s') }}"
+          labels:
+            app: "{{ app_name }}"
+            component: "{{ quarkus_component | default('backend') }}"
+            environment: "{{ lions_environment | default('development') }}"
+            version: "{{ quarkus_version | default('latest') }}"
+
+    - name: "Monitoring | Déploiement du ServiceMonitor"
+      kubernetes.core.k8s:
+        state: present
+        src: "{{ temp_dir.path }}/servicemonitor.yml"
+        wait: true
+        wait_timeout: "{{ lions_timeout_default | default(300) }}"
+      register: servicemonitor_result
+
+    - name: "Monitoring | Validation du déploiement ServiceMonitor"
+      kubernetes.core.k8s_info:
+        api_version: monitoring.coreos.com/v1
+        kind: ServiceMonitor
+        name: "{{ quarkus_service_name | default(app_name) }}"
+        namespace: "{{ quarkus_namespace | default(app_namespace) }}"
+        wait: true
+        wait_condition:
+          type: Ready
+          status: "True"
+        wait_timeout: "{{ lions_timeout_default | default(300) }}"
+      register: servicemonitor_validation
+
+    - name: "Monitoring | Confirmation ServiceMonitor"
+      debug:
+        msg: "✅ ServiceMonitor '{{ quarkus_service_name | default(app_name) }}' déployé avec succès"
+
+  when:
+    - prometheus_operator_available | bool
+    - quarkus_prometheus_scrape | default(true) | bool
+  tags:
+    - monitoring
+    - servicemonitor
+    - prometheus
+
+# =========================================================================
+# CONFIGURATION DES RÈGLES D'ALERTE PROMETHEUS
+# =========================================================================
+- name: "Monitoring | Configuration des règles d'alerte"
+  block:
+    - name: "Monitoring | Préparation des règles d'alerte personnalisées"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: monitoring.coreos.com/v1
+          kind: PrometheusRule
+          metadata:
+            name: "{{ app_name }}-alerts"
+            namespace: "{{ quarkus_namespace | default(app_namespace) }}"
+            labels:
+              app: "{{ app_name }}"
+              component: "{{ quarkus_component | default('backend') }}"
+              environment: "{{ lions_environment | default('development') }}"
+              prometheus: kube-prometheus
+              role: alert-rules
+              team: "{{ quarkus_team | default('platform') }}"
+          spec:
+            groups:
+              - name: "{{ app_name }}.availability"
+                interval: "{{ quarkus_alert_evaluation_interval | default('30s') }}"
+                rules:
+                  - alert: "{{ app_name | title }}InstanceDown"
+                    expr: 'up{job="{{ app_name }}", namespace="{{ quarkus_namespace | default(app_namespace) }}"} == 0'
+                    for: "{{ quarkus_alert_instance_down_duration | default('2m') }}"
+                    labels:
+                      severity: critical
+                      team: "{{ quarkus_team | default('platform') }}"
+                      component: "{{ quarkus_component | default('backend') }}"
+                      environment: "{{ lions_environment | default('development') }}"
+                    annotations:
+                      summary: "Instance {{ app_name }} indisponible"
+                      description: "L'instance {{ app_name }} dans le namespace {{ quarkus_namespace | default(app_namespace) }} est indisponible depuis plus de {{ quarkus_alert_instance_down_duration | default('2m') }}."
+                      runbook_url: "{{ quarkus_runbook_base_url | default('https://docs.lions.dev/runbooks') }}/{{ app_name }}/instance-down"
+                      dashboard_url: "{{ lions_grafana_base_url | default('https://grafana.' + lions_dns_full_domain) }}/d/{{ app_name }}-overview"
+
+                  - alert: "{{ app_name | title }}HighErrorRate"
+                    expr: 'rate(http_server_requests_total{job="{{ app_name }}", namespace="{{ quarkus_namespace | default(app_namespace) }}", status=~"5.."}[5m]) / rate(http_server_requests_total{job="{{ app_name }}", namespace="{{ quarkus_namespace | default(app_namespace) }}"}[5m]) > {{ quarkus_alert_error_rate_threshold | default(0.05) }}'
+                    for: "{{ quarkus_alert_error_rate_duration | default('5m') }}"
+                    labels:
+                      severity: warning
+                      team: "{{ quarkus_team | default('platform') }}"
+                      component: "{{ quarkus_component | default('backend') }}"
+                      environment: "{{ lions_environment | default('development') }}"
+                    annotations:
+                      summary: "Taux d'erreur élevé pour {{ app_name }}"
+                      description: "Le taux d'erreur 5xx pour {{ app_name }} dépasse {{ (quarkus_alert_error_rate_threshold | default(0.05) * 100) | round(1) }}% depuis plus de {{ quarkus_alert_error_rate_duration | default('5m') }}."
+                      runbook_url: "{{ quarkus_runbook_base_url | default('https://docs.lions.dev/runbooks') }}/{{ app_name }}/high-error-rate"
+
+              - name: "{{ app_name }}.performance"
+                interval: "{{ quarkus_alert_evaluation_interval | default('30s') }}"
+                rules:
+                  - alert: "{{ app_name | title }}HighLatency"
+                    expr: 'histogram_quantile(0.95, rate(http_server_requests_seconds_bucket{job="{{ app_name }}", namespace="{{ quarkus_namespace | default(app_namespace) }}"}[5m])) > {{ quarkus_alert_latency_threshold | default(1.0) }}'
+                    for: "{{ quarkus_alert_latency_duration | default('5m') }}"
+                    labels:
+                      severity: warning
+                      team: "{{ quarkus_team | default('platform') }}"
+                      component: "{{ quarkus_component | default('backend') }}"
+                      environment: "{{ lions_environment | default('development') }}"
+                    annotations:
+                      summary: "Latence élevée pour {{ app_name }}"
+                      description: "La latence P95 pour {{ app_name }} dépasse {{ quarkus_alert_latency_threshold | default(1.0) }}s depuis plus de {{ quarkus_alert_latency_duration | default('5m') }}."
+                      runbook_url: "{{ quarkus_runbook_base_url | default('https://docs.lions.dev/runbooks') }}/{{ app_name }}/high-latency"
+
+              - name: "{{ app_name }}.resources"
+                interval: "{{ quarkus_alert_evaluation_interval | default('30s') }}"
+                rules:
+                  - alert: "{{ app_name | title }}HighMemoryUsage"
+                    expr: 'container_memory_working_set_bytes{pod=~"{{ app_name }}-.*", namespace="{{ quarkus_namespace | default(app_namespace) }}"} / container_spec_memory_limit_bytes{pod=~"{{ app_name }}-.*", namespace="{{ quarkus_namespace | default(app_namespace) }}"} > {{ quarkus_alert_memory_threshold | default(0.85) }}'
+                    for: "{{ quarkus_alert_memory_duration | default('10m') }}"
+                    labels:
+                      severity: warning
+                      team: "{{ quarkus_team | default('platform') }}"
+                      component: "{{ quarkus_component | default('backend') }}"
+                      environment: "{{ lions_environment | default('development') }}"
+                    annotations:
+                      summary: "Utilisation mémoire élevée pour {{ app_name }}"
+                      description: "L'utilisation mémoire pour {{ app_name }} dépasse {{ (quarkus_alert_memory_threshold | default(0.85) * 100) | round(1) }}% depuis plus de {{ quarkus_alert_memory_duration | default('10m') }}."
+                      runbook_url: "{{ quarkus_runbook_base_url | default('https://docs.lions.dev/runbooks') }}/{{ app_name }}/high-memory"
+
+                  - alert: "{{ app_name | title }}HighCPUUsage"
+                    expr: 'rate(container_cpu_usage_seconds_total{pod=~"{{ app_name }}-.*", namespace="{{ quarkus_namespace | default(app_namespace) }}"}[5m]) > {{ quarkus_alert_cpu_threshold | default(0.85) }}'
+                    for: "{{ quarkus_alert_cpu_duration | default('10m') }}"
+                    labels:
+                      severity: warning
+                      team: "{{ quarkus_team | default('platform') }}"
+                      component: "{{ quarkus_component | default('backend') }}"
+                      environment: "{{ lions_environment | default('development') }}"
+                    annotations:
+                      summary: "Utilisation CPU élevée pour {{ app_name }}"
+                      description: "L'utilisation CPU pour {{ app_name }} dépasse {{ (quarkus_alert_cpu_threshold | default(0.85) * 100) | round(1) }}% depuis plus de {{ quarkus_alert_cpu_duration | default('10m') }}."
+                      runbook_url: "{{ quarkus_runbook_base_url | default('https://docs.lions.dev/runbooks') }}/{{ app_name }}/high-cpu"
+
+              - name: "{{ app_name }}.business"
+                interval: "{{ quarkus_alert_evaluation_interval | default('30s') }}"
+                rules: "{{ quarkus_custom_business_alerts | default([]) }}"
+
+        wait: true
+        wait_timeout: "{{ lions_timeout_default | default(300) }}"
+      register: prometheus_rules_result
+
+    - name: "Monitoring | Validation des règles d'alerte"
+      debug:
+        msg: "✅ Règles d'alerte Prometheus configurées pour {{ app_name }}"
+
+  when:
+    - prometheus_operator_available | bool
+    - quarkus_prometheus_alerts | default(true) | bool
+  tags:
+    - monitoring
+    - alerts
+    - prometheus
+
+# =========================================================================
+# CONFIGURATION DASHBOARD GRAFANA
+# =========================================================================
+- name: "Monitoring | Configuration Dashboard Grafana"
+  block:
+    - name: "Monitoring | Vérification de l'existence du dashboard personnalisé"
+      stat:
+        path: "{{ role_path }}/templates/grafana-dashboard.json.j2"
+      register: custom_dashboard_template
+
+    - name: "Monitoring | Génération du dashboard Grafana personnalisé"
+      ansible.builtin.template:
+        src: "{{ 'grafana-dashboard.json.j2' if custom_dashboard_template.stat.exists else 'default-quarkus-dashboard.json.j2' }}"
+        dest: "{{ temp_dir.path }}/grafana-dashboard.json"
+        mode: '0644'
+      vars:
+        dashboard_config:
+          uid: "{{ app_name }}-overview"
+          title: "{{ app_name | title }} - Overview"
+          tags:
+            - "{{ app_name }}"
+            - quarkus
+            - "{{ lions_environment | default('development') }}"
+            - "{{ quarkus_component | default('backend') }}"
+          time_from: "{{ quarkus_dashboard_time_range | default('now-6h') }}"
+          refresh: "{{ quarkus_dashboard_refresh | default('30s') }}"
+          panels: "{{ quarkus_custom_dashboard_panels | default([]) }}"
+
+    - name: "Monitoring | Déploiement du dashboard Grafana"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: "{{ app_name }}-dashboard"
+            namespace: "{{ lions_monitoring_namespace | default('monitoring') }}"
+            labels:
+              grafana_dashboard: "1"
+              app: "{{ app_name }}"
+              component: "{{ quarkus_component | default('backend') }}"
+              environment: "{{ lions_environment | default('development') }}"
+              managed-by: "{{ lions_config_maintainer | default('lions-infrastructure') }}"
+          data:
+            "{{ app_name }}-dashboard.json": "{{ lookup('file', temp_dir.path + '/grafana-dashboard.json') }}"
+        wait: true
+        wait_timeout: "{{ lions_timeout_default | default(300) }}"
+      register: grafana_dashboard_result
+
+    - name: "Monitoring | Validation du dashboard Grafana"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: ConfigMap
         name: "{{ app_name }}-dashboard"
-        namespace: monitoring
-        labels:
-          grafana_dashboard: "1"
-      data:
-        "{{ app_name }}-dashboard.json": |
-          {
-            "annotations": {
-              "list": [
-                {
-                  "builtIn": 1,
-                  "datasource": "-- Grafana --",
-                  "enable": true,
-                  "hide": true,
-                  "iconColor": "rgba(0, 211, 255, 1)",
-                  "name": "Annotations & Alerts",
-                  "type": "dashboard"
-                }
-              ]
-            },
-            "editable": true,
-            "gnetId": null,
-            "graphTooltip": 0,
-            "id": null,
-            "links": [],
-            "panels": [
-              {
-                "aliasColors": {},
-                "bars": false,
-                "dashLength": 10,
-                "dashes": false,
-                "datasource": "Prometheus",
-                "fill": 1,
-                "fillGradient": 0,
-                "gridPos": {
-                  "h": 8,
-                  "w": 12,
-                  "x": 0,
-                  "y": 0
-                },
-                "hiddenSeries": false,
-                "id": 2,
-                "legend": {
-                  "avg": false,
-                  "current": false,
-                  "max": false,
-                  "min": false,
-                  "show": true,
-                  "total": false,
-                  "values": false
-                },
-                "lines": true,
-                "linewidth": 1,
-                "nullPointMode": "null",
-                "options": {
-                  "dataLinks": []
-                },
-                "percentage": false,
-                "pointradius": 2,
-                "points": false,
-                "renderer": "flot",
-                "seriesOverrides": [],
-                "spaceLength": 10,
-                "stack": false,
-                "steppedLine": false,
-                "targets": [
-                  {
-                    "expr": "container_memory_usage_bytes{pod=~\"{{ app_name }}.*\"}",
-                    "refId": "A"
-                  }
-                ],
-                "thresholds": [],
-                "timeFrom": null,
-                "timeRegions": [],
-                "timeShift": null,
-                "title": "Memory Usage",
-                "tooltip": {
-                  "shared": true,
-                  "sort": 0,
-                  "value_type": "individual"
-                },
-                "type": "graph",
-                "xaxis": {
-                  "buckets": null,
-                  "mode": "time",
-                  "name": null,
-                  "show": true,
-                  "values": []
-                },
-                "yaxes": [
-                  {
-                    "format": "bytes",
-                    "label": null,
-                    "logBase": 1,
-                    "max": null,
-                    "min": null,
-                    "show": true
-                  },
-                  {
-                    "format": "short",
-                    "label": null,
-                    "logBase": 1,
-                    "max": null,
-                    "min": null,
-                    "show": true
-                  }
-                ],
-                "yaxis": {
-                  "align": false,
-                  "alignLevel": null
-                }
-              }
-            ],
-            "schemaVersion": 22,
-            "style": "dark",
-            "tags": [],
-            "templating": {
-              "list": []
-            },
-            "time": {
-              "from": "now-6h",
-              "to": "now"
-            },
-            "timepicker": {},
-            "timezone": "",
-            "title": "{{ app_name }} Dashboard",
-            "uid": "{{ app_name }}-dashboard",
-            "version": 1
-          }
-  when: 
-    - prometheus_operator_check is succeeded
-    - prometheus_operator_check.resources | length > 0
-    - quarkus_prometheus_scrape | bool
-  ignore_errors: yes
+        namespace: "{{ lions_monitoring_namespace | default('monitoring') }}"
+      register: dashboard_validation
+
+    - name: "Monitoring | Information dashboard Grafana"
+      debug:
+        msg: >-
+          ✅ Dashboard Grafana configuré pour {{ app_name }}
+          📊 URL: {{ lions_grafana_base_url | default('https://grafana.' + lions_dns_full_domain) }}/d/{{ app_name }}-overview
+
+  when:
+    - lions_grafana_enabled | default(true) | bool
+    - quarkus_grafana_dashboard | default(true) | bool
+  tags:
+    - monitoring
+    - grafana
+    - dashboard
+
+# =========================================================================
+# CONFIGURATION MÉTRIQUES PERSONNALISÉES
+# =========================================================================
+- name: "Monitoring | Configuration métriques personnalisées"
+  block:
+    - name: "Monitoring | Configuration PodMonitor pour métriques JVM"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: monitoring.coreos.com/v1
+          kind: PodMonitor
+          metadata:
+            name: "{{ app_name }}-jvm"
+            namespace: "{{ quarkus_namespace | default(app_namespace) }}"
+            labels:
+              app: "{{ app_name }}"
+              component: "{{ quarkus_component | default('backend') }}"
+              environment: "{{ lions_environment | default('development') }}"
+          spec:
+            selector:
+              matchLabels:
+                app: "{{ app_name }}"
+            podMetricsEndpoints:
+              - port: "{{ quarkus_metrics_port | default('http') }}"
+                path: "{{ quarkus_jvm_metrics_path | default('/q/metrics') }}"
+                interval: "{{ quarkus_jvm_scrape_interval | default('30s') }}"
+                scrapeTimeout: "{{ quarkus_jvm_scrape_timeout | default('10s') }}"
+        wait: true
+        wait_timeout: "{{ lions_timeout_default | default(300) }}"
+      when: quarkus_jvm_metrics_enabled | default(true) | bool
+
+    - name: "Monitoring | Configuration des métriques business"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: "{{ app_name }}-metrics-config"
+            namespace: "{{ quarkus_namespace | default(app_namespace) }}"
+            labels:
+              app: "{{ app_name }}"
+              component: "{{ quarkus_component | default('backend') }}"
+              environment: "{{ lions_environment | default('development') }}"
+          data:
+            metrics.properties: |
+              # Configuration des métriques personnalisées pour {{ app_name }}
+              {% for metric in quarkus_custom_metrics | default([]) %}
+              {{ metric.name }}={{ metric.value | default('') }}
+              {% endfor %}
+        wait: true
+        wait_timeout: "{{ lions_timeout_default | default(300) }}"
+      when: quarkus_custom_metrics | default([]) | length > 0
+
+  when:
+    - prometheus_operator_available | bool
+    - quarkus_custom_metrics_enabled | default(false) | bool
+  tags:
+    - monitoring
+    - metrics
+    - custom
+
+# =========================================================================
+# CONFIGURATION HEALTH CHECKS AVANCÉS
+# =========================================================================
+- name: "Monitoring | Configuration Health Checks avancés"
+  block:
+    - name: "Monitoring | Configuration PrometheusRule pour Health Checks"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: monitoring.coreos.com/v1
+          kind: PrometheusRule
+          metadata:
+            name: "{{ app_name }}-health-checks"
+            namespace: "{{ quarkus_namespace | default(app_namespace) }}"
+            labels:
+              app: "{{ app_name }}"
+              component: health-checks
+              environment: "{{ lions_environment | default('development') }}"
+          spec:
+            groups:
+              - name: "{{ app_name }}.health"
+                interval: "{{ quarkus_health_check_interval | default('15s') }}"
+                rules:
+                  - alert: "{{ app_name | title }}HealthCheckFailed"
+                    expr: 'up{job="{{ app_name }}-health", namespace="{{ quarkus_namespace | default(app_namespace) }}"} == 0'
+                    for: "{{ quarkus_health_check_duration | default('1m') }}"
+                    labels:
+                      severity: critical
+                      team: "{{ quarkus_team | default('platform') }}"
+                      component: health-check
+                      environment: "{{ lions_environment | default('development') }}"
+                    annotations:
+                      summary: "Health Check échoué pour {{ app_name }}"
+                      description: "Le health check pour {{ app_name }} échoue depuis plus de {{ quarkus_health_check_duration | default('1m') }}."
+                      runbook_url: "{{ quarkus_runbook_base_url | default('https://docs.lions.dev/runbooks') }}/{{ app_name }}/health-check-failed"
+
+                  - alert: "{{ app_name | title }}ReadinessCheckFailed"
+                    expr: 'quarkus_ready{job="{{ app_name }}", namespace="{{ quarkus_namespace | default(app_namespace) }}"} == 0'
+                    for: "{{ quarkus_readiness_check_duration | default('2m') }}"
+                    labels:
+                      severity: warning
+                      team: "{{ quarkus_team | default('platform') }}"
+                      component: readiness-check
+                      environment: "{{ lions_environment | default('development') }}"
+                    annotations:
+                      summary: "Readiness Check échoué pour {{ app_name }}"
+                      description: "Le readiness check pour {{ app_name }} échoue depuis plus de {{ quarkus_readiness_check_duration | default('2m') }}."
+                      runbook_url: "{{ quarkus_runbook_base_url | default('https://docs.lions.dev/runbooks') }}/{{ app_name }}/readiness-check-failed"
+
+        wait: true
+        wait_timeout: "{{ lions_timeout_default | default(300) }}"
+
+  when:
+    - prometheus_operator_available | bool
+    - quarkus_health_checks_monitoring | default(true) | bool
+  tags:
+    - monitoring
+    - health-checks
+
+# =========================================================================
+# VALIDATION FINALE ET NETTOYAGE
+# =========================================================================
+- name: "Monitoring | Validation finale de la configuration"
+  block:
+    - name: "Monitoring | Vérification de la collecte des métriques"
+      uri:
+        url: "{{ lions_prometheus_url | default('http://prometheus.' + lions_monitoring_namespace | default('monitoring') + '.svc.cluster.local:9090') }}/api/v1/query"
+        method: GET
+        body_format: form-urlencoded
+        body:
+          query: 'up{job="{{ app_name }}", namespace="{{ quarkus_namespace | default(app_namespace) }}"}'
+        timeout: "{{ lions_timeout_default | default(300) }}"
+      register: metrics_validation
+      retries: 3
+      delay: 30
+      until: metrics_validation.json.data.result | length > 0
+      failed_when: false
+
+    - name: "Monitoring | Résumé de la configuration monitoring"
+      debug:
+        msg: |
+          🔍 Configuration Monitoring Quarkus Terminée
+          ==========================================
+          
+          📊 Application: {{ app_name }}
+          🏗️  Namespace: {{ quarkus_namespace | default(app_namespace) }}
+          🌍 Environnement: {{ lions_environment | default('development') }}
+          
+          ✅ Composants configurés:
+          {% if prometheus_operator_available %}
+          - ServiceMonitor Prometheus: ✅
+          - Règles d'alerte: ✅
+          {% if quarkus_custom_metrics_enabled | default(false) %}
+          - Métriques personnalisées: ✅
+          {% endif %}
+          {% if quarkus_health_checks_monitoring | default(true) %}
+          - Health Checks monitoring: ✅
+          {% endif %}
+          {% else %}
+          - Prometheus Operator: ❌ (non disponible)
+          {% endif %}
+          {% if lions_grafana_enabled | default(true) and quarkus_grafana_dashboard | default(true) %}
+          - Dashboard Grafana: ✅
+          {% endif %}
+          
+          🔗 Liens utiles:
+          {% if lions_grafana_enabled | default(true) %}
+          - Dashboard: {{ lions_grafana_base_url | default('https://grafana.' + lions_dns_full_domain) }}/d/{{ app_name }}-overview
+          {% endif %}
+          - Métriques: {{ app_name }}.{{ quarkus_namespace | default(app_namespace) }}.svc.cluster.local:{{ quarkus_metrics_port | default('8080') }}{{ quarkus_metrics_path | default('/q/metrics') }}
+          
+          ⚠️  État validation métriques: {{ 'Collecte active' if metrics_validation.json.data.result | default([]) | length > 0 else 'En attente de collecte' }}
+
+  always:
+    - name: "Monitoring | Nettoyage fichiers temporaires"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ temp_dir.path }}/servicemonitor.yml"
+        - "{{ temp_dir.path }}/grafana-dashboard.json"
+      ignore_errors: yes
+
+  tags:
+    - monitoring
+    - validation
+    - cleanup

@@ -1,39 +1,348 @@
 ---
-# Titre: Template d'ingress Kubernetes pour Ollama
-# Description: Définit l'ingress Kubernetes pour Ollama
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-14
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - OLLAMA INGRESS TEMPLATE
+# =========================================================================
+# Description: Template d'ingress Kubernetes pour le service Ollama
+# Maintainer: DevOps Team LIONS
+# Version: 5.0.0
+# Date: {{ ansible_date_time.iso8601 }}
+# Environment: {{ lions_environment }}
+# =========================================================================
 
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: "{{ app_name }}"
-  namespace: "{{ app_namespace }}"
+  name: "{{ lions_ollama_service_name }}-ingress"
+  namespace: "{{ lions_ollama_namespace }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "ollama"
+    # ========================================
+    # Labels standard LIONS
+    # ========================================
+    app.kubernetes.io/name: "{{ lions_ollama_service_name }}"
+    app.kubernetes.io/instance: "{{ lions_ollama_service_name }}-{{ lions_environment }}"
+    app.kubernetes.io/version: "{{ lions_ollama_version }}"
+    app.kubernetes.io/component: "ai-inference"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+
+    # ========================================
+    # Labels LIONS spécifiques
+    # ========================================
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/service-type: "ai-service"
+    lions.dev/technology: "ollama"
+    lions.dev/tier: "application"
+    lions.dev/monitoring: "{{ 'enabled' if lions_monitoring_enabled else 'disabled' }}"
+    lions.dev/backup: "{{ 'enabled' if lions_backup_enabled else 'disabled' }}"
+    lions.dev/config-version: "{{ lions_config_version }}"
+
   annotations:
-    description: "Ingress pour Ollama {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
-    {% for key, value in ollama_ingress_annotations.items() %}
-    {{ key }}: "{{ value }}"
-    {% endfor %}
+    # ========================================
+    # Annotations de documentation
+    # ========================================
+    description: "Ingress pour Ollama AI inference service - Environnement {{ lions_environment }}"
+    lions.dev/created-by: "ansible-playbook"
+    lions.dev/last-updated: "{{ ansible_date_time.iso8601 }}"
+    lions.dev/deployment-mode: "{{ lions_deployment_mode }}"
+
+    # ========================================
+    # Configuration Traefik de base
+    # ========================================
+    traefik.ingress.kubernetes.io/router.entrypoints: "web{% if lions_security_tls_enabled %},websecure{% endif %}"
+    {% if lions_security_tls_enabled %}
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.tls.certresolver: "{{ lions_security_tls_provider }}"
+    {% endif %}
+
+    # ========================================
+    # Configuration de sécurité avancée
+    # ========================================
+    {% if lions_environment == 'production' %}
+    # Configuration production - Sécurité renforcée
+    traefik.ingress.kubernetes.io/router.middlewares: >-
+      {{ lions_ollama_namespace }}-auth@kubernetescrd,
+      {{ lions_ollama_namespace }}-ratelimit@kubernetescrd,
+      {{ lions_ollama_namespace }}-security-headers@kubernetescrd,
+      {{ lions_ollama_namespace }}-ip-whitelist@kubernetescrd
+    {% elif lions_environment == 'staging' %}
+    # Configuration staging - Sécurité modérée
+    traefik.ingress.kubernetes.io/router.middlewares: >-
+      {{ lions_ollama_namespace }}-auth@kubernetescrd,
+      {{ lions_ollama_namespace }}-ratelimit@kubernetescrd,
+      {{ lions_ollama_namespace }}-security-headers@kubernetescrd
+    {% else %}
+    # Configuration development - Sécurité de base
+    traefik.ingress.kubernetes.io/router.middlewares: >-
+      {{ lions_ollama_namespace }}-security-headers@kubernetescrd
+    {% endif %}
+
+    # ========================================
+    # Configuration de performance
+    # ========================================
+    # Timeouts optimisés pour les requêtes AI longues
+    traefik.ingress.kubernetes.io/router.timeout: "{{ lions_timeout_default * 4 }}s"
+    traefik.ingress.kubernetes.io/router.priority: "100"
+
+    # Configuration des headers pour les API AI
+    traefik.ingress.kubernetes.io/router.headers.requestheaders.X-Real-IP: "%a"
+    traefik.ingress.kubernetes.io/router.headers.requestheaders.X-Forwarded-Proto: "{{ 'https' if lions_security_tls_enabled else 'http' }}"
+    traefik.ingress.kubernetes.io/router.headers.requestheaders.X-Service-Type: "ai-inference"
+
+    # ========================================
+    # Configuration de mise en cache pour les modèles
+    # ========================================
+    {% if lions_environment == 'production' %}
+    traefik.ingress.kubernetes.io/router.headers.customresponseheaders.Cache-Control: "public, max-age=3600"
+    traefik.ingress.kubernetes.io/router.headers.customresponseheaders.X-Content-Type-Options: "nosniff"
+    {% endif %}
+
+    # ========================================
+    # Configuration de load balancing
+    # ========================================
+    traefik.ingress.kubernetes.io/service.loadbalancer.method: "round_robin"
+    traefik.ingress.kubernetes.io/service.loadbalancer.healthcheck.path: "/api/health"
+    traefik.ingress.kubernetes.io/service.loadbalancer.healthcheck.interval: "30s"
+    traefik.ingress.kubernetes.io/service.loadbalancer.healthcheck.timeout: "10s"
+
+    # ========================================
+    # Configuration spécifique Ollama
+    # ========================================
+    # Support des requêtes de streaming pour les réponses AI
+    traefik.ingress.kubernetes.io/router.headers.customrequestheaders.X-Stream-Support: "true"
+    traefik.ingress.kubernetes.io/router.headers.customrequestheaders.Accept-Encoding: "gzip, deflate"
+
+    # Configuration pour les uploads de modèles (si activé)
+    {% if lions_environment != 'production' %}
+    traefik.ingress.kubernetes.io/router.headers.customrequestheaders.X-Upload-Limit: "10GB"
+    {% endif %}
+
+    # ========================================
+    # Annotations de monitoring
+    # ========================================
+    {% if lions_monitoring_enabled %}
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9090"
+    prometheus.io/path: "/metrics"
+    {% endif %}
+
 spec:
-  ingressClassName: traefik
+  # ========================================
+  # Configuration de l'ingress class
+  # ========================================
+  ingressClassName: "traefik"
+
+  # ========================================
+  # Configuration TLS
+  # ========================================
+  {% if lions_security_tls_enabled %}
   tls:
     - hosts:
-        - "{{ app_domain }}"
-      secretName: "{{ app_name }}-tls"
+        - "{{ lions_ollama_service_name }}.{{ lions_dns_full_domain }}"
+        {% if lions_dns_wildcard_enabled %}
+        - "*.{{ lions_ollama_service_name }}.{{ lions_dns_full_domain }}"
+        {% endif %}
+      secretName: "{{ lions_ollama_service_name }}-tls-secret"
+    {% if lions_environment == 'production' %}
+    # Certificat wildcard pour la production
+    - hosts:
+        - "ai.{{ lions_dns_domain_base }}"
+        - "ollama.{{ lions_dns_domain_base }}"
+      secretName: "{{ lions_ollama_service_name }}-wildcard-tls"
+    {% endif %}
+  {% endif %}
+
+  # ========================================
+  # Règles de routage
+  # ========================================
   rules:
-    - host: "{{ app_domain }}"
+    # ========================================
+    # Domaine principal du service
+    # ========================================
+    - host: "{{ lions_ollama_service_name }}.{{ lions_dns_full_domain }}"
       http:
         paths:
-          - path: /
+          # API principale d'Ollama
+          - path: "/api"
             pathType: Prefix
             backend:
               service:
-                name: "{{ app_name }}"
+                name: "{{ lions_ollama_service_name }}-service"
                 port:
-                  name: http
+                  number: {{ lions_ollama_port }}
+
+          # Interface web d'administration (si disponible)
+          - path: "/admin"
+            pathType: Prefix
+            backend:
+              service:
+                name: "{{ lions_ollama_service_name }}-service"
+                port:
+                  number: {{ lions_ollama_port }}
+
+          # Health check endpoint
+          - path: "/health"
+            pathType: Exact
+            backend:
+              service:
+                name: "{{ lions_ollama_service_name }}-service"
+                port:
+                  number: {{ lions_ollama_port }}
+
+          # Metrics endpoint (si monitoring activé)
+          {% if lions_monitoring_enabled %}
+          - path: "/metrics"
+            pathType: Exact
+            backend:
+              service:
+                name: "{{ lions_ollama_service_name }}-service"
+                port:
+                  number: 9090
+          {% endif %}
+
+          # Root path - redirection vers l'API
+          - path: "/"
+            pathType: Prefix
+            backend:
+              service:
+                name: "{{ lions_ollama_service_name }}-service"
+                port:
+                  number: {{ lions_ollama_port }}
+
+    {% if lions_environment == 'production' %}
+    # ========================================
+    # Domaines alternatifs pour la production
+    # ========================================
+    - host: "ai.{{ lions_dns_domain_base }}"
+      http:
+        paths:
+          - path: "/"
+            pathType: Prefix
+            backend:
+              service:
+                name: "{{ lions_ollama_service_name }}-service"
+                port:
+                  number: {{ lions_ollama_port }}
+
+    - host: "ollama.{{ lions_dns_domain_base }}"
+      http:
+        paths:
+          - path: "/"
+            pathType: Prefix
+            backend:
+              service:
+                name: "{{ lions_ollama_service_name }}-service"
+                port:
+                  number: {{ lions_ollama_port }}
+    {% endif %}
+
+    {% if lions_dns_wildcard_enabled and lions_environment != 'production' %}
+    # ========================================
+    # Support wildcard pour dev/staging
+    # ========================================
+    - host: "*.{{ lions_ollama_service_name }}.{{ lions_dns_full_domain }}"
+      http:
+        paths:
+          - path: "/"
+            pathType: Prefix
+            backend:
+              service:
+                name: "{{ lions_ollama_service_name }}-service"
+                port:
+                  number: {{ lions_ollama_port }}
+    {% endif %}
+
+---
+# =========================================================================
+# MIDDLEWARE DE SÉCURITÉ POUR OLLAMA
+# =========================================================================
+{% if lions_security_network_policies %}
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: "{{ lions_ollama_service_name }}-security-headers"
+  namespace: "{{ lions_ollama_namespace }}"
+  labels:
+    app.kubernetes.io/name: "{{ lions_ollama_service_name }}"
+    app.kubernetes.io/component: "security-middleware"
+    lions.dev/environment: "{{ lions_environment }}"
+spec:
+  headers:
+    customRequestHeaders:
+      X-Forwarded-Proto: "{{ 'https' if lions_security_tls_enabled else 'http' }}"
+      X-Real-IP: "%a"
+      X-Service-Name: "{{ lions_ollama_service_name }}"
+      X-Environment: "{{ lions_environment }}"
+    customResponseHeaders:
+      X-Frame-Options: "DENY"
+      X-Content-Type-Options: "nosniff"
+      X-XSS-Protection: "1; mode=block"
+      Referrer-Policy: "strict-origin-when-cross-origin"
+      {% if lions_security_tls_enabled %}
+      Strict-Transport-Security: "max-age=31536000; includeSubDomains; preload"
+      {% endif %}
+      X-Service-Version: "{{ lions_ollama_version }}"
+      X-Lions-Environment: "{{ lions_environment }}"
+
+---
+# =========================================================================
+# MIDDLEWARE DE RATE LIMITING
+# =========================================================================
+{% if lions_environment in ['staging', 'production'] %}
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: "{{ lions_ollama_service_name }}-ratelimit"
+  namespace: "{{ lions_ollama_namespace }}"
+  labels:
+    app.kubernetes.io/name: "{{ lions_ollama_service_name }}"
+    app.kubernetes.io/component: "ratelimit-middleware"
+    lions.dev/environment: "{{ lions_environment }}"
+spec:
+  rateLimit:
+    {% if lions_environment == 'production' %}
+    # Limites strictes pour la production
+    average: 100
+    burst: 200
+    period: 1m
+    {% else %}
+    # Limites plus permissives pour le staging
+    average: 200
+    burst: 400
+    period: 1m
+    {% endif %}
+    sourceCriterion:
+      ipStrategy:
+        depth: 1
+        excludedIPs:
+          - "127.0.0.1/32"
+          - "10.0.0.0/8"
+          - "172.16.0.0/12"
+          - "192.168.0.0/16"
+{% endif %}
+
+---
+# =========================================================================
+# MIDDLEWARE D'AUTHENTIFICATION (PRODUCTION)
+# =========================================================================
+{% if lions_environment == 'production' and lions_keycloak_enabled %}
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: "{{ lions_ollama_service_name }}-auth"
+  namespace: "{{ lions_ollama_namespace }}"
+  labels:
+    app.kubernetes.io/name: "{{ lions_ollama_service_name }}"
+    app.kubernetes.io/component: "auth-middleware"
+    lions.dev/environment: "{{ lions_environment }}"
+spec:
+  forwardAuth:
+    address: "http://{{ lions_keycloak_service_name }}-service.{{ lions_keycloak_namespace }}.svc.{{ lions_k8s_dns_domain }}:{{ lions_keycloak_port }}/auth/realms/{{ lions_keycloak_realm }}/protocol/openid_connect/userinfo"
+    authResponseHeaders:
+      - "X-Auth-User"
+      - "X-Auth-Groups"
+      - "X-Auth-Realm"
+    authRequestHeaders:
+      - "Authorization"
+      - "X-Original-URL"
+      - "X-Forwarded-Method"
+{% endif %}

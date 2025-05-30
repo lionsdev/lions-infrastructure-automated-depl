@@ -1,26 +1,570 @@
 ---
-# Titre: Tâches principales pour Ollama
-# Description: Orchestration du déploiement Ollama
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-14
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - RÔLE OLLAMA AI SERVICE
+# =========================================================================
+# Description: Orchestrateur principal pour le déploiement du service IA Ollama
+# Composant: Ollama LLM Service - Plateforme d'exécution de modèles de langage
+# Version: 5.0.0
+# Maintainer: DevOps Team <devops@lions.dev>
+# Documentation: https://docs.lions.dev/infrastructure/ai/ollama
+# Dépendances: Kubernetes 1.24+, Persistent Storage, Prometheus
+# =========================================================================
 
-- name: "[Ollama] Inclure les tâches de préparation"
-  include_tasks: prepare.yml
-  when: app_prepare | default(true) | bool
+# =========================================================================
+# MÉTADONNÉES ET CONFIGURATION
+# =========================================================================
+- name: "Ollama | Initialisation des métadonnées de déploiement"
+  set_fact:
+    ollama_deployment_metadata:
+      role_name: "ollama"
+      role_version: "5.0.0"
+      deployment_id: "{{ ansible_date_time.epoch }}"
+      environment: "{{ ollama_environment }}"
+      namespace: "{{ ollama_namespace }}"
+      cluster_name: "{{ ollama_cluster_name }}"
+      started_at: "{{ ansible_date_time.iso8601 }}"
+      started_by: "{{ ansible_user_id | default('ansible') }}"
+    ollama_deployment_config:
+      dry_run: "{{ lookup('env', 'OLLAMA_DRY_RUN') | default('false') | bool }}"
+      debug_mode: "{{ lookup('env', 'OLLAMA_DEBUG_MODE') | default('false') | bool }}"
+      skip_validation: "{{ lookup('env', 'OLLAMA_SKIP_VALIDATION') | default('false') | bool }}"
+      force_recreate: "{{ lookup('env', 'OLLAMA_FORCE_RECREATE') | default('false') | bool }}"
+      enable_gpu: "{{ ollama_resources.gpu.enabled }}"
+      preload_models: "{{ ollama_app_config.models.auto_load }}"
+      # Phases de déploiement contrôlables
+      app_prepare: "{{ lookup('env', 'OLLAMA_PHASE_PREPARE') | default('true') | bool }}"
+      app_prerequisites: "{{ lookup('env', 'OLLAMA_PHASE_PREREQUISITES') | default('true') | bool }}"
+      app_deploy: "{{ lookup('env', 'OLLAMA_PHASE_DEPLOY') | default('true') | bool }}"
+      app_monitoring: "{{ lookup('env', 'OLLAMA_PHASE_MONITORING') | default('true') | bool }}"
+      app_validate: "{{ lookup('env', 'OLLAMA_PHASE_VALIDATE') | default('true') | bool }}"
+  tags:
+    - ollama
+    - ai-ml
+    - metadata
+    - always
 
-- name: "[Ollama] Inclure les tâches de prérequis"
-  include_tasks: prerequisites.yml
-  when: app_prerequisites | default(true) | bool
+- name: "Ollama | Affichage des informations de déploiement"
+  debug:
+    msg:
+      - "🚀 Démarrage du déploiement Ollama AI Service"
+      - "🤖 Service: {{ ollama_service_name }}"
+      - "📊 Environnement: {{ ollama_deployment_metadata.environment }}"
+      - "🏷️  Namespace: {{ ollama_deployment_metadata.namespace }}"
+      - "🔧 Cluster: {{ ollama_deployment_metadata.cluster_name }}"
+      - "🆔 ID de déploiement: {{ ollama_deployment_metadata.deployment_id }}"
+      - "⏰ Démarré le: {{ ollama_deployment_metadata.started_at }}"
+      - "👤 Initié par: {{ ollama_deployment_metadata.started_by }}"
+      - "🧩 Version: {{ ollama_service_meta.version }}"
+      - "🔧 Mode debug: {{ ollama_deployment_config.debug_mode }}"
+      - "🧪 Dry run: {{ ollama_deployment_config.dry_run }}"
+      - "⚡ GPU activé: {{ ollama_deployment_config.enable_gpu }}"
+      - "📦 Modèles pré-chargés: {{ ollama_deployment_config.preload_models }}"
+  when: ollama_deployment_config.debug_mode | bool
+  tags:
+    - ollama
+    - ai-ml
+    - debug
+    - always
 
-- name: "[Ollama] Inclure les tâches de déploiement"
-  include_tasks: deploy.yml
-  when: app_deploy | default(true) | bool
+# =========================================================================
+# GESTION DES ERREURS ET ROLLBACK
+# =========================================================================
+- name: "Ollama | Configuration de la gestion d'erreurs"
+  set_fact:
+    ollama_error_handling:
+      max_retries: "{{ lookup('env', 'OLLAMA_MAX_RETRIES') | default('3') }}"
+      retry_delay: "{{ lookup('env', 'OLLAMA_RETRY_DELAY') | default('10') }}"
+      rollback_on_failure: "{{ lookup('env', 'OLLAMA_ROLLBACK_ON_FAILURE') | default('true') | bool }}"
+      continue_on_minor_errors: "{{ lookup('env', 'OLLAMA_CONTINUE_ON_MINOR_ERRORS') | default('true') | bool }}"
+      error_log_file: "/tmp/ollama-deployment-{{ ollama_deployment_metadata.deployment_id }}.log"
+      debug_log_file: "/tmp/ollama-debug-{{ ollama_deployment_metadata.deployment_id }}.log"
+    ollama_deployment_status:
+      phases_completed: []
+      phases_failed: []
+      warnings: []
+      critical_errors: []
+  tags:
+    - ollama
+    - ai-ml
+    - error-handling
+    - always
 
-- name: "[Ollama] Inclure les tâches de monitoring"
-  include_tasks: monitoring.yml
-  when: app_monitoring | default(true) | bool
+# =========================================================================
+# VÉRIFICATIONS PRÉALABLES CRITIQUES
+# =========================================================================
+- name: "Ollama | Vérification de l'état de l'environnement"
+  block:
+    - name: "Ollama | Vérification de l'accessibilité du cluster Kubernetes"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Namespace
+        name: "{{ ollama_namespace }}"
+      register: ollama_namespace_check
+      failed_when: false
 
-- name: "[Ollama] Inclure les tâches de validation"
-  include_tasks: validate.yml
-  when: app_validate | default(true) | bool
+    - name: "Ollama | Vérification des variables d'environnement critiques"
+      assert:
+        that:
+          - ollama_service_meta.name is defined
+          - ollama_service_meta.name | length > 0
+          - ollama_service_meta.version is defined
+          - ollama_service_meta.version | length > 0
+          - ollama_namespace is defined
+          - ollama_namespace | length > 0
+          - ollama_container.image.repository is defined
+          - ollama_container.image.tag is defined
+        fail_msg: "Variables d'environnement Ollama manquantes ou incorrectes"
+        success_msg: "Variables d'environnement Ollama validées"
+
+    - name: "Ollama | Vérification des ressources système disponibles"
+      set_fact:
+        ollama_system_check:
+          cluster_accessible: "{{ ollama_namespace_check.resources is defined }}"
+          namespace_exists: "{{ ollama_namespace_check.resources | length > 0 if ollama_namespace_check.resources is defined else false }}"
+          config_valid: true
+
+    - name: "Ollama | Affichage du statut des vérifications"
+      debug:
+        msg:
+          - "🔍 Statut des vérifications préalables:"
+          - "  - Cluster accessible: {{ ollama_system_check.cluster_accessible }}"
+          - "  - Namespace existe: {{ ollama_system_check.namespace_exists }}"
+          - "  - Configuration valide: {{ ollama_system_check.config_valid }}"
+
+  rescue:
+    - name: "Ollama | Gestion d'erreur - Vérifications préalables"
+      fail:
+        msg: "❌ Échec des vérifications préalables Ollama AI Service: {{ ansible_failed_result.msg | default('Erreur inconnue') }}"
+
+  tags:
+    - ollama
+    - ai-ml
+    - preflight
+    - validation
+
+# =========================================================================
+# PHASE 1: PRÉREQUIS ET DÉPENDANCES
+# =========================================================================
+- name: "Ollama | Phase 1 - Vérification des prérequis"
+  block:
+    - name: "Ollama | Inclusion des tâches de prérequis"
+      include_tasks: prerequisites.yml
+      vars:
+        current_phase: "prerequisites"
+        phase_description: "Vérification des prérequis système pour Ollama AI"
+        phase_number: 1
+      when: ollama_deployment_config.app_prerequisites | bool
+
+    - name: "Ollama | Enregistrement du succès Phase 1"
+      set_fact:
+        ollama_deployment_status: "{{ ollama_deployment_status | combine({'phases_completed': ollama_deployment_status.phases_completed + ['prerequisites']}) }}"
+
+  rescue:
+    - name: "Ollama | Échec Phase 1 - Prérequis"
+      set_fact:
+        ollama_deployment_failed: true
+        ollama_failure_phase: "prerequisites"
+        ollama_failure_reason: "{{ ansible_failed_result.msg | default('Échec des prérequis Ollama AI') }}"
+        ollama_deployment_status: "{{ ollama_deployment_status | combine({'phases_failed': ollama_deployment_status.phases_failed + ['prerequisites'], 'critical_errors': ollama_deployment_status.critical_errors + [ansible_failed_result.msg | default('Erreur de prérequis')]}) }}"
+
+    - name: "Ollama | Log d'erreur Phase 1"
+      lineinfile:
+        path: "{{ ollama_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] ERREUR Phase 1 (Prérequis): {{ ollama_failure_reason }}"
+        create: yes
+
+    - name: "Ollama | Arrêt du déploiement - Phase 1"
+      fail:
+        msg: "❌ Déploiement Ollama AI Service interrompu en Phase 1 (Prérequis): {{ ollama_failure_reason }}"
+
+  tags:
+    - ollama
+    - ai-ml
+    - prerequisites
+    - phase-1
+
+# =========================================================================
+# PHASE 2: PRÉPARATION DES RESSOURCES
+# =========================================================================
+- name: "Ollama | Phase 2 - Préparation des ressources"
+  block:
+    - name: "Ollama | Inclusion des tâches de préparation"
+      include_tasks: prepare.yml
+      vars:
+        current_phase: "preparation"
+        phase_description: "Création des ressources Kubernetes pour Ollama AI"
+        phase_number: 2
+      when: ollama_deployment_config.app_prepare | bool
+
+    - name: "Ollama | Enregistrement du succès Phase 2"
+      set_fact:
+        ollama_deployment_status: "{{ ollama_deployment_status | combine({'phases_completed': ollama_deployment_status.phases_completed + ['preparation']}) }}"
+
+  rescue:
+    - name: "Ollama | Échec Phase 2 - Préparation"
+      set_fact:
+        ollama_deployment_failed: true
+        ollama_failure_phase: "preparation"
+        ollama_failure_reason: "{{ ansible_failed_result.msg | default('Échec de la préparation Ollama AI') }}"
+        ollama_deployment_status: "{{ ollama_deployment_status | combine({'phases_failed': ollama_deployment_status.phases_failed + ['preparation'], 'critical_errors': ollama_deployment_status.critical_errors + [ansible_failed_result.msg | default('Erreur de préparation')]}) }}"
+
+    - name: "Ollama | Log d'erreur Phase 2"
+      lineinfile:
+        path: "{{ ollama_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] ERREUR Phase 2 (Préparation): {{ ollama_failure_reason }}"
+        create: yes
+
+    - name: "Ollama | Nettoyage partiel après échec Phase 2"
+      include_tasks: cleanup.yml
+      vars:
+        cleanup_scope: "preparation"
+        cleanup_reason: "Échec Phase 2"
+      when: ollama_error_handling.rollback_on_failure | bool
+
+    - name: "Ollama | Arrêt du déploiement - Phase 2"
+      fail:
+        msg: "❌ Déploiement Ollama AI Service interrompu en Phase 2 (Préparation): {{ ollama_failure_reason }}"
+
+  when: ollama_deployment_failed is not defined
+  tags:
+    - ollama
+    - ai-ml
+    - preparation
+    - phase-2
+
+# =========================================================================
+# PHASE 3: DÉPLOIEMENT PRINCIPAL
+# =========================================================================
+- name: "Ollama | Phase 3 - Déploiement principal"
+  block:
+    - name: "Ollama | Inclusion des tâches de déploiement"
+      include_tasks: deploy.yml
+      vars:
+        current_phase: "deployment"
+        phase_description: "Déploiement des composants Ollama AI (Deployment, Service, Ingress)"
+        phase_number: 3
+      when: ollama_deployment_config.app_deploy | bool
+
+    - name: "Ollama | Enregistrement du succès Phase 3"
+      set_fact:
+        ollama_deployment_status: "{{ ollama_deployment_status | combine({'phases_completed': ollama_deployment_status.phases_completed + ['deployment']}) }}"
+
+  rescue:
+    - name: "Ollama | Échec Phase 3 - Déploiement"
+      set_fact:
+        ollama_deployment_failed: true
+        ollama_failure_phase: "deployment"
+        ollama_failure_reason: "{{ ansible_failed_result.msg | default('Échec du déploiement Ollama AI') }}"
+        ollama_deployment_status: "{{ ollama_deployment_status | combine({'phases_failed': ollama_deployment_status.phases_failed + ['deployment'], 'critical_errors': ollama_deployment_status.critical_errors + [ansible_failed_result.msg | default('Erreur de déploiement')]}) }}"
+
+    - name: "Ollama | Log d'erreur Phase 3"
+      lineinfile:
+        path: "{{ ollama_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] ERREUR Phase 3 (Déploiement): {{ ollama_failure_reason }}"
+        create: yes
+
+    - name: "Ollama | Rollback complet après échec Phase 3"
+      include_tasks: rollback.yml
+      vars:
+        rollback_reason: "Échec du déploiement principal Ollama AI"
+        rollback_scope: "full"
+      when: ollama_error_handling.rollback_on_failure | bool
+
+    - name: "Ollama | Arrêt du déploiement - Phase 3"
+      fail:
+        msg: "❌ Déploiement Ollama AI Service interrompu en Phase 3 (Déploiement): {{ ollama_failure_reason }}"
+
+  when: ollama_deployment_failed is not defined
+  tags:
+    - ollama
+    - ai-ml
+    - deployment
+    - phase-3
+
+# =========================================================================
+# PHASE 4: CONFIGURATION DU MONITORING
+# =========================================================================
+- name: "Ollama | Phase 4 - Configuration du monitoring"
+  block:
+    - name: "Ollama | Inclusion des tâches de monitoring"
+      include_tasks: monitoring.yml
+      vars:
+        current_phase: "monitoring"
+        phase_description: "Configuration des métriques et alertes Ollama AI (Prometheus, ServiceMonitor)"
+        phase_number: 4
+      when: 
+        - ollama_deployment_config.app_monitoring | bool
+        - ollama_monitoring.enabled | bool
+
+    - name: "Ollama | Enregistrement du succès Phase 4"
+      set_fact:
+        ollama_deployment_status: "{{ ollama_deployment_status | combine({'phases_completed': ollama_deployment_status.phases_completed + ['monitoring']}) }}"
+
+  rescue:
+    - name: "Ollama | Avertissement Phase 4 - Monitoring"
+      debug:
+        msg:
+          - "⚠️  Échec de la configuration du monitoring Ollama AI"
+          - "ℹ️  Le déploiement principal a réussi, mais les métriques peuvent être indisponibles"
+          - "🔍 Erreur: {{ ansible_failed_result.msg | default('Erreur de monitoring inconnue') }}"
+          - "🛠️  Les modèles IA restent fonctionnels malgré ce problème"
+
+    - name: "Ollama | Log d'avertissement Phase 4"
+      lineinfile:
+        path: "{{ ollama_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] AVERTISSEMENT Phase 4 (Monitoring): {{ ansible_failed_result.msg | default('Erreur de monitoring') }}"
+        create: yes
+
+    - name: "Ollama | Marquage du monitoring comme défaillant"
+      set_fact:
+        ollama_monitoring_failed: true
+        ollama_deployment_status: "{{ ollama_deployment_status | combine({'warnings': ollama_deployment_status.warnings + ['Monitoring Ollama AI indisponible']}) }}"
+
+  when:
+    - ollama_deployment_failed is not defined
+    - ollama_monitoring.enabled | default(true) | bool
+  tags:
+    - ollama
+    - ai-ml
+    - monitoring
+    - phase-4
+
+# =========================================================================
+# PHASE 5: VALIDATION POST-DÉPLOIEMENT
+# =========================================================================
+- name: "Ollama | Phase 5 - Validation post-déploiement"
+  block:
+    - name: "Ollama | Inclusion des tâches de validation"
+      include_tasks: validate.yml
+      vars:
+        current_phase: "validation"
+        phase_description: "Validation de l'état et des fonctionnalités Ollama AI (API, modèles, performance)"
+        phase_number: 5
+      when: ollama_deployment_config.app_validate | bool
+
+    - name: "Ollama | Enregistrement du succès Phase 5"
+      set_fact:
+        ollama_deployment_status: "{{ ollama_deployment_status | combine({'phases_completed': ollama_deployment_status.phases_completed + ['validation']}) }}"
+
+  rescue:
+    - name: "Ollama | Échec Phase 5 - Validation"
+      set_fact:
+        ollama_deployment_failed: true
+        ollama_failure_phase: "validation"
+        ollama_failure_reason: "{{ ansible_failed_result.msg | default('Échec de la validation Ollama AI') }}"
+        ollama_deployment_status: "{{ ollama_deployment_status | combine({'phases_failed': ollama_deployment_status.phases_failed + ['validation'], 'critical_errors': ollama_deployment_status.critical_errors + [ansible_failed_result.msg | default('Erreur de validation')]}) }}"
+
+    - name: "Ollama | Log d'erreur Phase 5"
+      lineinfile:
+        path: "{{ ollama_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] ERREUR Phase 5 (Validation): {{ ollama_failure_reason }}"
+        create: yes
+
+    - name: "Ollama | Décision sur le rollback après validation"
+      debug:
+        msg: 
+          - "⚠️  Validation échouée mais Ollama AI peut être partiellement fonctionnel"
+          - "🤖 Les modèles de base peuvent toujours être accessibles"
+          - "🔍 Vérifiez les logs pour plus de détails"
+
+    - name: "Ollama | Arrêt avec avertissement - Phase 5"
+      fail:
+        msg: "⚠️  Déploiement Ollama AI Service terminé avec des erreurs de validation: {{ ollama_failure_reason }}"
+
+  when:
+    - ollama_deployment_failed is not defined
+    - not ollama_deployment_config.skip_validation | bool
+  tags:
+    - ollama
+    - ai-ml
+    - validation
+    - phase-5
+
+# =========================================================================
+# PHASE 6: CONFIGURATION DE LA SAUVEGARDE
+# =========================================================================
+- name: "Ollama | Phase 6 - Configuration de la sauvegarde"
+  block:
+    - name: "Ollama | Inclusion des tâches de sauvegarde"
+      include_tasks: backup.yml
+      vars:
+        current_phase: "backup"
+        phase_description: "Configuration des stratégies de sauvegarde Ollama AI (modèles, configurations)"
+        phase_number: 6
+
+    - name: "Ollama | Enregistrement du succès Phase 6"
+      set_fact:
+        ollama_deployment_status: "{{ ollama_deployment_status | combine({'phases_completed': ollama_deployment_status.phases_completed + ['backup']}) }}"
+
+  rescue:
+    - name: "Ollama | Avertissement Phase 6 - Sauvegarde"
+      debug:
+        msg:
+          - "⚠️  Échec de la configuration de sauvegarde Ollama AI"
+          - "ℹ️  Ollama AI fonctionne mais les sauvegardes automatiques des modèles sont désactivées"
+          - "🔍 Erreur: {{ ansible_failed_result.msg | default('Erreur de sauvegarde inconnue') }}"
+          - "💡 Recommandation: Configurez manuellement la sauvegarde des modèles"
+
+    - name: "Ollama | Log d'avertissement Phase 6"
+      lineinfile:
+        path: "{{ ollama_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] AVERTISSEMENT Phase 6 (Sauvegarde): {{ ansible_failed_result.msg | default('Erreur de sauvegarde') }}"
+        create: yes
+
+    - name: "Ollama | Marquage de la sauvegarde comme défaillante"
+      set_fact:
+        ollama_backup_failed: true
+        ollama_deployment_status: "{{ ollama_deployment_status | combine({'warnings': ollama_deployment_status.warnings + ['Sauvegarde automatique Ollama AI désactivée']}) }}"
+
+  when:
+    - ollama_deployment_failed is not defined
+    - ollama_storage.backup_enabled | default(true) | bool
+  tags:
+    - ollama
+    - ai-ml
+    - backup
+    - phase-6
+
+# =========================================================================
+# FINALISATION ET RAPPORT DE DÉPLOIEMENT
+# =========================================================================
+- name: "Ollama | Génération du rapport de déploiement"
+  set_fact:
+    ollama_deployment_report:
+      # Statut général
+      status: "{{ 'FAILED' if ollama_deployment_failed | default(false) else 'SUCCESS' }}"
+      service_type: "ai-ml"
+      component: "ollama"
+      
+      # Métadonnées de déploiement
+      environment: "{{ ollama_deployment_metadata.environment }}"
+      namespace: "{{ ollama_deployment_metadata.namespace }}"
+      cluster: "{{ ollama_deployment_metadata.cluster_name }}"
+      deployment_id: "{{ ollama_deployment_metadata.deployment_id }}"
+      started_at: "{{ ollama_deployment_metadata.started_at }}"
+      completed_at: "{{ ansible_date_time.iso8601 }}"
+      duration: "{{ (ansible_date_time.epoch | int) - (ollama_deployment_metadata.deployment_id | int) }}"
+      
+      # Statut des phases
+      phases_completed: "{{ ollama_deployment_status.phases_completed }}"
+      phases_failed: "{{ ollama_deployment_status.phases_failed }}"
+      failed_phase: "{{ ollama_failure_phase | default('N/A') }}"
+      failure_reason: "{{ ollama_failure_reason | default('N/A') }}"
+      
+      # Statut des composants
+      monitoring_status: "{{ 'FAILED' if ollama_monitoring_failed | default(false) else 'OK' }}"
+      backup_status: "{{ 'FAILED' if ollama_backup_failed | default(false) else 'OK' }}"
+      
+      # Informations du service
+      ollama_version: "{{ ollama_service_meta.version }}"
+      ollama_service_name: "{{ ollama_service_name }}"
+      ollama_endpoint: "{{ ollama_service_name }}.{{ ollama_namespace }}.svc.cluster.local:{{ ollama_network.service.port }}"
+      ollama_external_url: "{{ 'https' if ollama_ingress.tls.enabled else 'http' }}://{{ ollama_dns.full_domain }}"
+      
+      # Configuration spécifique IA
+      gpu_enabled: "{{ ollama_deployment_config.enable_gpu }}"
+      preload_models: "{{ ollama_deployment_config.preload_models }}"
+      models_configured: "{{ ollama_app_config.models.preload_models | selectattr('enabled', 'equalto', true) | map(attribute='name') | list }}"
+      
+      # Alertes et avertissements
+      warnings: "{{ ollama_deployment_status.warnings }}"
+      critical_errors: "{{ ollama_deployment_status.critical_errors }}"
+  tags:
+    - ollama
+    - ai-ml
+    - report
+    - always
+
+- name: "Ollama | Affichage du rapport de déploiement"
+  debug:
+    msg:
+      - "=============================================="
+      - "🤖 RAPPORT DE DÉPLOIEMENT OLLAMA AI SERVICE"
+      - "=============================================="
+      - "📈 Statut: {{ ollama_deployment_report.status }}"
+      - "🌍 Environnement: {{ ollama_deployment_report.environment }}"
+      - "🏷️  Namespace: {{ ollama_deployment_report.namespace }}"
+      - "🔧 Cluster: {{ ollama_deployment_report.cluster }}"
+      - "🆔 ID de déploiement: {{ ollama_deployment_report.deployment_id }}"
+      - "⏰ Durée: {{ ollama_deployment_report.duration }}s"
+      - "🧩 Version Ollama: {{ ollama_deployment_report.ollama_version }}"
+      - "🔗 Point de connexion interne: {{ ollama_deployment_report.ollama_endpoint }}"
+      - "🌐 URL externe: {{ ollama_deployment_report.ollama_external_url }}"
+      - "⚡ GPU activé: {{ ollama_deployment_report.gpu_enabled }}"
+      - "📦 Modèles configurés: {{ ollama_deployment_report.models_configured | join(', ') }}"
+      - "📊 Monitoring: {{ ollama_deployment_report.monitoring_status }}"
+      - "💾 Sauvegarde: {{ ollama_deployment_report.backup_status }}"
+      - "✅ Phases réussies: {{ ollama_deployment_report.phases_completed | join(', ') }}"
+      - "{{ '❌ Phases échouées: ' + (ollama_deployment_report.phases_failed | join(', ')) if ollama_deployment_report.phases_failed | length > 0 else '' }}"
+      - "{{ '⚠️  Avertissements: ' + (ollama_deployment_report.warnings | join(', ')) if ollama_deployment_report.warnings | length > 0 else '' }}"
+      - "{{ '❌ Phase d\'échec: ' + ollama_deployment_report.failed_phase if ollama_deployment_report.status == 'FAILED' else '✅ Déploiement réussi' }}"
+      - "{{ '🔍 Raison: ' + ollama_deployment_report.failure_reason if ollama_deployment_report.status == 'FAILED' else '' }}"
+      - "=============================================="
+  tags:
+    - ollama
+    - ai-ml
+    - report
+    - always
+
+- name: "Ollama | Sauvegarde du rapport de déploiement"
+  copy:
+    content: "{{ ollama_deployment_report | to_nice_json }}"
+    dest: "/tmp/ollama-deployment-report-{{ ollama_deployment_metadata.deployment_id }}.json"
+    mode: '0644'
+  delegate_to: localhost
+  tags:
+    - ollama
+    - ai-ml
+    - report
+
+# =========================================================================
+# NETTOYAGE ET FINALISATION
+# =========================================================================
+- name: "Ollama | Nettoyage des fichiers temporaires"
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ ollama_error_handling.error_log_file }}"
+    - "{{ ollama_error_handling.debug_log_file }}"
+  when:
+    - ollama_deployment_report.status == "SUCCESS"
+    - not ollama_deployment_config.debug_mode | bool
+  ignore_errors: yes
+  tags:
+    - ollama
+    - ai-ml
+    - cleanup
+
+- name: "Ollama | Message de finalisation"
+  debug:
+    msg: |
+      {% if ollama_deployment_report.status == 'SUCCESS' %}
+      🎉 Déploiement Ollama AI Service terminé avec succès !
+
+      📋 Informations de connexion:
+      - 🔗 API interne: {{ ollama_deployment_report.ollama_endpoint }}
+      - 🌐 URL externe: {{ ollama_deployment_report.ollama_external_url }}
+      - 🚪 Port: {{ ollama_network.service.port }}
+      
+      🤖 Modèles IA disponibles:
+      {% for model in ollama_deployment_report.models_configured %}
+      - {{ model }}
+      {% endfor %}
+      
+      📚 Documentation disponible à: {{ ollama_service_meta.documentation_url }}
+      💬 Support: {{ ollama_service_meta.support_channel }}
+      {% else %}
+      💥 Déploiement Ollama AI Service échoué en phase {{ ollama_deployment_report.failed_phase }}
+
+      🔍 Consultez les logs d'erreur pour plus de détails:
+      - Fichier d'erreur: {{ ollama_error_handling.error_log_file }}
+      - Rapport JSON: /tmp/ollama-deployment-report-{{ ollama_deployment_metadata.deployment_id }}.json
+
+      🛠️  Guide de dépannage: {{ ollama_service_meta.documentation_url }}/troubleshooting
+      💬 Support: {{ ollama_service_meta.support_channel }}
+      {% endif %}
+  tags:
+    - ollama
+    - ai-ml
+    - always

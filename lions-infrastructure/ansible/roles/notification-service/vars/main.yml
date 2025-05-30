@@ -1,105 +1,398 @@
 ---
-# Titre: Variables pour le déploiement du service de notification
-# Description: Variables spécifiques au service de notification
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-08
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - NOTIFICATION SERVICE VARIABLES
+# =========================================================================
+# Description: Variables centralisées pour le déploiement du service de notification
+# Version: 5.0.0
+# Date: 2025-05-28
+# Maintainer: DevOps Team
+# Documentation: https://docs.lions.dev/services/notification
+# =========================================================================
 
-# Configuration par défaut pour le service de notification
-notification_version: "1.0"
-notification_default_port: 8080
-notification_health_path: "/health"
-notification_metrics_path: "/metrics"
-notification_admin_user: "admin"
-notification_admin_password_secret: "notification-admin-password"
+# =========================================================================
+# MÉTADONNÉES DU SERVICE
+# =========================================================================
+notification_service_meta:
+  name: "notification-service"
+  version: "{{ lookup('env', 'LIONS_NOTIFICATION_VERSION') | default('1.0.0', true) }}"
+  component: "notification"
+  tier: "application"
+  managed_by: "lions-infrastructure"
+  part_of: "lions-platform"
 
-# Configuration des sondes de santé
-notification_readiness_probe:
-  httpGet:
-    path: "/health/readiness"
-    port: 8080
-  initialDelaySeconds: 30
-  periodSeconds: 10
-  timeoutSeconds: 5
-  failureThreshold: 3
+# =========================================================================
+# CONFIGURATION PRINCIPALE
+# =========================================================================
+# Configuration basée sur les variables d'environnement LIONS
+notification_enabled: "{{ lookup('env', 'LIONS_NOTIFICATION_ENABLED') | default('true', true) | bool }}"
+notification_namespace: "{{ lookup('env', 'LIONS_NOTIFICATION_NAMESPACE') | default('services', true) }}"
+notification_service_name: "{{ lookup('env', 'LIONS_NOTIFICATION_SERVICE_NAME') | default('notification-service', true) }}"
+notification_environment: "{{ lookup('env', 'LIONS_ENVIRONMENT') | default('development', true) }}"
 
-notification_liveness_probe:
-  httpGet:
-    path: "/health/liveness"
-    port: 8080
-  initialDelaySeconds: 60
-  periodSeconds: 20
-  timeoutSeconds: 5
-  failureThreshold: 3
+# =========================================================================
+# CONFIGURATION RÉSEAU ET PORTS
+# =========================================================================
+notification_ports:
+  http: "{{ lookup('env', 'LIONS_NOTIFICATION_PORT') | default('8080', true) | int }}"
+  metrics: "{{ lookup('env', 'LIONS_NOTIFICATION_METRICS_PORT') | default('8081', true) | int }}"
+  management: "{{ lookup('env', 'LIONS_NOTIFICATION_MANAGEMENT_PORT') | default('8082', true) | int }}"
 
-# Configuration du monitoring
-notification_prometheus_port: 8080
-notification_prometheus_path: "/metrics"
-notification_prometheus_scrape: true
-notification_init_delay: 30
+# Configuration des endpoints
+notification_endpoints:
+  health: "{{ lookup('env', 'LIONS_NOTIFICATION_HEALTH_PATH') | default('/health', true) }}"
+  metrics: "{{ lookup('env', 'LIONS_NOTIFICATION_METRICS_PATH') | default('/metrics', true) }}"
+  ready: "{{ lookup('env', 'LIONS_NOTIFICATION_READY_PATH') | default('/health/readiness', true) }}"
+  live: "{{ lookup('env', 'LIONS_NOTIFICATION_LIVE_PATH') | default('/health/liveness', true) }}"
 
-# Configuration des ressources par environnement
-notification_resources:
+# =========================================================================
+# CONFIGURATION DNS ET DOMAINES
+# =========================================================================
+notification_dns:
+  domain_base: "{{ lookup('env', 'LIONS_DNS_DOMAIN_BASE') | default('lions.local', true) }}"
+  subdomain: "{{ lookup('env', 'LIONS_NOTIFICATION_SUBDOMAIN') | default('notifications', true) }}"
+  full_domain: "{{ lookup('env', 'LIONS_NOTIFICATION_SUBDOMAIN') | default('notifications', true) }}.{{ lookup('env', 'LIONS_DNS_FULL_DOMAIN') | default('dev.lions.local', true) }}"
+
+# Configuration URLs
+notification_urls:
+  external: "{{ 'https' if (lookup('env', 'LIONS_SECURITY_TLS_ENABLED') | default('true', true) | bool) else 'http' }}://{{ notification_dns.full_domain }}"
+  internal: "http://{{ notification_service_name }}.{{ notification_namespace }}.svc.cluster.local:{{ notification_ports.http }}"
+
+# =========================================================================
+# CONFIGURATION DES RESSOURCES
+# =========================================================================
+# Ressources dynamiques basées sur l'environnement
+notification_resources_config:
   development:
     requests:
-      cpu: "100m"
-      memory: "256Mi"
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_CPU_REQUEST') | default('100m', true) }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_MEMORY_REQUEST') | default('256Mi', true) }}"
     limits:
-      cpu: "500m"
-      memory: "512Mi"
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_CPU_LIMIT') | default('500m', true) }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_MEMORY_LIMIT') | default('512Mi', true) }}"
   staging:
     requests:
-      cpu: "200m"
-      memory: "512Mi"
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_CPU_REQUEST') | default('200m', true) }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_MEMORY_REQUEST') | default('512Mi', true) }}"
     limits:
-      cpu: "1000m"
-      memory: "1Gi"
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_CPU_LIMIT') | default('1000m', true) }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_MEMORY_LIMIT') | default('1Gi', true) }}"
   production:
     requests:
-      cpu: "500m"
-      memory: "1Gi"
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_CPU_REQUEST') | default('500m', true) }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_MEMORY_REQUEST') | default('1Gi', true) }}"
     limits:
-      cpu: "2000m"
-      memory: "2Gi"
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_CPU_LIMIT') | default('2000m', true) }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_MEMORY_LIMIT') | default('2Gi', true) }}"
 
+# Ressources actives pour l'environnement courant
+notification_resources: "{{ notification_resources_config[notification_environment] }}"
+
+# =========================================================================
+# CONFIGURATION DE LA HAUTE DISPONIBILITÉ
+# =========================================================================
 # Configuration des réplicas par environnement
-notification_replicas:
-  development: 1
-  staging: 2
-  production: 3
+notification_replicas_config:
+  development: "{{ lookup('env', 'LIONS_NOTIFICATION_REPLICAS_DEV') | default('1', true) | int }}"
+  staging: "{{ lookup('env', 'LIONS_NOTIFICATION_REPLICAS_STAGING') | default('2', true) | int }}"
+  production: "{{ lookup('env', 'LIONS_NOTIFICATION_REPLICAS_PROD') | default('3', true) | int }}"
 
-# Configuration de la persistance
-notification_persistent_storage: false
-notification_storage_size: "1Gi"
-notification_storage_class: "local-path"
+notification_replicas: "{{ notification_replicas_config[notification_environment] }}"
 
-# Configuration des canaux de notification
-notification_channels:
-  email:
-    enabled: true
-    smtp_host: "smtp.example.com"
-    smtp_port: 587
-    smtp_user_secret: "notification-smtp-user"
-    smtp_password_secret: "notification-smtp-password"
-    from_address: "notifications@lions.dev"
-  slack:
-    enabled: true
-    webhook_url_secret: "notification-slack-webhook"
-    default_channel: "#notifications"
-  sms:
-    enabled: false
-    provider: "twilio"
-    account_sid_secret: "notification-twilio-sid"
-    auth_token_secret: "notification-twilio-token"
-    from_number: "+1234567890"
+# Configuration de l'auto-scaling
+notification_autoscaling:
+  enabled: "{{ lookup('env', 'LIONS_AUTOSCALING_ENABLED') | default('true', true) | bool }}"
+  min_replicas: "{{ notification_replicas }}"
+  max_replicas: "{{ lookup('env', 'LIONS_AUTOSCALING_MAX_REPLICAS') | default('10', true) | int }}"
+  target_cpu_utilization: "{{ lookup('env', 'LIONS_AUTOSCALING_CPU_TARGET') | default('70', true) | int }}"
+  target_memory_utilization: "{{ lookup('env', 'LIONS_AUTOSCALING_MEMORY_TARGET') | default('80', true) | int }}"
 
-# Configuration des templates de notification
-notification_templates_path: "/app/templates"
-notification_default_language: "fr"
-notification_available_languages: ["fr", "en"]
+# =========================================================================
+# CONFIGURATION DU STOCKAGE
+# =========================================================================
+notification_storage:
+  enabled: "{{ lookup('env', 'LIONS_NOTIFICATION_STORAGE_ENABLED') | default('false', true) | bool }}"
+  size: "{{ lookup('env', 'LIONS_NOTIFICATION_STORAGE_SIZE') | default('1Gi', true) }}"
+  class: "{{ lookup('env', 'LIONS_STORAGE_CLASS_DEFAULT') | default('local-path', true) }}"
+  access_mode: "{{ lookup('env', 'LIONS_NOTIFICATION_STORAGE_ACCESS_MODE') | default('ReadWriteOnce', true) }}"
+  reclaim_policy: "{{ lookup('env', 'LIONS_STORAGE_RECLAIM_POLICY') | default('Retain', true) }}"
+  mount_path: "{{ lookup('env', 'LIONS_NOTIFICATION_DATA_PATH') | default('/app/data', true) }}"
 
-# Configuration de la sécurité
-notification_tls_enabled: false
-notification_tls_secret: "notification-tls"
-notification_auth_enabled: true
-notification_rate_limit: 100
+# =========================================================================
+# CONFIGURATION DE LA SÉCURITÉ
+# =========================================================================
+# Configuration TLS
+notification_tls:
+  enabled: "{{ lookup('env', 'LIONS_SECURITY_TLS_ENABLED') | default('true', true) | bool }}"
+  cert_manager_issuer: "{{ lookup('env', 'LIONS_SECURITY_TLS_PROVIDER') | default('letsencrypt', true) }}"
+  secret_name: "notification-tls-secret"
+
+# Configuration des secrets
+notification_secrets:
+  admin:
+    username: "{{ lookup('env', 'LIONS_NOTIFICATION_ADMIN_USER') | default('admin', true) }}"
+    password_secret: "{{ lookup('env', 'LIONS_NOTIFICATION_ADMIN_PASSWORD_SECRET') | default('notification-admin-password', true) }}"
+    email: "{{ lookup('env', 'LIONS_NOTIFICATION_ADMIN_EMAIL') | default('admin@' + notification_dns.domain_base, true) }}"
+  api:
+    key_secret: "{{ lookup('env', 'LIONS_NOTIFICATION_API_KEY_SECRET') | default('notification-api-key', true) }}"
+  jwt:
+    secret_name: "{{ lookup('env', 'LIONS_NOTIFICATION_JWT_SECRET') | default('notification-jwt-secret', true) }}"
+  encryption:
+    key_secret: "{{ lookup('env', 'LIONS_NOTIFICATION_ENCRYPTION_KEY') | default('notification-encryption-key', true) }}"
+
+# Configuration RBAC
+notification_rbac:
+  enabled: "{{ lookup('env', 'LIONS_SECURITY_RBAC_ENABLED') | default('true', true) | bool }}"
+  service_account_name: "notification-sa"
+  role_name: "notification-role"
+  role_binding_name: "notification-role-binding"
+
+# =========================================================================
+# CONFIGURATION DES SONDES DE SANTÉ
+# =========================================================================
+notification_health_checks:
+  readiness:
+    http_get:
+      path: "{{ notification_endpoints.ready }}"
+      port: "http"
+      scheme: "HTTP"
+    initial_delay_seconds: "{{ lookup('env', 'LIONS_NOTIFICATION_READINESS_INITIAL_DELAY') | default('30', true) | int }}"
+    period_seconds: "{{ lookup('env', 'LIONS_NOTIFICATION_READINESS_PERIOD') | default('10', true) | int }}"
+    timeout_seconds: "{{ lookup('env', 'LIONS_NOTIFICATION_READINESS_TIMEOUT') | default('5', true) | int }}"
+    failure_threshold: "{{ lookup('env', 'LIONS_NOTIFICATION_READINESS_FAILURE_THRESHOLD') | default('3', true) | int }}"
+    success_threshold: "{{ lookup('env', 'LIONS_NOTIFICATION_READINESS_SUCCESS_THRESHOLD') | default('1', true) | int }}"
+
+  liveness:
+    http_get:
+      path: "{{ notification_endpoints.live }}"
+      port: "http"
+      scheme: "HTTP"
+    initial_delay_seconds: "{{ lookup('env', 'LIONS_NOTIFICATION_LIVENESS_INITIAL_DELAY') | default('60', true) | int }}"
+    period_seconds: "{{ lookup('env', 'LIONS_NOTIFICATION_LIVENESS_PERIOD') | default('20', true) | int }}"
+    timeout_seconds: "{{ lookup('env', 'LIONS_NOTIFICATION_LIVENESS_TIMEOUT') | default('5', true) | int }}"
+    failure_threshold: "{{ lookup('env', 'LIONS_NOTIFICATION_LIVENESS_FAILURE_THRESHOLD') | default('3', true) | int }}"
+
+  startup:
+    http_get:
+      path: "{{ notification_endpoints.health }}"
+      port: "http"
+      scheme: "HTTP"
+    initial_delay_seconds: "{{ lookup('env', 'LIONS_NOTIFICATION_STARTUP_INITIAL_DELAY') | default('15', true) | int }}"
+    period_seconds: "{{ lookup('env', 'LIONS_NOTIFICATION_STARTUP_PERIOD') | default('5', true) | int }}"
+    timeout_seconds: "{{ lookup('env', 'LIONS_NOTIFICATION_STARTUP_TIMEOUT') | default('3', true) | int }}"
+    failure_threshold: "{{ lookup('env', 'LIONS_NOTIFICATION_STARTUP_FAILURE_THRESHOLD') | default('20', true) | int }}"
+
+# =========================================================================
+# CONFIGURATION INGRESS
+# =========================================================================
+notification_ingress:
+  enabled: "{{ lookup('env', 'LIONS_NOTIFICATION_INGRESS_ENABLED') | default('true', true) | bool }}"
+  class_name: "{{ lookup('env', 'LIONS_INGRESS_CLASS') | default('traefik', true) }}"
+  annotations:
+    # Annotations TLS/SSL
+    cert-manager.io/cluster-issuer: "{{ 'letsencrypt-prod' if notification_environment == 'production' else 'letsencrypt-staging' }}"
+    traefik.ingress.kubernetes.io/router.entrypoints: "websecure"
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/ssl-redirect: "true"
+    traefik.ingress.kubernetes.io/ssl-permanent-redirect: "true"
+
+    # Annotations de performance
+    traefik.ingress.kubernetes.io/request-timeout: "{{ lookup('env', 'LIONS_TIMEOUT_DEFAULT') | default('300', true) }}"
+    traefik.ingress.kubernetes.io/compress: "true"
+    traefik.ingress.kubernetes.io/router.middlewares: "{{ notification_namespace }}-notification-headers@kubernetescrd"
+
+    # Annotations de sécurité
+    traefik.ingress.kubernetes.io/headers-customrequestheaders: "X-Forwarded-Proto:https||X-Forwarded-Port:443"
+    traefik.ingress.kubernetes.io/headers-customresponseheaders: "X-Content-Type-Options:nosniff||X-Frame-Options:SAMEORIGIN||X-XSS-Protection:1; mode=block||Strict-Transport-Security:max-age=31536000; includeSubDomains"
+
+    # Annotations de monitoring
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "{{ notification_ports.metrics }}"
+    prometheus.io/path: "{{ notification_endpoints.metrics }}"
+
+# =========================================================================
+# CONFIGURATION MONITORING
+# =========================================================================
+notification_monitoring:
+  enabled: "{{ lookup('env', 'LIONS_MONITORING_ENABLED') | default('true', true) | bool }}"
+  prometheus:
+    enabled: "{{ lookup('env', 'LIONS_PROMETHEUS_ENABLED') | default('true', true) | bool }}"
+    scrape_interval: "{{ lookup('env', 'LIONS_NOTIFICATION_METRICS_SCRAPE_INTERVAL') | default('30s', true) }}"
+    scrape_timeout: "{{ lookup('env', 'LIONS_NOTIFICATION_METRICS_SCRAPE_TIMEOUT') | default('10s', true) }}"
+    port: "{{ notification_ports.metrics }}"
+    path: "{{ notification_endpoints.metrics }}"
+    service_monitor:
+      enabled: true
+      labels:
+        app.kubernetes.io/name: "notification-service"
+        app.kubernetes.io/component: "notification"
+
+# =========================================================================
+# CONFIGURATION APPLICATIVE DU SERVICE DE NOTIFICATION
+# =========================================================================
+notification_app_config:
+  # Configuration générale
+  app_name: "{{ lookup('env', 'LIONS_NOTIFICATION_APP_NAME') | default('LIONS Notification Service', true) }}"
+  run_mode: "{{ lookup('env', 'LIONS_NOTIFICATION_RUN_MODE') | default('prod', true) }}"
+  
+  # Configuration des canaux de notification
+  channels:
+    email:
+      enabled: "{{ lookup('env', 'LIONS_NOTIFICATION_EMAIL_ENABLED') | default('true', true) | bool }}"
+      smtp_host: "{{ lookup('env', 'LIONS_NOTIFICATION_SMTP_HOST') | default('smtp.lions.dev', true) }}"
+      smtp_port: "{{ lookup('env', 'LIONS_NOTIFICATION_SMTP_PORT') | default('587', true) | int }}"
+      from_address: "{{ lookup('env', 'LIONS_NOTIFICATION_FROM_EMAIL') | default('notifications@lions.dev', true) }}"
+      user_secret: "{{ lookup('env', 'LIONS_NOTIFICATION_SMTP_USER_SECRET') | default('notification-smtp-user', true) }}"
+      password_secret: "{{ lookup('env', 'LIONS_NOTIFICATION_SMTP_PASSWORD_SECRET') | default('notification-smtp-password', true) }}"
+    slack:
+      enabled: "{{ lookup('env', 'LIONS_NOTIFICATION_SLACK_ENABLED') | default('true', true) | bool }}"
+      webhook_secret: "{{ lookup('env', 'LIONS_NOTIFICATION_SLACK_WEBHOOK_SECRET') | default('notification-slack-webhook', true) }}"
+      default_channel: "{{ lookup('env', 'LIONS_NOTIFICATION_SLACK_DEFAULT_CHANNEL') | default('#notifications', true) }}"
+    sms:
+      enabled: "{{ lookup('env', 'LIONS_NOTIFICATION_SMS_ENABLED') | default('false', true) | bool }}"
+      provider: "{{ lookup('env', 'LIONS_NOTIFICATION_SMS_PROVIDER') | default('twilio', true) }}"
+      account_sid_secret: "{{ lookup('env', 'LIONS_NOTIFICATION_SMS_SID_SECRET') | default('notification-sms-sid', true) }}"
+      auth_token_secret: "{{ lookup('env', 'LIONS_NOTIFICATION_SMS_TOKEN_SECRET') | default('notification-sms-token', true) }}"
+      from_number: "{{ lookup('env', 'LIONS_NOTIFICATION_SMS_FROM_NUMBER') | default('+33000000000', true) }}"
+
+  # Configuration des templates
+  templates:
+    path: "{{ lookup('env', 'LIONS_NOTIFICATION_TEMPLATES_PATH') | default('/app/templates', true) }}"
+    default_language: "{{ lookup('env', 'LIONS_NOTIFICATION_DEFAULT_LANGUAGE') | default('fr', true) }}"
+    available_languages: "{{ (lookup('env', 'LIONS_NOTIFICATION_AVAILABLE_LANGUAGES') | default('fr,en', true)).split(',') }}"
+
+  # Configuration de sécurité
+  security:
+    auth_enabled: "{{ lookup('env', 'LIONS_NOTIFICATION_AUTH_ENABLED') | default('true', true) | bool }}"
+    rate_limit: "{{ lookup('env', 'LIONS_NOTIFICATION_RATE_LIMIT') | default('100', true) | int }}"
+    encryption_enabled: "{{ lookup('env', 'LIONS_NOTIFICATION_ENCRYPTION_ENABLED') | default('true', true) | bool }}"
+
+  # Configuration des logs
+  log_level: "{{ lookup('env', 'LIONS_LOG_LEVEL') | default('INFO', true) }}"
+  log_format: "{{ lookup('env', 'LIONS_LOG_FORMAT') | default('json', true) }}"
+
+# =========================================================================
+# CONFIGURATION DES LABELS KUBERNETES
+# =========================================================================
+notification_labels:
+  common:
+    app.kubernetes.io/name: "notification-service"
+    app.kubernetes.io/instance: "{{ notification_service_name }}"
+    app.kubernetes.io/version: "{{ notification_service_meta.version }}"
+    app.kubernetes.io/component: "{{ notification_service_meta.component }}"
+    app.kubernetes.io/part-of: "{{ notification_service_meta.part_of }}"
+    app.kubernetes.io/managed-by: "{{ notification_service_meta.managed_by }}"
+    lions.dev/environment: "{{ notification_environment }}"
+    lions.dev/tier: "{{ notification_service_meta.tier }}"
+    lions.dev/service: "notification"
+
+# =========================================================================
+# CONFIGURATION DES ANNOTATIONS
+# =========================================================================
+notification_annotations:
+  common:
+    lions.dev/version: "{{ notification_service_meta.version }}"
+    lions.dev/config-version: "{{ lookup('env', 'LIONS_CONFIG_VERSION') | default('5.0.0', true) }}"
+    lions.dev/deployment-date: "{{ ansible_date_time.iso8601 }}"
+    lions.dev/maintainer: "{{ lookup('env', 'LIONS_CONFIG_MAINTAINER') | default('devops@lions.dev', true) }}"
+
+# =========================================================================
+# CONFIGURATION DE LA TOLÉRANCE AUX PANNES
+# =========================================================================
+notification_disruption_budget:
+  enabled: "{{ notification_replicas | int > 1 }}"
+  min_available: "{{ (notification_replicas | int * 0.5) | round(0, 'floor') | int }}"
+  max_unavailable: "{{ (notification_replicas | int * 0.5) | round(0, 'ceil') | int }}"
+
+# =========================================================================
+# CONFIGURATION DES POLITIQUES RÉSEAU
+# =========================================================================
+notification_network_policy:
+  enabled: "{{ lookup('env', 'LIONS_SECURITY_NETWORK_POLICIES') | default('true', true) | bool }}"
+  ingress_rules:
+    - from:
+        - namespace_selector:
+            match_labels:
+              name: "{{ lookup('env', 'LIONS_K8S_INGRESS_NAMESPACE') | default('kube-system', true) }}"
+        - namespace_selector:
+            match_labels:
+              name: "{{ lookup('env', 'LIONS_MONITORING_NAMESPACE') | default('monitoring', true) }}"
+      ports:
+        - protocol: "TCP"
+          port: "{{ notification_ports.http }}"
+        - protocol: "TCP"
+          port: "{{ notification_ports.metrics }}"
+  egress_rules:
+    - to: []
+      ports:
+        - protocol: "TCP"
+          port: 443
+        - protocol: "TCP"
+          port: 80
+        - protocol: "UDP"
+          port: 53
+        - protocol: "TCP"
+          port: 587  # SMTP
+        - protocol: "TCP"
+          port: 25   # SMTP alternatif
+
+# =========================================================================
+# CONFIGURATION DES VARIABLES D'ENVIRONNEMENT POUR LE SERVICE
+# =========================================================================
+notification_environment_variables:
+  # Configuration de base
+  NOTIFICATION_APP_NAME: "{{ notification_app_config.app_name }}"
+  NOTIFICATION_RUN_MODE: "{{ notification_app_config.run_mode }}"
+  NOTIFICATION_PORT: "{{ notification_ports.http }}"
+  NOTIFICATION_METRICS_PORT: "{{ notification_ports.metrics }}"
+
+  # Configuration des canaux
+  NOTIFICATION_EMAIL_ENABLED: "{{ notification_app_config.channels.email.enabled }}"
+  NOTIFICATION_SLACK_ENABLED: "{{ notification_app_config.channels.slack.enabled }}"
+  NOTIFICATION_SMS_ENABLED: "{{ notification_app_config.channels.sms.enabled }}"
+
+  # Configuration SMTP
+  NOTIFICATION_SMTP_HOST: "{{ notification_app_config.channels.email.smtp_host }}"
+  NOTIFICATION_SMTP_PORT: "{{ notification_app_config.channels.email.smtp_port }}"
+  NOTIFICATION_FROM_EMAIL: "{{ notification_app_config.channels.email.from_address }}"
+
+  # Configuration Slack
+  NOTIFICATION_SLACK_DEFAULT_CHANNEL: "{{ notification_app_config.channels.slack.default_channel }}"
+
+  # Configuration des templates
+  NOTIFICATION_TEMPLATES_PATH: "{{ notification_app_config.templates.path }}"
+  NOTIFICATION_DEFAULT_LANGUAGE: "{{ notification_app_config.templates.default_language }}"
+
+  # Configuration de sécurité
+  NOTIFICATION_AUTH_ENABLED: "{{ notification_app_config.security.auth_enabled }}"
+  NOTIFICATION_RATE_LIMIT: "{{ notification_app_config.security.rate_limit }}"
+  NOTIFICATION_ENCRYPTION_ENABLED: "{{ notification_app_config.security.encryption_enabled }}"
+
+  # Configuration des logs
+  NOTIFICATION_LOG_LEVEL: "{{ notification_app_config.log_level }}"
+  NOTIFICATION_LOG_FORMAT: "{{ notification_app_config.log_format }}"
+
+  # Configuration des métriques
+  NOTIFICATION_METRICS_ENABLED: "{{ notification_monitoring.enabled }}"
+
+# =========================================================================
+# VALIDATION DE LA CONFIGURATION
+# =========================================================================
+notification_config_validation:
+  required_vars:
+    - "notification_namespace"
+    - "notification_service_name"
+    - "notification_dns.full_domain"
+
+  required_secrets:
+    - "{{ notification_secrets.admin.password_secret }}"
+    - "{{ notification_secrets.api.key_secret }}"
+    - "{{ notification_secrets.jwt.secret_name }}"
+    - "{{ notification_secrets.encryption.key_secret }}"
+
+# =========================================================================
+# CONFIGURATION DE DEBUG
+# =========================================================================
+notification_debug:
+  enabled: "{{ lookup('env', 'LIONS_DEBUG_MODE') | default('false', true) | bool }}"
+  verbose_logging: "{{ notification_debug.enabled }}"
+  profiling_enabled: "{{ notification_debug.enabled }}"

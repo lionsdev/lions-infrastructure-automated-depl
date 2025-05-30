@@ -1,72 +1,271 @@
 ---
-# Titre: Template d'Ingress Kubernetes pour pgAdmin
-# Description: Définit l'Ingress Kubernetes pour pgAdmin avec Traefik
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-10
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - INGRESS TEMPLATE PGADMIN
+# =========================================================================
+# Description: Template d'Ingress Kubernetes pour pgAdmin avec configuration
+#              dynamique et support multi-environnements
+# Version: 5.0.0
+# Maintainer: DevOps Team LIONS
+# Documentation: https://docs.lions.dev/infrastructure/pgadmin
+# =========================================================================
 
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: "{{ app_name }}"
-  namespace: "{{ app_namespace }}"
+  name: "{{ lions_pgadmin_service_name | default('pgadmin') }}"
+  namespace: "{{ lions_pgadmin_namespace | default('database') }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "pgadmin"
+    app.kubernetes.io/name: "{{ lions_pgadmin_service_name | default('pgadmin') }}"
+    app.kubernetes.io/instance: "{{ lions_pgadmin_service_name | default('pgadmin') }}-{{ ansible_date_time.epoch }}"
+    app.kubernetes.io/version: "{{ lions_pgadmin_version | default('8.0') }}"
+    app.kubernetes.io/component: "database-admin"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+    lions.dev/environment: "{{ lions_environment | default('development') }}"
+    lions.dev/deployment-mode: "{{ lions_deployment_mode | default('single') }}"
+    lions.dev/component-type: "database-management"
+    lions.dev/service-tier: "infrastructure"
   annotations:
-    description: "Ingress pour pgAdmin {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
-    # Annotations pour Let's Encrypt
-    {% if app_environment == 'production' %}
+    # Métadonnées de déploiement
+    lions.dev/deployed-by: "{{ ansible_user_id | default('ansible') }}"
+    lions.dev/deployed-at: "{{ ansible_date_time.iso8601 }}"
+    lions.dev/config-version: "{{ lions_config_version | default('5.0.0') }}"
+
+    # Configuration Let's Encrypt dynamique
+    {% if lions_security_tls_enabled | default(true) %}
+    {% if lions_environment == 'production' and not (lions_security_tls_staging | default(false)) %}
     cert-manager.io/cluster-issuer: "letsencrypt-prod"
     {% else %}
     cert-manager.io/cluster-issuer: "letsencrypt-staging"
     {% endif %}
-    # Annotations spécifiques à Traefik
-    traefik.ingress.kubernetes.io/router.entrypoints: "websecure"
+    {% endif %}
+
+    # Configuration Traefik dynamique
+    {% if lions_k8s_traefik_enabled | default(true) %}
+    traefik.ingress.kubernetes.io/router.entrypoints: "{% if lions_security_tls_enabled | default(true) %}websecure{% else %}web{% endif %}"
+    {% if lions_security_tls_enabled | default(true) %}
     traefik.ingress.kubernetes.io/router.tls: "true"
-    traefik.ingress.kubernetes.io/router.middlewares: "{{ app_namespace }}-{{ app_name }}-strip-prefix@kubernetescrd"
-    # Annotations de sécurité
     traefik.ingress.kubernetes.io/ssl-redirect: "true"
     traefik.ingress.kubernetes.io/ssl-permanent-redirect: "true"
-    # Annotations pour les en-têtes de sécurité
-    traefik.ingress.kubernetes.io/headers-customrequestheaders: "X-Forwarded-Proto:https||X-Forwarded-Port:443"
-    traefik.ingress.kubernetes.io/headers-customresponseheaders: "X-Content-Type-Options:nosniff||X-Frame-Options:SAMEORIGIN||X-XSS-Protection:1; mode=block"
-    # Annotations pour la compression
-    traefik.ingress.kubernetes.io/compress: "true"
-    # Annotations pour les timeouts
-    traefik.ingress.kubernetes.io/request-timeout: "300"
+    {% endif %}
+
+    # Middlewares Traefik
+    traefik.ingress.kubernetes.io/router.middlewares: >-
+      {{ lions_pgadmin_namespace | default('database') }}-{{ lions_pgadmin_service_name | default('pgadmin') }}-security@kubernetescrd,
+      {{ lions_pgadmin_namespace | default('database') }}-{{ lions_pgadmin_service_name | default('pgadmin') }}-compress@kubernetescrd{% if lions_pgadmin_path_prefix | default('') != '' %},
+      {{ lions_pgadmin_namespace | default('database') }}-{{ lions_pgadmin_service_name | default('pgladmin') }}-strip-prefix@kubernetescrd{% endif %}
+
+    # Configuration des timeouts selon l'environnement
+    {% if lions_environment == 'production' %}
+    traefik.ingress.kubernetes.io/request-timeout: "{{ lions_pgladmin_timeout_production | default('600') }}"
+    {% elif lions_environment == 'staging' %}
+    traefik.ingress.kubernetes.io/request-timeout: "{{ lions_pgladmin_timeout_staging | default('300') }}"
+    {% else %}
+    traefik.ingress.kubernetes.io/request-timeout: "{{ lions_pgladmin_timeout_development | default('120') }}"
+    {% endif %}
+
+    # Configuration du rate limiting selon l'environnement
+    {% if lions_environment == 'production' %}
+    traefik.ingress.kubernetes.io/rate-limit: "{{ lions_pgladmin_rate_limit_production | default('100') }}"
+    {% endif %}
+    {% endif %}
+
+    # Annotations de monitoring
+    prometheus.io/scrape: "true"
+    prometheus.io/path: "/metrics"
+    prometheus.io/port: "{{ lions_pgladmin_metrics_port | default('9090') }}"
+
 spec:
-  ingressClassName: traefik
+  ingressClassName: "{{ lions_ingress_class | default('traefik') }}"
+
+  {% if lions_security_tls_enabled | default(true) %}
   tls:
-  - hosts:
-    - "{{ app_name }}.{{ app_environment }}.lions.dev"
-    secretName: "{{ app_name }}-tls"
+    - hosts:
+        - "{{ lions_pgladmin_hostname | default(lions_pgladmin_service_name + '.' + lions_dns_full_domain) }}"
+    {% if lions_pgladmin_additional_hostnames | default([]) | length > 0 %}
+    {% for hostname in lions_pgladmin_additional_hostnames %}
+        - "{{ hostname }}"
+    {% endfor %}
+    {% endif %}
+      secretName: "{{ lions_pgladmin_service_name | default('pgladmin') }}-tls-{{ lions_environment }}"
+  {% endif %}
+
   rules:
-  - host: "{{ app_name }}.{{ app_environment }}.lions.dev"
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: "{{ app_name }}"
-            port:
-              number: {{ pgadmin_default_port | default(80) }}
+    - host: "{{ lions_pgladmin_hostname | default(lions_pgladmin_service_name + '.' + lions_dns_full_domain) }}"
+      http:
+        paths:
+          - path: "{{ lions_pgladmin_path_prefix | default('/') }}"
+            pathType: "{{ lions_pgladmin_path_type | default('Prefix') }}"
+            backend:
+              service:
+                name: "{{ lions_pgladmin_service_name | default('pgladmin') }}"
+                port:
+                  number: {{ lions_pgladmin_port | default(80) }}
+
+  {% if lions_pgladmin_additional_hostnames | default([]) | length > 0 %}
+  {% for hostname in lions_pgladmin_additional_hostnames %}
+    - host: "{{ hostname }}"
+      http:
+        paths:
+          - path: "{{ lions_pgladmin_path_prefix | default('/') }}"
+            pathType: "{{ lions_pgladmin_path_type | default('Prefix') }}"
+            backend:
+              service:
+                name: "{{ lions_pgladmin_service_name | default('pgladmin') }}"
+                port:
+                  number: {{ lions_pgladmin_port | default(80) }}
+  {% endfor %}
+  {% endif %}
+
 ---
-# Middleware pour supprimer le préfixe de l'URL
+# =========================================================================
+# MIDDLEWARE DE SÉCURITÉ TRAEFIK
+# =========================================================================
+{% if lions_k8s_traefik_enabled | default(true) %}
 apiVersion: traefik.containo.us/v1alpha1
 kind: Middleware
 metadata:
-  name: "{{ app_name }}-strip-prefix"
-  namespace: "{{ app_namespace }}"
+  name: "{{ lions_pgladmin_service_name | default('pgladmin') }}-security"
+  namespace: "{{ lions_pgladmin_namespace | default('database') }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "pgadmin"
+    app.kubernetes.io/name: "{{ lions_pgladmin_service_name | default('pgladmin') }}"
+    app.kubernetes.io/component: "middleware"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    lions.dev/environment: "{{ lions_environment | default('development') }}"
+spec:
+  headers:
+    # En-têtes de sécurité
+    customRequestHeaders:
+      X-Forwarded-Proto: "{% if lions_security_tls_enabled | default(true) %}https{% else %}http{% endif %}"
+      X-Forwarded-Port: "{% if lions_security_tls_enabled | default(true) %}443{% else %}80{% endif %}"
+      X-Real-IP: ""
+    customResponseHeaders:
+      X-Content-Type-Options: "nosniff"
+      X-Frame-Options: "{{ lions_pgladmin_frame_options | default('SAMEORIGIN') }}"
+      X-XSS-Protection: "1; mode=block"
+      Referrer-Policy: "{{ lions_pgladmin_referrer_policy | default('strict-origin-when-cross-origin') }}"
+      {% if lions_security_tls_enabled | default(true) %}
+      Strict-Transport-Security: "max-age={{ lions_pgladmin_hsts_max_age | default('31536000') }}; includeSubDomains"
+      {% endif %}
+      {% if lions_pgladmin_csp_policy | default('') != '' %}
+      Content-Security-Policy: "{{ lions_pgladmin_csp_policy }}"
+      {% endif %}
+    # Configuration CORS si nécessaire
+    {% if lions_pgladmin_cors_enabled | default(false) %}
+    accessControlAllowMethods:
+      - "GET"
+      - "POST"
+      - "PUT"
+      - "DELETE"
+      - "OPTIONS"
+    accessControlAllowOriginList:
+      {% for origin in lions_pgladmin_cors_allowed_origins | default([]) %}
+      - "{{ origin }}"
+      {% endfor %}
+    accessControlAllowHeaders:
+      - "Content-Type"
+      - "Authorization"
+      - "X-Requested-With"
+    accessControlMaxAge: {{ lions_pgladmin_cors_max_age | default(3600) }}
+    {% endif %}
+
+---
+# =========================================================================
+# MIDDLEWARE DE COMPRESSION TRAEFIK
+# =========================================================================
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: "{{ lions_pgladmin_service_name | default('pgladmin') }}-compress"
+  namespace: "{{ lions_pgladmin_namespace | default('database') }}"
+  labels:
+    app.kubernetes.io/name: "{{ lions_pgladmin_service_name | default('pgladmin') }}"
+    app.kubernetes.io/component: "middleware"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    lions.dev/environment: "{{ lions_environment | default('development') }}"
+spec:
+  compress:
+    excludedContentTypes:
+      - "text/event-stream"
+      - "application/grpc"
+    minResponseBodyBytes: {{ lions_pgladmin_compress_min_size | default(1024) }}
+
+{% if lions_pgladmin_path_prefix | default('') != '' and lions_pgladmin_path_prefix != '/' %}
+---
+# =========================================================================
+# MIDDLEWARE STRIP PREFIX TRAEFIK
+# =========================================================================
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: "{{ lions_pgladmin_service_name | default('pgladmin') }}-strip-prefix"
+  namespace: "{{ lions_pgladmin_namespace | default('database') }}"
+  labels:
+    app.kubernetes.io/name: "{{ lions_pgladmin_service_name | default('pgladmin') }}"
+    app.kubernetes.io/component: "middleware"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    lions.dev/environment: "{{ lions_environment | default('development') }}"
 spec:
   stripPrefix:
     prefixes:
-      - "/{{ app_name }}"
+      - "{{ lions_pgladmin_path_prefix }}"
+    forceSlash: {{ lions_pgladmin_strip_prefix_force_slash | default(false) }}
+{% endif %}
+
+{% if lions_environment == 'production' and lions_pgladmin_rate_limit_enabled | default(true) %}
+---
+# =========================================================================
+# MIDDLEWARE RATE LIMITING TRAEFIK (PRODUCTION UNIQUEMENT)
+# =========================================================================
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: "{{ lions_pgladmin_service_name | default('pgladmin') }}-rate-limit"
+  namespace: "{{ lions_pgladmin_namespace | default('database') }}"
+  labels:
+    app.kubernetes.io/name: "{{ lions_pgladmin_service_name | default('pgladmin') }}"
+    app.kubernetes.io/component: "middleware"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    lions.dev/environment: "{{ lions_environment }}"
+spec:
+  rateLimit:
+    average: {{ lions_pgladmin_rate_limit_average | default(100) }}
+    burst: {{ lions_pgladmin_rate_limit_burst | default(200) }}
+    period: "{{ lions_pgladmin_rate_limit_period | default('1m') }}"
+    sourceCriterion:
+      ipStrategy:
+        depth: {{ lions_pgladmin_rate_limit_ip_depth | default(1) }}
+{% endif %}
+
+{% if lions_pgladmin_auth_enabled | default(false) %}
+---
+# =========================================================================
+# MIDDLEWARE D'AUTHENTIFICATION TRAEFIK
+# =========================================================================
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: "{{ lions_pgladmin_service_name | default('pgladmin') }}-auth"
+  namespace: "{{ lions_pgladmin_namespace | default('database') }}"
+  labels:
+    app.kubernetes.io/name: "{{ lions_pgladmin_service_name | default('pgladmin') }}"
+    app.kubernetes.io/component: "middleware"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    lions.dev/environment: "{{ lions_environment | default('development') }}"
+spec:
+  {% if lions_pgladmin_auth_type | default('basic') == 'basic' %}
+  basicAuth:
+    secret: "{{ lions_pgladmin_auth_secret | default(lions_pgladmin_service_name + '-auth') }}"
+    realm: "{{ lions_pgladmin_auth_realm | default('pgAdmin Access') }}"
+    removeHeader: {{ lions_pgladmin_auth_remove_header | default(true) }}
+  {% elif lions_pgladmin_auth_type == 'forward' %}
+  forwardAuth:
+    address: "{{ lions_pgladmin_forward_auth_address }}"
+    trustForwardHeader: {{ lions_pgladmin_forward_auth_trust | default(false) }}
+    authResponseHeaders:
+      {% for header in lions_pgladmin_forward_auth_headers | default(['X-User', 'X-Email']) %}
+      - "{{ header }}"
+      {% endfor %}
+  {% endif %}
+{% endif %}
+{% endif %}

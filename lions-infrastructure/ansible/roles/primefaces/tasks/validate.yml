@@ -1,138 +1,653 @@
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - PRIMEFACES VALIDATION TASKS
+# =========================================================================
+# Description: Tâches Ansible pour la validation post-déploiement PrimeFaces
+# Composant: PrimeFaces Application Validation
+# Version: 5.0.0
+# Maintainer: DevOps LIONS Team
+# Documentation: https://docs.lions.dev/infrastructure/primefaces/validation
+# =========================================================================
+
 ---
-# Titre: Validation post-déploiement pour PrimeFaces
-# Description: Valide le déploiement d'une application PrimeFaces
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# PHASE DE VALIDATION - INITIALISATION
+# =========================================================================
 
-- name: Attente que l'application soit prête
-  uri:
-    url: "http://{{ app_name }}.{{ app_namespace }}.svc.cluster.local:{{ primefaces_default_port }}/health"
-    status_code: 200
-    validate_certs: no
-  register: health_check
-  until: health_check.status == 200
-  retries: 30
-  delay: 10
-  ignore_errors: yes
-
-- name: Vérification de l'état de santé de l'application
-  debug:
-    msg: "L'application {{ app_name }} est en bonne santé et prête à recevoir des requêtes."
-  when: health_check is succeeded
-
-- name: Avertissement si l'application n'est pas en bonne santé
-  debug:
-    msg: "AVERTISSEMENT: L'application {{ app_name }} n'est pas en bonne santé. Vérifiez les logs pour plus d'informations."
-  when: health_check is failed
-
-- name: Récupération de l'URL d'accès
+- name: "PrimeFaces Validate | {{ current_phase | default('validation') | title }} - Initialisation"
   set_fact:
-    app_url: "https://{{ app_domain }}"
-  when: app_environment != 'development' or (extra_params.create_ingress | default(true) | bool)
+    primefaces_validate_start_time: "{{ ansible_date_time.epoch }}"
+    primefaces_validation_tests:
+      kubernetes_resources: false
+      application_health: false
+      database_connectivity: false
+      cache_connectivity: false
+      external_accessibility: false
+      ssl_certificate: false
+      monitoring_metrics: false
+      authentication: false
+      performance_baseline: false
+      security_headers: false
+      api_endpoints: false
+      ui_responsiveness: false
+    primefaces_validation_errors: []
+    primefaces_validation_warnings: []
+    primefaces_application_url: "https://{{ lions_primefaces_hostname }}.{{ lions_dns_full_domain }}"
+    primefaces_internal_url: "http://{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}.{{ lions_primefaces_namespace }}.svc.cluster.local:{{ lions_primefaces_port }}"
+  tags:
+    - primefaces
+    - validate
+    - init
 
-- name: Affichage de l'URL d'accès
+- name: "PrimeFaces Validate | Affichage des informations de validation"
   debug:
-    msg: "L'application {{ app_name }} est accessible à l'adresse: {{ app_url }}"
-  when: app_url is defined
+    msg:
+      - "🔍 Validation post-déploiement PrimeFaces"
+      - "📋 Application: {{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+      - "🏷️  Namespace: {{ lions_primefaces_namespace }}"
+      - "🌍 Environnement: {{ lions_environment }}"
+      - "🌐 URL externe: {{ primefaces_application_url }}"
+      - "🔗 URL interne: {{ primefaces_internal_url }}"
+  when: primefaces_deployment_config.debug_mode | default(false) | bool
+  tags:
+    - primefaces
+    - validate
+    - debug
 
-- name: Vérification de l'accessibilité externe (si ingress est configuré)
+# =========================================================================
+# VALIDATION DES RESSOURCES KUBERNETES
+# =========================================================================
+
+- name: "PrimeFaces Validate | Vérification du Deployment"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ lions_primefaces_namespace }}"
+    name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+    wait: true
+    wait_condition:
+      type: Available
+      status: "True"
+    wait_timeout: "{{ lions_primefaces_validation_timeout | default(300) }}"
+  register: primefaces_deployment_status
+  failed_when: false
+
+- name: "PrimeFaces Validate | Vérification du Service"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Service
+    namespace: "{{ lions_primefaces_namespace }}"
+    name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+  register: primefaces_service_status
+  failed_when: false
+
+- name: "PrimeFaces Validate | Vérification de l'Ingress"
+  kubernetes.core.k8s_info:
+    api_version: networking.k8s.io/v1
+    kind: Ingress
+    namespace: "{{ lions_primefaces_namespace }}"
+    name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+  register: primefaces_ingress_status
+  when: lions_ingress_enabled | bool
+  failed_when: false
+
+- name: "PrimeFaces Validate | Vérification des Pods"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: "{{ lions_primefaces_namespace }}"
+    label_selectors:
+      - "app.kubernetes.io/name={{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+  register: primefaces_pods_status
+  failed_when: false
+
+- name: "PrimeFaces Validate | Analyse de l'état des pods"
+  set_fact:
+    primefaces_healthy_pods: "{{ primefaces_pods_status.resources | selectattr('status.phase', 'equalto', 'Running') | list | length }}"
+    primefaces_total_pods: "{{ primefaces_pods_status.resources | length }}"
+    primefaces_expected_pods: "{{ lions_primefaces_replicas | default('1') | int }}"
+
+- name: "PrimeFaces Validate | Validation des ressources Kubernetes"
+  set_fact:
+    primefaces_validation_tests: "{{ primefaces_validation_tests | combine({'kubernetes_resources': (primefaces_deployment_status.resources | default([]) | length > 0) and (primefaces_service_status.resources | default([]) | length > 0) and (primefaces_healthy_pods | int == primefaces_expected_pods | int)}) }}"
+    primefaces_validation_errors: "{{ primefaces_validation_errors + ['KubernetesResources: Resources not properly deployed'] if not ((primefaces_deployment_status.resources | default([]) | length > 0) and (primefaces_service_status.resources | default([]) | length > 0) and (primefaces_healthy_pods | int == primefaces_expected_pods | int)) else primefaces_validation_errors }}"
+
+# =========================================================================
+# VALIDATION DE LA SANTÉ DE L'APPLICATION
+# =========================================================================
+
+- name: "PrimeFaces Validate | Test de santé - Startup probe"
   uri:
-    url: "{{ app_url }}"
+    url: "{{ primefaces_internal_url }}/actuator/health/readiness"
     method: GET
-    status_code: 200, 301, 302, 307, 308
-    validate_certs: no
-    follow_redirects: no
-  register: external_check
-  ignore_errors: yes
-  when: app_url is defined
+    status_code: [200, 503]
+    timeout: "{{ lions_timeout_default }}"
+    validate_certs: false
+  register: primefaces_startup_health
+  retries: "{{ lions_primefaces_health_retries | default(30) }}"
+  delay: "{{ lions_primefaces_health_delay | default(10) }}"
+  until: primefaces_startup_health.status == 200
+  when: lions_monitoring_enabled | bool
+  failed_when: false
 
-- name: Affichage du résultat de la vérification externe
-  debug:
-    msg: "L'application {{ app_name }} est accessible depuis l'extérieur."
-  when: external_check is defined and external_check is succeeded
-
-- name: Avertissement si l'application n'est pas accessible depuis l'extérieur
-  debug:
-    msg: "AVERTISSEMENT: L'application {{ app_name }} n'est pas accessible depuis l'extérieur. Vérifiez la configuration de l'ingress."
-  when: external_check is defined and external_check is failed
-
-- name: Vérification des métriques Prometheus
+- name: "PrimeFaces Validate | Test de santé - Liveness probe"
   uri:
-    url: "http://{{ app_name }}.{{ app_namespace }}.svc.cluster.local:{{ primefaces_prometheus_port }}/metrics"
-    status_code: 200
-    validate_certs: no
-  register: metrics_check
-  ignore_errors: yes
-  when: primefaces_prometheus_scrape | bool
+    url: "{{ primefaces_internal_url }}/actuator/health/liveness"
+    method: GET
+    status_code: [200]
+    timeout: "{{ lions_timeout_default }}"
+    validate_certs: false
+  register: primefaces_liveness_health
+  when: lions_monitoring_enabled | bool
+  failed_when: false
 
-- name: Affichage du résultat de la vérification des métriques
-  debug:
-    msg: "Les métriques Prometheus sont disponibles pour l'application {{ app_name }}."
-  when: metrics_check is defined and metrics_check is succeeded
-
-- name: Avertissement si les métriques ne sont pas disponibles
-  debug:
-    msg: "AVERTISSEMENT: Les métriques Prometheus ne sont pas disponibles pour l'application {{ app_name }}."
-  when: metrics_check is defined and metrics_check is failed
-
-- name: Vérification spécifique à PrimeFaces
-  debug:
-    msg: "Vérification spécifique à PrimeFaces"
-
-- name: Vérification de la connexion à la base de données
+- name: "PrimeFaces Validate | Test de santé - Application endpoint"
   uri:
-    url: "http://{{ app_name }}.{{ app_namespace }}.svc.cluster.local:{{ primefaces_default_port }}/api/system/db-status"
-    status_code: 200
-    validate_certs: no
-  register: db_check
+    url: "{{ primefaces_internal_url }}{{ lions_primefaces_context_path | default('/') }}"
+    method: GET
+    status_code: [200, 302, 401]
+    timeout: "{{ lions_timeout_default }}"
+    validate_certs: false
+  register: primefaces_app_health
+  retries: 5
+  delay: 10
+  until: primefaces_app_health.status in [200, 302, 401]
+  failed_when: false
+
+- name: "PrimeFaces Validate | Validation de la santé de l'application"
+  set_fact:
+    primefaces_validation_tests: "{{ primefaces_validation_tests | combine({'application_health': (primefaces_startup_health.status == 200 or not lions_monitoring_enabled | bool) and (primefaces_liveness_health.status == 200 or not lions_monitoring_enabled | bool) and (primefaces_app_health.status in [200, 302, 401])}) }}"
+    primefaces_validation_errors: "{{ primefaces_validation_errors + ['ApplicationHealth: Application not responding properly'] if not ((primefaces_startup_health.status == 200 or not lions_monitoring_enabled | bool) and (primefaces_liveness_health.status == 200 or not lions_monitoring_enabled | bool) and (primefaces_app_health.status in [200, 302, 401])) else primefaces_validation_errors }}"
+
+# =========================================================================
+# VALIDATION DE LA CONNECTIVITÉ BASE DE DONNÉES
+# =========================================================================
+
+- name: "PrimeFaces Validate | Test de connectivité PostgreSQL"
+  uri:
+    url: "{{ primefaces_internal_url }}/actuator/health/db"
+    method: GET
+    status_code: [200]
+    timeout: "{{ lions_timeout_default }}"
+    validate_certs: false
+  register: primefaces_db_health
+  when: 
+    - lions_postgres_enabled | bool
+    - lions_monitoring_enabled | bool
+  failed_when: false
+
+- name: "PrimeFaces Validate | Test de requête base de données"
+  uri:
+    url: "{{ primefaces_internal_url }}/actuator/health"
+    method: GET
+    status_code: [200]
+    timeout: "{{ lions_timeout_default }}"
+    validate_certs: false
+  register: primefaces_overall_health
+  when: lions_postgres_enabled | bool
+  failed_when: false
+
+- name: "PrimeFaces Validate | Validation de la connectivité base de données"
+  set_fact:
+    primefaces_validation_tests: "{{ primefaces_validation_tests | combine({'database_connectivity': (primefaces_db_health.status == 200 or not lions_monitoring_enabled | bool) and (primefaces_overall_health.status == 200 or not lions_postgres_enabled | bool)}) }}"
+    primefaces_validation_warnings: "{{ primefaces_validation_warnings + ['DatabaseConnectivity: Database health check failed'] if (lions_postgres_enabled | bool and ((primefaces_db_health.status != 200 and lions_monitoring_enabled | bool) or primefaces_overall_health.status != 200)) else primefaces_validation_warnings }}"
+
+# =========================================================================
+# VALIDATION DE LA CONNECTIVITÉ CACHE REDIS
+# =========================================================================
+
+- name: "PrimeFaces Validate | Test de connectivité Redis"
+  uri:
+    url: "{{ primefaces_internal_url }}/actuator/health/redis"
+    method: GET
+    status_code: [200]
+    timeout: "{{ lions_timeout_default }}"
+    validate_certs: false
+  register: primefaces_redis_health
+  when: 
+    - lions_redis_enabled | bool
+    - lions_monitoring_enabled | bool
+  failed_when: false
+
+- name: "PrimeFaces Validate | Validation de la connectivité Redis"
+  set_fact:
+    primefaces_validation_tests: "{{ primefaces_validation_tests | combine({'cache_connectivity': (primefaces_redis_health.status == 200) or not (lions_redis_enabled | bool and lions_monitoring_enabled | bool)}) }}"
+    primefaces_validation_warnings: "{{ primefaces_validation_warnings + ['CacheConnectivity: Redis health check failed'] if (lions_redis_enabled | bool and lions_monitoring_enabled | bool and primefaces_redis_health.status != 200) else primefaces_validation_warnings }}"
+
+# =========================================================================
+# VALIDATION DE L'ACCESSIBILITÉ EXTERNE
+# =========================================================================
+
+- name: "PrimeFaces Validate | Test d'accessibilité externe"
+  uri:
+    url: "{{ primefaces_application_url }}"
+    method: GET
+    status_code: [200, 301, 302, 401, 403]
+    timeout: "{{ lions_timeout_default }}"
+    validate_certs: "{{ lions_security_tls_enabled | bool }}"
+    follow_redirects: false
+  register: primefaces_external_access
+  when: lions_ingress_enabled | bool
+  retries: 3
+  delay: 10
+  failed_when: false
+
+- name: "PrimeFaces Validate | Validation de l'accessibilité externe"
+  set_fact:
+    primefaces_validation_tests: "{{ primefaces_validation_tests | combine({'external_accessibility': (primefaces_external_access.status in [200, 301, 302, 401, 403]) or not (lions_ingress_enabled | bool)}) }}"
+    primefaces_validation_warnings: "{{ primefaces_validation_warnings + ['ExternalAccessibility: External access failed'] if (lions_ingress_enabled | bool and primefaces_external_access.status not in [200, 301, 302, 401, 403]) else primefaces_validation_warnings }}"
+
+# =========================================================================
+# VALIDATION DU CERTIFICAT SSL
+# =========================================================================
+
+- name: "PrimeFaces Validate | Vérification du certificat SSL"
+  uri:
+    url: "{{ primefaces_application_url }}"
+    method: HEAD
+    timeout: "{{ lions_timeout_default }}"
+    validate_certs: true
+  register: primefaces_ssl_check
+  when: 
+    - lions_ingress_enabled | bool
+    - lions_security_tls_enabled | bool
+  failed_when: false
+
+- name: "PrimeFaces Validate | Validation du certificat SSL"
+  set_fact:
+    primefaces_validation_tests: "{{ primefaces_validation_tests | combine({'ssl_certificate': (primefaces_ssl_check.status in [200, 301, 302, 401, 403]) or not (lions_security_tls_enabled | bool and lions_ingress_enabled | bool)}) }}"
+    primefaces_validation_warnings: "{{ primefaces_validation_warnings + ['SSLCertificate: SSL certificate validation failed'] if (lions_security_tls_enabled | bool and lions_ingress_enabled | bool and primefaces_ssl_check.status not in [200, 301, 302, 401, 403]) else primefaces_validation_warnings }}"
+
+# =========================================================================
+# VALIDATION DES MÉTRIQUES DE MONITORING
+# =========================================================================
+
+- name: "PrimeFaces Validate | Test des métriques Prometheus"
+  uri:
+    url: "{{ primefaces_internal_url }}/actuator/prometheus"
+    method: GET
+    status_code: [200]
+    timeout: "{{ lions_timeout_default }}"
+    validate_certs: false
+  register: primefaces_metrics_check
+  when: lions_monitoring_enabled | bool
+  failed_when: false
+
+- name: "PrimeFaces Validate | Validation des métriques de monitoring"
+  set_fact:
+    primefaces_validation_tests: "{{ primefaces_validation_tests | combine({'monitoring_metrics': (primefaces_metrics_check.status == 200) or not (lions_monitoring_enabled | bool)}) }}"
+    primefaces_validation_warnings: "{{ primefaces_validation_warnings + ['MonitoringMetrics: Prometheus metrics not available'] if (lions_monitoring_enabled | bool and primefaces_metrics_check.status != 200) else primefaces_validation_warnings }}"
+
+# =========================================================================
+# VALIDATION DE L'AUTHENTIFICATION
+# =========================================================================
+
+- name: "PrimeFaces Validate | Test d'authentification Keycloak"
+  uri:
+    url: "{{ primefaces_application_url }}/login"
+    method: GET
+    status_code: [200, 302, 401]
+    timeout: "{{ lions_timeout_default }}"
+    validate_certs: "{{ lions_security_tls_enabled | bool }}"
+    follow_redirects: false
+  register: primefaces_auth_check
+  when: 
+    - lions_keycloak_enabled | bool
+    - lions_ingress_enabled | bool
+  failed_when: false
+
+- name: "PrimeFaces Validate | Validation de l'authentification"
+  set_fact:
+    primefaces_validation_tests: "{{ primefaces_validation_tests | combine({'authentication': (primefaces_auth_check.status in [200, 302, 401]) or not (lions_keycloak_enabled | bool and lions_ingress_enabled | bool)}) }}"
+    primefaces_validation_warnings: "{{ primefaces_validation_warnings + ['Authentication: Authentication system not responding'] if (lions_keycloak_enabled | bool and lions_ingress_enabled | bool and primefaces_auth_check.status not in [200, 302, 401]) else primefaces_validation_warnings }}"
+
+# =========================================================================
+# VALIDATION DES HEADERS DE SÉCURITÉ
+# =========================================================================
+
+- name: "PrimeFaces Validate | Test des headers de sécurité"
+  uri:
+    url: "{{ primefaces_application_url }}"
+    method: HEAD
+    timeout: "{{ lions_timeout_default }}"
+    validate_certs: "{{ lions_security_tls_enabled | bool }}"
+  register: primefaces_security_headers
+  when: lions_ingress_enabled | bool
+  failed_when: false
+
+- name: "PrimeFaces Validate | Analyse des headers de sécurité"
+  set_fact:
+    primefaces_security_headers_present: >-
+      {{ (primefaces_security_headers.response_headers is defined) and
+         ('X-Frame-Options' in primefaces_security_headers.response_headers or 'x-frame-options' in primefaces_security_headers.response_headers) and
+         ('X-Content-Type-Options' in primefaces_security_headers.response_headers or 'x-content-type-options' in primefaces_security_headers.response_headers) }}
+  when: 
+    - lions_ingress_enabled | bool
+    - primefaces_security_headers is succeeded
+
+- name: "PrimeFaces Validate | Validation des headers de sécurité"
+  set_fact:
+    primefaces_validation_tests: "{{ primefaces_validation_tests | combine({'security_headers': primefaces_security_headers_present | default(false) or not (lions_ingress_enabled | bool)}) }}"
+    primefaces_validation_warnings: "{{ primefaces_validation_warnings + ['SecurityHeaders: Security headers not properly configured'] if (lions_ingress_enabled | bool and not primefaces_security_headers_present | default(false)) else primefaces_validation_warnings }}"
+
+# =========================================================================
+# VALIDATION DES ENDPOINTS API
+# =========================================================================
+
+- name: "PrimeFaces Validate | Test des endpoints API principaux"
+  uri:
+    url: "{{ primefaces_internal_url }}/api/{{ item }}"
+    method: GET
+    status_code: [200, 401, 403, 404]
+    timeout: "{{ lions_timeout_default }}"
+    validate_certs: false
+  register: primefaces_api_endpoints
+  loop:
+    - "health"
+    - "version" 
+    - "status"
+  failed_when: false
   ignore_errors: yes
 
-- name: Affichage du résultat de la vérification de la base de données
-  debug:
-    msg: "La connexion à la base de données est fonctionnelle pour l'application {{ app_name }}."
-  when: db_check is succeeded
+- name: "PrimeFaces Validate | Validation des endpoints API"
+  set_fact:
+    primefaces_api_success_count: "{{ primefaces_api_endpoints.results | selectattr('status', 'in', [200, 401, 403]) | list | length }}"
 
-- name: Avertissement si la connexion à la base de données n'est pas fonctionnelle
-  debug:
-    msg: "AVERTISSEMENT: La connexion à la base de données n'est pas fonctionnelle pour l'application {{ app_name }}."
-  when: db_check is failed
+- name: "PrimeFaces Validate | Mise à jour de la validation API"
+  set_fact:
+    primefaces_validation_tests: "{{ primefaces_validation_tests | combine({'api_endpoints': (primefaces_api_success_count | int) >= 1}) }}"
+    primefaces_validation_warnings: "{{ primefaces_validation_warnings + ['APIEndpoints: Some API endpoints not responding'] if (primefaces_api_success_count | int) < 1 else primefaces_validation_warnings }}"
 
-- name: Enregistrement des informations de déploiement
+# =========================================================================
+# VALIDATION DE LA RESPONSIVITÉ DE L'INTERFACE
+# =========================================================================
+
+- name: "PrimeFaces Validate | Test de responsivité de l'interface"
+  uri:
+    url: "{{ primefaces_application_url }}"
+    method: GET
+    timeout: "{{ lions_primefaces_ui_timeout | default(30) }}"
+    validate_certs: "{{ lions_security_tls_enabled | bool }}"
+  register: primefaces_ui_response
+  when: lions_ingress_enabled | bool
+  failed_when: false
+
+- name: "PrimeFaces Validate | Validation de la responsivité UI"
+  set_fact:
+    primefaces_validation_tests: "{{ primefaces_validation_tests | combine({'ui_responsiveness': (primefaces_ui_response.elapsed | default(999)) < (lions_primefaces_ui_timeout | default(30)) or not (lions_ingress_enabled | bool)}) }}"
+    primefaces_validation_warnings: "{{ primefaces_validation_warnings + ['UIResponsiveness: UI response time is slow'] if (lions_ingress_enabled | bool and (primefaces_ui_response.elapsed | default(999)) >= (lions_primefaces_ui_timeout | default(30))) else primefaces_validation_warnings }}"
+
+# =========================================================================
+# BASELINE DE PERFORMANCE
+# =========================================================================
+
+- name: "PrimeFaces Validate | Test de performance baseline"
+  uri:
+    url: "{{ primefaces_internal_url }}/actuator/metrics/http.server.requests"
+    method: GET
+    status_code: [200]
+    timeout: "{{ lions_timeout_default }}"
+    validate_certs: false
+  register: primefaces_performance_metrics
+  when: lions_monitoring_enabled | bool
+  failed_when: false
+
+- name: "PrimeFaces Validate | Validation de la baseline de performance"
+  set_fact:
+    primefaces_validation_tests: "{{ primefaces_validation_tests | combine({'performance_baseline': (primefaces_performance_metrics.status == 200) or not (lions_monitoring_enabled | bool)}) }}"
+    primefaces_validation_warnings: "{{ primefaces_validation_warnings + ['PerformanceBaseline: Performance metrics not available'] if (lions_monitoring_enabled | bool and primefaces_performance_metrics.status != 200) else primefaces_validation_warnings }}"
+
+# =========================================================================
+# RAPPORT DE VALIDATION
+# =========================================================================
+
+- name: "PrimeFaces Validate | Collecte des métriques de validation"
+  set_fact:
+    primefaces_validation_metrics:
+      duration: "{{ (ansible_date_time.epoch | int) - (primefaces_validate_start_time | int) }}"
+      tests_passed: "{{ primefaces_validation_tests.values() | select('equalto', true) | list | length }}"
+      total_tests: "{{ primefaces_validation_tests | length }}"
+      success_rate: "{{ ((primefaces_validation_tests.values() | select('equalto', true) | list | length) / (primefaces_validation_tests | length) * 100) | round(2) }}"
+      errors_count: "{{ primefaces_validation_errors | length }}"
+      warnings_count: "{{ primefaces_validation_warnings | length }}"
+      critical_tests_passed: >-
+        {{ primefaces_validation_tests.kubernetes_resources and
+           primefaces_validation_tests.application_health }}
+
+- name: "PrimeFaces Validate | Rapport de validation détaillé"
+  debug:
+    msg:
+      - "📊 RAPPORT DE VALIDATION POST-DÉPLOIEMENT PRIMEFACES"
+      - "=================================================="
+      - "⏱️  Durée: {{ primefaces_validation_metrics.duration }}s"
+      - "✅ Tests réussis: {{ primefaces_validation_metrics.tests_passed }}/{{ primefaces_validation_metrics.total_tests }}"
+      - "📊 Taux de succès: {{ primefaces_validation_metrics.success_rate }}%"
+      - "❌ Erreurs critiques: {{ primefaces_validation_metrics.errors_count }}"
+      - "⚠️  Avertissements: {{ primefaces_validation_metrics.warnings_count }}"
+      - ""
+      - "📋 Détail des validations:"
+      - "🎯 Ressources Kubernetes: {{ '✅' if primefaces_validation_tests.kubernetes_resources else '❌' }}"
+      - "🏥 Santé application: {{ '✅' if primefaces_validation_tests.application_health else '❌' }}"
+      - "🗄️  Connectivité BDD: {{ '✅' if primefaces_validation_tests.database_connectivity else '⚠️' }}"
+      - "💾 Connectivité Cache: {{ '✅' if primefaces_validation_tests.cache_connectivity else '⚠️' }}"
+      - "🌐 Accessibilité externe: {{ '✅' if primefaces_validation_tests.external_accessibility else '⚠️' }}"
+      - "🔒 Certificat SSL: {{ '✅' if primefaces_validation_tests.ssl_certificate else '⚠️' }}"
+      - "📊 Métriques monitoring: {{ '✅' if primefaces_validation_tests.monitoring_metrics else '⚠️' }}"
+      - "🔐 Authentification: {{ '✅' if primefaces_validation_tests.authentication else '⚠️' }}"
+      - "🛡️  Headers sécurité: {{ '✅' if primefaces_validation_tests.security_headers else '⚠️' }}"
+      - "🔌 Endpoints API: {{ '✅' if primefaces_validation_tests.api_endpoints else '⚠️' }}"
+      - "⚡ Responsivité UI: {{ '✅' if primefaces_validation_tests.ui_responsiveness else '⚠️' }}"
+      - "📈 Baseline performance: {{ '✅' if primefaces_validation_tests.performance_baseline else '⚠️' }}"
+      - ""
+      - "🔗 URLs de test:"
+      - "- Application: {{ primefaces_application_url }}"
+      - "- Santé: {{ primefaces_internal_url }}/actuator/health"
+      - "- Métriques: {{ primefaces_internal_url }}/actuator/prometheus"
+  tags:
+    - primefaces
+    - validate
+    - report
+
+# =========================================================================
+# GESTION DES ÉCHECS CRITIQUES
+# =========================================================================
+
+- name: "PrimeFaces Validate | Échec critique de validation"
+  fail:
+    msg: |
+      ❌ Validation critique échouée pour PrimeFaces!
+      
+      🚨 Erreurs critiques détectées:
+      {% for error in primefaces_validation_errors %}
+      - {{ error }}
+      {% endfor %}
+      
+      📋 Tests échoués:
+      {% for test, status in primefaces_validation_tests.items() %}
+      {% if not status %}
+      - {{ test }}: FAILED
+      {% endif %}
+      {% endfor %}
+      
+      🔧 Actions requises:
+      1. Vérifiez les logs des pods: kubectl logs -n {{ lions_primefaces_namespace }} -l app.kubernetes.io/name={{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}
+      2. Vérifiez l'état des ressources: kubectl get all -n {{ lions_primefaces_namespace }}
+      3. Consultez la documentation de dépannage: https://docs.lions.dev/infrastructure/primefaces/troubleshooting
+  when: >
+    not primefaces_validation_metrics.critical_tests_passed or
+    primefaces_validation_metrics.errors_count > 0
+
+- name: "PrimeFaces Validate | Avertissements de validation"
+  debug:
+    msg:
+      - "⚠️  Avertissements détectés:"
+      - "{{ primefaces_validation_warnings | join('\n- ') if primefaces_validation_warnings | length > 0 else 'Aucun avertissement' }}"
+      - ""
+      - "📋 L'application est fonctionnelle mais certaines fonctionnalités peuvent être limitées"
+      - "🔧 Consultez la documentation pour les optimisations: https://docs.lions.dev/infrastructure/primefaces/optimization"
+  when: 
+    - primefaces_validation_metrics.critical_tests_passed
+    - primefaces_validation_metrics.warnings_count > 0
+
+- name: "PrimeFaces Validate | Succès de la validation"
+  debug:
+    msg:
+      - "🎉 Validation PrimeFaces terminée avec succès!"
+      - "✅ Tous les tests critiques sont passés"
+      - "📊 Taux de succès: {{ primefaces_validation_metrics.success_rate }}%"
+      - "🌐 Application accessible: {{ primefaces_application_url }}"
+      - "📊 Monitoring disponible: {{ 'Oui' if primefaces_validation_tests.monitoring_metrics else 'Non' }}"
+      - "🔒 Sécurité configurée: {{ 'Oui' if primefaces_validation_tests.ssl_certificate and primefaces_validation_tests.security_headers else 'Partiellement' }}"
+  when: 
+    - primefaces_validation_metrics.critical_tests_passed
+    - primefaces_validation_metrics.errors_count == 0
+    - primefaces_validation_metrics.success_rate == 100
+
+# =========================================================================
+# GÉNÉRATION DU RAPPORT DE DÉPLOIEMENT
+# =========================================================================
+
+- name: "PrimeFaces Validate | Création du répertoire de rapports"
+  file:
+    path: "/var/log/lions/deployments"
+    state: directory
+    mode: '0755'
+  delegate_to: localhost
+  ignore_errors: yes
+
+- name: "PrimeFaces Validate | Génération du rapport de déploiement"
   copy:
     content: |
-      Application: {{ app_name }}
-      Version: {{ app_version }}
-      Environnement: {{ app_environment }}
-      Namespace: {{ app_namespace }}
-      URL: {{ app_url | default('Non disponible') }}
+      =========================================================================
+      RAPPORT DE DÉPLOIEMENT LIONS INFRASTRUCTURE 5.0 - PRIMEFACES
+      =========================================================================
+      
+      Application: {{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}
+      Version: {{ lions_primefaces_app_version | default('latest') }}
+      Environnement: {{ lions_environment }}
+      Namespace: {{ lions_primefaces_namespace }}
       Date de déploiement: {{ ansible_date_time.iso8601 }}
-      Statut: {{ 'Succès' if health_check is succeeded else 'Avertissement' }}
+      Durée de validation: {{ primefaces_validation_metrics.duration }}s
       
-      Ressources:
-        Replicas: {{ app_replicas }}
-        CPU Requests: {{ app_resources.requests.cpu }}
-        Memory Requests: {{ app_resources.requests.memory }}
-        CPU Limits: {{ app_resources.limits.cpu }}
-        Memory Limits: {{ app_resources.limits.memory }}
+      =========================================================================
+      URLS D'ACCÈS
+      =========================================================================
+      Application: {{ primefaces_application_url }}
+      Santé: {{ primefaces_internal_url }}/actuator/health
+      Métriques: {{ primefaces_internal_url }}/actuator/prometheus
+      {% if lions_monitoring_enabled | bool %}
+      Dashboard Grafana: https://grafana.{{ lions_dns_full_domain }}/d/lions-primefaces-{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-{{ lions_environment }}
+      {% endif %}
       
-      Monitoring:
-        Prometheus: {{ 'Activé' if primefaces_prometheus_scrape | bool else 'Désactivé' }}
-        Métriques: {{ 'Disponibles' if metrics_check is defined and metrics_check is succeeded else 'Non disponibles' }}
+      =========================================================================
+      STATUT DE VALIDATION
+      =========================================================================
+      Statut global: {{ 'SUCCÈS' if primefaces_validation_metrics.success_rate == 100 else 'AVERTISSEMENT' if primefaces_validation_metrics.critical_tests_passed else 'ÉCHEC' }}
+      Tests réussis: {{ primefaces_validation_metrics.tests_passed }}/{{ primefaces_validation_metrics.total_tests }}
+      Taux de succès: {{ primefaces_validation_metrics.success_rate }}%
+      Erreurs critiques: {{ primefaces_validation_metrics.errors_count }}
+      Avertissements: {{ primefaces_validation_metrics.warnings_count }}
       
-      Base de données:
-        Connexion: {{ 'Fonctionnelle' if db_check is succeeded else 'Non fonctionnelle' }}
+      =========================================================================
+      DÉTAIL DES TESTS
+      =========================================================================
+      {% for test, status in primefaces_validation_tests.items() %}
+      {{ test }}: {{ 'SUCCÈS' if status else 'ÉCHEC' }}
+      {% endfor %}
       
-      Notes:
-      - Vérifiez les logs de l'application pour plus d'informations.
-      - Pour les problèmes, contactez l'équipe d'infrastructure.
-    dest: "/var/log/lions/deployments/{{ app_name }}-{{ app_environment }}-{{ ansible_date_time.date }}.log"
+      =========================================================================
+      RESSOURCES DÉPLOYÉES
+      =========================================================================
+      Pods sains: {{ primefaces_healthy_pods }}/{{ primefaces_expected_pods }}
+      CPU Requests: {{ lions_primefaces_cpu_request | default('N/A') }}
+      Memory Requests: {{ lions_primefaces_memory_request | default('N/A') }}
+      CPU Limits: {{ lions_primefaces_cpu_limit | default('N/A') }}
+      Memory Limits: {{ lions_primefaces_memory_limit | default('N/A') }}
+      
+      =========================================================================
+      SERVICES INTÉGRÉS
+      =========================================================================
+      PostgreSQL: {{ 'Activé' if lions_postgres_enabled | bool else 'Désactivé' }}
+      Redis: {{ 'Activé' if lions_redis_enabled | bool else 'Désactivé' }}
+      Keycloak: {{ 'Activé' if lions_keycloak_enabled | bool else 'Désactivé' }}
+      Monitoring: {{ 'Activé' if lions_monitoring_enabled | bool else 'Désactivé' }}
+      Ingress: {{ 'Activé' if lions_ingress_enabled | bool else 'Désactivé' }}
+      TLS: {{ 'Activé' if lions_security_tls_enabled | bool else 'Désactivé' }}
+      
+      =========================================================================
+      ERREURS ET AVERTISSEMENTS
+      =========================================================================
+      {% if primefaces_validation_errors | length > 0 %}
+      Erreurs:
+      {% for error in primefaces_validation_errors %}
+      - {{ error }}
+      {% endfor %}
+      {% endif %}
+      
+      {% if primefaces_validation_warnings | length > 0 %}
+      Avertissements:
+      {% for warning in primefaces_validation_warnings %}
+      - {{ warning }}
+      {% endfor %}
+      {% endif %}
+      
+      =========================================================================
+      DOCUMENTATION ET SUPPORT
+      =========================================================================
+      Documentation: https://docs.lions.dev/infrastructure/primefaces
+      Dépannage: https://docs.lions.dev/infrastructure/primefaces/troubleshooting
+      Support: DevOps LIONS Team <devops@lions.dev>
+      
+      =========================================================================
+      COMMANDES UTILES
+      =========================================================================
+      Vérifier les pods:
+      kubectl get pods -n {{ lions_primefaces_namespace }} -l app.kubernetes.io/name={{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}
+      
+      Consulter les logs:
+      kubectl logs -n {{ lions_primefaces_namespace }} -l app.kubernetes.io/name={{ lions_primefaces_app_name | default(lions_primefaces_service_name) }} --tail=100
+      
+      Décrire le déploiement:
+      kubectl describe deployment -n {{ lions_primefaces_namespace }} {{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}
+      
+      Test de santé:
+      curl {{ primefaces_internal_url }}/actuator/health
+      
+      =========================================================================
+    dest: "/var/log/lions/deployments/{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-{{ lions_environment }}-{{ ansible_date_time.date }}.log"
     mode: '0644'
+  delegate_to: localhost
   ignore_errors: yes
 
-- name: Nettoyage des fichiers temporaires
+# =========================================================================
+# NETTOYAGE POST-VALIDATION
+# =========================================================================
+
+- name: "PrimeFaces Validate | Nettoyage des fichiers temporaires"
   file:
-    path: "{{ temp_dir.path }}"
+    path: "{{ primefaces_temp_dir }}"
     state: absent
-  changed_when: false
+  when: 
+    - primefaces_temp_dir is defined
+    - not primefaces_deployment_config.debug_mode | default(false) | bool
   ignore_errors: yes
+  tags:
+    - primefaces
+    - validate
+    - cleanup
+
+# =========================================================================
+# EXPOSITION DES VARIABLES POUR INTÉGRATION
+# =========================================================================
+
+- name: "PrimeFaces Validate | Exposition des résultats de validation"
+  set_fact:
+    primefaces_validation_successful: "{{ primefaces_validation_metrics.critical_tests_passed }}"
+    primefaces_validation_score: "{{ primefaces_validation_metrics.success_rate }}"
+    primefaces_deployment_url: "{{ primefaces_application_url }}"
+    primefaces_health_endpoint: "{{ primefaces_internal_url }}/actuator/health"
+    primefaces_metrics_endpoint: "{{ primefaces_internal_url }}/actuator/prometheus"
+    primefaces_deployment_status: "{{ 'SUCCESS' if primefaces_validation_metrics.success_rate == 100 else 'WARNING' if primefaces_validation_metrics.critical_tests_passed else 'FAILED' }}"
+  tags:
+    - primefaces
+    - validate
+    - variables

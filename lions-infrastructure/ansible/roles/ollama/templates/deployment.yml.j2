@@ -1,67 +1,208 @@
 ---
-# Titre: Template de déploiement Kubernetes pour Ollama
-# Description: Définit le déploiement Kubernetes pour Ollama
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-14
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - OLLAMA DEPLOYMENT TEMPLATE
+# =========================================================================
+# Description: Template Kubernetes pour le déploiement d'Ollama
+# Version: 5.0.0
+# Maintainer: DevOps Team - LIONS Infrastructure
+# Date: {{ ansible_date_time.iso8601 | default(ansible_date_time.date) }}
+# Documentation: https://docs.lions.dev/infrastructure/services/ollama
+# =========================================================================
 
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: "{{ app_name }}"
-  namespace: "{{ app_namespace }}"
+  name: {{ lions_ollama_service_name | default('ollama') }}
+  namespace: {{ lions_ollama_namespace | default('ai') }}
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "ollama"
+    # Labels standardisés LIONS
+    app.kubernetes.io/name: {{ lions_ollama_service_name | default('ollama') }}
+    app.kubernetes.io/instance: {{ lions_ollama_service_name | default('ollama') }}-{{ lions_environment | default('development') }}
+    app.kubernetes.io/version: {{ lions_ollama_version | default('0.1.26') }}
+    app.kubernetes.io/component: ai-service
+    app.kubernetes.io/part-of: lions-infrastructure
+    app.kubernetes.io/managed-by: ansible
+
+    # Labels LIONS spécifiques
+    lions.dev/environment: {{ lions_environment | default('development') }}
+    lions.dev/service-type: ai
+    lions.dev/technology: ollama
+    lions.dev/tier: application
+    lions.dev/monitoring: {{ lions_monitoring_enabled | default('true') | string }}
+    lions.dev/backup: {{ lions_backup_enabled | default('true') | string }}
+
+    # Labels pour le monitoring
+    prometheus.io/scrape: {{ lions_monitoring_enabled | default('true') | string }}
+
   annotations:
-    description: "Déploiement d'Ollama {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    # Annotations de déploiement
     deployment.kubernetes.io/revision: "1"
+    lions.dev/deployment-strategy: "rolling-update"
+    lions.dev/config-version: "{{ lions_config_version | default('5.0.0') }}"
+    lions.dev/last-applied-configuration: "{{ ansible_date_time.iso8601 | default(ansible_date_time.date) }}"
+
+    # Annotations de sécurité
+    seccomp.security.alpha.kubernetes.io/pod: runtime/default
+    container.apparmor.security.beta.kubernetes.io/{{ lions_ollama_service_name | default('ollama') }}: runtime/default
+
+    # Documentation
+    lions.dev/description: "Service Ollama pour l'intelligence artificielle - Environnement {{ lions_environment | default('development') }}"
+    lions.dev/contact: "{{ lions_config_maintainer | default('devops@lions.dev') }}"
+    lions.dev/documentation: "https://docs.lions.dev/services/ollama"
+
 spec:
-  replicas: {{ ollama_replicas[app_environment] }}
+  # Configuration des répliques basée sur l'environnement
+  replicas: {% if lions_environment == 'production' %}{{ lions_autoscaling_min_replicas | default(2) }}{% elif lions_environment == 'staging' %}{{ lions_autoscaling_min_replicas | default(1) }}{% else %}1{% endif %}
+
   selector:
     matchLabels:
-      app: "{{ app_name }}"
+      app.kubernetes.io/name: {{ lions_ollama_service_name | default('ollama') }}
+      app.kubernetes.io/instance: {{ lions_ollama_service_name | default('ollama') }}-{{ lions_environment | default('development') }}
+
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxSurge: 1
+      maxSurge: {% if lions_environment == 'production' %}2{% else %}1{% endif %}
+
       maxUnavailable: 0
+
   template:
     metadata:
       labels:
-        app: "{{ app_name }}"
-        version: "{{ app_version }}"
-        environment: "{{ app_environment }}"
-        technology: "ollama"
+        # Labels identiques au selector + labels additionnels
+        app.kubernetes.io/name: {{ lions_ollama_service_name | default('ollama') }}
+        app.kubernetes.io/instance: {{ lions_ollama_service_name | default('ollama') }}-{{ lions_environment | default('development') }}
+        app.kubernetes.io/version: {{ lions_ollama_version | default('0.1.26') }}
+        app.kubernetes.io/component: ai-service
+        app.kubernetes.io/part-of: lions-infrastructure
+
+        # Labels pour les politiques réseau
+        lions.dev/environment: {{ lions_environment | default('development') }}
+        lions.dev/service-type: ai
+        lions.dev/network-policy: {{ lions_security_network_policies | default('true') | string }}
+
       annotations:
-        prometheus.io/scrape: "{{ ollama_prometheus_scrape | string | lower }}"
-        prometheus.io/path: "{{ ollama_prometheus_path }}"
-        prometheus.io/port: "{{ ollama_prometheus_port | string }}"
+        # Annotations de monitoring Prometheus
+        prometheus.io/scrape: {{ lions_monitoring_enabled | default('true') | string }}
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "{{ lions_ollama_port | default('11434') }}"
+        prometheus.io/scheme: "http"
+
+        # Annotations de logging
+        lions.dev/log-level: "{{ lions_log_level | default('INFO') }}"
+        lions.dev/log-format: "{{ lions_log_format | default('json') }}"
+
+        # Annotations de configuration
+        lions.dev/config-hash: "{{ (ollama_config | default({})) | to_json | hash('sha256') }}"
+        lions.dev/restart-policy: "Always"
+
     spec:
-      serviceAccountName: "{{ app_name }}"
+      # Service Account avec RBAC
+      serviceAccountName: {{ lions_ollama_service_name | default('ollama') }}
+      automountServiceAccountToken: true
+
+      # Configuration de sécurité Pod
       securityContext:
-        runAsNonRoot: false
-        runAsUser: 1000
-        fsGroup: 1000
+        runAsNonRoot: {% if lions_ollama_gpu_enabled | default('false') | bool %}false{% else %}true{% endif %}
+
+        runAsUser: {% if lions_ollama_gpu_enabled | default('false') | bool %}0{% else %}1001{% endif %}
+
+        runAsGroup: 1001
+        fsGroup: 1001
+        fsGroupChangePolicy: "OnRootMismatch"
+        seccompProfile:
+          type: RuntimeDefault
+        supplementalGroups: {% if lions_ollama_gpu_enabled | default('false') | bool %}[44, 107]  # video and render groups{% else %}[]{% endif %}
+
+
+      # Tolérance et affinité
+      tolerations:
+        {% if lions_ollama_gpu_enabled | default('false') | bool %}
+        - key: "nvidia.com/gpu"
+          operator: "Exists"
+          effect: "NoSchedule"
+        {% endif %}
+        - key: "lions.dev/ai-workload"
+          operator: "Equal"
+          value: "true"
+          effect: "NoSchedule"
+
+      affinity:
+        # Anti-affinité pour éviter le colocation
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app.kubernetes.io/name
+                      operator: In
+                      values:
+                        - {{ lions_ollama_service_name | default('ollama') }}
+                topologyKey: kubernetes.io/hostname
+
+        # Affinité pour les nœuds avec GPU si activé
+        {% if lions_ollama_gpu_enabled | default('false') | bool %}
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: accelerator
+                    operator: In
+                    values:
+                      - nvidia-tesla-k80
+                      - nvidia-tesla-p4
+                      - nvidia-tesla-v100
+                      - nvidia-tesla-t4
+                      - nvidia-tesla-a100
+        {% endif %}
+
+      # Délai de grâce pour l'arrêt
+      terminationGracePeriodSeconds: {{ lions_timeout_default | default(300) }}
+
+      # Configuration des conteneurs
       containers:
-        - name: "{{ app_name }}"
-          image: "ollama/ollama:{{ app_version }}"
+        - name: {{ lions_ollama_service_name | default('ollama') }}
+          image: ollama/ollama:{{ lions_ollama_version | default('0.1.26') }}
           imagePullPolicy: IfNotPresent
+
+          # Ports exposés
           ports:
             - name: http
-              containerPort: {{ ollama_default_port }}
+              containerPort: {{ lions_ollama_port | default(11434) }}
               protocol: TCP
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+
+          # Variables d'environnement
           env:
+            # Configuration Ollama
             - name: OLLAMA_HOST
-              value: "0.0.0.0:{{ ollama_default_port }}"
+              value: "0.0.0.0:{{ lions_ollama_port | default(11434) }}"
             - name: OLLAMA_ORIGINS
-              value: "{{ ollama_cors_allowed_origins }}"
+              value: "https://{{ lions_dns_full_domain }},https://*.{{ lions_dns_domain_base }}"
             - name: OLLAMA_MODELS
               value: "/var/lib/ollama/models"
             - name: OLLAMA_HOME
-              value: "/tmp/ollama"
+              value: "/var/lib/ollama"
+            - name: OLLAMA_KEEP_ALIVE
+              value: "5m"
+            - name: OLLAMA_MAX_LOADED_MODELS
+              value: "3"
+            - name: OLLAMA_NUM_PARALLEL
+              value: "{{ ansible_processor_vcpus | default(4) // 2 }}"
+
+            # Configuration GPU si activé
+            {% if lions_ollama_gpu_enabled | default('false') | bool %}
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: "all"
+            - name: NVIDIA_DRIVER_CAPABILITIES
+              value: "compute,utility"
+            {% endif %}
+
+            # Variables Kubernetes
             - name: KUBERNETES_NAMESPACE
               valueFrom:
                 fieldRef:
@@ -70,61 +211,233 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+
+            # Variables LIONS
+            - name: LIONS_ENVIRONMENT
+              value: {{ lions_environment | default('development') }}
+            - name: LIONS_LOG_LEVEL
+              value: {{ lions_log_level | default('INFO') }}
+            - name: LIONS_SERVICE_NAME
+              value: {{ lions_ollama_service_name | default('ollama') }}
+
+          # Configuration depuis ConfigMap et Secrets
           envFrom:
             - configMapRef:
-                name: "{{ app_name }}-config"
+                name: {{ lions_ollama_service_name | default('ollama') }}-config
+                optional: true
+            - secretRef:
+                name: {{ lions_ollama_service_name | default('ollama') }}-secrets
+                optional: true
+
+          # Ressources selon l'environnement
           resources:
             requests:
-              cpu: "{{ ollama_resources[app_environment].requests.cpu }}"
-              memory: "{{ ollama_resources[app_environment].requests.memory }}"
+              cpu: {% if lions_environment == 'production' %}{{ lions_resources_large_cpu_request | default('500m') }}{% elif lions_environment == 'staging' %}{{ lions_resources_medium_cpu_request | default('200m') }}{% else %}{{ lions_resources_small_cpu_request | default('100m') }}{% endif %}
+
+              memory: {% if lions_environment == 'production' %}{{ lions_resources_large_memory_request | default('1Gi') }}{% elif lions_environment == 'staging' %}{{ lions_resources_medium_memory_request | default('512Mi') }}{% else %}{{ lions_resources_small_memory_request | default('256Mi') }}{% endif %}
+
+              {% if lions_ollama_gpu_enabled | default('false') | bool %}
+              nvidia.com/gpu: 1
+              {% endif %}
             limits:
-              cpu: "{{ ollama_resources[app_environment].limits.cpu }}"
-              memory: "{{ ollama_resources[app_environment].limits.memory }}"
+              cpu: {% if lions_environment == 'production' %}{{ lions_resources_large_cpu_limit | default('2000m') }}{% elif lions_environment == 'staging' %}{{ lions_resources_medium_cpu_limit | default('1000m') }}{% else %}{{ lions_resources_small_cpu_limit | default('500m') }}{% endif %}
+
+              memory: {% if lions_environment == 'production' %}{{ lions_resources_large_memory_limit | default('4Gi') }}{% elif lions_environment == 'staging' %}{{ lions_resources_medium_memory_limit | default('2Gi') }}{% else %}{{ lions_resources_small_memory_limit | default('1Gi') }}{% endif %}
+
+              {% if lions_ollama_gpu_enabled | default('false') | bool %}
+              nvidia.com/gpu: 1
+              {% endif %}
+
+          # Sondes de santé
+          startupProbe:
+            httpGet:
+              path: /
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+            successThreshold: 1
+
           readinessProbe:
-            {{- ollama_readiness_probe | to_nice_yaml(indent=2) | indent(12) }}
+            httpGet:
+              path: /
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+            successThreshold: 1
+
           livenessProbe:
-            {{- ollama_liveness_probe | to_nice_yaml(indent=2) | indent(12) }}
-          volumeMounts:
-            - name: tmp-volume
-              mountPath: /tmp
-            - name: ollama-home
-              mountPath: /tmp/ollama
-            - name: config-volume
-              mountPath: /etc/ollama
-              readOnly: true
-            {% if ollama_persistent_storage | bool %}
-            - name: data-volume
-              mountPath: /var/lib/ollama
-            {% endif %}
+            httpGet:
+              path: /
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+            successThreshold: 1
+
+          # Configuration de sécurité Container
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
               drop:
                 - ALL
-            readOnlyRootFilesystem: false
+              {% if lions_ollama_gpu_enabled | default('false') | bool %}
+              add:
+                - SYS_ADMIN  # Required for GPU access
+              {% endif %}
+            readOnlyRootFilesystem: {% if lions_ollama_gpu_enabled | default('false') | bool %}false{% else %}true{% endif %}
+
+            runAsNonRoot: {% if lions_ollama_gpu_enabled | default('false') | bool %}false{% else %}true{% endif %}
+
+            runAsUser: {% if lions_ollama_gpu_enabled | default('false') | bool %}0{% else %}1001{% endif %}
+
+            runAsGroup: 1001
+            seccompProfile:
+              type: RuntimeDefault
+
+          # Montage des volumes
+          volumeMounts:
+            # Volume temporaire pour les opérations
+            - name: tmp-volume
+              mountPath: /tmp
+
+            # Volume pour le cache Ollama
+            - name: cache-volume
+              mountPath: /var/cache/ollama
+
+            # Configuration depuis ConfigMap
+            - name: config-volume
+              mountPath: /etc/ollama
+              readOnly: true
+
+            # Volume de données persistent si activé
+            {% if lions_ollama_storage_size | default('100Gi') != '0' %}
+            - name: data-volume
+              mountPath: /var/lib/ollama
+            {% endif %}
+
+            # Volume pour les logs si nécessaire
+            {% if not (lions_log_output | default('stdout') == 'stdout') %}
+            - name: logs-volume
+              mountPath: /var/log/ollama
+            {% endif %}
+
+      # Configuration des volumes
       volumes:
+        # Volume temporaire
         - name: tmp-volume
-          emptyDir: {}
-        - name: ollama-home
-          emptyDir: {}
+          emptyDir:
+            sizeLimit: 1Gi
+
+        # Volume de cache
+        - name: cache-volume
+          emptyDir:
+            sizeLimit: 5Gi
+
+        # Configuration depuis ConfigMap
         - name: config-volume
           configMap:
-            name: "{{ app_name }}-config"
-        {% if ollama_persistent_storage | bool %}
+            name: {{ lions_ollama_service_name | default('ollama') }}-config
+            defaultMode: 0444
+
+        # Volume de données persistent
+        {% if lions_ollama_storage_size | default('100Gi') != '0' %}
         - name: data-volume
           persistentVolumeClaim:
-            claimName: "{{ app_name }}-pvc"
+            claimName: {{ lions_ollama_service_name | default('ollama') }}-pvc
         {% endif %}
-      affinity:
-        podAntiAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-            - weight: 100
-              podAffinityTerm:
-                labelSelector:
-                  matchExpressions:
-                    - key: app
-                      operator: In
-                      values:
-                        - "{{ app_name }}"
-                topologyKey: kubernetes.io/hostname
-      terminationGracePeriodSeconds: 60
+
+        # Volume pour les logs
+        {% if not (lions_log_output | default('stdout') == 'stdout') %}
+        - name: logs-volume
+          emptyDir:
+            sizeLimit: 1Gi
+        {% endif %}
+
+      # Stratégie de redémarrage
+      restartPolicy: Always
+
+      # Priorité du pod
+      priorityClassName: {% if lions_environment == 'production' %}high-priority{% elif lions_environment == 'staging' %}medium-priority{% else %}low-priority{% endif %}
+
+      # Configuration DNS
+      dnsPolicy: ClusterFirst
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "2"
+          - name: edns0
+
+---
+# =========================================================================
+# HORIZONTAL POD AUTOSCALER - OLLAMA
+# =========================================================================
+{% if lions_autoscaling_enabled | default('true') | bool and lions_environment != 'development' %}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ lions_ollama_service_name | default('ollama') }}-hpa
+  namespace: {{ lions_ollama_namespace | default('ai') }}
+  labels:
+    app.kubernetes.io/name: {{ lions_ollama_service_name | default('ollama') }}
+    app.kubernetes.io/instance: {{ lions_ollama_service_name | default('ollama') }}-{{ lions_environment | default('development') }}
+    app.kubernetes.io/component: autoscaler
+    app.kubernetes.io/part-of: lions-infrastructure
+    lions.dev/environment: {{ lions_environment | default('development') }}
+  annotations:
+    lions.dev/description: "Auto-scaleur horizontal pour {{ lions_ollama_service_name | default('ollama') }}"
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ lions_ollama_service_name | default('ollama') }}
+  minReplicas: {{ lions_autoscaling_min_replicas | default(1) }}
+  maxReplicas: {% if lions_environment == 'production' %}{{ lions_autoscaling_max_replicas | default(10) }}{% else %}{{ (lions_autoscaling_max_replicas | default(10) | int / 2) | int }}{% endif %}
+
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ lions_autoscaling_cpu_target | default(70) }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ lions_autoscaling_memory_target | default(80) }}
+
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 10
+          periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Percent
+          value: 50
+          periodSeconds: 60
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+      selectPolicy: Max
+{% endif %}

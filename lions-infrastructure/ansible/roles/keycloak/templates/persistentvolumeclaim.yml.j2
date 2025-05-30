@@ -1,26 +1,230 @@
 ---
-# Titre: Template de PersistentVolumeClaim Kubernetes pour Keycloak
-# Description: Définit le PersistentVolumeClaim Kubernetes pour Keycloak
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - KEYCLOAK PERSISTENT VOLUME CLAIM
+# =========================================================================
+# Titre: Template PersistentVolumeClaim Kubernetes pour Keycloak
+# Description: Définit le stockage persistant pour l'instance Keycloak
+# Composant: Keycloak Identity and Access Management
+# Maintainer: DevOps Team LIONS
+# Date: {{ ansible_date_time.iso8601 }}
+# Version: 5.0.0
+# Documentation: https://docs.lions.dev/infrastructure/keycloak/storage
+# =========================================================================
 
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: "{{ app_name }}-pvc"
-  namespace: "{{ app_namespace }}"
+  name: "{{ lions_keycloak_service_name }}-pvc"
+  namespace: "{{ lions_keycloak_namespace }}"
+
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
+    # Labels LIONS standardisés
+    lions.dev/component: "keycloak"
+    lions.dev/service: "{{ lions_keycloak_service_name }}"
+    lions.dev/version: "{{ lions_keycloak_version }}"
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/managed-by: "ansible"
+    lions.dev/infrastructure-version: "5.0.0"
+
+    # Labels Kubernetes standards
+    app.kubernetes.io/name: "keycloak"
+    app.kubernetes.io/instance: "{{ lions_keycloak_service_name }}"
+    app.kubernetes.io/version: "{{ lions_keycloak_version }}"
+    app.kubernetes.io/component: "identity-provider"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+
+    # Labels métier
     technology: "keycloak"
+    category: "security"
+    tier: "infrastructure"
+
+{% if lions_environment == 'production' %}
+    # Labels de production
+    backup.lions.dev/enabled: "true"
+    backup.lions.dev/schedule: "daily"
+    backup.lions.dev/retention: "{{ lions_backup_retention_days }}d"
+    monitoring.lions.dev/enabled: "true"
+{% endif %}
+
   annotations:
-    description: "PersistentVolumeClaim pour Keycloak {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    # Annotations descriptives
+    description: "Stockage persistant pour Keycloak {{ lions_keycloak_service_name }} (v{{ lions_keycloak_version }}) - Environnement {{ lions_environment }}"
+    lions.dev/created-by: "ansible-playbook"
+    lions.dev/creation-date: "{{ ansible_date_time.iso8601 }}"
+    lions.dev/last-applied-configuration: "{{ ansible_date_time.iso8601 }}"
+
+    # Annotations techniques
+    volume.beta.kubernetes.io/storage-class: "{{ lions_keycloak_storage_class | default(lions_storage_class_default) }}"
+
+{% if lions_environment == 'production' %}
+    # Annotations de production
+    backup.lions.dev/policy: "retain"
+    backup.lions.dev/encryption: "enabled"
+    monitoring.lions.dev/alerts: "enabled"
+{% endif %}
+
+{% if lions_keycloak_storage_annotations is defined %}
+    # Annotations personnalisées
+{% for key, value in lions_keycloak_storage_annotations.items() %}
+    {{ key }}: "{{ value }}"
+{% endfor %}
+{% endif %}
+
 spec:
+  # Mode d'accès optimisé pour Keycloak
   accessModes:
     - ReadWriteOnce
-  storageClassName: "{{ keycloak_storage_class }}"
+{% if lions_environment == 'production' and lions_k8s_ha_enabled | bool %}
+    # Support HA en production
+    - ReadWriteMany
+{% endif %}
+
+  # Classe de stockage dynamique selon l'environnement
+  storageClassName: >-
+    {{-
+      lions_keycloak_storage_class | default(
+        lions_environment == 'production' and lions_storage_class_ssd is defined
+        and lions_storage_class_ssd != ''
+        and lions_storage_class_ssd != lions_storage_class_default
+        | ternary(lions_storage_class_ssd, lions_storage_class_default)
+      )
+    -}}
+
+  # Taille du stockage selon l'environnement
   resources:
     requests:
-      storage: "{{ keycloak_storage_size }}"
+      storage: >-
+        {{-
+          lions_keycloak_storage_size | default(
+            lions_environment == 'development' | ternary(
+              lions_storage_pv_size_small,
+              lions_environment == 'staging' | ternary(
+                lions_storage_pv_size_medium,
+                lions_storage_pv_size_large
+              )
+            )
+          )
+        -}}
+
+{% if lions_environment == 'production' %}
+    # Limites de stockage en production
+    limits:
+      storage: "{{ (lions_keycloak_storage_size | default(lions_storage_pv_size_large) | regex_replace('Gi', '') | int * 1.5) | int }}Gi"
+{% endif %}
+
+{% if lions_keycloak_volume_selector is defined %}
+  # Sélecteur de volume personnalisé
+  selector:
+    matchLabels:
+{% for key, value in lions_keycloak_volume_selector.items() %}
+      {{ key }}: "{{ value }}"
+{% endfor %}
+{% endif %}
+
+{% if lions_environment == 'production' and lions_keycloak_data_source is defined %}
+  # Source de données pour la restauration (production uniquement)
+  dataSource:
+    name: "{{ lions_keycloak_data_source }}"
+    kind: VolumeSnapshot
+    apiGroup: snapshot.storage.k8s.io
+{% endif %}
+
+---
+{% if lions_environment == 'production' and lions_backup_enabled | bool %}
+# =========================================================================
+# VOLUME SNAPSHOT CLASS POUR BACKUP (PRODUCTION UNIQUEMENT)
+# =========================================================================
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: "{{ lions_keycloak_service_name }}-snapshot-class"
+  namespace: "{{ lions_keycloak_namespace }}"
+
+  labels:
+    lions.dev/component: "keycloak"
+    lions.dev/service: "{{ lions_keycloak_service_name }}"
+    lions.dev/environment: "{{ lions_environment }}"
+    app.kubernetes.io/name: "keycloak"
+    app.kubernetes.io/component: "backup"
+
+  annotations:
+    description: "Classe de snapshot pour les sauvegardes Keycloak"
+    lions.dev/backup-retention: "{{ lions_backup_retention_days }}d"
+
+driver: "{{ lions_storage_provisioner | default('rancher.io/local-path') }}"
+deletionPolicy: "{{ lions_storage_reclaim_policy }}"
+
+parameters:
+{% if lions_backup_encryption | bool %}
+  encrypted: "true"
+{% endif %}
+  backup-schedule: "{{ lions_backup_schedule }}"
+  retention-days: "{{ lions_backup_retention_days }}"
+
+---
+# =========================================================================
+# RECURRING VOLUME SNAPSHOT POUR BACKUP AUTOMATIQUE
+# =========================================================================
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata:
+  name: "{{ lions_keycloak_service_name }}-backup-{{ ansible_date_time.epoch }}"
+  namespace: "{{ lions_keycloak_namespace }}"
+
+  labels:
+    lions.dev/component: "keycloak"
+    lions.dev/service: "{{ lions_keycloak_service_name }}"
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/backup-type: "automatic"
+    app.kubernetes.io/name: "keycloak"
+    app.kubernetes.io/component: "backup"
+
+  annotations:
+    description: "Snapshot automatique de Keycloak - {{ ansible_date_time.iso8601 }}"
+    lions.dev/created-by: "ansible-backup-job"
+    lions.dev/retention-until: "{{ (ansible_date_time.epoch | int + (lions_backup_retention_days | int * 86400)) | strftime('%Y-%m-%d') }}"
+
+spec:
+  source:
+    persistentVolumeClaimName: "{{ lions_keycloak_service_name }}-pvc"
+  volumeSnapshotClassName: "{{ lions_keycloak_service_name }}-snapshot-class"
+{% endif %}
+
+---
+{% if lions_monitoring_enabled | bool %}
+# =========================================================================
+# SERVICE MONITOR POUR LE STOCKAGE (SI MONITORING ACTIVÉ)
+# =========================================================================
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: "{{ lions_keycloak_service_name }}-storage-monitor"
+  namespace: "{{ lions_monitoring_namespace }}"
+
+  labels:
+    lions.dev/component: "keycloak"
+    lions.dev/service: "{{ lions_keycloak_service_name }}"
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/monitoring-type: "storage"
+    app.kubernetes.io/name: "keycloak"
+    app.kubernetes.io/component: "storage-monitoring"
+
+  annotations:
+    description: "Monitoring du stockage pour Keycloak {{ lions_keycloak_service_name }}"
+
+spec:
+  selector:
+    matchLabels:
+      lions.dev/component: "keycloak"
+      lions.dev/service: "{{ lions_keycloak_service_name }}"
+
+  endpoints:
+    - port: metrics
+      interval: 30s
+      path: /metrics
+
+  namespaceSelector:
+    matchNames:
+      - "{{ lions_keycloak_namespace }}"
+{% endif %}

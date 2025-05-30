@@ -1,57 +1,242 @@
----
-# Titre: Template de ServiceMonitor Kubernetes pour la registry de conteneurs
-# Description: Définit le ServiceMonitor Kubernetes pour la registry de conteneurs Docker
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-10
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - SERVICEMONITOR REGISTRY
+# =========================================================================
+# Description: Template ServiceMonitor Kubernetes pour Docker Registry
+# Component: Container Registry Service
+# Technology Stack: Docker Registry 2.x + Prometheus
+# Security Level: Production Ready
+# Maintainer: DevOps Team LIONS
+# Version: 5.0.0
+# Last Updated: {{ ansible_date_time.date }}
+# =========================================================================
 
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: "{{ app_name | default('registry') }}"
-  namespace: monitoring
+  name: "{{ lions_registry_service_name | default(registry_service_name) | default('registry') }}-monitor"
+  namespace: "{{ lions_monitoring_namespace | default('monitoring') }}"
   labels:
-    app: "{{ app_name | default('registry') }}"
-    version: "{{ app_version | default('latest') }}"
-    environment: "{{ app_environment | default('development') }}"
-    technology: "registry"
-    release: prometheus
+    # Labels standards LIONS 5.0
+    app.kubernetes.io/name: "{{ lions_registry_service_name | default(registry_service_name) | default('registry') }}"
+    app.kubernetes.io/instance: "{{ lions_registry_service_name | default(registry_service_name) | default('registry') }}-{{ lions_environment | default('development') }}"
+    app.kubernetes.io/version: "{{ lions_registry_version | default(registry_version) | default('2.8') }}"
+    app.kubernetes.io/component: "container-registry"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+
+    # Labels LIONS spécifiques
+    lions.dev/environment: "{{ lions_environment | default('development') }}"
+    lions.dev/tier: "infrastructure"
+    lions.dev/category: "registry"
+    lions.dev/monitoring: "enabled"
+    lions.dev/backup: "{{ lions_backup_enabled | default('true') | string }}"
+    lions.dev/security-scan: "{{ lions_security_scanning_enabled | default('true') | string }}"
+
+    # Labels techniques
+    technology: "docker-registry"
+    monitoring.lions.dev/scrape: "true"
+    monitoring.lions.dev/system: "prometheus"
+    release: "prometheus-stack"
+
+    # Labels de gouvernance
+    cost-center: "{{ lions_cost_center | default('infrastructure') }}"
+    data-classification: "{{ lions_data_classification | default('internal') }}"
+    compliance.lions.dev/required: "{{ lions_compliance_required | default('true') | string }}"
+
   annotations:
-    description: "ServiceMonitor pour la registry {{ app_name | default('registry') }} ({{ app_version | default('latest') }}) en environnement {{ app_environment | default('development') }}"
+    # Annotations de description
+    description: "ServiceMonitor pour Docker Registry {{ lions_registry_service_name | default('registry') }} v{{ lions_registry_version | default('2.8') }}"
+    summary: "Monitoring metrics collection for LIONS Container Registry"
+
+    # Annotations techniques
+    monitoring.lions.dev/scrape-interval: "{{ lions_registry_monitoring_interval | default('30s') }}"
+    monitoring.lions.dev/scrape-timeout: "{{ lions_registry_monitoring_timeout | default('10s') }}"
+    monitoring.lions.dev/metrics-path: "{{ lions_registry_metrics_path | default('/metrics') }}"
+
+    # Annotations de documentation
+    documentation: "https://docs.lions.dev/infrastructure/monitoring/registry"
+    runbook: "https://runbooks.lions.dev/registry/troubleshooting"
+    dashboard: "https://grafana.{{ lions_dns_full_domain }}/d/registry-overview"
+
+    # Annotations de sécurité
+    security.lions.dev/scan-schedule: "{{ lions_security_scan_schedule | default('0 2 * * *') }}"
+    security.lions.dev/vulnerability-policy: "critical-high-block"
+
+    # Annotations opérationnelles
+    ops.lions.dev/alerting: "enabled"
+    ops.lions.dev/escalation-policy: "infrastructure-team"
+    ops.lions.dev/maintenance-window: "{{ lions_maintenance_window | default('02:00-04:00 UTC') }}"
+
 spec:
+  # Sélection des services à monitorer
   selector:
     matchLabels:
-      app: "{{ app_name | default('registry') }}"
-      technology: "registry"
+      app.kubernetes.io/name: "{{ lions_registry_service_name | default(registry_service_name) | default('registry') }}"
+      app.kubernetes.io/component: "container-registry"
+      lions.dev/environment: "{{ lions_environment | default('development') }}"
+      monitoring.lions.dev/scrape: "true"
+
+  # Sélection des namespaces
   namespaceSelector:
     matchNames:
-      - "{{ app_namespace | default('registry') }}"
+      - "{{ lions_registry_namespace | default(registry_namespace) | default('development') }}"
+
+  # Configuration des endpoints de métriques
   endpoints:
-    - port: http
-      path: "{{ registry_prometheus_path | default('/metrics') }}"
-      interval: 30s
-      scrapeTimeout: 10s
+    # Endpoint principal pour les métriques registry
+    - port: "{{ lions_registry_metrics_port_name | default('metrics') }}"
+      path: "{{ lions_registry_metrics_path | default('/metrics') }}"
+      interval: "{{ lions_registry_monitoring_interval | default('30s') }}"
+      scrapeTimeout: "{{ lions_registry_monitoring_timeout | default('10s') }}"
       honorLabels: true
+      honorTimestamps: true
+
+      # Configuration TLS si activé
+{% if lions_security_tls_enabled | default(true) | bool %}
+      scheme: https
+      tlsConfig:
+        caFile: /etc/prometheus/secrets/registry-tls/ca.crt
+        certFile: /etc/prometheus/secrets/registry-tls/tls.crt
+        keyFile: /etc/prometheus/secrets/registry-tls/tls.key
+        serverName: "{{ lions_registry_service_name | default('registry') }}.{{ lions_registry_namespace | default('development') }}.svc.cluster.local"
+        insecureSkipVerify: {{ lions_registry_tls_skip_verify | default('false') | string }}
+{% else %}
+      scheme: http
+{% endif %}
+
+      # Filtrage et transformation des labels
+      relabelings:
+        # Labels de base Kubernetes
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          action: replace
+          targetLabel: pod
+
+        - sourceLabels: [__meta_kubernetes_namespace]
+          action: replace
+          targetLabel: namespace
+
+        - sourceLabels: [__meta_kubernetes_service_name]
+          action: replace
+          targetLabel: service
+
+        # Labels d'application
+        - sourceLabels: [__meta_kubernetes_service_label_app_kubernetes_io_name]
+          action: replace
+          targetLabel: app
+
+        - sourceLabels: [__meta_kubernetes_service_label_app_kubernetes_io_version]
+          action: replace
+          targetLabel: version
+
+        - sourceLabels: [__meta_kubernetes_service_label_app_kubernetes_io_component]
+          action: replace
+          targetLabel: component
+
+        # Labels LIONS spécifiques
+        - sourceLabels: [__meta_kubernetes_service_label_lions_dev_environment]
+          action: replace
+          targetLabel: lions_environment
+
+        - sourceLabels: [__meta_kubernetes_service_label_lions_dev_tier]
+          action: replace
+          targetLabel: lions_tier
+
+        - sourceLabels: [__meta_kubernetes_service_label_lions_dev_category]
+          action: replace
+          targetLabel: lions_category
+
+        # Label d'instance unique
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          action: replace
+          targetLabel: instance
+          replacement: "registry-{{ lions_environment | default('development') }}-${1}"
+
+        # Ajout du cluster name
+        - action: replace
+          targetLabel: cluster
+          replacement: "{{ lions_k8s_cluster_name | default('lions-' + lions_environment) }}"
+
+        # Ajout de métadonnées de déploiement
+        - action: replace
+          targetLabel: deployment_version
+          replacement: "{{ lions_config_version | default('5.0.0') }}"
+
+      # Filtrage des métriques
+      metricRelabelings:
+        # Conserver uniquement les métriques registry pertinentes
+        - sourceLabels: [__name__]
+          regex: '^(registry_.*|prometheus_.*|go_.*|process_.*)$'
+          action: keep
+
+        # Supprimer les métriques trop granulaires si nécessaire
+        - sourceLabels: [__name__]
+          regex: '^registry_http_request_duration_seconds_bucket$'
+          action: drop
+
+        # Ajouter le préfixe environment aux métriques
+        - sourceLabels: [__name__]
+          action: replace
+          targetLabel: __name__
+          regex: '^(.+)$'
+          replacement: '${1}'
+
+        # Normaliser les labels de job
+        - sourceLabels: [job]
+          action: replace
+          targetLabel: job
+          replacement: "registry-{{ lions_environment | default('development') }}"
+
+        # Ajouter des métadonnées business
+        - action: replace
+          targetLabel: business_service
+          replacement: "container-registry"
+
+        - action: replace
+          targetLabel: sla_tier
+          replacement: "{{ lions_registry_sla_tier | default('gold') }}"
+
+{% if lions_environment == 'production' %}
+    # Endpoint secondaire pour les métriques de santé (production uniquement)
+    - port: "{{ lions_registry_health_port_name | default('health') }}"
+      path: "{{ lions_registry_health_path | default('/health') }}"
+      interval: "{{ lions_registry_health_monitoring_interval | default('15s') }}"
+      scrapeTimeout: "{{ lions_registry_health_monitoring_timeout | default('5s') }}"
+      honorLabels: true
+
       relabelings:
         - sourceLabels: [__meta_kubernetes_pod_name]
           action: replace
           targetLabel: pod
-        - sourceLabels: [__meta_kubernetes_namespace]
-          action: replace
-          targetLabel: namespace
-        - sourceLabels: [__meta_kubernetes_service_name]
-          action: replace
-          targetLabel: service
-        - sourceLabels: [__meta_kubernetes_service_label_app]
-          action: replace
-          targetLabel: app
-        - sourceLabels: [__meta_kubernetes_service_label_version]
-          action: replace
-          targetLabel: version
-        - sourceLabels: [__meta_kubernetes_service_label_environment]
-          action: replace
-          targetLabel: environment
+
+        - action: replace
+          targetLabel: metrics_type
+          replacement: "health"
+
+        - action: replace
+          targetLabel: cluster
+          replacement: "{{ lions_k8s_cluster_name | default('lions-production') }}"
+
       metricRelabelings:
         - sourceLabels: [__name__]
-          regex: 'registry_.*'
+          regex: '^(up|registry_health_.*)$'
           action: keep
+{% endif %}
+
+  # Configuration de sécurité pour l'accès aux métriques
+  jobLabel: "app.kubernetes.io/name"
+  podTargetLabels:
+    - "app.kubernetes.io/name"
+    - "app.kubernetes.io/version"
+    - "lions.dev/environment"
+    - "lions.dev/tier"
+
+  # Limite de targets pour éviter la surcharge
+  targetLimit: {{ lions_registry_monitoring_target_limit | default('100') }}
+
+  # Configuration des samples
+  sampleLimit: {{ lions_registry_monitoring_sample_limit | default('10000') }}
+
+  # Configuration du label limit
+  labelLimit: {{ lions_registry_monitoring_label_limit | default('50') }}
+  labelNameLengthLimit: {{ lions_registry_monitoring_label_name_length_limit | default('200') }}
+  labelValueLengthLimit: {{ lions_registry_monitoring_label_value_length_limit | default('500') }}

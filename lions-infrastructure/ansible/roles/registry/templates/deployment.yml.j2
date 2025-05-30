@@ -1,123 +1,450 @@
 ---
-# Titre: Template de déploiement Kubernetes pour la registry de conteneurs
-# Description: Définit le déploiement Kubernetes pour la registry de conteneurs Docker
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-10
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - DEPLOYMENT REGISTRY
+# =========================================================================
+# Titre: Template de déploiement Kubernetes pour Docker Registry
+# Description: Déploiement sécurisé et optimisé de Docker Registry avec intégration Vault
+# Auteur: Équipe DevOps LIONS Infrastructure
+# Date: {{ ansible_date_time.iso8601 }}
+# Version: 5.0.0
+# Environnement: {{ lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT')) | default('development') }}
+# =========================================================================
 
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: "{{ app_name | default('registry') }}"
-  namespace: "{{ app_namespace | default('registry') }}"
+  name: {{ lions_registry_service_name | default(lookup('env', 'LIONS_REGISTRY_SERVICE_NAME')) | default('registry') }}
+  namespace: {{ lions_registry_namespace | default(lookup('env', 'LIONS_REGISTRY_NAMESPACE')) | default('development') }}
   labels:
-    app: "{{ app_name | default('registry') }}"
-    version: "{{ app_version | default('latest') }}"
-    environment: "{{ app_environment | default('development') }}"
-    technology: "registry"
+    # Labels standards LIONS
+    app.kubernetes.io/name: {{ lions_registry_service_name | default('registry') }}
+    app.kubernetes.io/instance: {{ lions_registry_service_name | default('registry') }}-{{ lions_environment | default('development') }}
+    app.kubernetes.io/version: "{{ lions_registry_version | default(lookup('env', 'LIONS_REGISTRY_VERSION')) | default('2.8') }}"
+    app.kubernetes.io/component: registry
+    app.kubernetes.io/part-of: lions-infrastructure
+    app.kubernetes.io/managed-by: ansible
+
+    # Labels personnalisés LIONS
+    lions.dev/service: registry
+    lions.dev/environment: {{ lions_environment | default('development') }}
+    lions.dev/tier: development
+    lions.dev/technology: docker-registry
+    lions.dev/backup-required: "true"
+    lions.dev/monitoring-enabled: "true"
+
+    # Labels pour l'observabilité
+    prometheus.io/scrape-enabled: "true"
+    grafana.com/dashboard: "registry"
+
   annotations:
-    description: "Déploiement de la registry {{ app_name | default('registry') }} ({{ app_version | default('latest') }}) en environnement {{ app_environment | default('development') }}"
+    # Métadonnées de déploiement
+    lions.dev/deployment-timestamp: "{{ ansible_date_time.iso8601 }}"
+    lions.dev/deployed-by: "{{ ansible_user_id | default('ansible') }}"
+    lions.dev/config-version: "5.0.0"
+
+    # Documentation et liens
+    lions.dev/documentation: "https://docs.lions.dev/services/registry"
+    lions.dev/runbook: "https://docs.lions.dev/runbooks/registry"
+    lions.dev/monitoring-dashboard: "https://grafana.{{ lions_dns_full_domain | default('dev.lions.dev') }}/d/registry"
+
+    # Configuration de sécurité
+    seccomp.security.alpha.kubernetes.io/pod: runtime/default
+    container.apparmor.security.beta.kubernetes.io/{{ lions_registry_service_name | default('registry') }}: runtime/default
+
 spec:
-  replicas: {{ registry_replicas[app_environment | default('development')] | default(1) }}
+  # Configuration du déploiement selon l'environnement
+  replicas: {{ lions_registry_replicas[lions_environment | default('development')] | default(1) }}
+
   selector:
     matchLabels:
-      app: "{{ app_name | default('registry') }}"
-      technology: "registry"
+      app.kubernetes.io/name: {{ lions_registry_service_name | default('registry') }}
+      app.kubernetes.io/instance: {{ lions_registry_service_name | default('registry') }}-{{ lions_environment | default('development') }}
+      lions.dev/service: registry
+
+  # Stratégie de déploiement optimisée par environnement
   strategy:
+{% if lions_environment == 'production' %}
     type: RollingUpdate
     rollingUpdate:
-      maxSurge: 1
+      maxSurge: 25%
       maxUnavailable: 0
+{% elif lions_environment == 'staging' %}
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 50%
+      maxUnavailable: 25%
+{% else %}
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 100%
+      maxUnavailable: 50%
+{% endif %}
+
+  # Configuration du template de pod
   template:
     metadata:
       labels:
-        app: "{{ app_name | default('registry') }}"
-        version: "{{ app_version | default('latest') }}"
-        environment: "{{ app_environment | default('development') }}"
-        technology: "registry"
+        # Reproduction des labels du deployment
+        app.kubernetes.io/name: {{ lions_registry_service_name | default('registry') }}
+        app.kubernetes.io/instance: {{ lions_registry_service_name | default('registry') }}-{{ lions_environment | default('development') }}
+        app.kubernetes.io/version: "{{ lions_registry_version | default('2.8') }}"
+        app.kubernetes.io/component: registry
+        app.kubernetes.io/part-of: lions-infrastructure
+
+        lions.dev/service: registry
+        lions.dev/environment: {{ lions_environment | default('development') }}
+        lions.dev/tier: development
+        lions.dev/technology: docker-registry
+
+        # Labels pour les politiques réseau
+        lions.dev/network-policy: registry
+        lions.dev/network-access: {{ lions_registry_network_access | default('internal') }}
+
       annotations:
-        prometheus.io/scrape: "{{ registry_prometheus_scrape | default(true) | string | lower }}"
-        prometheus.io/path: "{{ registry_prometheus_path | default('/metrics') }}"
-        prometheus.io/port: "{{ registry_prometheus_port | default(5000) | string }}"
+        # Annotations pour Prometheus
+        prometheus.io/scrape: {{ lions_registry_prometheus_scrape | default('true') | string | lower }}
+        prometheus.io/path: {{ lions_registry_prometheus_path | default('/metrics') }}
+        prometheus.io/port: {{ lions_registry_port | default(lookup('env', 'LIONS_REGISTRY_PORT')) | default('5000') | string }}
+        prometheus.io/scheme: {{ 'https' if lions_security_tls_enabled | default(true) | bool else 'http' }}
+
+        # Annotations pour la configuration
+        config.linkerd.io/skip-inbound-ports: {{ lions_registry_port | default('5000') }}
+        config.linkerd.io/skip-outbound-ports: {{ lions_registry_port | default('5000') }}
+
+        # Annotations pour le restart automatique lors de changement de config
+        checksum/config: "{{ (lookup('file', playbook_dir + '/roles/registry/templates/configmap.yml.j2') | hash('sha256'))[:8] }}"
+        checksum/secret: "{{ (lions_registry_auth_secret_content | default('default') | hash('sha256'))[:8] }}"
+
     spec:
-      serviceAccountName: "{{ app_name | default('registry') }}"
-      containers:
-      - name: "{{ app_name | default('registry') }}"
-        image: "registry:{{ app_version | default('2.8.2') }}"
-        imagePullPolicy: IfNotPresent
-        ports:
-        - name: http
-          containerPort: {{ registry_default_port | default(5000) }}
-          protocol: TCP
-        env:
-        - name: REGISTRY_HTTP_ADDR
-          value: ":{{ registry_default_port | default(5000) }}"
-        - name: REGISTRY_HTTP_SECRET
-          valueFrom:
-            secretKeyRef:
-              name: "{{ registry_auth_secret | default('registry-auth') }}"
-              key: REGISTRY_HTTP_SECRET
-        - name: REGISTRY_AUTH
-          value: "htpasswd"
-        - name: REGISTRY_AUTH_HTPASSWD_PATH
-          valueFrom:
-            secretKeyRef:
-              name: "{{ registry_auth_secret | default('registry-auth') }}"
-              key: REGISTRY_AUTH_HTPASSWD_PATH
-        - name: REGISTRY_AUTH_HTPASSWD_REALM
-          valueFrom:
-            secretKeyRef:
-              name: "{{ registry_auth_secret | default('registry-auth') }}"
-              key: REGISTRY_AUTH_HTPASSWD_REALM
-        - name: REGISTRY_STORAGE_DELETE_ENABLED
+      # Configuration de sécurité du pod
+      serviceAccountName: {{ lions_registry_service_name | default('registry') }}
+      automountServiceAccountToken: false
+
+      # Contraintes de sécurité renforcées
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+{% if lions_environment == 'production' %}
+        supplementalGroups: [1000]
+{% endif %}
+
+      # Configuration anti-affinité pour la production
+{% if lions_environment == 'production' %}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: lions.dev/service
+                      operator: In
+                      values: ["registry"]
+                topologyKey: kubernetes.io/hostname
+{% endif %}
+
+      # Tolérations pour les nœuds spécialisés
+{% if lions_registry_dedicated_nodes | default(false) | bool %}
+      tolerations:
+        - key: "lions.dev/registry-dedicated"
+          operator: "Equal"
           value: "true"
-        - name: REGISTRY_LOG_LEVEL
-          value: "{{ registry_log_level | default('info') }}"
-        - name: REGISTRY_LOG_FORMATTER
-          value: "json"
-        resources:
-          requests:
-            cpu: "{{ registry_resources[app_environment | default('development')].requests.cpu | default('100m') }}"
-            memory: "{{ registry_resources[app_environment | default('development')].requests.memory | default('256Mi') }}"
-          limits:
-            cpu: "{{ registry_resources[app_environment | default('development')].limits.cpu | default('500m') }}"
-            memory: "{{ registry_resources[app_environment | default('development')].limits.memory | default('512Mi') }}"
-        readinessProbe:
-          tcpSocket:
-            port: http
-          initialDelaySeconds: 10
-          timeoutSeconds: 5
-          periodSeconds: 10
-        livenessProbe:
-          tcpSocket:
-            port: http
-          initialDelaySeconds: 20
-          timeoutSeconds: 5
-          periodSeconds: 10
-        volumeMounts:
-        - name: registry-data
-          mountPath: /var/lib/registry
-        - name: registry-config
-          mountPath: /etc/docker/registry/config.yml
-          subPath: config.yml
-        - name: auth
-          mountPath: /auth
-          readOnly: true
+          effect: "NoSchedule"
+
+      nodeSelector:
+        lions.dev/node-type: registry
+{% endif %}
+
+      # Configuration d'arrêt gracieux
+      terminationGracePeriodSeconds: {{ lions_registry_termination_grace_period | default(30) }}
+
+      # Configuration des conteneurs
+      containers:
+        - name: {{ lions_registry_service_name | default('registry') }}
+          image: "{{ lions_registry_image_repository | default('registry') }}:{{ lions_registry_version | default('2.8') }}"
+          imagePullPolicy: {{ lions_registry_image_pull_policy | default('IfNotPresent') }}
+
+          # Configuration de sécurité du conteneur
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            capabilities:
+              drop:
+                - ALL
+
+          # Configuration des ports
+          ports:
+            - name: http
+              containerPort: {{ lions_registry_port | default('5000') }}
+              protocol: TCP
+{% if lions_registry_metrics_enabled | default(true) | bool %}
+            - name: metrics
+              containerPort: {{ lions_registry_metrics_port | default('5001') }}
+              protocol: TCP
+{% endif %}
+
+          # Variables d'environnement
+          env:
+            # Configuration réseau
+            - name: REGISTRY_HTTP_ADDR
+              value: ":{{ lions_registry_port | default('5000') }}"
+
+            # Configuration de sécurité
+            - name: REGISTRY_HTTP_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ lions_registry_secret_name | default('registry-secrets') }}
+                  key: http-secret
+                  optional: false
+
+            # Configuration d'authentification
+{% if lions_registry_auth_enabled | default(true) | bool %}
+            - name: REGISTRY_AUTH
+              value: "htpasswd"
+            - name: REGISTRY_AUTH_HTPASSWD_PATH
+              value: "/auth/htpasswd"
+            - name: REGISTRY_AUTH_HTPASSWD_REALM
+              value: "Registry Realm"
+{% endif %}
+
+            # Configuration de stockage
+            - name: REGISTRY_STORAGE_DELETE_ENABLED
+              value: {{ lions_registry_storage_delete_enabled | default('true') | string | lower }}
+            - name: REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY
+              value: "/var/lib/registry"
+
+            # Configuration des logs
+            - name: REGISTRY_LOG_LEVEL
+              value: {{ lions_registry_log_level | default(lions_log_level) | default('info') }}
+            - name: REGISTRY_LOG_FORMATTER
+              value: {{ lions_registry_log_format | default('json') }}
+            - name: REGISTRY_LOG_ACCESSLOG_DISABLED
+              value: {{ lions_registry_access_log_disabled | default('false') | string | lower }}
+
+            # Configuration des métriques
+{% if lions_registry_metrics_enabled | default(true) | bool %}
+            - name: REGISTRY_HTTP_DEBUG_ADDR
+              value: ":{{ lions_registry_metrics_port | default('5001') }}"
+            - name: REGISTRY_HTTP_DEBUG_PROMETHEUS_ENABLED
+              value: "true"
+{% endif %}
+
+            # Configuration TLS
+{% if lions_security_tls_enabled | default(true) | bool %}
+            - name: REGISTRY_HTTP_TLS_CERTIFICATE
+              value: "/etc/ssl/certs/tls.crt"
+            - name: REGISTRY_HTTP_TLS_KEY
+              value: "/etc/ssl/private/tls.key"
+{% endif %}
+
+            # Variables d'environnement personnalisées
+            - name: LIONS_ENVIRONMENT
+              value: {{ lions_environment | default('development') }}
+            - name: LIONS_SERVICE_NAME
+              value: {{ lions_registry_service_name | default('registry') }}
+            - name: LIONS_NAMESPACE
+              value: {{ lions_registry_namespace | default('development') }}
+
+          # Configuration des ressources selon l'environnement
+          resources:
+            requests:
+              cpu: {{ lions_registry_resources[lions_environment | default('development')].requests.cpu | default(lions_resources_medium_cpu_request | default('200m')) }}
+              memory: {{ lions_registry_resources[lions_environment | default('development')].requests.memory | default(lions_resources_medium_memory_request | default('512Mi')) }}
+              ephemeral-storage: {{ lions_registry_ephemeral_storage_request | default('1Gi') }}
+            limits:
+              cpu: {{ lions_registry_resources[lions_environment | default('development')].limits.cpu | default(lions_resources_medium_cpu_limit | default('1000m')) }}
+              memory: {{ lions_registry_resources[lions_environment | default('development')].limits.memory | default(lions_resources_medium_memory_limit | default('2Gi')) }}
+              ephemeral-storage: {{ lions_registry_ephemeral_storage_limit | default('5Gi') }}
+
+          # Configuration des sondes de santé
+          startupProbe:
+            httpGet:
+              path: {{ lions_registry_health_check_path | default('/v2/') }}
+              port: http
+              scheme: {{ 'HTTPS' if lions_security_tls_enabled | default(true) | bool else 'HTTP' }}
+            initialDelaySeconds: {{ lions_registry_startup_delay | default('10') }}
+            timeoutSeconds: {{ lions_registry_startup_timeout | default('5') }}
+            periodSeconds: {{ lions_registry_startup_period | default('10') }}
+            successThreshold: 1
+            failureThreshold: {{ lions_registry_startup_failure_threshold | default('6') }}
+
+          readinessProbe:
+            httpGet:
+              path: {{ lions_registry_health_check_path | default('/v2/') }}
+              port: http
+              scheme: {{ 'HTTPS' if lions_security_tls_enabled | default(true) | bool else 'HTTP' }}
+            initialDelaySeconds: {{ lions_registry_readiness_delay | default('5') }}
+            timeoutSeconds: {{ lions_registry_readiness_timeout | default('3') }}
+            periodSeconds: {{ lions_registry_readiness_period | default('10') }}
+            successThreshold: 1
+            failureThreshold: {{ lions_registry_readiness_failure_threshold | default('3') }}
+
+          livenessProbe:
+            httpGet:
+              path: {{ lions_registry_health_check_path | default('/v2/') }}
+              port: http
+              scheme: {{ 'HTTPS' if lions_security_tls_enabled | default(true) | bool else 'HTTP' }}
+            initialDelaySeconds: {{ lions_registry_liveness_delay | default('30') }}
+            timeoutSeconds: {{ lions_registry_liveness_timeout | default('5') }}
+            periodSeconds: {{ lions_registry_liveness_period | default('30') }}
+            successThreshold: 1
+            failureThreshold: {{ lions_registry_liveness_failure_threshold | default('3') }}
+
+          # Configuration des volumes montés
+          volumeMounts:
+            # Volume principal de données
+            - name: registry-data
+              mountPath: /var/lib/registry
+              readOnly: false
+
+            # Configuration de la registry
+            - name: registry-config
+              mountPath: /etc/docker/registry/config.yml
+              subPath: config.yml
+              readOnly: true
+
+            # Configuration d'authentification
+{% if lions_registry_auth_enabled | default(true) | bool %}
+            - name: registry-auth
+              mountPath: /auth
+              readOnly: true
+{% endif %}
+
+            # Certificats TLS
+{% if lions_security_tls_enabled | default(true) | bool %}
+            - name: tls-certs
+              mountPath: /etc/ssl/certs
+              readOnly: true
+            - name: tls-private
+              mountPath: /etc/ssl/private
+              readOnly: true
+{% endif %}
+
+            # Répertoire temporaire en écriture
+            - name: tmp
+              mountPath: /tmp
+            - name: var-tmp
+              mountPath: /var/tmp
+
+{% if lions_registry_sidecar_enabled | default(false) | bool %}
+        # Sidecar pour l'exportation de métriques personnalisées
+        - name: metrics-exporter
+          image: {{ lions_registry_metrics_exporter_image | default('prom/node-exporter:latest') }}
+          imagePullPolicy: IfNotPresent
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65534
+            capabilities:
+              drop:
+                - ALL
+
+          ports:
+            - name: node-metrics
+              containerPort: 9100
+              protocol: TCP
+
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+{% endif %}
+
+      # Configuration des volumes
       volumes:
-      - name: registry-config
-        configMap:
-          name: "{{ app_name | default('registry') }}-config"
-      - name: auth
-        secret:
-          secretName: "{{ registry_auth_secret | default('registry-auth') }}"
-          items:
-            - key: htpasswd
-              path: htpasswd
-{% if registry_persistent_storage | default(true) | bool %}
-      - name: registry-data
-        persistentVolumeClaim:
-          claimName: "{{ app_name | default('registry') }}-data"
+        # Configuration de la registry
+        - name: registry-config
+          configMap:
+            name: {{ lions_registry_service_name | default('registry') }}-config
+            defaultMode: 0644
+
+        # Authentification
+{% if lions_registry_auth_enabled | default(true) | bool %}
+        - name: registry-auth
+          secret:
+            secretName: {{ lions_registry_secret_name | default('registry-secrets') }}
+            defaultMode: 0600
+            items:
+              - key: htpasswd
+                path: htpasswd
+{% endif %}
+
+        # Certificats TLS
+{% if lions_security_tls_enabled | default(true) | bool %}
+        - name: tls-certs
+          secret:
+            secretName: {{ lions_registry_tls_secret_name | default('registry-tls') }}
+            defaultMode: 0644
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: ca.crt
+                path: ca.crt
+
+        - name: tls-private
+          secret:
+            secretName: {{ lions_registry_tls_secret_name | default('registry-tls') }}
+            defaultMode: 0600
+            items:
+              - key: tls.key
+                path: tls.key
+{% endif %}
+
+        # Volume de données principal
+{% if lions_registry_persistent_storage | default(true) | bool %}
+        - name: registry-data
+          persistentVolumeClaim:
+            claimName: {{ lions_registry_service_name | default('registry') }}-data
 {% else %}
-      - name: registry-data
-        emptyDir: {}
+        - name: registry-data
+          emptyDir:
+            sizeLimit: {{ lions_registry_ephemeral_size | default('10Gi') }}
+{% endif %}
+
+        # Volumes temporaires
+        - name: tmp
+          emptyDir:
+            sizeLimit: 1Gi
+        - name: var-tmp
+          emptyDir:
+            sizeLimit: 1Gi
+
+      # Configuration de redémarrage
+      restartPolicy: Always
+
+      # Configuration DNS
+      dnsPolicy: ClusterFirst
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "2"
+          - name: edns0
+
+      # Configuration de l'ordonnanceur
+{% if lions_registry_priority_class | default('') != '' %}
+      priorityClassName: {{ lions_registry_priority_class }}
+{% endif %}
+
+      # Configuration des images de pull secret
+{% if lions_registry_image_pull_secrets | default([]) | length > 0 %}
+      imagePullSecrets:
+{% for secret in lions_registry_image_pull_secrets %}
+        - name: {{ secret }}
+{% endfor %}
 {% endif %}

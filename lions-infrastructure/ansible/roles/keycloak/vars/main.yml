@@ -1,95 +1,472 @@
 ---
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - VARIABLES KEYCLOAK
+# =========================================================================
 # Titre: Variables pour le déploiement de Keycloak
-# Description: Variables spécifiques à Keycloak
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# Description: Configuration complète de Keycloak avec intégration variables d'environnement
+# Auteur: Équipe DevOps LIONS Infrastructure
+# Date: "{{ ansible_date_time.date }}"
+# Version: 5.0.0
+# Documentation: https://docs.lions.dev/infrastructure/services/keycloak
+# =========================================================================
 
-# Configuration par défaut pour Keycloak
-keycloak_default_port: 8080
-keycloak_health_path: "/health"
-keycloak_metrics_path: "/metrics"
-keycloak_admin_user: "admin"
-keycloak_admin_password_secret: "keycloak-admin-password"
-keycloak_database_service: "postgres"
-keycloak_database_name: "keycloak"
-keycloak_database_user: "keycloak"
-keycloak_database_password_secret: "keycloak-db-password"
-keycloak_database_namespace: "{{ app_namespace }}"
+# =========================================================================
+# MÉTADONNÉES DU RÔLE
+# =========================================================================
+keycloak_role_version: "5.0.0"
+keycloak_role_schema_version: "1.0"
+keycloak_role_maintainer: "devops@lions.dev"
+keycloak_last_updated: "{{ ansible_date_time.iso8601 }}"
 
-# Configuration des sondes de santé
-keycloak_readiness_probe:
-  httpGet:
-    path: "{{ keycloak_health_path }}/ready"
-    port: http
-  initialDelaySeconds: 30
-  periodSeconds: 10
-  timeoutSeconds: 5
-  failureThreshold: 3
+# =========================================================================
+# CONFIGURATION DE BASE KEYCLOAK
+# =========================================================================
+# Configuration principale héritée des variables d'environnement
+keycloak_enabled: "{{ lookup('env', 'LIONS_KEYCLOAK_ENABLED') | default('true') | bool }}"
+keycloak_version: "{{ lookup('env', 'LIONS_KEYCLOAK_VERSION') | default('22.0') }}"
+keycloak_namespace: "{{ lookup('env', 'LIONS_KEYCLOAK_NAMESPACE') | default('security') }}"
+keycloak_service_name: "{{ lookup('env', 'LIONS_KEYCLOAK_SERVICE_NAME') | default('keycloak') }}"
+keycloak_port: "{{ lookup('env', 'LIONS_KEYCLOAK_PORT') | default('8080') | int }}"
+keycloak_admin_user: "{{ lookup('env', 'LIONS_KEYCLOAK_ADMIN_USER') | default('admin') }}"
+keycloak_realm: "{{ lookup('env', 'LIONS_KEYCLOAK_REALM') | default('lions') }}"
 
-keycloak_liveness_probe:
-  httpGet:
-    path: "{{ keycloak_health_path }}/live"
-    port: http
-  initialDelaySeconds: 60
-  periodSeconds: 20
-  timeoutSeconds: 5
-  failureThreshold: 3
+# Configuration de l'environnement actuel
+keycloak_environment: "{{ lookup('env', 'LIONS_ENVIRONMENT') | default('development') }}"
+keycloak_domain: "{{ lookup('env', 'LIONS_DNS_FULL_DOMAIN') | default('dev.lions.local') }}"
+keycloak_storage_class: "{{ lookup('env', 'LIONS_STORAGE_CLASS_DEFAULT') | default('local-path') }}"
 
-# Configuration du monitoring
-keycloak_prometheus_port: 8080
-keycloak_prometheus_path: "/metrics"
-keycloak_prometheus_scrape: true
-keycloak_init_delay: 60
+# =========================================================================
+# CONFIGURATION RÉSEAU ET ACCÈS
+# =========================================================================
+# Configuration des ports et endpoints
+keycloak_ports:
+  http: "{{ keycloak_port }}"
+  management: 9990
+  https: 8443
+  debug: 8787
 
-# Configuration des ressources par environnement
+# Configuration des chemins d'API
+keycloak_paths:
+  health: "/health"
+  ready: "/health/ready"
+  live: "/health/live"
+  metrics: "/metrics"
+  admin: "/admin"
+  auth: "/auth"
+  realms: "/realms"
+
+# Configuration de l'accès externe
+keycloak_ingress:
+  enabled: "{{ lookup('env', 'LIONS_SECURITY_TLS_ENABLED') | default('true') | bool }}"
+  host: "auth.{{ keycloak_domain }}"
+  path: "{{ keycloak_paths.auth }}"
+  path_type: "Prefix"
+  tls_enabled: "{{ lookup('env', 'LIONS_SECURITY_TLS_ENABLED') | default('true') | bool }}"
+  tls_secret_name: "keycloak-tls"
+
+# =========================================================================
+# CONFIGURATION SÉCURITÉ
+# =========================================================================
+# Configuration TLS/SSL
+keycloak_tls:
+  enabled: "{{ lookup('env', 'LIONS_SECURITY_TLS_ENABLED') | default('true') | bool }}"
+  cert_manager_issuer: "{{ 'letsencrypt-staging' if (lookup('env', 'LIONS_SECURITY_TLS_STAGING') | default('true') | bool) else 'letsencrypt-prod' }}"
+  ssl_redirect: true
+  ssl_permanent_redirect: true
+  frontend_url: "https://auth.{{ keycloak_domain }}{{ keycloak_paths.auth }}"
+
+# Configuration des secrets Vault
+keycloak_secrets:
+  vault_enabled: "{{ lookup('env', 'LIONS_VAULT_ENABLED') | default('true') | bool }}"
+  vault_path: "secret/keycloak"
+  admin_password:
+    secret_name: "keycloak-admin-credentials"
+    vault_key: "admin-password"
+    env_var: "KEYCLOAK_ADMIN_PASSWORD"
+  database_password:
+    secret_name: "keycloak-database-credentials"
+    vault_key: "database-password"
+    env_var: "KC_DB_PASSWORD"
+
+# Configuration RBAC
+keycloak_rbac:
+  service_account: "{{ keycloak_service_name }}-sa"
+  cluster_role: "{{ keycloak_service_name }}-role"
+  cluster_role_binding: "{{ keycloak_service_name }}-binding"
+  security_context:
+    run_as_non_root: true
+    run_as_user: 1000
+    run_as_group: 1000
+    fs_group: 1000
+    capabilities:
+      drop: ["ALL"]
+    read_only_root_filesystem: true
+
+# =========================================================================
+# CONFIGURATION BASE DE DONNÉES
+# =========================================================================
+# Configuration PostgreSQL (base de données recommandée pour Keycloak)
+keycloak_database:
+  type: "postgres"
+  host: "{{ lookup('env', 'LIONS_POSTGRES_SERVICE_NAME') | default('postgresql') }}.{{ lookup('env', 'LIONS_POSTGRES_NAMESPACE') | default('database') }}.svc.cluster.local"
+  port: "{{ lookup('env', 'LIONS_POSTGRES_PORT') | default('5432') | int }}"
+  name: "keycloak_{{ keycloak_environment }}"
+  username: "keycloak_user"
+  pool_initial_size: 5
+  pool_min_size: 5
+  pool_max_size: 20
+  connection_timeout: 30000
+  idle_timeout: 600000
+  max_lifetime: 1800000
+
+# Configuration alternative H2 (développement uniquement)
+keycloak_h2_database:
+  enabled: "{{ keycloak_environment == 'development' }}"
+  file_path: "/opt/keycloak/data/h2/keycloakdb"
+
+# =========================================================================
+# CONFIGURATION DES RESSOURCES PAR ENVIRONNEMENT
+# =========================================================================
 keycloak_resources:
   development:
+    replicas: 1
     requests:
-      cpu: "200m"
-      memory: "512Mi"
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_CPU_REQUEST') | default('200m') }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_MEMORY_REQUEST') | default('512Mi') }}"
     limits:
-      cpu: "1000m"
-      memory: "1Gi"
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_CPU_LIMIT') | default('1000m') }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_MEMORY_LIMIT') | default('1Gi') }}"
+    jvm_heap: "512m"
+
   staging:
+    replicas: 2
     requests:
-      cpu: "500m"
-      memory: "1Gi"
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_CPU_REQUEST') | default('500m') }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_MEMORY_REQUEST') | default('1Gi') }}"
     limits:
-      cpu: "1500m"
-      memory: "2Gi"
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_CPU_LIMIT') | default('1500m') }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_MEMORY_LIMIT') | default('2Gi') }}"
+    jvm_heap: "1536m"
+
   production:
+    replicas: 3
     requests:
-      cpu: "1000m"
-      memory: "2Gi"
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_CPU_REQUEST') | default('1000m') }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_MEMORY_REQUEST') | default('2Gi') }}"
     limits:
-      cpu: "2000m"
-      memory: "4Gi"
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_CPU_LIMIT') | default('2000m') }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_MEMORY_LIMIT') | default('4Gi') }}"
+    jvm_heap: "3072m"
 
-# Configuration des réplicas par environnement
-keycloak_replicas:
-  development: 1
-  staging: 2
-  production: 3
+# Ressources actuelles basées sur l'environnement
+keycloak_current_resources: "{{ keycloak_resources[keycloak_environment] }}"
 
-# Configuration de l'ingress
+# =========================================================================
+# CONFIGURATION DES SONDES DE SANTÉ
+# =========================================================================
+keycloak_health_checks:
+  startup_probe:
+    enabled: true
+    http_get:
+      path: "{{ keycloak_paths.health }}"
+      port: "http"
+      scheme: "HTTP"
+    initial_delay_seconds: 30
+    period_seconds: 5
+    timeout_seconds: 3
+    failure_threshold: 10
+    success_threshold: 1
+
+  readiness_probe:
+    enabled: true
+    http_get:
+      path: "{{ keycloak_paths.ready }}"
+      port: "http"
+      scheme: "HTTP"
+    initial_delay_seconds: 30
+    period_seconds: 10
+    timeout_seconds: 5
+    failure_threshold: 3
+    success_threshold: 1
+
+  liveness_probe:
+    enabled: true
+    http_get:
+      path: "{{ keycloak_paths.live }}"
+      port: "http"
+      scheme: "HTTP"
+    initial_delay_seconds: 60
+    period_seconds: 20
+    timeout_seconds: 5
+    failure_threshold: 3
+    success_threshold: 1
+
+# =========================================================================
+# CONFIGURATION DU STOCKAGE PERSISTANT
+# =========================================================================
+keycloak_storage:
+  enabled: true
+  size: "{{ lookup('env', 'LIONS_STORAGE_PV_SIZE_SMALL') | default('5Gi') }}"
+  class: "{{ keycloak_storage_class }}"
+  access_modes: ["ReadWriteOnce"]
+  reclaim_policy: "Retain"
+  mount_path: "/opt/keycloak/data"
+  subpath: "keycloak-data"
+
+# Configuration de backup
+keycloak_backup:
+  enabled: "{{ lookup('env', 'LIONS_BACKUP_ENABLED') | default('true') | bool }}"
+  schedule: "{{ lookup('env', 'LIONS_BACKUP_SCHEDULE') | default('0 2 * * *') }}"
+  retention_days: "{{ lookup('env', 'LIONS_BACKUP_RETENTION_DAYS') | default('30') | int }}"
+
+# =========================================================================
+# CONFIGURATION MONITORING ET OBSERVABILITÉ
+# =========================================================================
+# Configuration Prometheus
+keycloak_monitoring:
+  enabled: "{{ lookup('env', 'LIONS_MONITORING_ENABLED') | default('true') | bool }}"
+  prometheus:
+    enabled: true
+    port: "{{ keycloak_port }}"
+    path: "{{ keycloak_paths.metrics }}"
+    scrape_interval: "30s"
+    scrape_timeout: "10s"
+    honor_labels: true
+
+  service_monitor:
+    enabled: true
+    namespace: "{{ lookup('env', 'LIONS_MONITORING_NAMESPACE') | default('monitoring') }}"
+    labels:
+      app: "{{ keycloak_service_name }}"
+      component: "identity-provider"
+      monitoring: "prometheus"
+
+  alerts:
+    enabled: true
+    cpu_threshold: 80
+    memory_threshold: 85
+    response_time_threshold: 5000  # 5 seconds
+    error_rate_threshold: 5  # 5%
+
+# Configuration des logs
+keycloak_logging:
+  level: "{{ lookup('env', 'LIONS_LOG_LEVEL') | default('INFO') }}"
+  format: "{{ lookup('env', 'LIONS_LOG_FORMAT') | default('json') }}"
+  console_enabled: true
+  file_enabled: false
+  audit_enabled: "{{ lookup('env', 'LIONS_AUDIT_ENABLED') | default('true') | bool }}"
+
+# =========================================================================
+# CONFIGURATION AUTO-SCALING
+# =========================================================================
+keycloak_autoscaling:
+  enabled: "{{ lookup('env', 'LIONS_AUTOSCALING_ENABLED') | default('true') | bool }}"
+  min_replicas: "{{ lookup('env', 'LIONS_AUTOSCALING_MIN_REPLICAS') | default('1') | int }}"
+  max_replicas: "{{ lookup('env', 'LIONS_AUTOSCALING_MAX_REPLICAS') | default('10') | int }}"
+  target_cpu_utilization: "{{ lookup('env', 'LIONS_AUTOSCALING_CPU_TARGET') | default('70') | int }}"
+  target_memory_utilization: "{{ lookup('env', 'LIONS_AUTOSCALING_MEMORY_TARGET') | default('80') | int }}"
+  scale_up_stabilization: 60  # seconds
+  scale_down_stabilization: 300  # seconds
+
+# =========================================================================
+# CONFIGURATION INGRESS AVANCÉE
+# =========================================================================
 keycloak_ingress_annotations:
-  cert-manager.io/cluster-issuer: "letsencrypt-prod"
-  traefik.ingress.kubernetes.io/router.entrypoints: "websecure"
-  traefik.ingress.kubernetes.io/router.tls: "true"
-  traefik.ingress.kubernetes.io/ssl-redirect: "true"
-  traefik.ingress.kubernetes.io/ssl-permanent-redirect: "true"
-  traefik.ingress.kubernetes.io/request-timeout: "300"
-  traefik.ingress.kubernetes.io/compress: "true"
-  traefik.ingress.kubernetes.io/headers-customrequestheaders: "X-Forwarded-Proto:https||X-Forwarded-Port:443"
-  traefik.ingress.kubernetes.io/headers-customresponseheaders: "X-Content-Type-Options:nosniff||X-Frame-Options:SAMEORIGIN||X-XSS-Protection:1; mode=block"
+  # Cert-Manager
+  "cert-manager.io/cluster-issuer": "{{ keycloak_tls.cert_manager_issuer }}"
 
-# Configuration de la persistance
-keycloak_persistent_storage: true
-keycloak_storage_size: "1Gi"
-keycloak_storage_class: "local-path"
+  # Traefik - Routage
+  "traefik.ingress.kubernetes.io/router.entrypoints": "websecure"
+  "traefik.ingress.kubernetes.io/router.tls": "true"
+  "traefik.ingress.kubernetes.io/ssl-redirect": "{{ keycloak_tls.ssl_redirect | lower }}"
+  "traefik.ingress.kubernetes.io/ssl-permanent-redirect": "{{ keycloak_tls.ssl_permanent_redirect | lower }}"
 
-# Configuration de Keycloak
-keycloak_realm: "lions"
-keycloak_frontend_url: "https://{{ app_domain }}/auth"
-keycloak_proxy_address_forwarding: true
+  # Traefik - Timeouts et limites
+  "traefik.ingress.kubernetes.io/request-timeout": "{{ lookup('env', 'LIONS_TIMEOUT_DEFAULT') | default('300') }}"
+  "traefik.ingress.kubernetes.io/compress": "true"
+  "traefik.ingress.kubernetes.io/router.middlewares": "{{ keycloak_namespace }}-keycloak-security@kubernetescrd"
+
+  # Traefik - Headers de sécurité
+  "traefik.ingress.kubernetes.io/headers-customrequestheaders": |
+    X-Forwarded-Proto:https||
+    X-Forwarded-Port:443||
+    X-Forwarded-Host:auth.{{ keycloak_domain }}
+  "traefik.ingress.kubernetes.io/headers-customresponseheaders": |
+    X-Content-Type-Options:nosniff||
+    X-Frame-Options:SAMEORIGIN||
+    X-XSS-Protection:1; mode=block||
+    Strict-Transport-Security:max-age=31536000; includeSubDomains||
+    Content-Security-Policy:default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'
+
+# =========================================================================
+# CONFIGURATION KEYCLOAK SPÉCIFIQUE
+# =========================================================================
+# Configuration du serveur Keycloak
+keycloak_server_config:
+  hostname: "auth.{{ keycloak_domain }}"
+  hostname_strict: false
+  hostname_strict_https: false
+  hostname_strict_backchannel: false
+  proxy_address_forwarding: true
+  proxy_headers: "forwarded|xforwarded"
+
+  # Configuration de cache
+  cache_stack: "kubernetes"
+  cache_config_file: "cache-ispn-kubernetes.xml"
+
+  # Configuration de clustering (pour HA)
+  cluster_enabled: "{{ keycloak_current_resources.replicas > 1 }}"
+  jgroups_discovery_protocol: "kubernetes.KUBE_PING"
+
+  # Configuration de performance
+  transaction_xa_enabled: false
+  db_pool_initial_size: "{{ keycloak_database.pool_initial_size }}"
+  db_pool_min_size: "{{ keycloak_database.pool_min_size }}"
+  db_pool_max_size: "{{ keycloak_database.pool_max_size }}"
+
+# Configuration du realm par défaut
+keycloak_realm_config:
+  name: "{{ keycloak_realm }}"
+  display_name: "LIONS Infrastructure"
+  enabled: true
+  registration_allowed: false
+  registration_email_as_username: true
+  edit_username_allowed: false
+  reset_password_allowed: true
+  remember_me: true
+  verify_email: true
+  login_with_email_allowed: true
+  duplicate_emails_allowed: false
+  ssl_required: "external"
+
+  # Configuration des sessions
+  sso_session_idle_timeout: 1800  # 30 minutes
+  sso_session_max_lifespan: 36000  # 10 hours
+  offline_session_idle_timeout: 2592000  # 30 days
+
+  # Configuration des tokens
+  access_token_lifespan: 900  # 15 minutes
+  refresh_token_lifespan: 1800  # 30 minutes
+
+# Configuration des thèmes
+keycloak_themes:
+  login: "lions"
+  admin: "lions"
+  account: "lions"
+  email: "lions"
+  welcome: "lions"
+
+# =========================================================================
+# CONFIGURATION DES POLITIQUES DE SÉCURITÉ
+# =========================================================================
+# Configuration Pod Security Standards
+keycloak_pod_security:
+  security_context:
+    run_as_non_root: true
+    run_as_user: 1000
+    run_as_group: 1000
+    fs_group: 1000
+    supplemental_groups: [1000]
+
+  container_security_context:
+    allow_privilege_escalation: false
+    run_as_non_root: true
+    run_as_user: 1000
+    run_as_group: 1000
+    capabilities:
+      drop: ["ALL"]
+      add: ["NET_BIND_SERVICE"]
+    read_only_root_filesystem: false  # Keycloak needs to write temp files
+    seccomp_profile:
+      type: "RuntimeDefault"
+
+# Configuration Network Policies
+keycloak_network_policies:
+  enabled: "{{ lookup('env', 'LIONS_SECURITY_NETWORK_POLICIES') | default('true') | bool }}"
+  ingress_rules:
+    - from_namespace_selector: "{{ keycloak_namespace }}"
+    - from_namespace_selector: "{{ lookup('env', 'LIONS_MONITORING_NAMESPACE') | default('monitoring') }}"
+    - from_external: true  # Pour l'accès utilisateur
+  egress_rules:
+    - to_namespace_selector: "{{ lookup('env', 'LIONS_POSTGRES_NAMESPACE') | default('database') }}"
+    - to_dns: true
+    - to_external: true  # Pour les intégrations externes
+
+# =========================================================================
+# CONFIGURATION DE VALIDATION
+# =========================================================================
+# Variables de validation (utilisées par les tâches de validation)
+keycloak_validation:
+  required_env_vars:
+    - "LIONS_ENVIRONMENT"
+    - "LIONS_DNS_DOMAIN_BASE"
+    - "LIONS_KEYCLOAK_ADMIN_USER"
+
+  health_check_timeout: 300  # 5 minutes
+  deployment_timeout: "{{ lookup('env', 'LIONS_TIMEOUT_DEPLOYMENT') | default('1800') | int }}"
+
+  min_requirements:
+    cpu: "200m"
+    memory: "512Mi"
+    storage: "1Gi"
+
+# =========================================================================
+# CONFIGURATION DES LABELS ET ANNOTATIONS
+# =========================================================================
+# Labels communs pour tous les objets Keycloak
+keycloak_common_labels:
+  app.kubernetes.io/name: "keycloak"
+  app.kubernetes.io/instance: "{{ keycloak_service_name }}"
+  app.kubernetes.io/version: "{{ keycloak_version }}"
+  app.kubernetes.io/component: "identity-provider"
+  app.kubernetes.io/part-of: "lions-infrastructure"
+  app.kubernetes.io/managed-by: "ansible"
+  lions.dev/environment: "{{ keycloak_environment }}"
+  lions.dev/service-type: "security"
+
+# Annotations communes
+keycloak_common_annotations:
+  lions.dev/deployed-by: "ansible"
+  lions.dev/deployment-date: "{{ ansible_date_time.iso8601 }}"
+  lions.dev/config-version: "{{ keycloak_role_version }}"
+  lions.dev/documentation: "https://docs.lions.dev/infrastructure/services/keycloak"
+
+# =========================================================================
+# CONFIGURATION DE DEBUG ET MAINTENANCE
+# =========================================================================
+keycloak_debug:
+  enabled: "{{ lookup('env', 'LIONS_DEBUG_MODE') | default('false') | bool }}"
+  jvm_debug_port: "{{ keycloak_ports.debug }}"
+  log_level: "{{ 'DEBUG' if (lookup('env', 'LIONS_DEBUG_MODE') | default('false') | bool) else keycloak_logging.level }}"
+
+keycloak_maintenance:
+  graceful_shutdown_timeout: 30
+  termination_grace_period: 60
+  update_strategy: "RollingUpdate"
+  rolling_update:
+    max_surge: 1
+    max_unavailable: 0
+
+# =========================================================================
+# VARIABLES CALCULÉES ET DÉRIVÉES
+# =========================================================================
+# Ces variables sont calculées automatiquement
+keycloak_full_name: "{{ keycloak_service_name }}-{{ keycloak_environment }}"
+keycloak_selector_labels:
+  app: "{{ keycloak_service_name }}"
+  version: "{{ keycloak_version }}"
+  environment: "{{ keycloak_environment }}"
+
+# Configuration finale fusionnée
+keycloak_final_config:
+  metadata:
+    name: "{{ keycloak_service_name }}"
+    namespace: "{{ keycloak_namespace }}"
+    labels: "{{ keycloak_common_labels }}"
+    annotations: "{{ keycloak_common_annotations }}"
+  spec:
+    replicas: "{{ keycloak_current_resources.replicas }}"
+    resources: "{{ keycloak_current_resources }}"
+    storage: "{{ keycloak_storage }}"
+    monitoring: "{{ keycloak_monitoring }}"
+    security: "{{ keycloak_pod_security }}"

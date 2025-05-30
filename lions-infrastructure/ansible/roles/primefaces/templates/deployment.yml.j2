@@ -1,63 +1,336 @@
----
-# Titre: Template de déploiement Kubernetes pour PrimeFaces
-# Description: Définit le déploiement Kubernetes pour une application PrimeFaces
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - PRIMEFACES DEPLOYMENT TEMPLATE
+# =========================================================================
+# Description: Template Kubernetes avancé pour le déploiement PrimeFaces
+# Composant: PrimeFaces Application Deployment
+# Version: 5.0.0
+# Maintainer: DevOps LIONS Team
+# Documentation: https://docs.lions.dev/infrastructure/primefaces/deployment
+# =========================================================================
 
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: "{{ app_name }}"
-  namespace: "{{ app_namespace }}"
+  name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+  namespace: "{{ lions_primefaces_namespace }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "primefaces"
+    # Labels Kubernetes standards
+    app.kubernetes.io/name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+    app.kubernetes.io/instance: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-{{ lions_environment }}"
+    app.kubernetes.io/version: "{{ lions_primefaces_app_version | default('latest') }}"
+    app.kubernetes.io/component: "web-application"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "lions-infrastructure-ansible"
+    
+    # Labels LIONS spécifiques
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/technology: "primefaces"
+    lions.dev/tier: "frontend"
+    lions.dev/data-classification: "{{ lions_primefaces_data_classification | default('internal') }}"
+    lions.dev/business-unit: "{{ lions_business_unit | default('infrastructure') }}"
+    lions.dev/cost-center: "{{ lions_cost_center | default('devops') }}"
+    lions.dev/backup-required: "{{ lions_primefaces_backup_required | default('false') }}"
+    lions.dev/monitoring-enabled: "{{ lions_monitoring_enabled | lower }}"
+    
+    # Labels pour l'observabilité
+    app: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+    version: "{{ lions_primefaces_app_version | default('latest') }}"
+    environment: "{{ lions_environment }}"
+    
   annotations:
-    description: "Déploiement de l'application {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    # Annotations standards
+    description: "Déploiement enterprise LIONS 5.0 pour l'application PrimeFaces {{ lions_primefaces_app_name | default(lions_primefaces_service_name) }} ({{ lions_primefaces_app_version | default('latest') }}) en environnement {{ lions_environment }}"
     deployment.kubernetes.io/revision: "1"
+    
+    # Annotations LIONS de gestion
+    lions.dev/created-by: "lions-infrastructure-ansible"
+    lions.dev/last-updated: "{{ ansible_date_time.iso8601 }}"
+    lions.dev/deployment-type: "{{ lions_primefaces_deployment_type | default('rolling') }}"
+    lions.dev/maintenance-window: "{{ lions_primefaces_maintenance_window | default('02:00-04:00 UTC') }}"
+    lions.dev/support-contact: "{{ lions_support_contact | default('devops@lions.dev') }}"
+    lions.dev/documentation-url: "https://docs.lions.dev/infrastructure/primefaces"
+    
+    # Annotations pour l'autoscaling
+    {% if lions_autoscaling_enabled | default(false) | bool %}
+    autoscaling.alpha.kubernetes.io/behavior: "{{ lions_primefaces_autoscaling_behavior | default('{}') }}"
+    {% endif %}
+    
+    # Annotations pour la sécurité
+    seccomp.security.alpha.kubernetes.io/pod: "runtime/default"
+    {% if lions_pod_security_enabled | default(true) | bool %}
+    pod-security.kubernetes.io/enforce: "{{ lions_pod_security_standard | default('restricted') }}"
+    {% endif %}
+
 spec:
-  replicas: {{ primefaces_replicas[app_environment] }}
+  replicas: {{ lions_primefaces_replicas | default('1') }}
+  
+  # Stratégie de déploiement avancée
+  strategy:
+    type: {{ lions_primefaces_deployment_strategy | default('RollingUpdate') }}
+    {% if lions_primefaces_deployment_strategy | default('RollingUpdate') == 'RollingUpdate' %}
+    rollingUpdate:
+      maxSurge: {{ lions_primefaces_max_surge | default('25%') }}
+      maxUnavailable: {{ lions_primefaces_max_unavailable | default('0%') }}
+    {% endif %}
+  
+  # Sélecteur avec labels compatibles
   selector:
     matchLabels:
-      app: "{{ app_name }}"
-  strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxSurge: 1
-      maxUnavailable: 0
+      app.kubernetes.io/name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+      app.kubernetes.io/instance: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-{{ lions_environment }}"
+  
+  # Configuration de révision
+  revisionHistoryLimit: {{ lions_primefaces_revision_history_limit | default('3') }}
+  
+  # Template des pods
   template:
     metadata:
       labels:
-        app: "{{ app_name }}"
-        version: "{{ app_version }}"
-        environment: "{{ app_environment }}"
-        technology: "primefaces"
+        # Labels Kubernetes standards
+        app.kubernetes.io/name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+        app.kubernetes.io/instance: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-{{ lions_environment }}"
+        app.kubernetes.io/version: "{{ lions_primefaces_app_version | default('latest') }}"
+        app.kubernetes.io/component: "web-application"
+        app.kubernetes.io/part-of: "lions-infrastructure"
+        app.kubernetes.io/managed-by: "lions-infrastructure-ansible"
+        
+        # Labels LIONS spécifiques
+        lions.dev/environment: "{{ lions_environment }}"
+        lions.dev/technology: "primefaces"
+        lions.dev/tier: "frontend"
+        lions.dev/data-classification: "{{ lions_primefaces_data_classification | default('internal') }}"
+        
+        # Labels pour l'observabilité et le networking
+        app: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+        version: "{{ lions_primefaces_app_version | default('latest') }}"
+        environment: "{{ lions_environment }}"
+        
       annotations:
-        prometheus.io/scrape: "{{ primefaces_prometheus_scrape | string | lower }}"
-        prometheus.io/path: "{{ primefaces_prometheus_path }}"
-        prometheus.io/port: "{{ primefaces_prometheus_port | string }}"
+        # Configuration Prometheus/monitoring
+        {% if lions_monitoring_enabled | bool %}
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "{{ lions_primefaces_metrics_path | default('/actuator/prometheus') }}"
+        prometheus.io/port: "{{ lions_primefaces_port }}"
+        prometheus.io/scheme: "{{ lions_primefaces_metrics_scheme | default('http') }}"
+        {% endif %}
+        
+        # Configuration Istio (si activé)
+        {% if lions_istio_enabled | default(false) | bool %}
+        sidecar.istio.io/inject: "{{ lions_primefaces_istio_injection | default('true') }}"
+        traffic.sidecar.istio.io/includeInboundPorts: "{{ lions_primefaces_port }}"
+        {% if lions_primefaces_istio_metrics_merging | default(true) | bool %}
+        sidecar.istio.io/statsInclusionRegexps: ".*circuit_breakers,.*upstream_rq_retry,.*upstream_rq_pending,.*_cx_.*"
+        {% endif %}
+        {% endif %}
+        
+        # Configuration réseau avancée
+        {% if lions_network_policies_enabled | default(false) | bool %}
+        network-policy.kubernetes.io/ingress: "{{ lions_primefaces_network_ingress_policy | default('restricted') }}"
+        network-policy.kubernetes.io/egress: "{{ lions_primefaces_network_egress_policy | default('restricted') }}"
+        {% endif %}
+        
+        # Annotations de sécurité
+        seccomp.security.alpha.kubernetes.io/container: "runtime/default"
+        container.apparmor.security.beta.kubernetes.io/{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}: "{{ lions_primefaces_apparmor_profile | default('runtime/default') }}"
+        
+        # Configuration de logging
+        {% if lions_logging_enabled | default(true) | bool %}
+        fluentd.alpha.kubernetes.io/include: "{{ lions_primefaces_logging_include | default('true') }}"
+        {% endif %}
+        
+        # Restart policy et checksums pour déclenchement des redéploiements
+        configmap.reloader.stakater.com/reload: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-config"
+        secret.reloader.stakater.com/reload: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-secret"
+        kubectl.kubernetes.io/restartedAt: "{{ ansible_date_time.iso8601 }}"
+
     spec:
-      serviceAccountName: "{{ app_name }}"
+      # Configuration du service account avec RBAC
+      serviceAccountName: "{{ lions_primefaces_service_account | default(lions_primefaces_app_name | default(lions_primefaces_service_name)) }}"
+      automountServiceAccountToken: {{ lions_primefaces_automount_sa_token | default('false') }}
+      
+      # Contexte de sécurité global du pod
       securityContext:
         runAsNonRoot: true
-        runAsUser: 1000
-        fsGroup: 1000
-      containers:
-        - name: "{{ app_name }}"
-          image: "registry.{{ app_environment }}.lions.dev/{{ app_name }}:{{ app_version }}"
+        runAsUser: {{ lions_primefaces_security_user_id | default('10001') }}
+        runAsGroup: {{ lions_primefaces_security_group_id | default('10001') }}
+        fsGroup: {{ lions_primefaces_security_fs_group | default('10001') }}
+        fsGroupChangePolicy: "OnRootMismatch"
+        supplementalGroups:
+          - {{ lions_primefaces_security_supplemental_group | default('10001') }}
+        {% if lions_pod_security_enabled | default(true) | bool %}
+        seccompProfile:
+          type: RuntimeDefault
+        {% endif %}
+      
+      # Configuration des pull secrets pour les registres privés
+      {% if lions_image_pull_secret_required | default(false) | bool %}
+      imagePullSecrets:
+        - name: "{{ lions_image_pull_secret_name | default('regcred') }}"
+      {% endif %}
+      
+      # DNS et hostname
+      {% if lions_primefaces_custom_hostname | default(false) | bool %}
+      hostname: "{{ lions_primefaces_hostname }}"
+      {% endif %}
+      dnsPolicy: {{ lions_primefaces_dns_policy | default('ClusterFirst') }}
+      {% if lions_primefaces_dns_config | default({}) %}
+      dnsConfig:
+        {{ lions_primefaces_dns_config | to_nice_yaml | indent(8) }}
+      {% endif %}
+      
+      # Délai de grâce pour la terminaison
+      terminationGracePeriodSeconds: {{ lions_primefaces_termination_grace_period | default('30') }}
+      
+      # Configuration d'affinité et d'anti-affinité avancée
+      {% if lions_primefaces_affinity_enabled | default(true) | bool %}
+      affinity:
+        # Anti-affinité des pods pour la haute disponibilité
+        podAntiAffinity:
+          {% if lions_environment == 'production' %}
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app.kubernetes.io/name
+                    operator: In
+                    values:
+                      - "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+              topologyKey: "kubernetes.io/hostname"
+          {% else %}
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app.kubernetes.io/name
+                      operator: In
+                      values:
+                        - "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+                topologyKey: "kubernetes.io/hostname"
+          {% endif %}
+        
+        # Affinité de nœud pour le placement préférentiel
+        {% if lions_primefaces_node_affinity_enabled | default(false) | bool %}
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 50
+              preference:
+                matchExpressions:
+                  - key: "{{ lions_primefaces_node_affinity_key | default('node-role.kubernetes.io/worker') }}"
+                    operator: In
+                    values:
+                      - "{{ lions_primefaces_node_affinity_value | default('true') }}"
+        {% endif %}
+      {% endif %}
+      
+      # Tolérances pour les taints
+      {% if lions_primefaces_tolerations | default([]) | length > 0 %}
+      tolerations:
+        {{ lions_primefaces_tolerations | to_nice_yaml | indent(8) }}
+      {% endif %}
+      
+      # Priorité du pod
+      {% if lions_primefaces_priority_class | default('') %}
+      priorityClassName: "{{ lions_primefaces_priority_class }}"
+      {% endif %}
+      
+      # Configuration init containers pour la préparation
+      {% if lions_primefaces_init_containers_enabled | default(false) | bool %}
+      initContainers:
+        # Init container pour la vérification de la base de données
+        {% if lions_postgres_enabled | bool %}
+        - name: wait-for-postgres
+          image: "{{ lions_primefaces_init_image | default('busybox:1.35') }}"
           imagePullPolicy: IfNotPresent
+          command:
+            - 'sh'
+            - '-c'
+            - |
+              echo "Waiting for PostgreSQL to be ready..."
+              until nc -z {{ lions_postgres_service_name }}.{{ lions_postgres_namespace }}.svc.cluster.local {{ lions_postgres_port }}; do
+                echo "PostgreSQL is unavailable - sleeping"
+                sleep 2
+              done
+              echo "PostgreSQL is ready!"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: {{ lions_primefaces_security_user_id | default('10001') }}
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+        {% endif %}
+        
+        # Init container pour la vérification de Redis
+        {% if lions_redis_enabled | bool %}
+        - name: wait-for-redis
+          image: "{{ lions_primefaces_init_image | default('busybox:1.35') }}"
+          imagePullPolicy: IfNotPresent
+          command:
+            - 'sh'
+            - '-c'
+            - |
+              echo "Waiting for Redis to be ready..."
+              until nc -z {{ lions_redis_service_name }}.{{ lions_redis_namespace }}.svc.cluster.local {{ lions_redis_port }}; do
+                echo "Redis is unavailable - sleeping"
+                sleep 2
+              done
+              echo "Redis is ready!"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: {{ lions_primefaces_security_user_id | default('10001') }}
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+        {% endif %}
+      {% endif %}
+      
+      # Containers principaux
+      containers:
+        # Container principal de l'application PrimeFaces
+        - name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+          image: "{{ lions_primefaces_image_registry }}/{{ lions_primefaces_image_repository }}:{{ lions_primefaces_app_version | default('latest') }}"
+          imagePullPolicy: {{ lions_primefaces_image_pull_policy | default('IfNotPresent') }}
+          
+          # Ports exposés
           ports:
             - name: http
-              containerPort: {{ primefaces_default_port }}
+              containerPort: {{ lions_primefaces_port }}
               protocol: TCP
+            {% if lions_monitoring_enabled | bool %}
+            - name: metrics
+              containerPort: {{ lions_primefaces_metrics_port | default(lions_primefaces_port) }}
+              protocol: TCP
+            {% endif %}
+            {% if lions_primefaces_management_port | default('') %}
+            - name: management
+              containerPort: {{ lions_primefaces_management_port }}
+              protocol: TCP
+            {% endif %}
+          
+          # Variables d'environnement complètes
           env:
+            # Configuration Spring Boot/Java
             - name: JAVA_OPTS
-              value: "{{ primefaces_java_opts }}"
+              value: "{{ lions_primefaces_java_opts }}"
             - name: SPRING_PROFILES_ACTIVE
-              value: "{{ primefaces_profile }}"
+              value: "{{ lions_primefaces_spring_profiles }}"
+            - name: SPRING_CONFIG_LOCATION
+              value: "{{ lions_primefaces_spring_config_location | default('classpath:/application.yml,/config/') }}"
+            
+            # Configuration PrimeFaces
+            - name: PRIMEFACES_THEME
+              value: "{{ lions_primefaces_theme }}"
+            - name: PRIMEFACES_FONTAWESOME
+              value: "{{ lions_primefaces_fontawesome | lower }}"
+            - name: PRIMEFACES_RESPONSIVE
+              value: "{{ lions_primefaces_responsive | lower }}"
+            - name: PRIMEFACES_LEGACY_MODE
+              value: "{{ lions_primefaces_legacy_mode | default('false') | lower }}"
+            
+            # Informations Kubernetes
             - name: KUBERNETES_NAMESPACE
               valueFrom:
                 fieldRef:
@@ -66,66 +339,326 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
-            - name: PRIMEFACES_THEME
-              value: "{{ primefaces_theme }}"
-            - name: PRIMEFACES_FONTAWESOME
-              value: "{{ primefaces_fontawesome | string | lower }}"
-            - name: PRIMEFACES_RESPONSIVE
-              value: "{{ primefaces_responsive | string | lower }}"
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            
+            # Configuration de l'environnement
+            - name: ENVIRONMENT
+              value: "{{ lions_environment }}"
+            - name: APPLICATION_NAME
+              value: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+            - name: APPLICATION_VERSION
+              value: "{{ lions_primefaces_app_version | default('latest') }}"
+            
+            # Configuration serveur
+            - name: SERVER_PORT
+              value: "{{ lions_primefaces_port }}"
+            - name: SERVER_SERVLET_CONTEXT_PATH
+              value: "{{ lions_primefaces_context_path | default('/') }}"
+            - name: SERVER_SHUTDOWN
+              value: "{{ lions_primefaces_shutdown_type | default('graceful') }}"
+            
+            # Configuration de logging
+            - name: LOGGING_LEVEL_ROOT
+              value: "{{ lions_primefaces_log_level | default('INFO') }}"
+            - name: LOGGING_LEVEL_ORG_PRIMEFACES
+              value: "{{ lions_primefaces_primefaces_log_level | default('INFO') }}"
+            
+            # Configuration de base de données
+            {% if lions_postgres_enabled | bool %}
+            - name: SPRING_DATASOURCE_URL
+              value: "jdbc:postgresql://{{ lions_postgres_service_name }}.{{ lions_postgres_namespace }}.svc.cluster.local:{{ lions_postgres_port }}/{{ lions_primefaces_db_name }}"
+            - name: SPRING_DATASOURCE_DRIVER_CLASS_NAME
+              value: "org.postgresql.Driver"
+            - name: SPRING_JPA_DATABASE_PLATFORM
+              value: "org.hibernate.dialect.PostgreSQLDialect"
+            {% endif %}
+            
+            # Configuration Redis
+            {% if lions_redis_enabled | bool %}
+            - name: SPRING_REDIS_HOST
+              value: "{{ lions_redis_service_name }}.{{ lions_redis_namespace }}.svc.cluster.local"
+            - name: SPRING_REDIS_PORT
+              value: "{{ lions_redis_port }}"
+            {% endif %}
+            
+            # Configuration monitoring
+            {% if lions_monitoring_enabled | bool %}
+            - name: MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE
+              value: "{{ lions_primefaces_actuator_endpoints | default('health,info,metrics,prometheus') }}"
+            - name: MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS
+              value: "{{ lions_primefaces_health_details | default('when-authorized') }}"
+            - name: MANAGEMENT_METRICS_EXPORT_PROMETHEUS_ENABLED
+              value: "true"
+            {% endif %}
+            
+            # Configuration sécurité
+            {% if lions_keycloak_enabled | bool %}
+            - name: SPRING_SECURITY_OAUTH2_CLIENT_PROVIDER_KEYCLOAK_ISSUER_URI
+              value: "{{ lions_keycloak_external_url }}/realms/{{ lions_keycloak_realm }}"
+            {% endif %}
+            
+            # Variables custom supplémentaires
+            {% if lions_primefaces_extra_env_vars | default({}) %}
+            {% for key, value in lions_primefaces_extra_env_vars.items() %}
+            - name: "{{ key }}"
+              value: "{{ value }}"
+            {% endfor %}
+            {% endif %}
+          
+          # Chargement des ConfigMaps et Secrets
           envFrom:
             - configMapRef:
-                name: "{{ app_name }}-config"
+                name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-config"
+                optional: false
+            {% if lions_postgres_enabled | bool %}
             - secretRef:
-                name: "{{ app_name }}-secrets"
+                name: "{{ lions_primefaces_db_secret_name | default(lions_primefaces_app_name | default(lions_primefaces_service_name) + '-db-secret') }}"
+                optional: false
+            {% endif %}
+            {% if lions_redis_enabled | bool %}
+            - secretRef:
+                name: "{{ lions_primefaces_redis_secret_name | default(lions_primefaces_app_name | default(lions_primefaces_service_name) + '-redis-secret') }}"
                 optional: true
+            {% endif %}
+            {% if lions_keycloak_enabled | bool %}
+            - secretRef:
+                name: "{{ lions_primefaces_oidc_secret_name | default(lions_primefaces_app_name | default(lions_primefaces_service_name) + '-oidc-secret') }}"
+                optional: true
+            {% endif %}
+          
+          # Configuration des ressources
           resources:
             requests:
-              cpu: "{{ primefaces_resources[app_environment].requests.cpu }}"
-              memory: "{{ primefaces_resources[app_environment].requests.memory }}"
+              cpu: "{{ lions_primefaces_cpu_request }}"
+              memory: "{{ lions_primefaces_memory_request }}"
+              {% if lions_primefaces_ephemeral_storage_request | default('') %}
+              ephemeral-storage: "{{ lions_primefaces_ephemeral_storage_request }}"
+              {% endif %}
             limits:
-              cpu: "{{ primefaces_resources[app_environment].limits.cpu }}"
-              memory: "{{ primefaces_resources[app_environment].limits.memory }}"
+              cpu: "{{ lions_primefaces_cpu_limit }}"
+              memory: "{{ lions_primefaces_memory_limit }}"
+              {% if lions_primefaces_ephemeral_storage_limit | default('') %}
+              ephemeral-storage: "{{ lions_primefaces_ephemeral_storage_limit }}"
+              {% endif %}
+          
+          # Probes de santé avancées
+          startupProbe:
+            httpGet:
+              path: "{{ lions_primefaces_startup_probe_path | default('/actuator/health') }}"
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: {{ lions_primefaces_startup_initial_delay | default('30') }}
+            periodSeconds: {{ lions_primefaces_startup_period | default('10') }}
+            timeoutSeconds: {{ lions_primefaces_startup_timeout | default('5') }}
+            failureThreshold: {{ lions_primefaces_startup_failure_threshold | default('30') }}
+            successThreshold: {{ lions_primefaces_startup_success_threshold | default('1') }}
+          
           readinessProbe:
-            {{- primefaces_readiness_probe | to_nice_yaml(indent=2) | indent(12) }}
+            httpGet:
+              path: "{{ lions_primefaces_readiness_probe_path | default('/actuator/health/readiness') }}"
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: {{ lions_primefaces_readiness_initial_delay | default('10') }}
+            periodSeconds: {{ lions_primefaces_readiness_period | default('10') }}
+            timeoutSeconds: {{ lions_primefaces_readiness_timeout | default('5') }}
+            failureThreshold: {{ lions_primefaces_readiness_failure_threshold | default('3') }}
+            successThreshold: {{ lions_primefaces_readiness_success_threshold | default('1') }}
+          
           livenessProbe:
-            {{- primefaces_liveness_probe | to_nice_yaml(indent=2) | indent(12) }}
+            httpGet:
+              path: "{{ lions_primefaces_liveness_probe_path | default('/actuator/health/liveness') }}"
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: {{ lions_primefaces_liveness_initial_delay | default('60') }}
+            periodSeconds: {{ lions_primefaces_liveness_period | default('30') }}
+            timeoutSeconds: {{ lions_primefaces_liveness_timeout | default('5') }}
+            failureThreshold: {{ lions_primefaces_liveness_failure_threshold | default('3') }}
+            successThreshold: {{ lions_primefaces_liveness_success_threshold | default('1') }}
+          
+          # Montages de volumes
           volumeMounts:
+            # Volume temporaire pour les opérations
             - name: tmp-volume
               mountPath: /tmp
+              readOnly: false
+            
+            # Volume pour la configuration
             - name: config-volume
               mountPath: /config
               readOnly: true
-            {% if primefaces_persistent_storage | bool %}
-            - name: data-volume
-              mountPath: /data
+            
+            # Volume pour les logs (si activé)
+            {% if lions_primefaces_logs_volume_enabled | default(false) | bool %}
+            - name: logs-volume
+              mountPath: /logs
+              readOnly: false
             {% endif %}
+            
+            # Volume persistant pour les données (si activé)
+            {% if lions_primefaces_storage_enabled | default(false) | bool %}
+            - name: data-volume
+              mountPath: "{{ lions_primefaces_data_mount_path | default('/data') }}"
+              readOnly: false
+            {% endif %}
+            
+            # Volume pour les certificats TLS (si activé)
+            {% if lions_primefaces_tls_volume_enabled | default(false) | bool %}
+            - name: tls-certs
+              mountPath: /etc/ssl/certs/app
+              readOnly: true
+            {% endif %}
+            
+            # Volumes supplémentaires personnalisés
+            {% if lions_primefaces_extra_volume_mounts | default([]) | length > 0 %}
+            {% for mount in lions_primefaces_extra_volume_mounts %}
+            - name: "{{ mount.name }}"
+              mountPath: "{{ mount.mountPath }}"
+              readOnly: {{ mount.readOnly | default(true) }}
+              {% if mount.subPath | default('') %}
+              subPath: "{{ mount.subPath }}"
+              {% endif %}
+            {% endfor %}
+            {% endif %}
+          
+          # Contexte de sécurité du container
           securityContext:
+            runAsNonRoot: true
+            runAsUser: {{ lions_primefaces_security_user_id | default('10001') }}
+            runAsGroup: {{ lions_primefaces_security_group_id | default('10001') }}
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: {{ lions_primefaces_readonly_root_filesystem | default('false') }}
+            capabilities:
+              drop:
+                - ALL
+              {% if lions_primefaces_security_capabilities | default([]) | length > 0 %}
+              add:
+                {% for cap in lions_primefaces_security_capabilities %}
+                - {{ cap }}
+                {% endfor %}
+              {% endif %}
+            {% if lions_pod_security_enabled | default(true) | bool %}
+            seccompProfile:
+              type: RuntimeDefault
+            {% endif %}
+        
+        # Sidecar container pour l'exportation de logs (optionnel)
+        {% if lions_primefaces_log_sidecar_enabled | default(false) | bool %}
+        - name: log-exporter
+          image: "{{ lions_primefaces_log_sidecar_image | default('fluent/fluent-bit:latest') }}"
+          imagePullPolicy: IfNotPresent
+          resources:
+            requests:
+              cpu: "{{ lions_primefaces_log_sidecar_cpu_request | default('50m') }}"
+              memory: "{{ lions_primefaces_log_sidecar_memory_request | default('64Mi') }}"
+            limits:
+              cpu: "{{ lions_primefaces_log_sidecar_cpu_limit | default('100m') }}"
+              memory: "{{ lions_primefaces_log_sidecar_memory_limit | default('128Mi') }}"
+          volumeMounts:
+            - name: logs-volume
+              mountPath: /logs
+              readOnly: true
+            - name: fluent-bit-config
+              mountPath: /fluent-bit/etc
+              readOnly: true
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: {{ lions_primefaces_security_user_id | default('10001') }}
             allowPrivilegeEscalation: false
             capabilities:
               drop:
                 - ALL
-            readOnlyRootFilesystem: false
+            readOnlyRootFilesystem: true
+        {% endif %}
+      
+      # Configuration des volumes
       volumes:
+        # Volume temporaire avec contraintes de taille
         - name: tmp-volume
-          emptyDir: {}
+          emptyDir:
+            {% if lions_primefaces_tmp_volume_size_limit | default('') %}
+            sizeLimit: "{{ lions_primefaces_tmp_volume_size_limit }}"
+            {% endif %}
+            {% if lions_primefaces_tmp_volume_medium | default('') %}
+            medium: "{{ lions_primefaces_tmp_volume_medium }}"
+            {% endif %}
+        
+        # Volume de configuration depuis ConfigMap
         - name: config-volume
           configMap:
-            name: "{{ app_name }}-config"
-        {% if primefaces_persistent_storage | bool %}
+            name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-config"
+            defaultMode: 0644
+            {% if lions_primefaces_config_volume_optional | default(false) | bool %}
+            optional: true
+            {% endif %}
+        
+        # Volume de logs (si activé)
+        {% if lions_primefaces_logs_volume_enabled | default(false) | bool %}
+        - name: logs-volume
+          emptyDir:
+            {% if lions_primefaces_logs_volume_size_limit | default('') %}
+            sizeLimit: "{{ lions_primefaces_logs_volume_size_limit }}"
+            {% endif %}
+        {% endif %}
+        
+        # Volume persistant pour les données (si activé)
+        {% if lions_primefaces_storage_enabled | default(false) | bool %}
         - name: data-volume
           persistentVolumeClaim:
-            claimName: "{{ app_name }}-pvc"
+            claimName: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-pvc"
         {% endif %}
-      affinity:
-        podAntiAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-            - weight: 100
-              podAffinityTerm:
-                labelSelector:
-                  matchExpressions:
-                    - key: app
-                      operator: In
-                      values:
-                        - "{{ app_name }}"
-                topologyKey: kubernetes.io/hostname
-      terminationGracePeriodSeconds: 60
+        
+        # Volume pour les certificats TLS (si activé)
+        {% if lions_primefaces_tls_volume_enabled | default(false) | bool %}
+        - name: tls-certs
+          secret:
+            secretName: "{{ lions_primefaces_tls_secret_name | default(lions_primefaces_app_name | default(lions_primefaces_service_name) + '-tls') }}"
+            defaultMode: 0644
+        {% endif %}
+        
+        # Configuration Fluent Bit (si sidecar activé)
+        {% if lions_primefaces_log_sidecar_enabled | default(false) | bool %}
+        - name: fluent-bit-config
+          configMap:
+            name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-fluent-bit-config"
+        {% endif %}
+        
+        # Volumes supplémentaires personnalisés
+        {% if lions_primefaces_extra_volumes | default([]) | length > 0 %}
+        {% for volume in lions_primefaces_extra_volumes %}
+        - name: "{{ volume.name }}"
+          {% if volume.type == 'configMap' %}
+          configMap:
+            name: "{{ volume.configMap.name }}"
+            {% if volume.configMap.defaultMode | default('') %}
+            defaultMode: {{ volume.configMap.defaultMode }}
+            {% endif %}
+            {% if volume.configMap.optional | default(false) | bool %}
+            optional: {{ volume.configMap.optional }}
+            {% endif %}
+          {% elif volume.type == 'secret' %}
+          secret:
+            secretName: "{{ volume.secret.secretName }}"
+            {% if volume.secret.defaultMode | default('') %}
+            defaultMode: {{ volume.secret.defaultMode }}
+            {% endif %}
+            {% if volume.secret.optional | default(false) | bool %}
+            optional: {{ volume.secret.optional }}
+            {% endif %}
+          {% elif volume.type == 'emptyDir' %}
+          emptyDir:
+            {% if volume.emptyDir.sizeLimit | default('') %}
+            sizeLimit: "{{ volume.emptyDir.sizeLimit }}"
+            {% endif %}
+            {% if volume.emptyDir.medium | default('') %}
+            medium: "{{ volume.emptyDir.medium }}"
+            {% endif %}
+          {% endif %}
+        {% endfor %}
+        {% endif %}

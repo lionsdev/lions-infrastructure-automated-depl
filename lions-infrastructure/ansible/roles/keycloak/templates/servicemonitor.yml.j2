@@ -1,55 +1,333 @@
 ---
-# Titre: Template de ServiceMonitor Kubernetes pour Keycloak
-# Description: Définit le ServiceMonitor Kubernetes pour Keycloak
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - KEYCLOAK SERVICEMONITOR TEMPLATE
+# =========================================================================
+# Description: Template ServiceMonitor Kubernetes pour Keycloak avec configuration avancée
+# Composant: Security & Identity Management
+# Technologie: Keycloak + Prometheus
+# Version: 5.0.0
+# Maintainer: DevOps Team
+# Documentation: https://docs.lions.dev/monitoring/keycloak
+# =========================================================================
 
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: "{{ app_name }}"
-  namespace: "{{ app_namespace }}"
+  name: "{{ lions_keycloak_service_monitor_name | default(lions_keycloak_service_name + '-monitor') }}"
+  namespace: "{{ lions_keycloak_namespace }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
+    # Labels principaux LIONS
+    app.kubernetes.io/name: "{{ lions_keycloak_service_name }}"
+    app.kubernetes.io/instance: "{{ lions_keycloak_instance_name | default(lions_keycloak_service_name + '-' + lions_environment) }}"
+    app.kubernetes.io/version: "{{ lions_keycloak_version }}"
+    app.kubernetes.io/component: "identity-management"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+
+    # Labels spécifiques au monitoring
+    prometheus.io/scrape: "true"
+    prometheus.io/service-monitor: "true"
+    monitoring.lions.dev/stack: "prometheus"
+    monitoring.lions.dev/tier: "application"
+
+    # Labels environnement et organisation
+    environment: "{{ lions_environment }}"
+    project: "lions-infrastructure"
     technology: "keycloak"
-    prometheus: k8s
+    service-type: "security"
+
+    # Labels pour le découpage organisationnel
+    team: "{{ lions_keycloak_team | default('platform') }}"
+    owner: "{{ lions_keycloak_owner | default('devops') }}"
+    cost-center: "{{ lions_cost_center | default('infrastructure') }}"
+
+{% if lions_monitoring_custom_labels is defined %}
+    # Labels personnalisés
+{% for key, value in lions_monitoring_custom_labels.items() %}
+    {{ key }}: "{{ value }}"
+{% endfor %}
+{% endif %}
+
   annotations:
-    description: "ServiceMonitor pour Keycloak {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    # Annotations de documentation
+    description: "ServiceMonitor pour Keycloak {{ lions_keycloak_service_name }} version {{ lions_keycloak_version }}"
+    documentation: "https://docs.lions.dev/components/keycloak/monitoring"
+    runbook: "https://runbooks.lions.dev/keycloak"
+
+    # Annotations de monitoring
+    prometheus.io/port: "{{ lions_keycloak_metrics_port | default(lions_keycloak_port) }}"
+    prometheus.io/path: "{{ lions_keycloak_metrics_path }}"
+    prometheus.io/scheme: "{{ lions_keycloak_metrics_scheme | default('http') }}"
+
+    # Annotations de maintenance
+    created-by: "lions-infrastructure-ansible"
+    managed-by: "ansible-automation"
+    last-updated: "{{ ansible_date_time.iso8601 }}"
+
+    # Annotations spécifiques au service
+    keycloak.lions.dev/realm: "{{ lions_keycloak_realm }}"
+    keycloak.lions.dev/admin-console: "https://{{ lions_keycloak_fqdn }}/admin"
+
+{% if lions_backup_enabled %}
+    backup.lions.dev/included: "true"
+    backup.lions.dev/frequency: "{{ lions_backup_schedule }}"
+{% endif %}
+
 spec:
+  # Sélecteur de service
   selector:
     matchLabels:
-      app: "{{ app_name }}"
+      app.kubernetes.io/name: "{{ lions_keycloak_service_name }}"
+      app.kubernetes.io/instance: "{{ lions_keycloak_instance_name | default(lions_keycloak_service_name + '-' + lions_environment) }}"
+
+  # Sélecteur de namespace
   namespaceSelector:
     matchNames:
-      - "{{ app_namespace }}"
+      - "{{ lions_keycloak_namespace }}"
+
+  # Configuration des endpoints de scraping
   endpoints:
-    - port: http
-      path: "{{ keycloak_prometheus_path }}"
-      interval: 15s
-      scrapeTimeout: 10s
-      honorLabels: true
+    # Endpoint principal des métriques
+    - port: "{{ lions_keycloak_metrics_port_name | default('metrics') }}"
+      path: "{{ lions_keycloak_metrics_path }}"
+      scheme: "{{ lions_keycloak_metrics_scheme | default('http') }}"
+      interval: "{{ lions_keycloak_scrape_interval | default('30s') }}"
+      scrapeTimeout: "{{ lions_keycloak_scrape_timeout | default('25s') }}"
+      honorLabels: {{ lions_keycloak_honor_labels | default(true) | lower }}
+      honorTimestamps: {{ lions_keycloak_honor_timestamps | default(true) | lower }}
+
+{% if lions_keycloak_metrics_basic_auth_enabled | default(false) %}
+      # Authentification pour les métriques (si activée)
+      basicAuth:
+        username:
+          name: "{{ lions_keycloak_metrics_secret_name }}"
+          key: "username"
+        password:
+          name: "{{ lions_keycloak_metrics_secret_name }}"
+          key: "password"
+{% endif %}
+
+{% if lions_security_tls_enabled and lions_keycloak_metrics_scheme == 'https' %}
+      # Configuration TLS pour HTTPS
+      tlsConfig:
+        serverName: "{{ lions_keycloak_fqdn }}"
+        insecureSkipVerify: {{ lions_keycloak_tls_skip_verify | default(false) | lower }}
+{% if lions_keycloak_ca_secret_name is defined %}
+        ca:
+          secret:
+            name: "{{ lions_keycloak_ca_secret_name }}"
+            key: "ca.crt"
+{% endif %}
+{% endif %}
+
+      # Configuration des métadonnées de métriques
       metricRelabelings:
+        # Préservation des labels d'instance et job
+        - sourceLabels: [__address__]
+          targetLabel: __param_target
+        - sourceLabels: [__param_target]
+          targetLabel: instance
+        - targetLabel: __address__
+          replacement: "{{ lions_keycloak_service_name }}.{{ lions_keycloak_namespace }}.svc.cluster.local:{{ lions_keycloak_port }}"
+
+        # Labels d'environnement et de service
+        - targetLabel: environment
+          replacement: "{{ lions_environment }}"
+        - targetLabel: service
+          replacement: "keycloak"
+        - targetLabel: namespace
+          replacement: "{{ lions_keycloak_namespace }}"
+        - targetLabel: cluster
+          replacement: "{{ lions_k8s_cluster_name | default('lions-cluster') }}"
+
+        # Filtrage et conservation des métriques Keycloak importantes
         - sourceLabels: [__name__]
-          regex: 'jvm_.*'
+          regex: '^(jvm_memory_bytes_used|jvm_memory_bytes_max|jvm_gc_collection_seconds_count|jvm_gc_collection_seconds_sum)$'
           action: keep
         - sourceLabels: [__name__]
-          regex: 'http_.*'
+          regex: '^(http_requests_total|http_request_duration_seconds_.*|http_server_requests_seconds_.*)$'
           action: keep
         - sourceLabels: [__name__]
-          regex: 'process_.*'
+          regex: '^(process_cpu_seconds_total|process_resident_memory_bytes|process_open_fds)$'
           action: keep
         - sourceLabels: [__name__]
-          regex: 'system_.*'
+          regex: '^(system_cpu_usage|system_load_average_1m)$'
           action: keep
         - sourceLabels: [__name__]
-          regex: 'base_.*'
+          regex: '^(keycloak_.*|wildfly_.*)$'
           action: keep
         - sourceLabels: [__name__]
-          regex: 'keycloak_.*'
+          regex: '^(up|scrape_duration_seconds|scrape_samples_scraped)$'
           action: keep
+
+{% if lions_keycloak_custom_metrics_enabled | default(false) %}
+        # Métriques personnalisées Keycloak (si activées)
         - sourceLabels: [__name__]
-          regex: 'vendor_.*'
+          regex: '^{{ lions_keycloak_custom_metrics_regex | default("lions_keycloak_.*") }}$'
           action: keep
+{% endif %}
+
+        # Suppression des métriques non pertinentes
+        - sourceLabels: [__name__]
+          regex: '^(go_.*|prometheus_.*|net_conntrack_.*)$'
+          action: drop
+
+        # Normalisation des labels
+        - sourceLabels: [realm]
+          targetLabel: keycloak_realm
+        - sourceLabels: [client_id]
+          targetLabel: keycloak_client
+
+      # Configuration des labels de relabeling
+      relabelings:
+        # Ajout de métadonnées de service
+        - sourceLabels: [__meta_kubernetes_service_name]
+          targetLabel: service_name
+        - sourceLabels: [__meta_kubernetes_service_label_app_kubernetes_io_version]
+          targetLabel: service_version
+        - sourceLabels: [__meta_kubernetes_namespace]
+          targetLabel: kubernetes_namespace
+
+        # Configuration de l'endpoint de scraping
+        - sourceLabels: [__meta_kubernetes_service_annotation_prometheus_io_scrape]
+          action: keep
+          regex: true
+        - sourceLabels: [__meta_kubernetes_service_annotation_prometheus_io_path]
+          action: replace
+          targetLabel: __metrics_path__
+          regex: (.+)
+
+        # Filtrage par labels de service
+        - sourceLabels: [__meta_kubernetes_service_label_monitoring_lions_dev_stack]
+          action: keep
+          regex: prometheus
+
+{% if lions_keycloak_admin_metrics_enabled | default(false) %}
+    # Endpoint pour les métriques d'administration (si activé)
+    - port: "{{ lions_keycloak_admin_port_name | default('admin') }}"
+      path: "{{ lions_keycloak_admin_metrics_path | default('/metrics') }}"
+      scheme: "{{ lions_keycloak_metrics_scheme | default('http') }}"
+      interval: "{{ lions_keycloak_admin_scrape_interval | default('60s') }}"
+      scrapeTimeout: "{{ lions_keycloak_admin_scrape_timeout | default('55s') }}"
+      honorLabels: false
+
+      metricRelabelings:
+        - targetLabel: metrics_type
+          replacement: "admin"
+        - sourceLabels: [__name__]
+          regex: '^(keycloak_admin_.*|wildfly_datasource_.*)$'
+          action: keep
+{% endif %}
+
+{% if lions_keycloak_custom_endpoints is defined %}
+    # Endpoints personnalisés (si définis)
+{% for endpoint in lions_keycloak_custom_endpoints %}
+    - port: "{{ endpoint.port }}"
+      path: "{{ endpoint.path }}"
+      scheme: "{{ endpoint.scheme | default('http') }}"
+      interval: "{{ endpoint.interval | default('30s') }}"
+      scrapeTimeout: "{{ endpoint.timeout | default('25s') }}"
+      honorLabels: {{ endpoint.honor_labels | default(false) | lower }}
+{% if endpoint.metric_relabelings is defined %}
+      metricRelabelings:
+{% for relabeling in endpoint.metric_relabelings %}
+        - {{ relabeling | to_nice_yaml | indent(10) }}
+{% endfor %}
+{% endif %}
+{% endfor %}
+{% endif %}
+
+        # Configuration du Job Name
+  jobLabel: "app.kubernetes.io/name"
+
+  # Labels de target
+  targetLabels:
+    - "app.kubernetes.io/version"
+    - "environment"
+    - "team"
+    - "cost-center"
+
+  # Configuration de découverte de pods (si activée)
+{% if lions_keycloak_pod_monitoring_enabled | default(false) %}
+  podTargetLabels:
+    - "app.kubernetes.io/instance"
+    - "pod-template-hash"
+{% endif %}
+
+  # Configuration des limites de scraping
+  sampleLimit: {{ lions_keycloak_sample_limit | default(10000) }}
+  targetLimit: {{ lions_keycloak_target_limit | default(100) }}
+  labelLimit: {{ lions_keycloak_label_limit | default(200) }}
+  labelNameLengthLimit: {{ lions_keycloak_label_name_length_limit | default(200) }}
+  labelValueLengthLimit: {{ lions_keycloak_label_value_length_limit | default(200) }}
+
+---
+# Configuration additionnelle: PrometheusRule pour Keycloak (si les alertes sont activées)
+{% if lions_keycloak_alerts_enabled | default(true) %}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: "{{ lions_keycloak_service_name }}-alerts"
+  namespace: "{{ lions_keycloak_namespace }}"
+  labels:
+    app.kubernetes.io/name: "{{ lions_keycloak_service_name }}"
+    app.kubernetes.io/component: "alerting"
+    prometheus: "kube-prometheus"
+    role: "alert-rules"
+spec:
+  groups:
+    - name: "keycloak.rules"
+      interval: "{{ lions_keycloak_alert_evaluation_interval | default('30s') }}"
+      rules:
+        # Alerte de disponibilité du service
+        - alert: KeycloakDown
+          expr: up{job="{{ lions_keycloak_service_name }}"} == 0
+          for: "{{ lions_keycloak_alert_down_duration | default('1m') }}"
+          labels:
+            severity: critical
+            service: keycloak
+            environment: "{{ lions_environment }}"
+          annotations:
+            summary: "Keycloak est indisponible"
+            description: "Le service Keycloak {{ lions_keycloak_service_name }} est indisponible depuis {{ lions_keycloak_alert_down_duration | default('1m') }}"
+            runbook_url: "https://runbooks.lions.dev/keycloak/service-down"
+
+        # Alerte de haute utilisation mémoire
+        - alert: KeycloakHighMemoryUsage
+          expr: (jvm_memory_bytes_used{job="{{ lions_keycloak_service_name }}"} / jvm_memory_bytes_max{job="{{ lions_keycloak_service_name }}"}) * 100 > {{ lions_keycloak_memory_alert_threshold | default(85) }}
+          for: "{{ lions_keycloak_memory_alert_duration | default('5m') }}"
+          labels:
+            severity: warning
+            service: keycloak
+            environment: "{{ lions_environment }}"
+          annotations:
+            summary: "Utilisation mémoire élevée pour Keycloak"
+            description: "Keycloak utilise plus de {{ lions_keycloak_memory_alert_threshold | default(85) }}% de sa mémoire allouée"
+            runbook_url: "https://runbooks.lions.dev/keycloak/high-memory"
+
+        # Alerte de latence élevée
+        - alert: KeycloakHighLatency
+          expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{job="{{ lions_keycloak_service_name }}"}[5m])) > {{ lions_keycloak_latency_alert_threshold | default(2) }}
+          for: "{{ lions_keycloak_latency_alert_duration | default('3m') }}"
+          labels:
+            severity: warning
+            service: keycloak
+            environment: "{{ lions_environment }}"
+          annotations:
+            summary: "Latence élevée détectée sur Keycloak"
+            description: "Le 95e percentile de latence dépasse {{ lions_keycloak_latency_alert_threshold | default(2) }}s"
+            runbook_url: "https://runbooks.lions.dev/keycloak/high-latency"
+
+        # Alerte de taux d'erreur élevé
+        - alert: KeycloakHighErrorRate
+          expr: (rate(http_requests_total{job="{{ lions_keycloak_service_name }}", status=~"5.."}[5m]) / rate(http_requests_total{job="{{ lions_keycloak_service_name }}"}[5m])) * 100 > {{ lions_keycloak_error_rate_threshold | default(5) }}
+          for: "{{ lions_keycloak_error_rate_duration | default('2m') }}"
+          labels:
+            severity: critical
+            service: keycloak
+            environment: "{{ lions_environment }}"
+          annotations:
+            summary: "Taux d'erreur élevé sur Keycloak"
+            description: "Le taux d'erreur HTTP 5xx dépasse {{ lions_keycloak_error_rate_threshold | default(5) }}%"
+            runbook_url: "https://runbooks.lions.dev/keycloak/high-error-rate"
+{% endif %}

@@ -1,71 +1,475 @@
 ---
-# Development environment variables for LIONS Infrastructure
-# These variables override common.yml for the development environment
-# Author: LIONS Infrastructure Team
-# Date: 2025-05-24
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - VARIABLES ENVIRONNEMENT DÉVELOPPEMENT
+# =========================================================================
+# Description: Variables Ansible spécifiques à l'environnement de développement
+# Ces variables surchargent common.yml et s'alignent avec .env
+# Version: 5.0.0
+# Date: "{{ ansible_date_time.date }}"
+# Maintainer: DevOps Team
+# Documentation: https://docs.lions.dev/infrastructure/environments/development
+# =========================================================================
 
-# Environment settings
-lions_env: "development"
-lions_domain: "dev.lions.dev"
+# =========================================================================
+# MÉTADONNÉES DE CONFIGURATION
+# =========================================================================
+lions_config:
+  version: "5.0.0"
+  environment: "development"
+  schema_version: "1.0"
+  last_updated: "{{ ansible_date_time.iso8601 }}"
+  maintainer: "devops@lions.dev"
 
-# Resource settings - reduced for development environment
-lions_cpu_request: "100m"
-lions_cpu_limit: "500m"
-lions_memory_request: "256Mi"
-lions_memory_limit: "512Mi"
+# =========================================================================
+# CONFIGURATION ENVIRONNEMENT PRINCIPAL
+# =========================================================================
+# Configuration de base héritée du .env
+lions_environment: "{{ lookup('env', 'LIONS_ENVIRONMENT') | default('development') }}"
+lions_deployment_mode: "{{ lookup('env', 'LIONS_DEPLOYMENT_MODE') | default('single') }}"
+lions_debug_mode: "{{ lookup('env', 'LIONS_DEBUG_MODE') | default('true') | bool }}"
+lions_dry_run: "{{ lookup('env', 'LIONS_DRY_RUN') | default('false') | bool }}"
 
-# Monitoring configuration - reduced for development environment
-monitoring_config:
-  namespace: "monitoring"
-  grafana_admin_password: "admin123!"
-  prometheus_retention: "1d"  # Reduced retention for development
-  prometheus_storage: "5Gi"   # Reduced storage for development
-  grafana_storage: "2Gi"      # Reduced storage for development
-  resource_limits:
-    prometheus_cpu: "500m"    # Reduced CPU for development
-    prometheus_memory: "1Gi"  # Reduced memory for development
-    grafana_cpu: "200m"       # Reduced CPU for development
-    grafana_memory: "256Mi"   # Reduced memory for development
+# =========================================================================
+# CONFIGURATION INFRASTRUCTURE RÉSEAU
+# =========================================================================
+# Configuration DNS et domaines pour développement
+lions_dns_config:
+  domain_base: "{{ lookup('env', 'LIONS_DNS_DOMAIN_BASE') | default('lions.local') }}"
+  subdomain_prefix: "{{ lookup('env', 'LIONS_DNS_SUBDOMAIN_PREFIX') | default('dev') }}"
+  full_domain: "{{ lions_dns_config.subdomain_prefix }}.{{ lions_dns_config.domain_base }}"
+  wildcard_enabled: "{{ lookup('env', 'LIONS_DNS_WILDCARD_ENABLED') | default('true') | bool }}"
 
-# Development-specific component enablement
-# Enable only necessary components for development
-lions_monitoring_enabled: true
-lions_registry_enabled: true
-lions_postgres_enabled: true
-lions_keycloak_enabled: true
-lions_gitea_enabled: true
-lions_ollama_enabled: true
-lions_vault_enabled: false  # Disabled for development to save resources
+# Configuration serveur cible
+lions_infra_target:
+  host: "{{ lookup('env', 'LIONS_INFRA_TARGET_HOST') | default('localhost') }}"
+  port: "{{ lookup('env', 'LIONS_INFRA_TARGET_PORT') | default('22') | int }}"
+  user: "{{ lookup('env', 'LIONS_INFRA_TARGET_USER') | default('lions-admin') }}"
+  ssh_key_path: "{{ lookup('env', 'LIONS_INFRA_SSH_KEY_PATH') | default('~/.ssh/lions_infrastructure_rsa') }}"
 
-# Development-specific credentials
-# Using simpler passwords for development
-default_credentials:
-  postgres:
-    username: "postgres"
-    password: "postgres_dev"
-  keycloak:
-    admin_username: "admin"
-    admin_password: "admin_dev"
-  gitea:
-    admin_username: "gitea_admin"
-    admin_password: "gitea_dev"
-  registry:
-    username: "registry_admin"
-    password: "registry_dev"
+# =========================================================================
+# CONFIGURATION KUBERNETES (K3s) - DÉVELOPPEMENT
+# =========================================================================
+lions_k8s_config:
+  version: "{{ lookup('env', 'LIONS_K8S_VERSION') | default('v1.30.2+k3s1') }}"
+  install_channel: "{{ lookup('env', 'LIONS_K8S_INSTALL_CHANNEL') | default('stable') }}"
+  data_dir: "{{ lookup('env', 'LIONS_K8S_DATA_DIR') | default('/var/lib/rancher/k3s') }}"
+  config_file: "{{ lookup('env', 'LIONS_K8S_CONFIG_FILE') | default('/etc/rancher/k3s/k3s.yaml') }}"
 
-# Backup configuration - reduced for development
-backup_config:
-  schedule: "0 2 * * 0"  # Weekly on Sunday at 2 AM
-  storage_location: "/var/backups/lions"
-  retention_days: 3      # Keep only 3 days of backups in development
-  components:
-    - postgres
-    - gitea
-    - kubernetes_resources
+  # Configuration réseau
+  cluster_cidr: "{{ lookup('env', 'LIONS_K8S_CLUSTER_CIDR') | default('10.42.0.0/16') }}"
+  service_cidr: "{{ lookup('env', 'LIONS_K8S_SERVICE_CIDR') | default('10.43.0.0/16') }}"
+  dns_domain: "{{ lookup('env', 'LIONS_K8S_DNS_DOMAIN') | default('cluster.local') }}"
 
-# Logging configuration - more verbose for development
-logging_config:
-  log_level: "DEBUG"     # More detailed logging for development
-  retention_days: 7      # Keep only 7 days of logs in development
-  max_size: "50Mi"       # Smaller log size for development
+  # Configuration HA (désactivée en développement)
+  ha_enabled: "{{ lookup('env', 'LIONS_K8S_HA_ENABLED') | default('false') | bool }}"
+
+  # Composants intégrés
+  traefik_enabled: "{{ lookup('env', 'LIONS_K8S_TRAEFIK_ENABLED') | default('true') | bool }}"
+  metallb_enabled: "{{ lookup('env', 'LIONS_K8S_METALLB_ENABLED') | default('true') | bool }}"
+  metallb_ip_range: "{{ lookup('env', 'LIONS_K8S_METALLB_IP_RANGE') | default('') }}"
+
+# =========================================================================
+# CONFIGURATION STOCKAGE - DÉVELOPPEMENT
+# =========================================================================
+lions_storage_config:
+  class_default: "{{ lookup('env', 'LIONS_STORAGE_CLASS_DEFAULT') | default('local-path') }}"
+  provisioner: "{{ lookup('env', 'LIONS_STORAGE_PROVISIONER') | default('rancher.io/local-path') }}"
+  reclaim_policy: "{{ lookup('env', 'LIONS_STORAGE_RECLAIM_POLICY') | default('Delete') }}"  # Delete en dev pour économiser l'espace
+  base_path: "{{ lookup('env', 'LIONS_STORAGE_BASE_PATH') | default('/opt/lions/storage') }}"
+
+  # Tailles par défaut réduites pour le développement
+  size_small: "{{ lookup('env', 'LIONS_STORAGE_PV_SIZE_SMALL') | default('2Gi') }}"
+  size_medium: "{{ lookup('env', 'LIONS_STORAGE_PV_SIZE_MEDIUM') | default('5Gi') }}"
+  size_large: "{{ lookup('env', 'LIONS_STORAGE_PV_SIZE_LARGE') | default('10Gi') }}"
+
+# =========================================================================
+# CONFIGURATION SÉCURITÉ - DÉVELOPPEMENT
+# =========================================================================
+lions_security_config:
+  # TLS/SSL (utilisation de certificats staging en développement)
+  tls_enabled: "{{ lookup('env', 'LIONS_SECURITY_TLS_ENABLED') | default('true') | bool }}"
+  tls_provider: "{{ lookup('env', 'LIONS_SECURITY_TLS_PROVIDER') | default('selfsigned') }}"  # selfsigned en dev
+  tls_email: "{{ lookup('env', 'LIONS_SECURITY_TLS_EMAIL') | default('admin@' + lions_dns_config.domain_base) }}"
+  tls_staging: "{{ lookup('env', 'LIONS_SECURITY_TLS_STAGING') | default('true') | bool }}"
+
+  # Politiques de sécurité allégées pour le développement
+  network_policies: "{{ lookup('env', 'LIONS_SECURITY_NETWORK_POLICIES') | default('false') | bool }}"  # Désactivé en dev
+  pod_security_standards: "{{ lookup('env', 'LIONS_SECURITY_POD_SECURITY_STANDARDS') | default('baseline') }}"  # Moins restrictif
+  rbac_enabled: "{{ lookup('env', 'LIONS_SECURITY_RBAC_ENABLED') | default('true') | bool }}"
+
+  # Chiffrement
+  encryption_at_rest: "{{ lookup('env', 'LIONS_SECURITY_ENCRYPTION_AT_REST') | default('false') | bool }}"  # Désactivé en dev
+  secrets_encryption: "{{ lookup('env', 'LIONS_SECURITY_SECRETS_ENCRYPTION') | default('false') | bool }}"
+
+# =========================================================================
+# CONFIGURATION VAULT - DÉVELOPPEMENT
+# =========================================================================
+lions_vault_config:
+  enabled: "{{ lookup('env', 'LIONS_VAULT_ENABLED') | default('false') | bool }}"  # Désactivé par défaut en dev
+  version: "{{ lookup('env', 'LIONS_VAULT_VERSION') | default('1.15.2') }}"
+  namespace: "{{ lookup('env', 'LIONS_VAULT_NAMESPACE') | default('vault-system') }}"
+  service_name: "{{ lookup('env', 'LIONS_VAULT_SERVICE_NAME') | default('vault') }}"
+  port: "{{ lookup('env', 'LIONS_VAULT_PORT') | default('8200') | int }}"
+  storage_size: "{{ lookup('env', 'LIONS_VAULT_STORAGE_SIZE') | default('5Gi') }}"  # Réduit en dev
+
+  # Configuration accès
+  addr: "{{ lookup('env', 'LIONS_VAULT_ADDR') | default('https://vault.' + lions_dns_config.full_domain) }}"
+  skip_verify: "{{ lookup('env', 'LIONS_VAULT_SKIP_VERIFY') | default('true') | bool }}"  # true en dev
+  data_dir: "{{ lookup('env', 'LIONS_VAULT_DATA_DIR') | default('/opt/vault/data') }}"
+  config_dir: "{{ lookup('env', 'LIONS_VAULT_CONFIG_DIR') | default('/etc/vault.d') }}"
+
+  # Sécurité allégée pour développement
+  auto_unseal: "{{ lookup('env', 'LIONS_VAULT_AUTO_UNSEAL') | default('false') | bool }}"
+  seal_type: "{{ lookup('env', 'LIONS_VAULT_SEAL_TYPE') | default('shamir') }}"
+  ha_enabled: "{{ lookup('env', 'LIONS_VAULT_HA_ENABLED') | default('false') | bool }}"
+
+# =========================================================================
+# CONFIGURATION DES SERVICES - BASES DE DONNÉES
+# =========================================================================
+# PostgreSQL - Configuration développement
+lions_postgres_config:
+  enabled: "{{ lookup('env', 'LIONS_POSTGRES_ENABLED') | default('true') | bool }}"
+  version: "{{ lookup('env', 'LIONS_POSTGRES_VERSION') | default('15.4') }}"
+  namespace: "{{ lookup('env', 'LIONS_POSTGRES_NAMESPACE') | default('database') }}"
+  service_name: "{{ lookup('env', 'LIONS_POSTGRES_SERVICE_NAME') | default('postgresql') }}"
+  port: "{{ lookup('env', 'LIONS_POSTGRES_PORT') | default('5432') | int }}"
+  database: "{{ lookup('env', 'LIONS_POSTGRES_DATABASE') | default('lions_db') }}"
+  storage_size: "{{ lookup('env', 'LIONS_POSTGRES_STORAGE_SIZE') | default('5Gi') }}"  # Réduit en dev
+  backup_enabled: "{{ lookup('env', 'LIONS_POSTGRES_BACKUP_ENABLED') | default('false') | bool }}"  # Désactivé en dev
+
+  # Ressources réduites pour développement
+  resources:
+    requests:
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_CPU_REQUEST') | default('100m') }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_MEMORY_REQUEST') | default('256Mi') }}"
+    limits:
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_CPU_LIMIT') | default('500m') }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_MEMORY_LIMIT') | default('512Mi') }}"
+
+# Redis - Configuration développement
+lions_redis_config:
+  enabled: "{{ lookup('env', 'LIONS_REDIS_ENABLED') | default('true') | bool }}"
+  version: "{{ lookup('env', 'LIONS_REDIS_VERSION') | default('7.2') }}"
+  namespace: "{{ lookup('env', 'LIONS_REDIS_NAMESPACE') | default('database') }}"
+  service_name: "{{ lookup('env', 'LIONS_REDIS_SERVICE_NAME') | default('redis') }}"
+  port: "{{ lookup('env', 'LIONS_REDIS_PORT') | default('6379') | int }}"
+  storage_size: "{{ lookup('env', 'LIONS_REDIS_STORAGE_SIZE') | default('2Gi') }}"  # Réduit en dev
+
+  # Ressources réduites pour développement
+  resources:
+    requests:
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_CPU_REQUEST') | default('100m') }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_MEMORY_REQUEST') | default('128Mi') }}"
+    limits:
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_CPU_LIMIT') | default('300m') }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_MEMORY_LIMIT') | default('256Mi') }}"
+
+# =========================================================================
+# CONFIGURATION DES SERVICES - SÉCURITÉ ET IDENTITÉ
+# =========================================================================
+# Keycloak - Configuration développement
+lions_keycloak_config:
+  enabled: "{{ lookup('env', 'LIONS_KEYCLOAK_ENABLED') | default('true') | bool }}"
+  version: "{{ lookup('env', 'LIONS_KEYCLOAK_VERSION') | default('22.0') }}"
+  namespace: "{{ lookup('env', 'LIONS_KEYCLOAK_NAMESPACE') | default('security') }}"
+  service_name: "{{ lookup('env', 'LIONS_KEYCLOAK_SERVICE_NAME') | default('keycloak') }}"
+  port: "{{ lookup('env', 'LIONS_KEYCLOAK_PORT') | default('8080') | int }}"
+  realm: "{{ lookup('env', 'LIONS_KEYCLOAK_REALM') | default('lions-dev') }}"
+  admin_user: "{{ lookup('env', 'LIONS_KEYCLOAK_ADMIN_USER') | default('admin') }}"
+
+  # Ressources moyennes pour développement
+  resources:
+    requests:
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_CPU_REQUEST') | default('200m') }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_MEMORY_REQUEST') | default('512Mi') }}"
+    limits:
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_CPU_LIMIT') | default('1000m') }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_MEMORY_LIMIT') | default('1Gi') }}"
+
+# =========================================================================
+# CONFIGURATION DES SERVICES - DÉVELOPPEMENT
+# =========================================================================
+# Gitea - Configuration développement
+lions_gitea_config:
+  enabled: "{{ lookup('env', 'LIONS_GITEA_ENABLED') | default('true') | bool }}"
+  version: "{{ lookup('env', 'LIONS_GITEA_VERSION') | default('1.20.5') }}"
+  namespace: "{{ lookup('env', 'LIONS_GITEA_NAMESPACE') | default('development') }}"
+  service_name: "{{ lookup('env', 'LIONS_GITEA_SERVICE_NAME') | default('gitea') }}"
+  port: "{{ lookup('env', 'LIONS_GITEA_PORT') | default('3000') | int }}"
+  storage_size: "{{ lookup('env', 'LIONS_GITEA_STORAGE_SIZE') | default('5Gi') }}"  # Réduit en dev
+
+  # Ressources moyennes pour développement
+  resources:
+    requests:
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_CPU_REQUEST') | default('200m') }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_MEMORY_REQUEST') | default('512Mi') }}"
+    limits:
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_CPU_LIMIT') | default('800m') }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_MEMORY_LIMIT') | default('1Gi') }}"
+
+# Registry - Configuration développement
+lions_registry_config:
+  enabled: "{{ lookup('env', 'LIONS_REGISTRY_ENABLED') | default('true') | bool }}"
+  version: "{{ lookup('env', 'LIONS_REGISTRY_VERSION') | default('2.8') }}"
+  namespace: "{{ lookup('env', 'LIONS_REGISTRY_NAMESPACE') | default('development') }}"
+  service_name: "{{ lookup('env', 'LIONS_REGISTRY_SERVICE_NAME') | default('registry') }}"
+  port: "{{ lookup('env', 'LIONS_REGISTRY_PORT') | default('5000') | int }}"
+  storage_size: "{{ lookup('env', 'LIONS_REGISTRY_STORAGE_SIZE') | default('10Gi') }}"  # Réduit en dev
+
+  # Ressources moyennes pour développement
+  resources:
+    requests:
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_CPU_REQUEST') | default('200m') }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_MEMORY_REQUEST') | default('256Mi') }}"
+    limits:
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_CPU_LIMIT') | default('500m') }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_MEMORY_LIMIT') | default('512Mi') }}"
+
+# =========================================================================
+# CONFIGURATION DES SERVICES - INTELLIGENCE ARTIFICIELLE
+# =========================================================================
+# Ollama - Configuration développement
+lions_ollama_config:
+  enabled: "{{ lookup('env', 'LIONS_OLLAMA_ENABLED') | default('true') | bool }}"
+  version: "{{ lookup('env', 'LIONS_OLLAMA_VERSION') | default('0.1.26') }}"
+  namespace: "{{ lookup('env', 'LIONS_OLLAMA_NAMESPACE') | default('ai') }}"
+  service_name: "{{ lookup('env', 'LIONS_OLLAMA_SERVICE_NAME') | default('ollama') }}"
+  port: "{{ lookup('env', 'LIONS_OLLAMA_PORT') | default('11434') | int }}"
+  storage_size: "{{ lookup('env', 'LIONS_OLLAMA_STORAGE_SIZE') | default('20Gi') }}"  # Réduit en dev
+  gpu_enabled: "{{ lookup('env', 'LIONS_OLLAMA_GPU_ENABLED') | default('false') | bool }}"
+
+  # Ressources importantes pour l'IA même en dev
+  resources:
+    requests:
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_CPU_REQUEST') | default('500m') }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_MEMORY_REQUEST') | default('1Gi') }}"
+    limits:
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_CPU_LIMIT') | default('2000m') }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_MEMORY_LIMIT') | default('2Gi') }}"
+
+# =========================================================================
+# CONFIGURATION DES APPLICATIONS MÉTIER - DÉVELOPPEMENT
+# =========================================================================
+# Applications Frontend (désactivées par défaut en dev)
+lions_primereact_config:
+  enabled: "{{ lookup('env', 'LIONS_PRIMEREACT_ENABLED') | default('false') | bool }}"
+  namespace: "{{ lookup('env', 'LIONS_PRIMEREACT_NAMESPACE') | default('applications') }}"
+  port: "{{ lookup('env', 'LIONS_PRIMEREACT_PORT') | default('3000') | int }}"
+  resources:
+    requests:
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_CPU_REQUEST') | default('100m') }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_MEMORY_REQUEST') | default('128Mi') }}"
+    limits:
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_CPU_LIMIT') | default('500m') }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_MEMORY_LIMIT') | default('512Mi') }}"
+
+lions_primefaces_config:
+  enabled: "{{ lookup('env', 'LIONS_PRIMEFACES_ENABLED') | default('false') | bool }}"
+  namespace: "{{ lookup('env', 'LIONS_PRIMEFACES_NAMESPACE') | default('applications') }}"
+  port: "{{ lookup('env', 'LIONS_PRIMEFACES_PORT') | default('8080') | int }}"
+  resources:
+    requests:
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_CPU_REQUEST') | default('200m') }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_MEMORY_REQUEST') | default('512Mi') }}"
+    limits:
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_CPU_LIMIT') | default('1000m') }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_MEMORY_LIMIT') | default('1Gi') }}"
+
+# Applications Backend (désactivées par défaut en dev)
+lions_quarkus_config:
+  enabled: "{{ lookup('env', 'LIONS_QUARKUS_ENABLED') | default('false') | bool }}"
+  namespace: "{{ lookup('env', 'LIONS_QUARKUS_NAMESPACE') | default('applications') }}"
+  port: "{{ lookup('env', 'LIONS_QUARKUS_PORT') | default('8080') | int }}"
+  resources:
+    requests:
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_CPU_REQUEST') | default('200m') }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_MEMORY_REQUEST') | default('512Mi') }}"
+    limits:
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_CPU_LIMIT') | default('1000m') }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_MEMORY_LIMIT') | default('1Gi') }}"
+
+# Services de notification (désactivés par défaut en dev)
+lions_notification_service_config:
+  enabled: "{{ lookup('env', 'LIONS_NOTIFICATION_SERVICE_ENABLED') | default('false') | bool }}"
+  namespace: "{{ lookup('env', 'LIONS_NOTIFICATION_SERVICE_NAMESPACE') | default('services') }}"
+  port: "{{ lookup('env', 'LIONS_NOTIFICATION_SERVICE_PORT') | default('8080') | int }}"
+  resources:
+    requests:
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_CPU_REQUEST') | default('100m') }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_MEMORY_REQUEST') | default('256Mi') }}"
+    limits:
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_CPU_LIMIT') | default('500m') }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_MEMORY_LIMIT') | default('512Mi') }}"
+
+# =========================================================================
+# CONFIGURATION MONITORING ET OBSERVABILITÉ - DÉVELOPPEMENT
+# =========================================================================
+lions_monitoring_config:
+  enabled: "{{ lookup('env', 'LIONS_MONITORING_ENABLED') | default('true') | bool }}"
+  namespace: "{{ lookup('env', 'LIONS_MONITORING_NAMESPACE') | default('monitoring') }}"
+
+  # Prometheus - Configuration allégée pour développement
+  prometheus:
+    enabled: "{{ lookup('env', 'LIONS_PROMETHEUS_ENABLED') | default('true') | bool }}"
+    version: "{{ lookup('env', 'LIONS_PROMETHEUS_VERSION') | default('2.45.0') }}"
+    storage_size: "{{ lookup('env', 'LIONS_PROMETHEUS_STORAGE_SIZE') | default('10Gi') }}"  # Réduit en dev
+    retention: "{{ lookup('env', 'LIONS_PROMETHEUS_RETENTION') | default('7d') }}"  # Réduit en dev
+    resources:
+      requests:
+        cpu: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_CPU_REQUEST') | default('200m') }}"
+        memory: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_MEMORY_REQUEST') | default('512Mi') }}"
+      limits:
+        cpu: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_CPU_LIMIT') | default('1000m') }}"
+        memory: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_MEMORY_LIMIT') | default('1Gi') }}"
+
+  # Grafana - Configuration allégée pour développement
+  grafana:
+    enabled: "{{ lookup('env', 'LIONS_GRAFANA_ENABLED') | default('true') | bool }}"
+    version: "{{ lookup('env', 'LIONS_GRAFANA_VERSION') | default('10.1.0') }}"
+    admin_user: "{{ lookup('env', 'LIONS_GRAFANA_ADMIN_USER') | default('admin') }}"
+    resources:
+      requests:
+        cpu: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_CPU_REQUEST') | default('100m') }}"
+        memory: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_MEMORY_REQUEST') | default('256Mi') }}"
+      limits:
+        cpu: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_CPU_LIMIT') | default('500m') }}"
+        memory: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_MEMORY_LIMIT') | default('512Mi') }}"
+
+  # Alertmanager - Configuration basique pour développement
+  alertmanager:
+    enabled: "{{ lookup('env', 'LIONS_ALERTMANAGER_ENABLED') | default('false') | bool }}"  # Désactivé en dev
+    version: "{{ lookup('env', 'LIONS_ALERTMANAGER_VERSION') | default('0.25.0') }}"
+    resources:
+      requests:
+        cpu: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_CPU_REQUEST') | default('100m') }}"
+        memory: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_MEMORY_REQUEST') | default('128Mi') }}"
+      limits:
+        cpu: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_CPU_LIMIT') | default('300m') }}"
+        memory: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_MEMORY_LIMIT') | default('256Mi') }}"
+
+  # Loki - Logging simplifié pour développement
+  loki:
+    enabled: "{{ lookup('env', 'LIONS_LOKI_ENABLED') | default('false') | bool }}"  # Désactivé par défaut en dev
+    version: "{{ lookup('env', 'LIONS_LOKI_VERSION') | default('2.9.0') }}"
+    storage_size: "{{ lookup('env', 'LIONS_LOKI_STORAGE_SIZE') | default('10Gi') }}"  # Réduit en dev
+    resources:
+      requests:
+        cpu: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_CPU_REQUEST') | default('100m') }}"
+        memory: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_MEMORY_REQUEST') | default('256Mi') }}"
+      limits:
+        cpu: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_CPU_LIMIT') | default('500m') }}"
+        memory: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_MEMORY_LIMIT') | default('512Mi') }}"
+
+# =========================================================================
+# CONFIGURATION BACKUP ET RÉCUPÉRATION - DÉVELOPPEMENT
+# =========================================================================
+lions_backup_config:
+  enabled: "{{ lookup('env', 'LIONS_BACKUP_ENABLED') | default('false') | bool }}"  # Désactivé par défaut en dev
+  storage_class: "{{ lookup('env', 'LIONS_BACKUP_STORAGE_CLASS') | default(lions_storage_config.class_default) }}"
+  retention_days: "{{ lookup('env', 'LIONS_BACKUP_RETENTION_DAYS') | default('3') | int }}"  # Très court en dev
+  schedule: "{{ lookup('env', 'LIONS_BACKUP_SCHEDULE') | default('0 3 * * 0') }}"  # Hebdomadaire
+  compression: "{{ lookup('env', 'LIONS_BACKUP_COMPRESSION') | default('gzip') }}"
+  encryption: "{{ lookup('env', 'LIONS_BACKUP_ENCRYPTION') | default('false') | bool }}"  # Désactivé en dev
+
+  # Backup externe (désactivé en développement)
+  external_enabled: "{{ lookup('env', 'LIONS_BACKUP_EXTERNAL_ENABLED') | default('false') | bool }}"
+
+# =========================================================================
+# CONFIGURATION LOGGING ET DEBUGGING - DÉVELOPPEMENT
+# =========================================================================
+lions_logging_config:
+  level: "{{ lookup('env', 'LIONS_LOG_LEVEL') | default('DEBUG') }}"  # Détaillé en dev
+  format: "{{ lookup('env', 'LIONS_LOG_FORMAT') | default('json') }}"
+  output: "{{ lookup('env', 'LIONS_LOG_OUTPUT') | default('stdout') }}"
+  retention_days: "{{ lookup('env', 'LIONS_LOG_RETENTION_DAYS') | default('3') | int }}"  # Court en dev
+
+  # Audit (simplifié en développement)
+  audit_enabled: "{{ lookup('env', 'LIONS_AUDIT_ENABLED') | default('false') | bool }}"
+  audit_log_level: "{{ lookup('env', 'LIONS_AUDIT_LOG_LEVEL') | default('INFO') }}"
+  audit_retention_days: "{{ lookup('env', 'LIONS_AUDIT_RETENTION_DAYS') | default('7') | int }}"
+
+# =========================================================================
+# CONFIGURATION PERFORMANCE ET SCALING - DÉVELOPPEMENT
+# =========================================================================
+lions_autoscaling_config:
+  enabled: "{{ lookup('env', 'LIONS_AUTOSCALING_ENABLED') | default('false') | bool }}"  # Désactivé en dev
+  min_replicas: "{{ lookup('env', 'LIONS_AUTOSCALING_MIN_REPLICAS') | default('1') | int }}"
+  max_replicas: "{{ lookup('env', 'LIONS_AUTOSCALING_MAX_REPLICAS') | default('2') | int }}"  # Limité en dev
+  cpu_target: "{{ lookup('env', 'LIONS_AUTOSCALING_CPU_TARGET') | default('80') | int }}"
+  memory_target: "{{ lookup('env', 'LIONS_AUTOSCALING_MEMORY_TARGET') | default('85') | int }}"
+
+# Configuration des timeouts (réduits en développement)
+lions_timeout_config:
+  default: "{{ lookup('env', 'LIONS_TIMEOUT_DEFAULT') | default('180') | int }}"  # 3 minutes
+  deployment: "{{ lookup('env', 'LIONS_TIMEOUT_DEPLOYMENT') | default('900') | int }}"  # 15 minutes
+  rollback: "{{ lookup('env', 'LIONS_TIMEOUT_ROLLBACK') | default('300') | int }}"  # 5 minutes
+
+# =========================================================================
+# CONFIGURATION DES RESSOURCES PAR DÉFAUT - DÉVELOPPEMENT
+# =========================================================================
+# Templates de ressources adaptés au développement
+lions_resource_templates:
+  small:
+    requests:
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_CPU_REQUEST') | default('50m') }}"  # Encore plus réduit
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_MEMORY_REQUEST') | default('64Mi') }}"
+    limits:
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_CPU_LIMIT') | default('200m') }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_MEMORY_LIMIT') | default('256Mi') }}"
+
+  medium:
+    requests:
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_CPU_REQUEST') | default('100m') }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_MEMORY_REQUEST') | default('256Mi') }}"
+    limits:
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_CPU_LIMIT') | default('500m') }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_MEMORY_LIMIT') | default('1Gi') }}"
+
+  large:
+    requests:
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_CPU_REQUEST') | default('200m') }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_MEMORY_REQUEST') | default('512Mi') }}"
+    limits:
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_CPU_LIMIT') | default('1000m') }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_MEMORY_LIMIT') | default('2Gi') }}"
+
+# =========================================================================
+# CONFIGURATION SPÉCIFIQUE DÉVELOPPEMENT
+# =========================================================================
+# Configuration de développement rapide
+lions_dev_config:
+  fast_deployment: true
+  skip_health_checks: false  # Toujours garder les checks de santé
+  enable_debug_endpoints: true
+  allow_insecure_connections: true  # Pour les certificats auto-signés
+  enable_hot_reload: true
+
+  # Configuration de développement pour les tests
+  test_mode: true
+  mock_external_services: true
+  disable_rate_limiting: true
+
+  # Configuration IDE et outils de développement
+  enable_debug_ports: true
+  expose_internal_services: true
+
+# =========================================================================
+# VALIDATION ET CONTRAINTES - DÉVELOPPEMENT
+# =========================================================================
+# Contraintes spécifiques à l'environnement de développement
+lions_constraints:
+  max_cpu_per_pod: "2000m"
+  max_memory_per_pod: "4Gi"
+  max_storage_per_claim: "50Gi"
+  max_replicas_per_deployment: 3
+
+# =========================================================================
+# SURCHARGES FINALES BASÉES SUR L'ENVIRONNEMENT
+# =========================================================================
+# Ces valeurs surchargent définitivement les autres en développement
+lions_environment_overrides:
+  security_level: "low"          # Sécurité allégée
+  performance_level: "medium"    # Performance modérée
+  monitoring_level: "basic"      # Monitoring de base
+  backup_strategy: "minimal"     # Stratégie de backup minimale
+  ha_strategy: "none"           # Pas de haute disponibilité

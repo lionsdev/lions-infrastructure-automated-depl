@@ -1,21 +1,850 @@
 ---
-# Titre: Tâches pour le déploiement de Keycloak
-# Description: Déploie Keycloak sur Kubernetes
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - RÔLE KEYCLOAK - ORCHESTRATEUR PRINCIPAL
+# =========================================================================
+# Description: Orchestrateur principal pour le déploiement Keycloak IAM
+# Version: 5.0.0
+# Date: {{ ansible_date_time.date }}
+# Maintainer: DevOps Team <devops@lions.dev>
+# Documentation: https://docs.lions.dev/infrastructure/services/keycloak
+# Compatibilité: Kubernetes 1.24+, Keycloak 22.0+
+# =========================================================================
 
-- name: Vérification des prérequis pour Keycloak
-  include_tasks: prerequisites.yml
+# =========================================================================
+# MÉTADONNÉES ET CONTEXTE DE DÉPLOIEMENT
+# =========================================================================
+- name: "Keycloak | Initialisation du contexte de déploiement"
+  set_fact:
+    # Métadonnées de déploiement
+    lions_keycloak_deployment_context:
+      role_name: "keycloak"
+      role_version: "5.0.0"
+      deployment_id: "keycloak-{{ ansible_date_time.epoch }}"
+      environment: "{{ lions_environment | default('development') }}"
+      namespace: "{{ lions_keycloak_namespace | default('security') }}"
+      cluster_name: "{{ lions_k8s_cluster_name | default('lions-cluster') }}"
+      deployment_strategy: "{{ lions_keycloak_deployment_strategy | default('rolling') }}"
 
-- name: Préparation des ressources Kubernetes
-  include_tasks: prepare.yml
+    # Horodatage et traçabilité
+    lions_keycloak_deployment_tracking:
+      started_at: "{{ ansible_date_time.iso8601 }}"
+      started_by: "{{ ansible_user_id | default('ansible-system') }}"
+      hostname: "{{ ansible_hostname }}"
+      ansible_version: "{{ ansible_version.full }}"
+      playbook_dir: "{{ playbook_dir | default('N/A') }}"
 
-- name: Déploiement de Keycloak
-  include_tasks: deploy.yml
+    # Configuration opérationnelle
+    lions_keycloak_deployment_config:
+      dry_run: "{{ lions_dry_run | default(false) | bool }}"
+      debug_mode: "{{ lions_debug_mode | default(false) | bool }}"
+      skip_validation: "{{ lions_keycloak_skip_validation | default(false) | bool }}"
+      force_recreate: "{{ lions_keycloak_force_recreate | default(false) | bool }}"
+      timeout_seconds: "{{ lions_timeout_deployment | default(1800) | int }}"
+      check_interval: "{{ lions_keycloak_check_interval | default(30) | int }}"
 
-- name: Configuration du monitoring pour Keycloak
-  include_tasks: monitoring.yml
+    # Configuration de sécurité
+    lions_keycloak_security_config:
+      tls_enabled: "{{ lions_security_tls_enabled | default(true) | bool }}"
+      rbac_enabled: "{{ lions_security_rbac_enabled | default(true) | bool }}"
+      network_policies: "{{ lions_security_network_policies | default(true) | bool }}"
+      pod_security_standards: "{{ lions_security_pod_security_standards | default('restricted') }}"
+      vault_integration: "{{ lions_vault_enabled | default(true) | bool }}"
+  tags:
+    - keycloak
+    - metadata
+    - always
 
-- name: Validation post-déploiement
-  include_tasks: validate.yml
+- name: "Keycloak | Validation des variables d'environnement critiques"
+  assert:
+    that:
+      - lions_keycloak_enabled is defined
+      - lions_keycloak_enabled | bool
+      - lions_keycloak_version is defined
+      - lions_keycloak_version | length > 0
+      - lions_keycloak_namespace is defined
+      - lions_dns_domain_base is defined
+      - lions_infra_target_host is defined
+    fail_msg: |
+      ❌ Variables d'environnement Keycloak manquantes ou incorrectes:
+      - LIONS_KEYCLOAK_ENABLED: {{ lions_keycloak_enabled | default('NON DÉFINI') }}
+      - LIONS_KEYCLOAK_VERSION: {{ lions_keycloak_version | default('NON DÉFINI') }}
+      - LIONS_KEYCLOAK_NAMESPACE: {{ lions_keycloak_namespace | default('NON DÉFINI') }}
+      - LIONS_DNS_DOMAIN_BASE: {{ lions_dns_domain_base | default('NON DÉFINI') }}
+      - LIONS_INFRA_TARGET_HOST: {{ lions_infra_target_host | default('NON DÉFINI') }}
+    success_msg: "✅ Variables d'environnement Keycloak validées avec succès"
+  tags:
+    - keycloak
+    - validation
+    - preflight
+
+- name: "Keycloak | Affichage du contexte de déploiement"
+  debug:
+    msg:
+      - "🚀 DÉMARRAGE DU DÉPLOIEMENT KEYCLOAK LIONS 5.0"
+      - "=============================================="
+      - "📊 Environnement: {{ lions_keycloak_deployment_context.environment | upper }}"
+      - "🏷️  Namespace: {{ lions_keycloak_deployment_context.namespace }}"
+      - "🏗️  Cluster: {{ lions_keycloak_deployment_context.cluster_name }}"
+      - "🆔 ID de déploiement: {{ lions_keycloak_deployment_context.deployment_id }}"
+      - "📅 Démarré le: {{ lions_keycloak_deployment_tracking.started_at }}"
+      - "👤 Initié par: {{ lions_keycloak_deployment_tracking.started_by }}"
+      - "🔧 Version Keycloak: {{ lions_keycloak_version }}"
+      - "🎯 Stratégie: {{ lions_keycloak_deployment_context.deployment_strategy }}"
+      - "🔒 TLS activé: {{ lions_keycloak_security_config.tls_enabled }}"
+      - "🔐 Vault intégration: {{ lions_keycloak_security_config.vault_integration }}"
+      - "🧪 Mode dry-run: {{ lions_keycloak_deployment_config.dry_run }}"
+      - "🐛 Mode debug: {{ lions_keycloak_deployment_config.debug_mode }}"
+      - "=============================================="
+  when: lions_keycloak_deployment_config.debug_mode | bool
+  tags:
+    - keycloak
+    - debug
+    - always
+
+# =========================================================================
+# CONFIGURATION AVANCÉE DE LA GESTION D'ERREURS
+# =========================================================================
+- name: "Keycloak | Configuration de la stratégie de gestion d'erreurs"
+  set_fact:
+    lions_keycloak_error_handling:
+      # Stratégies de reprise
+      max_retries: "{{ lions_keycloak_max_retries | default(3) | int }}"
+      retry_delay: "{{ lions_keycloak_retry_delay | default(15) | int }}"
+      exponential_backoff: "{{ lions_keycloak_exponential_backoff | default(true) | bool }}"
+
+      # Gestion du rollback
+      rollback_enabled: "{{ lions_keycloak_rollback_enabled | default(true) | bool }}"
+      rollback_timeout: "{{ lions_keycloak_rollback_timeout | default(600) | int }}"
+      preserve_data: "{{ lions_keycloak_preserve_data | default(true) | bool }}"
+
+      # Logging et traçabilité
+      error_log_dir: "/tmp/lions-keycloak-logs"
+      error_log_file: "/tmp/lions-keycloak-logs/deployment-{{ lions_keycloak_deployment_context.deployment_id }}.log"
+      detailed_logging: "{{ lions_keycloak_deployment_config.debug_mode | bool }}"
+
+      # Notifications
+      slack_webhook: "{{ lions_notification_slack_webhook | default('') }}"
+      email_notifications: "{{ lions_notification_email_enabled | default(false) | bool }}"
+      webhook_enabled: "{{ lions_notification_webhook_enabled | default(false) | bool }}"
+  tags:
+    - keycloak
+    - error-handling
+    - always
+
+- name: "Keycloak | Création du répertoire de logs d'erreur"
+  file:
+    path: "{{ lions_keycloak_error_handling.error_log_dir }}"
+    state: directory
+    mode: '0755'
+  delegate_to: localhost
+  tags:
+    - keycloak
+    - logging
+    - always
+
+# =========================================================================
+# VÉRIFICATIONS DE SANTÉ DE L'ENVIRONNEMENT
+# =========================================================================
+- name: "Keycloak | Vérifications de santé de l'environnement"
+  block:
+    - name: "Keycloak | Test de connectivité Kubernetes"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Node
+      register: lions_keycloak_k8s_nodes
+      retries: "{{ lions_keycloak_error_handling.max_retries }}"
+      delay: "{{ lions_keycloak_error_handling.retry_delay }}"
+
+    - name: "Keycloak | Vérification de l'espace disque disponible"
+      kubernetes.core.k8s_info:
+        api_version: storage.k8s.io/v1
+        kind: StorageClass
+        name: "{{ lions_storage_class_default }}"
+      register: lions_keycloak_storage_check
+      failed_when: false
+
+    - name: "Keycloak | Vérification de l'état des services prérequis"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Service
+        namespace: "{{ item.namespace }}"
+        name: "{{ item.service }}"
+      register: lions_keycloak_prereq_services
+      loop:
+        - { namespace: "{{ lions_postgres_namespace | default('database') }}", service: "{{ lions_postgres_service_name | default('postgresql') }}" }
+        - { namespace: "{{ lions_vault_namespace | default('vault-system') }}", service: "{{ lions_vault_service_name | default('vault') }}" }
+      when:
+        - (lions_postgres_enabled | default(true) | bool) or (lions_vault_enabled | default(true) | bool)
+      failed_when: false
+
+    - name: "Keycloak | Évaluation de la santé de l'environnement"
+      set_fact:
+        lions_keycloak_environment_health:
+          k8s_ready: "{{ lions_keycloak_k8s_nodes is succeeded }}"
+          storage_ready: "{{ lions_keycloak_storage_check.resources is defined }}"
+          prereq_services_ready: "{{ lions_keycloak_prereq_services.results | selectattr('resources', 'defined') | list | length > 0 }}"
+          overall_healthy: "{{ (lions_keycloak_k8s_nodes is succeeded) and (lions_keycloak_storage_check.resources is defined or lions_keycloak_storage_check is skipped) }}"
+
+  rescue:
+    - name: "Keycloak | Échec des vérifications de santé"
+      set_fact:
+        lions_keycloak_deployment_failed: true
+        lions_keycloak_failure_phase: "health-checks"
+        lions_keycloak_failure_reason: "Environnement non prêt: {{ ansible_failed_result.msg | default('Vérifications de santé échouées') }}"
+
+    - name: "Keycloak | Log d'erreur - Santé environnement"
+      lineinfile:
+        path: "{{ lions_keycloak_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] CRITIQUE - Vérifications de santé échouées: {{ lions_keycloak_failure_reason }}"
+        create: yes
+
+    - name: "Keycloak | Arrêt critique - Environnement non prêt"
+      fail:
+        msg: "🚨 Environnement Kubernetes non prêt pour le déploiement Keycloak: {{ lions_keycloak_failure_reason }}"
+
+  tags:
+    - keycloak
+    - health-checks
+    - preflight
+
+# =========================================================================
+# PHASE 1: PRÉREQUIS ET DÉPENDANCES SYSTÈME
+# =========================================================================
+- name: "Keycloak | Phase 1 - Vérification des prérequis système"
+  block:
+    - name: "Keycloak | Initialisation Phase 1"
+      set_fact:
+        lions_keycloak_current_phase: "prerequisites"
+        lions_keycloak_phase_start_time: "{{ ansible_date_time.epoch }}"
+
+    - name: "Keycloak | Log Phase 1"
+      lineinfile:
+        path: "{{ lions_keycloak_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] INFO - Début Phase 1 (Prérequis système)"
+        create: yes
+
+    - name: "Keycloak | Exécution des tâches de prérequis"
+      include_tasks: prerequisites.yml
+      vars:
+        current_phase: "{{ lions_keycloak_current_phase }}"
+        phase_description: "Vérification des prérequis système et Kubernetes"
+        deployment_context: "{{ lions_keycloak_deployment_context }}"
+        security_config: "{{ lions_keycloak_security_config }}"
+
+    - name: "Keycloak | Succès Phase 1"
+      set_fact:
+        lions_keycloak_phase_1_duration: "{{ (ansible_date_time.epoch | int) - (lions_keycloak_phase_start_time | int) }}"
+
+    - name: "Keycloak | Log succès Phase 1"
+      lineinfile:
+        path: "{{ lions_keycloak_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] SUCCÈS - Phase 1 terminée en {{ lions_keycloak_phase_1_duration }}s"
+        create: yes
+
+  rescue:
+    - name: "Keycloak | Échec Phase 1 - Prérequis"
+      set_fact:
+        lions_keycloak_deployment_failed: true
+        lions_keycloak_failure_phase: "prerequisites"
+        lions_keycloak_failure_reason: "{{ ansible_failed_result.msg | default('Échec des prérequis système') }}"
+        lions_keycloak_failure_details: "{{ ansible_failed_result | default({}) }}"
+
+    - name: "Keycloak | Log détaillé d'erreur Phase 1"
+      lineinfile:
+        path: "{{ lions_keycloak_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] ERREUR Phase 1 (Prérequis): {{ lions_keycloak_failure_reason }}"
+        create: yes
+
+    - name: "Keycloak | Notification d'échec Phase 1"
+      include_tasks: notify_failure.yml
+      vars:
+        failure_phase: "Phase 1 - Prérequis"
+        failure_reason: "{{ lions_keycloak_failure_reason }}"
+      when: lions_keycloak_error_handling.webhook_enabled | bool
+
+    - name: "Keycloak | Arrêt critique - Phase 1"
+      fail:
+        msg: "❌ Déploiement Keycloak interrompu en Phase 1 (Prérequis): {{ lions_keycloak_failure_reason }}"
+
+  tags:
+    - keycloak
+    - prerequisites
+    - phase-1
+
+# =========================================================================
+# PHASE 2: PRÉPARATION ET PROVISIONING DES RESSOURCES
+# =========================================================================
+- name: "Keycloak | Phase 2 - Préparation des ressources Kubernetes"
+  block:
+    - name: "Keycloak | Initialisation Phase 2"
+      set_fact:
+        lions_keycloak_current_phase: "preparation"
+        lions_keycloak_phase_start_time: "{{ ansible_date_time.epoch }}"
+
+    - name: "Keycloak | Log Phase 2"
+      lineinfile:
+        path: "{{ lions_keycloak_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] INFO - Début Phase 2 (Préparation des ressources)"
+        create: yes
+
+    - name: "Keycloak | Exécution des tâches de préparation"
+      include_tasks: prepare.yml
+      vars:
+        current_phase: "{{ lions_keycloak_current_phase }}"
+        phase_description: "Création des ressources Kubernetes de base"
+        deployment_context: "{{ lions_keycloak_deployment_context }}"
+        security_config: "{{ lions_keycloak_security_config }}"
+        dry_run: "{{ lions_keycloak_deployment_config.dry_run }}"
+
+    - name: "Keycloak | Succès Phase 2"
+      set_fact:
+        lions_keycloak_phase_2_duration: "{{ (ansible_date_time.epoch | int) - (lions_keycloak_phase_start_time | int) }}"
+
+    - name: "Keycloak | Log succès Phase 2"
+      lineinfile:
+        path: "{{ lions_keycloak_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] SUCCÈS - Phase 2 terminée en {{ lions_keycloak_phase_2_duration }}s"
+        create: yes
+
+  rescue:
+    - name: "Keycloak | Échec Phase 2 - Préparation"
+      set_fact:
+        lions_keycloak_deployment_failed: true
+        lions_keycloak_failure_phase: "preparation"
+        lions_keycloak_failure_reason: "{{ ansible_failed_result.msg | default('Échec de la préparation des ressources') }}"
+
+    - name: "Keycloak | Log d'erreur Phase 2"
+      lineinfile:
+        path: "{{ lions_keycloak_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] ERREUR Phase 2 (Préparation): {{ lions_keycloak_failure_reason }}"
+        create: yes
+
+    - name: "Keycloak | Rollback partiel après échec Phase 2"
+      include_tasks: rollback.yml
+      vars:
+        rollback_scope: "preparation"
+        preserve_data: "{{ lions_keycloak_error_handling.preserve_data }}"
+      when: lions_keycloak_error_handling.rollback_enabled | bool
+
+    - name: "Keycloak | Notification d'échec Phase 2"
+      include_tasks: notify_failure.yml
+      vars:
+        failure_phase: "Phase 2 - Préparation"
+        failure_reason: "{{ lions_keycloak_failure_reason }}"
+      when: lions_keycloak_error_handling.webhook_enabled | bool
+
+    - name: "Keycloak | Arrêt avec rollback - Phase 2"
+      fail:
+        msg: "❌ Déploiement Keycloak interrompu en Phase 2 (Préparation): {{ lions_keycloak_failure_reason }}"
+
+  when: lions_keycloak_deployment_failed is not defined
+  tags:
+    - keycloak
+    - preparation
+    - phase-2
+
+# =========================================================================
+# PHASE 3: DÉPLOIEMENT PRINCIPAL ET CONFIGURATION
+# =========================================================================
+- name: "Keycloak | Phase 3 - Déploiement principal"
+  block:
+    - name: "Keycloak | Initialisation Phase 3"
+      set_fact:
+        lions_keycloak_current_phase: "deployment"
+        lions_keycloak_phase_start_time: "{{ ansible_date_time.epoch }}"
+
+    - name: "Keycloak | Log Phase 3"
+      lineinfile:
+        path: "{{ lions_keycloak_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] INFO - Début Phase 3 (Déploiement principal)"
+        create: yes
+
+    - name: "Keycloak | Exécution du déploiement principal"
+      include_tasks: deploy.yml
+      vars:
+        current_phase: "{{ lions_keycloak_current_phase }}"
+        phase_description: "Déploiement des composants Keycloak"
+        deployment_context: "{{ lions_keycloak_deployment_context }}"
+        security_config: "{{ lions_keycloak_security_config }}"
+        timeout_seconds: "{{ lions_keycloak_deployment_config.timeout_seconds }}"
+
+    - name: "Keycloak | Attente de la disponibilité du service"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Pod
+        namespace: "{{ lions_keycloak_deployment_context.namespace }}"
+        label_selectors:
+          - "app.kubernetes.io/name=keycloak"
+        wait: true
+        wait_condition:
+          type: Ready
+          status: "True"
+        wait_timeout: "{{ lions_keycloak_deployment_config.timeout_seconds }}"
+      register: lions_keycloak_pods_ready
+
+    - name: "Keycloak | Succès Phase 3"
+      set_fact:
+        lions_keycloak_phase_3_duration: "{{ (ansible_date_time.epoch | int) - (lions_keycloak_phase_start_time | int) }}"
+        lions_keycloak_pods_count: "{{ lions_keycloak_pods_ready.resources | length }}"
+
+    - name: "Keycloak | Log succès Phase 3"
+      lineinfile:
+        path: "{{ lions_keycloak_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] SUCCÈS - Phase 3 terminée en {{ lions_keycloak_phase_3_duration }}s ({{ lions_keycloak_pods_count }} pods prêts)"
+        create: yes
+
+  rescue:
+    - name: "Keycloak | Échec Phase 3 - Déploiement"
+      set_fact:
+        lions_keycloak_deployment_failed: true
+        lions_keycloak_failure_phase: "deployment"
+        lions_keycloak_failure_reason: "{{ ansible_failed_result.msg | default('Échec du déploiement principal') }}"
+
+    - name: "Keycloak | Collecte des logs de débogage Phase 3"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Pod
+        namespace: "{{ lions_keycloak_deployment_context.namespace }}"
+        label_selectors:
+          - "app.kubernetes.io/name=keycloak"
+      register: lions_keycloak_debug_pods
+      failed_when: false
+
+    - name: "Keycloak | Log détaillé d'erreur Phase 3"
+      lineinfile:
+        path: "{{ lions_keycloak_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] ERREUR Phase 3 (Déploiement): {{ lions_keycloak_failure_reason }} - Pods trouvés: {{ lions_keycloak_debug_pods.resources | length }}"
+        create: yes
+
+    - name: "Keycloak | Rollback complet après échec Phase 3"
+      include_tasks: rollback.yml
+      vars:
+        rollback_reason: "Échec du déploiement principal"
+        preserve_data: "{{ lions_keycloak_error_handling.preserve_data }}"
+      when: lions_keycloak_error_handling.rollback_enabled | bool
+
+    - name: "Keycloak | Notification d'échec critique Phase 3"
+      include_tasks: notify_failure.yml
+      vars:
+        failure_phase: "Phase 3 - Déploiement"
+        failure_reason: "{{ lions_keycloak_failure_reason }}"
+        is_critical: true
+      when: lions_keycloak_error_handling.webhook_enabled | bool
+
+    - name: "Keycloak | Arrêt critique - Phase 3"
+      fail:
+        msg: "❌ Déploiement Keycloak interrompu en Phase 3 (Déploiement): {{ lions_keycloak_failure_reason }}"
+
+  when: lions_keycloak_deployment_failed is not defined
+  tags:
+    - keycloak
+    - deployment
+    - phase-3
+
+# =========================================================================
+# PHASE 4: CONFIGURATION DU MONITORING ET MÉTRIQUES
+# =========================================================================
+- name: "Keycloak | Phase 4 - Configuration du monitoring"
+  block:
+    - name: "Keycloak | Initialisation Phase 4"
+      set_fact:
+        lions_keycloak_current_phase: "monitoring"
+        lions_keycloak_phase_start_time: "{{ ansible_date_time.epoch }}"
+
+    - name: "Keycloak | Log Phase 4"
+      lineinfile:
+        path: "{{ lions_keycloak_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] INFO - Début Phase 4 (Configuration monitoring)"
+        create: yes
+
+    - name: "Keycloak | Configuration du monitoring"
+      include_tasks: monitoring.yml
+      vars:
+        current_phase: "{{ lions_keycloak_current_phase }}"
+        phase_description: "Configuration des métriques et alertes Keycloak"
+        deployment_context: "{{ lions_keycloak_deployment_context }}"
+        monitoring_namespace: "{{ lions_monitoring_namespace | default('monitoring') }}"
+
+    - name: "Keycloak | Succès Phase 4"
+      set_fact:
+        lions_keycloak_phase_4_duration: "{{ (ansible_date_time.epoch | int) - (lions_keycloak_phase_start_time | int) }}"
+        lions_keycloak_monitoring_configured: true
+
+    - name: "Keycloak | Log succès Phase 4"
+      lineinfile:
+        path: "{{ lions_keycloak_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] SUCCÈS - Phase 4 terminée en {{ lions_keycloak_phase_4_duration }}s"
+        create: yes
+
+  rescue:
+    - name: "Keycloak | Gestion non-critique Phase 4 - Monitoring"
+      set_fact:
+        lions_keycloak_monitoring_failed: true
+        lions_keycloak_monitoring_failure_reason: "{{ ansible_failed_result.msg | default('Erreur de monitoring inconnue') }}"
+
+    - name: "Keycloak | Log d'avertissement Phase 4"
+      lineinfile:
+        path: "{{ lions_keycloak_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] AVERTISSEMENT Phase 4 (Monitoring): {{ lions_keycloak_monitoring_failure_reason }}"
+        create: yes
+
+    - name: "Keycloak | Affichage d'avertissement Phase 4"
+      debug:
+        msg:
+          - "⚠️  Échec de la configuration du monitoring Keycloak"
+          - "ℹ️  Le déploiement principal a réussi, mais les métriques peuvent être indisponibles"
+          - "🔍 Erreur: {{ lions_keycloak_monitoring_failure_reason }}"
+          - "📊 Impact: Dashboards et alertes Keycloak non disponibles"
+
+  when:
+    - lions_keycloak_deployment_failed is not defined
+    - lions_monitoring_enabled | default(true) | bool
+  tags:
+    - keycloak
+    - monitoring
+    - phase-4
+
+# =========================================================================
+# PHASE 5: VALIDATION POST-DÉPLOIEMENT ET TESTS FONCTIONNELS
+# =========================================================================
+- name: "Keycloak | Phase 5 - Validation post-déploiement"
+  block:
+    - name: "Keycloak | Initialisation Phase 5"
+      set_fact:
+        lions_keycloak_current_phase: "validation"
+        lions_keycloak_phase_start_time: "{{ ansible_date_time.epoch }}"
+
+    - name: "Keycloak | Log Phase 5"
+      lineinfile:
+        path: "{{ lions_keycloak_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] INFO - Début Phase 5 (Validation post-déploiement)"
+        create: yes
+
+    - name: "Keycloak | Exécution des tests de validation"
+      include_tasks: validate.yml
+      vars:
+        current_phase: "{{ lions_keycloak_current_phase }}"
+        phase_description: "Validation de l'état et des fonctionnalités Keycloak"
+        deployment_context: "{{ lions_keycloak_deployment_context }}"
+        validation_timeout: "{{ lions_keycloak_deployment_config.timeout_seconds }}"
+
+    - name: "Keycloak | Succès Phase 5"
+      set_fact:
+        lions_keycloak_phase_5_duration: "{{ (ansible_date_time.epoch | int) - (lions_keycloak_phase_start_time | int) }}"
+        lions_keycloak_validation_passed: true
+
+    - name: "Keycloak | Log succès Phase 5"
+      lineinfile:
+        path: "{{ lions_keycloak_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] SUCCÈS - Phase 5 terminée en {{ lions_keycloak_phase_5_duration }}s"
+        create: yes
+
+  rescue:
+    - name: "Keycloak | Échec Phase 5 - Validation"
+      set_fact:
+        lions_keycloak_validation_failed: true
+        lions_keycloak_validation_failure_reason: "{{ ansible_failed_result.msg | default('Échec de la validation fonctionnelle') }}"
+
+    - name: "Keycloak | Log d'erreur Phase 5"
+      lineinfile:
+        path: "{{ lions_keycloak_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] ERREUR Phase 5 (Validation): {{ lions_keycloak_validation_failure_reason }}"
+        create: yes
+
+    - name: "Keycloak | Décision sur les actions correctives"
+      debug:
+        msg:
+          - "⚠️  Validation fonctionnelle échouée"
+          - "🔍 Raison: {{ lions_keycloak_validation_failure_reason }}"
+          - "🤔 Keycloak peut être partiellement fonctionnel"
+          - "🎯 Recommandation: Vérifier manuellement l'état du service"
+
+  when:
+    - lions_keycloak_deployment_failed is not defined
+    - not lions_keycloak_deployment_config.skip_validation | bool
+  tags:
+    - keycloak
+    - validation
+    - phase-5
+
+# =========================================================================
+# PHASE 6: CONFIGURATION DE LA SAUVEGARDE ET RÉCUPÉRATION
+# =========================================================================
+- name: "Keycloak | Phase 6 - Configuration de la sauvegarde"
+  block:
+    - name: "Keycloak | Initialisation Phase 6"
+      set_fact:
+        lions_keycloak_current_phase: "backup"
+        lions_keycloak_phase_start_time: "{{ ansible_date_time.epoch }}"
+
+    - name: "Keycloak | Log Phase 6"
+      lineinfile:
+        path: "{{ lions_keycloak_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] INFO - Début Phase 6 (Configuration sauvegarde)"
+        create: yes
+
+    - name: "Keycloak | Configuration des stratégies de sauvegarde"
+      include_tasks: backup.yml
+      vars:
+        current_phase: "{{ lions_keycloak_current_phase }}"
+        phase_description: "Configuration des stratégies de sauvegarde Keycloak"
+        deployment_context: "{{ lions_keycloak_deployment_context }}"
+        backup_retention_days: "{{ lions_backup_retention_days | default(30) }}"
+        backup_schedule: "{{ lions_backup_schedule | default('0 2 * * *') }}"
+
+    - name: "Keycloak | Succès Phase 6"
+      set_fact:
+        lions_keycloak_phase_6_duration: "{{ (ansible_date_time.epoch | int) - (lions_keycloak_phase_start_time | int) }}"
+        lions_keycloak_backup_configured: true
+
+    - name: "Keycloak | Log succès Phase 6"
+      lineinfile:
+        path: "{{ lions_keycloak_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] SUCCÈS - Phase 6 terminée en {{ lions_keycloak_phase_6_duration }}s"
+        create: yes
+
+  rescue:
+    - name: "Keycloak | Gestion non-critique Phase 6 - Sauvegarde"
+      set_fact:
+        lions_keycloak_backup_failed: true
+        lions_keycloak_backup_failure_reason: "{{ ansible_failed_result.msg | default('Erreur de configuration de sauvegarde') }}"
+
+    - name: "Keycloak | Log d'avertissement Phase 6"
+      lineinfile:
+        path: "{{ lions_keycloak_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] AVERTISSEMENT Phase 6 (Sauvegarde): {{ lions_keycloak_backup_failure_reason }}"
+        create: yes
+
+    - name: "Keycloak | Affichage d'avertissement Phase 6"
+      debug:
+        msg:
+          - "⚠️  Échec de la configuration de sauvegarde Keycloak"
+          - "ℹ️  Keycloak fonctionne mais les sauvegardes automatiques sont désactivées"
+          - "🔍 Erreur: {{ lions_keycloak_backup_failure_reason }}"
+          - "💾 Impact: Pas de sauvegarde automatique des données Keycloak"
+          - "🎯 Action: Configurer manuellement les sauvegardes si nécessaire"
+
+  when:
+    - lions_keycloak_deployment_failed is not defined
+    - lions_backup_enabled | default(true) | bool
+    - lions_keycloak_backup_enabled | default(true) | bool
+  tags:
+    - keycloak
+    - backup
+    - phase-6
+
+# =========================================================================
+# GÉNÉRATION DU RAPPORT FINAL DE DÉPLOIEMENT
+# =========================================================================
+- name: "Keycloak | Calcul des métriques de performance"
+  set_fact:
+    lions_keycloak_deployment_performance:
+      total_duration: "{{ (ansible_date_time.epoch | int) - (lions_keycloak_deployment_context.deployment_id | regex_replace('keycloak-', '') | int) }}"
+      phase_1_duration: "{{ lions_keycloak_phase_1_duration | default(0) }}"
+      phase_2_duration: "{{ lions_keycloak_phase_2_duration | default(0) }}"
+      phase_3_duration: "{{ lions_keycloak_phase_3_duration | default(0) }}"
+      phase_4_duration: "{{ lions_keycloak_phase_4_duration | default(0) }}"
+      phase_5_duration: "{{ lions_keycloak_phase_5_duration | default(0) }}"
+      phase_6_duration: "{{ lions_keycloak_phase_6_duration | default(0) }}"
+      pods_deployed: "{{ lions_keycloak_pods_count | default(0) }}"
+  tags:
+    - keycloak
+    - metrics
+    - always
+
+- name: "Keycloak | Génération du rapport final de déploiement"
+  set_fact:
+    lions_keycloak_deployment_report:
+      # Statut global
+      status: "{{ 'FAILED' if lions_keycloak_deployment_failed | default(false) else 'SUCCESS' }}"
+      deployment_health: "{{ 'HEALTHY' if not (lions_keycloak_deployment_failed | default(false) or lions_keycloak_validation_failed | default(false)) else 'DEGRADED' }}"
+
+      # Métadonnées
+      environment: "{{ lions_keycloak_deployment_context.environment }}"
+      namespace: "{{ lions_keycloak_deployment_context.namespace }}"
+      cluster: "{{ lions_keycloak_deployment_context.cluster_name }}"
+      deployment_id: "{{ lions_keycloak_deployment_context.deployment_id }}"
+
+      # Chronologie
+      started_at: "{{ lions_keycloak_deployment_tracking.started_at }}"
+      completed_at: "{{ ansible_date_time.iso8601 }}"
+      total_duration_seconds: "{{ lions_keycloak_deployment_performance.total_duration }}"
+
+      # Échecs et erreurs
+      failed_phase: "{{ lions_keycloak_failure_phase | default('N/A') }}"
+      failure_reason: "{{ lions_keycloak_failure_reason | default('N/A') }}"
+
+      # Statut des composants
+      monitoring_status: "{{ 'FAILED' if lions_keycloak_monitoring_failed | default(false) else 'OK' }}"
+      backup_status: "{{ 'FAILED' if lions_keycloak_backup_failed | default(false) else 'OK' }}"
+      validation_status: "{{ 'FAILED' if lions_keycloak_validation_failed | default(false) else 'OK' }}"
+
+      # Configuration technique
+      keycloak_version: "{{ lions_keycloak_version }}"
+      keycloak_service_name: "{{ lions_keycloak_service_name | default('keycloak') }}"
+      keycloak_endpoint: "{{ lions_keycloak_service_name | default('keycloak') }}.{{ lions_keycloak_deployment_context.namespace }}.svc.cluster.local:{{ lions_keycloak_port | default(8080) }}"
+      keycloak_admin_console: "https://{{ lions_keycloak_service_name | default('keycloak') }}.{{ lions_dns_full_domain | default(lions_dns_domain_base) }}/admin"
+
+      # Métriques de performance
+      performance_metrics: "{{ lions_keycloak_deployment_performance }}"
+
+      # Configuration de sécurité
+      security_features:
+        tls_enabled: "{{ lions_keycloak_security_config.tls_enabled }}"
+        rbac_enabled: "{{ lions_keycloak_security_config.rbac_enabled }}"
+        network_policies: "{{ lions_keycloak_security_config.network_policies }}"
+        vault_integration: "{{ lions_keycloak_security_config.vault_integration }}"
+
+      # Environnement système
+      system_info:
+        ansible_version: "{{ lions_keycloak_deployment_tracking.ansible_version }}"
+        hostname: "{{ lions_keycloak_deployment_tracking.hostname }}"
+        initiated_by: "{{ lions_keycloak_deployment_tracking.started_by }}"
+  tags:
+    - keycloak
+    - report
+    - always
+
+- name: "Keycloak | Affichage du rapport final de déploiement"
+  debug:
+    msg:
+      - "=============================================="
+      - "📊 RAPPORT FINAL DE DÉPLOIEMENT KEYCLOAK 5.0"
+      - "=============================================="
+      - "✅ Statut global: {{ lions_keycloak_deployment_report.status }} ({{ lions_keycloak_deployment_report.deployment_health }})"
+      - "🌍 Environnement: {{ lions_keycloak_deployment_report.environment | upper }}"
+      - "🏗️  Cluster: {{ lions_keycloak_deployment_report.cluster }}"
+      - "🏷️  Namespace: {{ lions_keycloak_deployment_report.namespace }}"
+      - "🆔 ID de déploiement: {{ lions_keycloak_deployment_report.deployment_id }}"
+      - "⏱️  Durée totale: {{ lions_keycloak_deployment_report.total_duration_seconds }}s"
+      - "🔐 Version Keycloak: {{ lions_keycloak_deployment_report.keycloak_version }}"
+      - "🔗 Endpoint interne: {{ lions_keycloak_deployment_report.keycloak_endpoint }}"
+      - "🌐 Console d'admin: {{ lions_keycloak_deployment_report.keycloak_admin_console }}"
+      - "🚀 Pods déployés: {{ lions_keycloak_deployment_report.performance_metrics.pods_deployed }}"
+      - "=============================================="
+      - "📈 STATUT DES COMPOSANTS:"
+      - "  📊 Monitoring: {{ lions_keycloak_deployment_report.monitoring_status }}"
+      - "  💾 Sauvegarde: {{ lions_keycloak_deployment_report.backup_status }}"
+      - "  ✅ Validation: {{ lions_keycloak_deployment_report.validation_status }}"
+      - "=============================================="
+      - "🔒 SÉCURITÉ:"
+      - "  🔐 TLS: {{ 'Activé' if lions_keycloak_deployment_report.security_features.tls_enabled else 'Désactivé' }}"
+      - "  🛡️  RBAC: {{ 'Activé' if lions_keycloak_deployment_report.security_features.rbac_enabled else 'Désactivé' }}"
+      - "  🚧 Politiques réseau: {{ 'Activées' if lions_keycloak_deployment_report.security_features.network_policies else 'Désactivées' }}"
+      - "  🗝️  Vault: {{ 'Intégré' if lions_keycloak_deployment_report.security_features.vault_integration else 'Non intégré' }}"
+      - "=============================================="
+      - "⏱️  PERFORMANCE PAR PHASE:"
+      - "  Phase 1 (Prérequis): {{ lions_keycloak_deployment_report.performance_metrics.phase_1_duration }}s"
+      - "  Phase 2 (Préparation): {{ lions_keycloak_deployment_report.performance_metrics.phase_2_duration }}s"
+      - "  Phase 3 (Déploiement): {{ lions_keycloak_deployment_report.performance_metrics.phase_3_duration }}s"
+      - "  Phase 4 (Monitoring): {{ lions_keycloak_deployment_report.performance_metrics.phase_4_duration }}s"
+      - "  Phase 5 (Validation): {{ lions_keycloak_deployment_report.performance_metrics.phase_5_duration }}s"
+      - "  Phase 6 (Sauvegarde): {{ lions_keycloak_deployment_report.performance_metrics.phase_6_duration }}s"
+      - "=============================================="
+      - "{{ '❌ ÉCHEC en ' + lions_keycloak_deployment_report.failed_phase + ': ' + lions_keycloak_deployment_report.failure_reason if lions_keycloak_deployment_report.status == 'FAILED' else '🎉 DÉPLOIEMENT RÉUSSI !' }}"
+      - "=============================================="
+  tags:
+    - keycloak
+    - report
+    - always
+
+- name: "Keycloak | Sauvegarde du rapport JSON"
+  copy:
+    content: "{{ lions_keycloak_deployment_report | to_nice_json }}"
+    dest: "/tmp/lions-keycloak-deployment-report-{{ lions_keycloak_deployment_context.deployment_id }}.json"
+    mode: '0644'
+  delegate_to: localhost
+  tags:
+    - keycloak
+    - report
+
+- name: "Keycloak | Notification de succès"
+  include_tasks: notify_success.yml
+  vars:
+    deployment_report: "{{ lions_keycloak_deployment_report }}"
+  when:
+    - lions_keycloak_deployment_report.status == "SUCCESS"
+    - lions_keycloak_error_handling.webhook_enabled | bool
+  tags:
+    - keycloak
+    - notifications
+
+# =========================================================================
+# NETTOYAGE ET FINALISATION
+# =========================================================================
+- name: "Keycloak | Nettoyage sélectif des fichiers temporaires"
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ lions_keycloak_error_handling.error_log_file }}"
+  when:
+    - lions_keycloak_deployment_report.status == "SUCCESS"
+    - not lions_keycloak_deployment_config.debug_mode | bool
+    - lions_environment != "development"
+  ignore_errors: yes
+  tags:
+    - keycloak
+    - cleanup
+
+- name: "Keycloak | Archivage des logs de déploiement"
+  archive:
+    path: "{{ lions_keycloak_error_handling.error_log_dir }}"
+    dest: "/tmp/lions-keycloak-logs-{{ lions_keycloak_deployment_context.deployment_id }}.tar.gz"
+    remove: false
+  when:
+    - lions_keycloak_deployment_config.debug_mode | bool
+    - lions_keycloak_error_handling.detailed_logging | bool
+  delegate_to: localhost
+  ignore_errors: yes
+  tags:
+    - keycloak
+    - archiving
+
+- name: "Keycloak | Message de finalisation personnalisé"
+  debug:
+    msg: |
+      {% if lions_keycloak_deployment_report.status == 'SUCCESS' %}
+      🎉 DÉPLOIEMENT KEYCLOAK LIONS 5.0 TERMINÉ AVEC SUCCÈS !
+      
+      🚀 Keycloak est maintenant disponible et prêt à l'emploi
+      📋 Informations de connexion:
+         • Console d'administration: {{ lions_keycloak_deployment_report.keycloak_admin_console }}
+         • Endpoint API: {{ lions_keycloak_deployment_report.keycloak_endpoint }}
+         • Namespace: {{ lions_keycloak_deployment_report.namespace }}
+      
+      📊 Statistiques de déploiement:
+         • Durée totale: {{ lions_keycloak_deployment_report.total_duration_seconds }}s
+         • Pods déployés: {{ lions_keycloak_deployment_report.performance_metrics.pods_deployed }}
+         • Environnement: {{ lions_keycloak_deployment_report.environment | upper }}
+      
+      📚 Ressources utiles:
+         • Documentation: https://docs.lions.dev/infrastructure/services/keycloak
+         • Guide d'administration: https://docs.lions.dev/guides/keycloak-admin
+         • Monitoring: {{ lions_keycloak_deployment_report.keycloak_admin_console }}/monitoring
+      
+      {% if lions_keycloak_deployment_report.monitoring_status == 'FAILED' %}
+      ⚠️  ATTENTION: Le monitoring n'a pas pu être configuré
+      {% endif %}
+      {% if lions_keycloak_deployment_report.backup_status == 'FAILED' %}
+      ⚠️  ATTENTION: Les sauvegardes automatiques ne sont pas configurées
+      {% endif %}
+      {% else %}
+      💥 ÉCHEC DU DÉPLOIEMENT KEYCLOAK LIONS 5.0
+      
+      🔍 Détails de l'échec:
+         • Phase d'échec: {{ lions_keycloak_deployment_report.failed_phase | upper }}
+         • Raison: {{ lions_keycloak_deployment_report.failure_reason }}
+         • Durée avant échec: {{ lions_keycloak_deployment_report.total_duration_seconds }}s
+      
+      🛠️  Actions de dépannage:
+         • Consultez les logs: {{ lions_keycloak_error_handling.error_log_file }}
+         • Rapport détaillé: /tmp/lions-keycloak-deployment-report-{{ lions_keycloak_deployment_context.deployment_id }}.json
+         • Guide de dépannage: https://docs.lions.dev/infrastructure/troubleshooting/keycloak
+      
+      🔄 Pour relancer le déploiement:
+         ansible-playbook -i inventories/{{ lions_keycloak_deployment_context.environment }}/hosts.yml playbooks/deploy-application-services.yml --tags keycloak
+      {% endif %}
+  tags:
+    - keycloak
+    - always

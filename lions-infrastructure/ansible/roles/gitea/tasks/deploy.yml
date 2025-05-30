@@ -1,128 +1,503 @@
 ---
-# Titre: Déploiement de Gitea
-# Description: Déploie Gitea sur Kubernetes
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - TÂCHES DE DÉPLOIEMENT GITEA
+# =========================================================================
+# Description: Tâches avancées de déploiement Gitea avec gestion d'erreurs complète
+# Version: 5.0.0
+# Auteur: Équipe DevOps LIONS
+# Date: 2025-05-28
+# Dépendances: PostgreSQL, Redis (optionnel), Vault
+# =========================================================================
 
-- name: Déploiement de Gitea
-  k8s:
-    state: present
-    src: "{{ temp_dir.path }}/deployment.yml"
-  register: deployment_result
+# =========================================================================
+# VALIDATION PRÉ-DÉPLOIEMENT
+# =========================================================================
+- name: "[GITEA-DEPLOY] Valider les prérequis de déploiement"
+  block:
+    - name: "Vérifier l'existence du namespace"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Namespace
+        name: "{{ lions_gitea_namespace }}"
+      register: namespace_check
+      failed_when: namespace_check.resources | length == 0
 
-- name: Création du service pour Gitea
-  k8s:
-    state: present
-    src: "{{ temp_dir.path }}/service.yml"
-  register: service_result
+    - name: "Valider les variables d'environnement requises"
+      assert:
+        that:
+          - lions_gitea_enabled | default(false) | bool
+          - lions_gitea_namespace is defined
+          - lions_gitea_service_name is defined
+          - lions_gitea_version is defined
+          - lions_dns_full_domain is defined
+        fail_msg: "Les variables d'environnement Gitea requises ne sont pas correctement configurées"
+        success_msg: "✅ Variables d'environnement Gitea validées"
 
-- name: Création de l'ingress pour Gitea
-  k8s:
-    state: present
-    src: "{{ temp_dir.path }}/ingress.yml"
-  register: ingress_result
-  when: app_environment != 'development' or (extra_params.create_ingress | default(true) | bool)
+    - name: "Vérifier la dépendance PostgreSQL"
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: StatefulSet
+        namespace: "{{ lions_postgres_namespace }}"
+        name: "{{ lions_postgres_service_name }}"
+      register: postgres_check
+      when: lions_postgres_enabled | default(true) | bool
+      failed_when:
+        - lions_postgres_enabled | default(true) | bool
+        - postgres_check.resources | length == 0 or postgres_check.resources[0].status.readyReplicas != postgres_check.resources[0].spec.replicas
 
-- name: Attente du déploiement
-  k8s_info:
-    api_version: apps/v1
-    kind: Deployment
-    namespace: "{{ app_namespace }}"
-    name: "{{ app_name }}"
-  register: deployment_status
-  until: deployment_status.resources[0].status.availableReplicas is defined and deployment_status.resources[0].status.availableReplicas == deployment_status.resources[0].spec.replicas
-  retries: 30
-  delay: 10
-  ignore_errors: yes
+  rescue:
+    - name: "Journaliser l'échec de validation des prérequis"
+      debug:
+        msg: "❌ Les prérequis de déploiement Gitea ne sont pas satisfaits. Abandon du déploiement."
+    - fail:
+        msg: "La validation des prérequis de déploiement Gitea a échoué"
 
-- name: Vérification du statut du déploiement
-  fail:
-    msg: "Le déploiement de Gitea a échoué. Veuillez vérifier les logs pour plus d'informations."
-  when: deployment_status is failed or deployment_status.resources | length == 0
+  tags: [gitea, deploy, validation]
 
-- name: Récupération des informations sur les pods
-  k8s_info:
-    api_version: v1
-    kind: Pod
-    namespace: "{{ app_namespace }}"
-    label_selectors:
-      - "app={{ app_name }}"
-  register: pods_info
+# =========================================================================
+# CONFIGURATION DE DÉPLOIEMENT
+# =========================================================================
+- name: "[GITEA-DEPLOY] Générer la configuration de déploiement"
+  block:
+    - name: "Définir les variables de déploiement"
+      set_fact:
+        gitea_deployment_config:
+          name: "{{ lions_gitea_service_name }}"
+          namespace: "{{ lions_gitea_namespace }}"
+          version: "{{ lions_gitea_version }}"
+          replicas: "{{ lions_gitea_replicas | default(1) }}"
+          domain: "{{ lions_gitea_service_name }}.{{ lions_dns_full_domain }}"
+          internal_url: "http://{{ lions_gitea_service_name }}.{{ lions_gitea_namespace }}.svc.cluster.local:{{ lions_gitea_port }}"
+          storage_size: "{{ lions_gitea_storage_size }}"
+          resources:
+            requests:
+              cpu: "{{ lions_resources_medium_cpu_request }}"
+              memory: "{{ lions_resources_medium_memory_request }}"
+            limits:
+              cpu: "{{ lions_resources_medium_cpu_limit }}"
+              memory: "{{ lions_resources_medium_memory_limit }}"
 
-- name: Affichage des informations sur les pods
-  debug:
-    msg: "Pod {{ item.metadata.name }} est dans l'état {{ item.status.phase }}"
-  loop: "{{ pods_info.resources }}"
-  loop_control:
-    label: "{{ item.metadata.name }}"
+    - name: "Générer l'horodatage de déploiement"
+      set_fact:
+        deployment_timestamp: "{{ ansible_date_time.epoch }}"
+        deployment_id: "{{ ansible_date_time.iso8601_basic_short }}-{{ ansible_hostname | hash('md5') | truncate(8, True, '') }}"
 
-- name: Attente de l'initialisation de Gitea
-  pause:
-    seconds: "{{ gitea_init_delay | default(45) }}"
-  when: deployment_status is succeeded
+  tags: [gitea, deploy, config]
 
-- name: Vérification de l'état des pods après initialisation
-  k8s_info:
-    api_version: v1
-    kind: Pod
-    namespace: "{{ app_namespace }}"
-    label_selectors:
-      - "app={{ app_name }}"
-  register: pods_info_after_init
+# =========================================================================
+# GESTION DES SECRETS
+# =========================================================================
+- name: "[GITEA-DEPLOY] Gérer les secrets et la configuration"
+  block:
+    - name: "Récupérer les identifiants de base de données depuis Vault"
+      lions_vault_secret:
+        vault_url: "{{ lions_vault_addr }}"
+        vault_token: "{{ vault_token | default(omit) }}"
+        path: "secret/gitea/database"
+        key: "credentials"
+      register: gitea_db_credentials
+      when: lions_vault_enabled | default(true) | bool
+      no_log: true
 
-- name: Affichage des informations sur les pods après initialisation
-  debug:
-    msg: "Pod {{ item.metadata.name }} est dans l'état {{ item.status.phase }} après initialisation"
-  loop: "{{ pods_info_after_init.resources }}"
-  loop_control:
-    label: "{{ item.metadata.name }}"
+    - name: "Générer un mot de passe administrateur aléatoire s'il n'existe pas"
+      set_fact:
+        gitea_admin_password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+      when: gitea_admin_password is not defined
+      no_log: true
 
-- name: Vérification des logs des pods pour détecter des erreurs
-  shell: "kubectl logs -n {{ app_namespace }} {{ item.metadata.name }} | grep -i error | tail -10"
-  loop: "{{ pods_info_after_init.resources }}"
-  register: pod_logs
-  ignore_errors: yes
-  changed_when: false
-  loop_control:
-    label: "{{ item.metadata.name }}"
+    - name: "Stocker les identifiants administrateur dans Vault"
+      lions_vault_secret:
+        vault_url: "{{ lions_vault_addr }}"
+        vault_token: "{{ vault_token | default(omit) }}"
+        path: "secret/gitea/admin"
+        data:
+          username: "{{ gitea_admin_username | default('admin') }}"
+          password: "{{ gitea_admin_password }}"
+          email: "{{ gitea_admin_email | default('admin@' + lions_dns_domain_base) }}"
+        state: present
+      when: lions_vault_enabled | default(true) | bool
+      no_log: true
 
-- name: Affichage des erreurs dans les logs (si présentes)
-  debug:
-    msg: "Erreurs détectées dans les logs de {{ item.item.metadata.name }}: {{ item.stdout }}"
-  loop: "{{ pod_logs.results }}"
-  when: item.stdout != ""
-  loop_control:
-    label: "{{ item.item.metadata.name }}"
+  rescue:
+    - name: "Gérer l'échec de gestion des secrets"
+      debug:
+        msg: "⚠️  Avertissement : La gestion des secrets a échoué. Utilisation de la configuration de secours."
+    - set_fact:
+        gitea_db_credentials:
+          username: "{{ gitea_db_username | default('gitea') }}"
+          password: "{{ gitea_db_password | default(lookup('password', '/dev/null length=16 chars=ascii_letters,digits')) }}"
+          database: "{{ gitea_db_name | default('gitea') }}"
 
-- name: Vérification de la disponibilité de l'API Gitea
-  uri:
-    url: "http://{{ app_name }}.{{ app_namespace }}.svc.cluster.local:{{ gitea_default_port }}{{ gitea_health_path }}"
-    method: GET
-    status_code: 200
-  register: api_check
-  ignore_errors: yes
-  retries: 5
-  delay: 10
-  until: api_check is succeeded
+  tags: [gitea, deploy, secrets]
 
-- name: Avertissement si l'API Gitea n'est pas disponible
-  debug:
-    msg: "AVERTISSEMENT: L'API de Gitea n'est pas disponible. Vérifiez les logs pour plus d'informations."
-  when: api_check is failed
+# =========================================================================
+# DÉPLOIEMENT DES RESSOURCES KUBERNETES
+# =========================================================================
+- name: "[GITEA-DEPLOY] Déployer les ressources Kubernetes"
+  block:
+    # ServiceAccount
+    - name: "Déployer le ServiceAccount"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: "{{ gitea_deployment_config.name }}"
+            namespace: "{{ gitea_deployment_config.namespace }}"
+            labels:
+              app.kubernetes.io/name: gitea
+              app.kubernetes.io/instance: "{{ gitea_deployment_config.name }}"
+              app.kubernetes.io/version: "{{ gitea_deployment_config.version }}"
+              app.kubernetes.io/component: vcs
+              app.kubernetes.io/part-of: lions-infrastructure
+              lions.dev/environment: "{{ lions_environment }}"
+              lions.dev/deployment-id: "{{ deployment_id }}"
+            annotations:
+              lions.dev/deployed-at: "{{ ansible_date_time.iso8601 }}"
+              lions.dev/deployed-by: "{{ ansible_user | default('ansible') }}"
+        wait: true
+        wait_condition:
+          type: Complete
+          status: "True"
+        wait_timeout: 60
+      register: serviceaccount_result
 
-- name: Vérification de la connexion à la base de données
-  uri:
-    url: "http://{{ app_name }}.{{ app_namespace }}.svc.cluster.local:{{ gitea_default_port }}/api/v1/version"
-    method: GET
-    status_code: 200
-  register: db_check
-  ignore_errors: yes
-  retries: 3
-  delay: 5
-  until: db_check is succeeded
+    # ConfigMap
+    - name: "Déployer la ConfigMap"
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('template', 'configmap.yml.j2') | from_yaml }}"
+        wait: true
+        wait_timeout: 60
+      register: configmap_result
 
-- name: Avertissement si la connexion à la base de données n'est pas fonctionnelle
-  debug:
-    msg: "AVERTISSEMENT: La connexion à la base de données n'est pas fonctionnelle. Vérifiez les logs et la configuration de la base de données."
-  when: db_check is failed
+    # PersistentVolumeClaim
+    - name: "Déployer le PersistentVolumeClaim"
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('template', 'persistentvolumeclaim.yml.j2') | from_yaml }}"
+        wait: true
+        wait_condition:
+          type: Bound
+          status: "True"
+        wait_timeout: 300
+      register: pvc_result
+
+    # Secret pour la base de données
+    - name: "Créer le secret de base de données"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: "{{ gitea_deployment_config.name }}-db-secret"
+            namespace: "{{ gitea_deployment_config.namespace }}"
+            labels:
+              app.kubernetes.io/name: gitea
+              app.kubernetes.io/instance: "{{ gitea_deployment_config.name }}"
+              lions.dev/environment: "{{ lions_environment }}"
+          type: Opaque
+          data:
+            username: "{{ gitea_db_credentials.username | b64encode }}"
+            password: "{{ gitea_db_credentials.password | b64encode }}"
+            database: "{{ gitea_db_credentials.database | default('gitea') | b64encode }}"
+            host: "{{ lions_postgres_service_name + '.' + lions_postgres_namespace + '.svc.cluster.local' | b64encode }}"
+            port: "{{ lions_postgres_port | string | b64encode }}"
+        wait: true
+        wait_timeout: 60
+      register: secret_result
+      no_log: true
+
+    # Service
+    - name: "Déployer le Service"
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('template', 'service.yml.j2') | from_yaml }}"
+        wait: true
+        wait_timeout: 60
+      register: service_result
+
+    # Deployment
+    - name: "Déployer l'application Gitea"
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('template', 'deployment.yml.j2') | from_yaml }}"
+        wait: true
+        wait_condition:
+          type: Available
+          status: "True"
+        wait_timeout: 600
+      register: deployment_result
+
+  rescue:
+    - name: "Journaliser l'échec de déploiement"
+      debug:
+        msg: "❌ Le déploiement des ressources Kubernetes Gitea a échoué à {{ ansible_date_time.iso8601 }}"
+    - name: "Collecter les logs de déploiement pour le dépannage"
+      include_tasks: "../utils/collect_logs.yml"
+      vars:
+        component_name: "gitea"
+        log_collection_reason: "deployment_failure"
+    - fail:
+        msg: "Le déploiement des ressources Kubernetes Gitea a échoué"
+
+  tags: [gitea, deploy, kubernetes]
+
+# =========================================================================
+# CONFIGURATION INGRESS
+# =========================================================================
+- name: "[GITEA-DEPLOY] Configurer l'ingress"
+  block:
+    - name: "Déployer la ressource Ingress"
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('template', 'ingress.yml.j2') | from_yaml }}"
+        wait: true
+        wait_timeout: 120
+      register: ingress_result
+      when:
+        - lions_environment != 'development' or (gitea_create_ingress | default(true) | bool)
+        - lions_security_tls_enabled | default(true) | bool
+
+    - name: "Attendre le provisionnement du certificat TLS"
+      kubernetes.core.k8s_info:
+        api_version: cert-manager.io/v1
+        kind: Certificate
+        namespace: "{{ gitea_deployment_config.namespace }}"
+        name: "{{ gitea_deployment_config.name }}-tls"
+      register: certificate_status
+      until:
+        - certificate_status.resources | length > 0
+        - certificate_status.resources[0].status.conditions | selectattr('type', 'equalto', 'Ready') | selectattr('status', 'equalto', 'True') | list | length > 0
+      retries: 30
+      delay: 10
+      when:
+        - ingress_result is not skipped
+        - lions_security_tls_enabled | default(true) | bool
+
+  rescue:
+    - name: "Gérer l'échec de configuration de l'ingress"
+      debug:
+        msg: "⚠️  Avertissement : La configuration de l'ingress a échoué. Le service ne sera accessible qu'en interne."
+
+  tags: [gitea, deploy, ingress]
+
+# =========================================================================
+# VÉRIFICATION POST-DÉPLOIEMENT
+# =========================================================================
+- name: "[GITEA-DEPLOY] Vérifier la santé du déploiement"
+  block:
+    - name: "Attendre la disponibilité du déploiement"
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        namespace: "{{ gitea_deployment_config.namespace }}"
+        name: "{{ gitea_deployment_config.name }}"
+      register: deployment_status
+      until:
+        - deployment_status.resources | length > 0
+        - deployment_status.resources[0].status.availableReplicas is defined
+        - deployment_status.resources[0].status.availableReplicas == deployment_status.resources[0].spec.replicas
+      retries: 30
+      delay: 10
+
+    - name: "Obtenir les informations des pods"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Pod
+        namespace: "{{ gitea_deployment_config.namespace }}"
+        label_selectors:
+          - "app.kubernetes.io/name=gitea"
+          - "app.kubernetes.io/instance={{ gitea_deployment_config.name }}"
+      register: pods_info
+
+    - name: "Vérifier la santé des pods"
+      assert:
+        that:
+          - pods_info.resources | length > 0
+          - pods_info.resources | selectattr('status.phase', 'equalto', 'Running') | list | length == pods_info.resources | length
+        fail_msg: "❌ Tous les pods Gitea ne fonctionnent pas correctement"
+        success_msg: "✅ Tous les pods Gitea sont en cours d'exécution et en bonne santé"
+
+    - name: "Vérifier la disponibilité de l'application"
+      uri:
+        url: "{{ gitea_deployment_config.internal_url }}/api/v1/version"
+        method: GET
+        status_code: 200
+        timeout: 30
+      register: health_check
+      retries: 10
+      delay: 15
+      until: health_check is succeeded
+
+    - name: "Vérifier la connectivité à la base de données"
+      uri:
+        url: "{{ gitea_deployment_config.internal_url }}/api/v1/settings/api"
+        method: GET
+        status_code: [200, 401]  # 401 est OK si l'authentification est requise
+        timeout: 30
+      register: db_connectivity_check
+      retries: 5
+      delay: 10
+      until: db_connectivity_check is succeeded
+
+  rescue:
+    - name: "Gérer l'échec de vérification post-déploiement"
+      debug:
+        msg: "❌ La vérification post-déploiement a échoué"
+
+    - name: "Collecter les logs des pods pour le dépannage"
+      kubernetes.core.k8s_log:
+        namespace: "{{ gitea_deployment_config.namespace }}"
+        name: "{{ item.metadata.name }}"
+        tail_lines: 50
+      register: pod_logs
+      loop: "{{ pods_info.resources | default([]) }}"
+      when: pods_info.resources is defined
+
+    - name: "Afficher les logs des pods"
+      debug:
+        msg: |
+          Logs du pod {{ item.item.metadata.name }} :
+          {{ item.log | default('Aucun log disponible') }}
+      loop: "{{ pod_logs.results | default([]) }}"
+      when: pod_logs.results is defined
+
+    - fail:
+        msg: "La vérification du déploiement Gitea a échoué"
+
+  tags: [gitea, deploy, verification]
+
+# =========================================================================
+# CONFIGURATION DU MONITORING
+# =========================================================================
+- name: "[GITEA-DEPLOY] Configurer le monitoring"
+  block:
+    - name: "Déployer le ServiceMonitor pour Prometheus"
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('template', 'servicemonitor.yml.j2') | from_yaml }}"
+        wait: true
+        wait_timeout: 60
+      register: servicemonitor_result
+      when: lions_monitoring_enabled | default(true) | bool
+
+    - name: "Créer la ConfigMap du tableau de bord Grafana"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: "{{ gitea_deployment_config.name }}-dashboard"
+            namespace: "{{ lions_monitoring_namespace }}"
+            labels:
+              grafana_dashboard: "1"
+              app.kubernetes.io/name: gitea
+              lions.dev/environment: "{{ lions_environment }}"
+          data:
+            gitea-dashboard.json: "{{ lookup('file', '../../../monitoring/dashboards/gitea/application-dashboard.json') }}"
+      when: lions_monitoring_enabled | default(true) | bool
+
+  rescue:
+    - name: "Gérer l'échec de configuration du monitoring"
+      debug:
+        msg: "⚠️  Avertissement : La configuration du monitoring a échoué. L'application est déployée mais le monitoring pourrait ne pas être disponible."
+
+  tags: [gitea, deploy, monitoring]
+
+# =========================================================================
+# FINALISATION DU DÉPLOIEMENT
+# =========================================================================
+- name: "[GITEA-DEPLOY] Finaliser le déploiement"
+  block:
+    - name: "Mettre à jour le statut de déploiement dans Vault"
+      lions_vault_secret:
+        vault_url: "{{ lions_vault_addr }}"
+        vault_token: "{{ vault_token | default(omit) }}"
+        path: "secret/gitea/deployment"
+        data:
+          status: "deployed"
+          version: "{{ gitea_deployment_config.version }}"
+          deployment_id: "{{ deployment_id }}"
+          deployed_at: "{{ ansible_date_time.iso8601 }}"
+          internal_url: "{{ gitea_deployment_config.internal_url }}"
+          external_url: "https://{{ gitea_deployment_config.domain }}"
+          namespace: "{{ gitea_deployment_config.namespace }}"
+        state: present
+      when: lions_vault_enabled | default(true) | bool
+
+    - name: "Journaliser le déploiement réussi"
+      debug:
+        msg: |
+          ✅ Déploiement Gitea terminé avec succès !
+          
+          📊 Résumé du déploiement :
+          - Nom : {{ gitea_deployment_config.name }}
+          - Namespace : {{ gitea_deployment_config.namespace }}
+          - Version : {{ gitea_deployment_config.version }}
+          - ID de déploiement : {{ deployment_id }}
+          - URL interne : {{ gitea_deployment_config.internal_url }}
+          - URL externe : https://{{ gitea_deployment_config.domain }}
+          - Déployé le : {{ ansible_date_time.iso8601 }}
+          
+          🔗 Informations d'accès :
+          - Interface Web : https://{{ gitea_deployment_config.domain }}
+          - Point d'accès API : https://{{ gitea_deployment_config.domain }}/api/v1
+          - Vérification de santé : {{ gitea_deployment_config.internal_url }}/api/v1/version
+          
+          📈 Monitoring :
+          - Métriques : Disponibles via ServiceMonitor
+          - Tableau de bord Grafana : Déployé dans le namespace monitoring
+          - Logs : kubectl logs -n {{ gitea_deployment_config.namespace }} -l app.kubernetes.io/name=gitea
+
+    - name: "Définir les variables de résultat de déploiement"
+      set_fact:
+        gitea_deployment_result:
+          status: "success"
+          deployment_id: "{{ deployment_id }}"
+          internal_url: "{{ gitea_deployment_config.internal_url }}"
+          external_url: "https://{{ gitea_deployment_config.domain }}"
+          namespace: "{{ gitea_deployment_config.namespace }}"
+          version: "{{ gitea_deployment_config.version }}"
+          deployed_at: "{{ ansible_date_time.iso8601 }}"
+
+  tags: [gitea, deploy, completion]
+
+# =========================================================================
+# GESTION D'ERREURS ET ROLLBACK
+# =========================================================================
+- name: "[GITEA-DEPLOY] Gérer l'échec de déploiement"
+  block:
+    - name: "Initier la procédure de rollback"
+      include_tasks: "rollback.yml"
+      vars:
+        rollback_reason: "deployment_failure"
+        deployment_id: "{{ deployment_id }}"
+      when: gitea_auto_rollback | default(true) | bool
+
+    - name: "Mettre à jour le statut de déploiement comme échoué"
+      lions_vault_secret:
+        vault_url: "{{ lions_vault_addr }}"
+        vault_token: "{{ vault_token | default(omit) }}"
+        path: "secret/gitea/deployment"
+        data:
+          status: "failed"
+          deployment_id: "{{ deployment_id }}"
+          failed_at: "{{ ansible_date_time.iso8601 }}"
+          error_message: "{{ ansible_failed_result.msg | default('Erreur inconnue') }}"
+        state: present
+      when: lions_vault_enabled | default(true) | bool
+
+    - name: "Définir les variables de résultat d'échec"
+      set_fact:
+        gitea_deployment_result:
+          status: "failed"
+          deployment_id: "{{ deployment_id }}"
+          failed_at: "{{ ansible_date_time.iso8601 }}"
+          error_message: "{{ ansible_failed_result.msg | default('Erreur inconnue') }}"
+
+  when: ansible_failed_task is defined
+  tags: [gitea, deploy, error-handling]

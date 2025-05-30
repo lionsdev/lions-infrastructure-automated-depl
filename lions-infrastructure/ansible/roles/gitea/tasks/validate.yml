@@ -1,155 +1,617 @@
 ---
-# Titre: Validation post-déploiement pour Gitea
-# Description: Valide le déploiement de Gitea
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - VALIDATION GITEA
+# =========================================================================
+# Description: Validation complète post-déploiement pour Gitea
+# Version: 5.0.0
+# Maintainer: DevOps Team LIONS
+# Date: 2025-05-28
+# Documentation: https://docs.lions.dev/infrastructure/gitea/validation
+# =========================================================================
 
-- name: Attente que Gitea soit prêt
-  uri:
-    url: "http://{{ app_name }}.{{ app_namespace }}.svc.cluster.local:{{ gitea_default_port }}{{ gitea_health_path }}"
-    method: GET
-    status_code: 200
-    validate_certs: no
-  register: health_check
-  until: health_check.status == 200
-  retries: 30
-  delay: 10
-  ignore_errors: yes
-
-- name: Vérification de l'état de santé de Gitea
+# =========================================================================
+# INITIALISATION ET PRÉPARATION
+# =========================================================================
+- name: "🔍 [{{ ansible_role_name }}] Initialisation de la validation"
   debug:
-    msg: "Gitea {{ app_name }} est en bonne santé et prêt à recevoir des requêtes."
-  when: health_check is succeeded
+    msg: |
+      🚀 Démarrage de la validation pour Gitea
+      📦 Application: {{ app_name }}
+      🏷️  Version: {{ app_version }}
+      🌍 Environnement: {{ app_environment }}
+      📁 Namespace: {{ app_namespace }}
+      🏗️  Mode déploiement: {{ lions_deployment_mode | default('single') }}
+  tags: [validation, init]
 
-- name: Avertissement si Gitea n'est pas en bonne santé
-  debug:
-    msg: "AVERTISSEMENT: Gitea {{ app_name }} n'est pas en bonne santé. Vérifiez les logs pour plus d'informations."
-  when: health_check is failed
-
-- name: Récupération de l'URL d'accès
+- name: "⏱️ [{{ ansible_role_name }}] Configuration des timeouts selon l'environnement"
   set_fact:
-    app_url: "https://{{ app_domain }}"
-  when: app_environment != 'development' or (extra_params.create_ingress | default(true) | bool)
+    validation_timeout: >-
+      {{
+        lookup('env', 'LIONS_TIMEOUT_DEFAULT') | default('300') | int
+        if app_environment == 'development'
+        else (lookup('env', 'LIONS_TIMEOUT_DEPLOYMENT') | default('1800') | int)
+      }}
+    health_check_retries: >-
+      {{
+        20 if app_environment == 'development'
+        else 60 if app_environment == 'production'
+        else 40
+      }}
+    health_check_delay: >-
+      {{
+        5 if app_environment == 'development'
+        else 15 if app_environment == 'production'
+        else 10
+      }}
+  tags: [validation, config]
 
-- name: Affichage de l'URL d'accès
+# =========================================================================
+# VALIDATION DES PRÉREQUIS
+# =========================================================================
+- name: "📋 [{{ ansible_role_name }}] Vérification des variables critiques"
+  assert:
+    that:
+      - app_name is defined and app_name | length > 0
+      - app_namespace is defined and app_namespace | length > 0
+      - app_version is defined and app_version | length > 0
+      - gitea_default_port is defined
+    fail_msg: "❌ Variables critiques manquantes pour la validation"
+    success_msg: "✅ Variables critiques validées"
+  tags: [validation, prerequisites]
+
+- name: "🎯 [{{ ansible_role_name }}] Définition des endpoints de validation"
+  set_fact:
+    internal_base_url: "http://{{ app_name }}.{{ app_namespace }}.svc.cluster.local:{{ gitea_default_port }}"
+    external_base_url: "https://{{ app_domain }}"
+    health_endpoint: "{{ gitea_health_path | default('/api/healthz') }}"
+    api_version_endpoint: "/api/v1/version"
+    metrics_endpoint: "{{ gitea_prometheus_path | default('/metrics') }}"
+    ssh_port: "{{ gitea_ssh_port | default('2222') }}"
+  tags: [validation, config]
+
+# =========================================================================
+# VALIDATION DE L'ÉTAT DU DÉPLOIEMENT KUBERNETES
+# =========================================================================
+- name: "🔍 [{{ ansible_role_name }}] Vérification de l'état des pods"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: "{{ app_namespace }}"
+    label_selectors:
+      - app={{ app_name }}
+    wait: true
+    wait_condition:
+      type: Ready
+      status: "True"
+    wait_timeout: "{{ validation_timeout }}"
+  register: pod_status
+  failed_when:
+    - pod_status.resources | length == 0
+    - not (pod_status.resources | selectattr('status.phase', 'equalto', 'Running') | list | length > 0)
+  tags: [validation, kubernetes, pods]
+
+- name: "📊 [{{ ansible_role_name }}] Analyse de l'état des pods"
   debug:
-    msg: "Gitea {{ app_name }} est accessible à l'adresse: {{ app_url }}"
-  when: app_url is defined
+    msg: |
+      📈 État des pods Gitea:
+      🟢 Pods actifs: {{ pod_status.resources | selectattr('status.phase', 'equalto', 'Running') | list | length }}
+      🔄 Pods en cours: {{ pod_status.resources | selectattr('status.phase', 'equalto', 'Pending') | list | length }}
+      ❌ Pods en erreur: {{ pod_status.resources | selectattr('status.phase', 'equalto', 'Failed') | list | length }}
+      📊 Total: {{ pod_status.resources | length }}
+  tags: [validation, kubernetes, analysis]
 
-- name: Vérification de l'accessibilité externe (si ingress est configuré)
+- name: "🔍 [{{ ansible_role_name }}] Vérification de l'état du service"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Service
+    namespace: "{{ app_namespace }}"
+    name: "{{ app_name }}"
+  register: service_status
+  failed_when: service_status.resources | length == 0
+  tags: [validation, kubernetes, service]
+
+- name: "🔍 [{{ ansible_role_name }}] Vérification de l'ingress (si configuré)"
+  kubernetes.core.k8s_info:
+    api_version: networking.k8s.io/v1
+    kind: Ingress
+    namespace: "{{ app_namespace }}"
+    name: "{{ app_name }}"
+  register: ingress_status
+  ignore_errors: true
+  when: extra_params.create_ingress | default(true) | bool
+  tags: [validation, kubernetes, ingress]
+
+# =========================================================================
+# VALIDATION DE LA SANTÉ DE L'APPLICATION
+# =========================================================================
+- name: "🏥 [{{ ansible_role_name }}] Test de santé interne (endpoint de santé)"
   uri:
-    url: "{{ app_url }}"
+    url: "{{ internal_base_url }}{{ health_endpoint }}"
     method: GET
-    status_code: 200, 301, 302, 307, 308
-    validate_certs: no
-    follow_redirects: no
-  register: external_check
-  ignore_errors: yes
-  when: app_url is defined
+    status_code: [200, 201]
+    validate_certs: false
+    timeout: 30
+    headers:
+      User-Agent: "LIONS-Infrastructure-Health-Check/5.0"
+  register: internal_health_check
+  until: internal_health_check.status in [200, 201]
+  retries: "{{ health_check_retries }}"
+  delay: "{{ health_check_delay }}"
+  failed_when: false
+  tags: [validation, health, internal]
 
-- name: Affichage du résultat de la vérification externe
+- name: "📊 [{{ ansible_role_name }}] Résultat du test de santé interne"
   debug:
-    msg: "Gitea {{ app_name }} est accessible depuis l'extérieur."
-  when: external_check is defined and external_check is succeeded
+    msg: |
+      🏥 État de santé interne:
+      {% if internal_health_check.status in [200, 201] %}
+      ✅ Statut: HEALTHY
+      🕐 Temps de réponse: {{ internal_health_check.elapsed }}s
+      📡 Code de réponse: {{ internal_health_check.status }}
+      {% else %}
+      ❌ Statut: UNHEALTHY
+      ⚠️  Code de réponse: {{ internal_health_check.status | default('N/A') }}
+      ❗ Erreur: {{ internal_health_check.msg | default('Timeout ou erreur de connexion') }}
+      {% endif %}
+  tags: [validation, health, analysis]
 
-- name: Avertissement si Gitea n'est pas accessible depuis l'extérieur
-  debug:
-    msg: "AVERTISSEMENT: Gitea {{ app_name }} n'est pas accessible depuis l'extérieur. Vérifiez la configuration de l'ingress."
-  when: external_check is defined and external_check is failed
-
-- name: Vérification de l'API Gitea
+# =========================================================================
+# VALIDATION DE L'API GITEA
+# =========================================================================
+- name: "🔌 [{{ ansible_role_name }}] Test de l'API Gitea (version)"
   uri:
-    url: "http://{{ app_name }}.{{ app_namespace }}.svc.cluster.local:{{ gitea_default_port }}/api/v1/version"
+    url: "{{ internal_base_url }}{{ api_version_endpoint }}"
     method: GET
-    status_code: 200
-    validate_certs: no
-  register: api_check
-  ignore_errors: yes
+    status_code: [200, 201]
+    validate_certs: false
+    timeout: 30
+    headers:
+      User-Agent: "LIONS-Infrastructure-API-Check/5.0"
+      Accept: "application/json"
+  register: api_version_check
+  failed_when: false
+  tags: [validation, api, version]
 
-- name: Affichage du résultat de la vérification de l'API
+- name: "📋 [{{ ansible_role_name }}] Analyse de la réponse API"
   debug:
-    msg: "L'API de Gitea est accessible."
-  when: api_check is succeeded
+    msg: |
+      🔌 État de l'API Gitea:
+      {% if api_version_check.status in [200, 201] %}
+      ✅ API: FONCTIONNELLE
+      📦 Version Gitea: {{ api_version_check.json.version | default('N/A') }}
+      🏗️  Commit: {{ api_version_check.json.sha | default('N/A') }}
+      {% else %}
+      ❌ API: NON FONCTIONNELLE
+      ⚠️  Code: {{ api_version_check.status | default('N/A') }}
+      {% endif %}
+  tags: [validation, api, analysis]
 
-- name: Avertissement si l'API n'est pas accessible
-  debug:
-    msg: "AVERTISSEMENT: L'API de Gitea n'est pas accessible. Vérifiez la configuration."
-  when: api_check is failed
-
-- name: Vérification des métriques Prometheus
+# =========================================================================
+# VALIDATION DE L'ACCÈS EXTERNE
+# =========================================================================
+- name: "🌐 [{{ ansible_role_name }}] Test d'accessibilité externe"
   uri:
-    url: "http://{{ app_name }}.{{ app_namespace }}.svc.cluster.local:{{ gitea_prometheus_port }}{{ gitea_prometheus_path }}"
-    status_code: 200
-    validate_certs: no
+    url: "{{ external_base_url }}"
+    method: GET
+    status_code: [200, 201, 301, 302, 307, 308]
+    validate_certs: "{{ not (lookup('env', 'LIONS_SECURITY_TLS_STAGING') | default('true') | bool) }}"
+    timeout: 45
+    follow_redirects: false
+    headers:
+      User-Agent: "LIONS-Infrastructure-External-Check/5.0"
+  register: external_access_check
+  failed_when: false
+  when:
+    - ingress_status is not failed
+    - extra_params.create_ingress | default(true) | bool
+  tags: [validation, external, access]
+
+- name: "🌍 [{{ ansible_role_name }}] Résultat de l'accès externe"
+  debug:
+    msg: |
+      🌐 Accès externe:
+      {% if external_access_check.skipped is defined %}
+      ⏭️  Test ignoré (pas d'ingress configuré)
+      {% elif external_access_check.status in [200, 201, 301, 302, 307, 308] %}
+      ✅ Statut: ACCESSIBLE
+      🔗 URL: {{ external_base_url }}
+      📡 Code: {{ external_access_check.status }}
+      🛡️  TLS: {{ 'Validé' if not (lookup('env', 'LIONS_SECURITY_TLS_STAGING') | default('true') | bool) else 'Staging/Dev' }}
+      {% else %}
+      ❌ Statut: INACCESSIBLE
+      ⚠️  Erreur: {{ external_access_check.msg | default('Erreur de connexion') }}
+      {% endif %}
+  tags: [validation, external, analysis]
+
+# =========================================================================
+# VALIDATION DU MONITORING
+# =========================================================================
+- name: "📊 [{{ ansible_role_name }}] Test des métriques Prometheus"
+  uri:
+    url: "{{ internal_base_url }}:{{ gitea_prometheus_port | default(gitea_default_port) }}{{ metrics_endpoint }}"
+    method: GET
+    status_code: [200, 201]
+    validate_certs: false
+    timeout: 30
+    headers:
+      User-Agent: "LIONS-Infrastructure-Metrics-Check/5.0"
   register: metrics_check
-  ignore_errors: yes
-  when: gitea_prometheus_scrape | bool
+  failed_when: false
+  when:
+    - gitea_prometheus_scrape | default(false) | bool
+    - lookup('env', 'LIONS_MONITORING_ENABLED') | default('true') | bool
+  tags: [validation, monitoring, metrics]
 
-- name: Affichage du résultat de la vérification des métriques
+- name: "📈 [{{ ansible_role_name }}] Validation des métriques"
   debug:
-    msg: "Les métriques Prometheus sont disponibles pour Gitea {{ app_name }}."
-  when: metrics_check is defined and metrics_check is succeeded
+    msg: |
+      📊 Métriques Prometheus:
+      {% if metrics_check.skipped is defined %}
+      ⏭️  Monitoring désactivé
+      {% elif metrics_check.status in [200, 201] %}
+      ✅ Statut: DISPONIBLE
+      📏 Taille: {{ metrics_check.content | length }} bytes
+      🔗 Endpoint: {{ metrics_endpoint }}
+      {% else %}
+      ❌ Statut: INDISPONIBLE
+      ⚠️  Erreur: {{ metrics_check.msg | default('Endpoint inaccessible') }}
+      {% endif %}
+  tags: [validation, monitoring, analysis]
 
-- name: Avertissement si les métriques ne sont pas disponibles
-  debug:
-    msg: "AVERTISSEMENT: Les métriques Prometheus ne sont pas disponibles pour Gitea {{ app_name }}."
-  when: metrics_check is defined and metrics_check is failed
+- name: "🔍 [{{ ansible_role_name }}] Vérification du ServiceMonitor"
+  kubernetes.core.k8s_info:
+    api_version: monitoring.coreos.com/v1
+    kind: ServiceMonitor
+    namespace: "{{ app_namespace }}"
+    name: "{{ app_name }}"
+  register: servicemonitor_check
+  failed_when: false
+  when:
+    - gitea_prometheus_scrape | default(false) | bool
+    - lookup('env', 'LIONS_MONITORING_ENABLED') | default('true') | bool
+  tags: [validation, monitoring, servicemonitor]
 
-- name: Vérification de la connexion SSH
-  shell: "kubectl exec -n {{ app_namespace }} {{ pods_info_after_init.resources[0].metadata.name }} -- netstat -tulpn | grep {{ gitea_ssh_port }}"
-  register: ssh_check
-  ignore_errors: yes
+# =========================================================================
+# VALIDATION DES SERVICES RÉSEAU
+# =========================================================================
+- name: "🔐 [{{ ansible_role_name }}] Test de connectivité SSH"
+  command: >
+    kubectl exec -n {{ app_namespace }}
+    {{ pod_status.resources[0].metadata.name }}
+    -- netstat -tulpn | grep {{ ssh_port }}
+  register: ssh_connectivity_check
+  failed_when: false
   changed_when: false
+  when: pod_status.resources | length > 0
+  tags: [validation, ssh, connectivity]
 
-- name: Affichage du résultat de la vérification SSH
+- name: "🔑 [{{ ansible_role_name }}] Résultat du test SSH"
   debug:
-    msg: "Le service SSH de Gitea est actif sur le port {{ gitea_ssh_port }}."
-  when: ssh_check is succeeded
+    msg: |
+      🔐 Service SSH:
+      {% if ssh_connectivity_check.rc == 0 %}
+      ✅ Statut: ACTIF
+      🔌 Port: {{ ssh_port }}
+      📡 Écoute: {{ ssh_connectivity_check.stdout | regex_replace('\n', ' ') }}
+      {% else %}
+      ❌ Statut: INACTIF
+      ⚠️  Le port {{ ssh_port }} n'est pas en écoute
+      {% endif %}
+  tags: [validation, ssh, analysis]
 
-- name: Avertissement si le service SSH n'est pas actif
+# =========================================================================
+# VALIDATION DE LA PERSISTANCE
+# =========================================================================
+- name: "💾 [{{ ansible_role_name }}] Vérification des volumes persistants"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: PersistentVolumeClaim
+    namespace: "{{ app_namespace }}"
+    label_selectors:
+      - app={{ app_name }}
+  register: pvc_status
+  tags: [validation, storage, pvc]
+
+- name: "📀 [{{ ansible_role_name }}] Analyse du stockage"
   debug:
-    msg: "AVERTISSEMENT: Le service SSH de Gitea n'est pas actif. Vérifiez la configuration."
-  when: ssh_check is failed
+    msg: |
+      💾 État du stockage:
+      {% if pvc_status.resources | length > 0 %}
+      ✅ PVC trouvés: {{ pvc_status.resources | length }}
+      {% for pvc in pvc_status.resources %}
+      📀 {{ pvc.metadata.name }}: {{ pvc.status.phase }} ({{ pvc.spec.resources.requests.storage }})
+      {% endfor %}
+      {% else %}
+      ⚠️  Aucun PVC configuré (mode ephémère)
+      {% endif %}
+  tags: [validation, storage, analysis]
 
-- name: Enregistrement des informations de déploiement
+# =========================================================================
+# TESTS DE PERFORMANCE DE BASE
+# =========================================================================
+- name: "⚡ [{{ ansible_role_name }}] Test de performance de base"
+  uri:
+    url: "{{ internal_base_url }}{{ health_endpoint }}"
+    method: GET
+    status_code: [200, 201]
+    validate_certs: false
+    timeout: 5
+  register: performance_test
+  failed_when: false
+  loop: "{{ range(5) | list }}"
+  tags: [validation, performance]
+
+- name: "📊 [{{ ansible_role_name }}] Analyse des performances"
+  debug:
+    msg: |
+      ⚡ Performance de base:
+      🕐 Temps de réponse moyen: {{ (performance_test.results | selectattr('elapsed', 'defined') | map(attribute='elapsed') | list | sum / performance_test.results | length) | round(3) }}s
+      ⚡ Temps minimum: {{ performance_test.results | selectattr('elapsed', 'defined') | map(attribute='elapsed') | min | round(3) }}s
+      🐌 Temps maximum: {{ performance_test.results | selectattr('elapsed', 'defined') | map(attribute='elapsed') | max | round(3) }}s
+      ✅ Tests réussis: {{ performance_test.results | selectattr('status', 'defined') | selectattr('status', 'equalto', 200) | list | length }}/5
+  when: performance_test.results | selectattr('elapsed', 'defined') | list | length > 0
+  tags: [validation, performance, analysis]
+
+# =========================================================================
+# VALIDATION DE LA SÉCURITÉ
+# =========================================================================
+- name: "🛡️ [{{ ansible_role_name }}] Vérification des politiques de sécurité"
+  kubernetes.core.k8s_info:
+    api_version: networking.k8s.io/v1
+    kind: NetworkPolicy
+    namespace: "{{ app_namespace }}"
+    label_selectors:
+      - app={{ app_name }}
+  register: network_policy_check
+  when: lookup('env', 'LIONS_SECURITY_NETWORK_POLICIES') | default('true') | bool
+  tags: [validation, security, network]
+
+- name: "🔒 [{{ ansible_role_name }}] Analyse de la sécurité réseau"
+  debug:
+    msg: |
+      🛡️ Sécurité réseau:
+      {% if network_policy_check.skipped is defined %}
+      ⏭️  Politiques réseau désactivées
+      {% elif network_policy_check.resources | length > 0 %}
+      ✅ Politiques actives: {{ network_policy_check.resources | length }}
+      {% for policy in network_policy_check.resources %}
+      🔐 {{ policy.metadata.name }}
+      {% endfor %}
+      {% else %}
+      ⚠️  Aucune politique réseau configurée
+      {% endif %}
+  tags: [validation, security, analysis]
+
+# =========================================================================
+# GÉNÉRATION DU RAPPORT DE VALIDATION
+# =========================================================================
+- name: "📄 [{{ ansible_role_name }}] Génération du rapport de validation"
+  set_fact:
+    validation_report:
+      metadata:
+        application: "{{ app_name }}"
+        version: "{{ app_version }}"
+        environment: "{{ app_environment }}"
+        namespace: "{{ app_namespace }}"
+        deployment_mode: "{{ lions_deployment_mode | default('single') }}"
+        validation_date: "{{ ansible_date_time.iso8601 }}"
+        validator_version: "5.0.0"
+
+      infrastructure:
+        pods:
+          total: "{{ pod_status.resources | length }}"
+          running: "{{ pod_status.resources | selectattr('status.phase', 'equalto', 'Running') | list | length }}"
+          ready: "{{ pod_status.resources | selectattr('status.conditions', 'defined') | selectattr('status.conditions', 'selectattr', 'type', 'equalto', 'Ready') | selectattr('status.conditions', 'selectattr', 'status', 'equalto', 'True') | list | length }}"
+
+        services:
+          configured: "{{ service_status.resources | length > 0 }}"
+          type: "{{ service_status.resources[0].spec.type if service_status.resources | length > 0 else 'N/A' }}"
+
+        ingress:
+          configured: "{{ ingress_status.resources | length > 0 if ingress_status.resources is defined else false }}"
+          hosts: "{{ ingress_status.resources[0].spec.rules | map(attribute='host') | list if (ingress_status.resources is defined and ingress_status.resources | length > 0) else [] }}"
+
+        storage:
+          pvc_count: "{{ pvc_status.resources | length }}"
+          total_size: "{{ pvc_status.resources | map(attribute='spec.resources.requests.storage') | list | join(', ') }}"
+
+      health_checks:
+        internal_health:
+          status: "{{ 'HEALTHY' if internal_health_check.status in [200, 201] else 'UNHEALTHY' }}"
+          response_time: "{{ internal_health_check.elapsed | default('N/A') }}"
+          http_code: "{{ internal_health_check.status | default('N/A') }}"
+
+        external_access:
+          status: "{{ 'ACCESSIBLE' if (external_access_check.status is defined and external_access_check.status in [200, 201, 301, 302, 307, 308]) else 'INACCESSIBLE' }}"
+          url: "{{ external_base_url if (external_access_check is not skipped) else 'N/A' }}"
+          tls_verified: "{{ not (lookup('env', 'LIONS_SECURITY_TLS_STAGING') | default('true') | bool) }}"
+
+        api:
+          status: "{{ 'FUNCTIONAL' if api_version_check.status in [200, 201] else 'NON_FUNCTIONAL' }}"
+          version: "{{ api_version_check.json.version if (api_version_check.json is defined and api_version_check.json.version is defined) else 'N/A' }}"
+
+        ssh:
+          status: "{{ 'ACTIVE' if ssh_connectivity_check.rc == 0 else 'INACTIVE' }}"
+          port: "{{ ssh_port }}"
+
+      monitoring:
+        enabled: "{{ lookup('env', 'LIONS_MONITORING_ENABLED') | default('true') | bool }}"
+        metrics:
+          status: "{{ 'AVAILABLE' if (metrics_check.status is defined and metrics_check.status in [200, 201]) else 'UNAVAILABLE' }}"
+          endpoint: "{{ metrics_endpoint }}"
+
+        service_monitor:
+          configured: "{{ servicemonitor_check.resources | length > 0 if servicemonitor_check.resources is defined else false }}"
+
+      security:
+        network_policies:
+          enabled: "{{ lookup('env', 'LIONS_SECURITY_NETWORK_POLICIES') | default('true') | bool }}"
+          count: "{{ network_policy_check.resources | length if network_policy_check.resources is defined else 0 }}"
+
+        tls:
+          enabled: "{{ lookup('env', 'LIONS_SECURITY_TLS_ENABLED') | default('true') | bool }}"
+          staging: "{{ lookup('env', 'LIONS_SECURITY_TLS_STAGING') | default('true') | bool }}"
+
+      performance:
+        average_response_time: "{{ (performance_test.results | selectattr('elapsed', 'defined') | map(attribute='elapsed') | list | sum / performance_test.results | length) | round(3) if performance_test.results | selectattr('elapsed', 'defined') | list | length > 0 else 'N/A' }}"
+        success_rate: "{{ ((performance_test.results | selectattr('status', 'defined') | selectattr('status', 'equalto', 200) | list | length) / 5 * 100) | round(1) if performance_test.results | selectattr('status', 'defined') | list | length > 0 else 'N/A' }}"
+
+      overall_status: >-
+        {{
+          'HEALTHY' if (
+            internal_health_check.status in [200, 201] and
+            api_version_check.status in [200, 201] and
+            pod_status.resources | selectattr('status.phase', 'equalto', 'Running') | list | length > 0
+          ) else 'UNHEALTHY'
+        }}
+  tags: [validation, report]
+
+# =========================================================================
+# SAUVEGARDE DU RAPPORT
+# =========================================================================
+- name: "📁 [{{ ansible_role_name }}] Création du répertoire de logs"
+  file:
+    path: "/var/log/lions/deployments/{{ app_environment }}"
+    state: directory
+    mode: '0755'
+  delegate_to: localhost
+  run_once: true
+  tags: [validation, logging]
+
+- name: "💾 [{{ ansible_role_name }}] Sauvegarde du rapport de validation"
   copy:
     content: |
-      Application: {{ app_name }}
-      Version: {{ app_version }}
-      Environnement: {{ app_environment }}
-      Namespace: {{ app_namespace }}
-      URL: {{ app_url | default('Non disponible') }}
-      Date de déploiement: {{ ansible_date_time.iso8601 }}
-      Statut: {{ 'Succès' if health_check is succeeded else 'Avertissement' }}
+      # LIONS Infrastructure 5.0 - Rapport de Validation Gitea
       
-      Ressources:
-        Replicas: {{ app_replicas }}
-        CPU Requests: {{ app_resources.requests.cpu }}
-        Memory Requests: {{ app_resources.requests.memory }}
-        CPU Limits: {{ app_resources.limits.cpu }}
-        Memory Limits: {{ app_resources.limits.memory }}
+      ## Métadonnées
+      - **Application**: {{ validation_report.metadata.application }}
+      - **Version**: {{ validation_report.metadata.version }}
+      - **Environnement**: {{ validation_report.metadata.environment }}
+      - **Namespace**: {{ validation_report.metadata.namespace }}
+      - **Mode de déploiement**: {{ validation_report.metadata.deployment_mode }}
+      - **Date de validation**: {{ validation_report.metadata.validation_date }}
+      - **Version du validateur**: {{ validation_report.metadata.validator_version }}
       
-      Monitoring:
-        Prometheus: {{ 'Activé' if gitea_prometheus_scrape | bool else 'Désactivé' }}
-        Métriques: {{ 'Disponibles' if metrics_check is defined and metrics_check is succeeded else 'Non disponibles' }}
+      ## État Global
+      **{{ '🟢 HEALTHY' if validation_report.overall_status == 'HEALTHY' else '🔴 UNHEALTHY' }}**
       
-      API:
-        Accès: {{ 'Fonctionnel' if api_check is succeeded else 'Non fonctionnel' }}
+      ## Infrastructure
+      ### Pods
+      - Total: {{ validation_report.infrastructure.pods.total }}
+      - En cours d'exécution: {{ validation_report.infrastructure.pods.running }}
+      - Prêts: {{ validation_report.infrastructure.pods.ready }}
       
-      SSH:
-        Accès: {{ 'Fonctionnel' if ssh_check is succeeded else 'Non fonctionnel' }}
+      ### Services
+      - Configuré: {{ validation_report.infrastructure.services.configured }}
+      - Type: {{ validation_report.infrastructure.services.type }}
       
-      Notes:
-      - Vérifiez les logs de Gitea pour plus d'informations.
-      - Pour les problèmes, contactez l'équipe d'infrastructure.
-    dest: "/var/log/lions/deployments/{{ app_name }}-{{ app_environment }}-{{ ansible_date_time.date }}.log"
+      ### Ingress
+      - Configuré: {{ validation_report.infrastructure.ingress.configured }}
+      - Hôtes: {{ validation_report.infrastructure.ingress.hosts | join(', ') if validation_report.infrastructure.ingress.hosts | length > 0 else 'N/A' }}
+      
+      ### Stockage
+      - Nombre de PVC: {{ validation_report.infrastructure.storage.pvc_count }}
+      - Taille totale: {{ validation_report.infrastructure.storage.total_size if validation_report.infrastructure.storage.total_size else 'N/A' }}
+      
+      ## Tests de Santé
+      ### Santé Interne
+      - **Statut**: {{ validation_report.health_checks.internal_health.status }}
+      - **Temps de réponse**: {{ validation_report.health_checks.internal_health.response_time }}s
+      - **Code HTTP**: {{ validation_report.health_checks.internal_health.http_code }}
+      
+      ### Accès Externe
+      - **Statut**: {{ validation_report.health_checks.external_access.status }}
+      - **URL**: {{ validation_report.health_checks.external_access.url }}
+      - **TLS Vérifié**: {{ validation_report.health_checks.external_access.tls_verified }}
+      
+      ### API
+      - **Statut**: {{ validation_report.health_checks.api.status }}
+      - **Version Gitea**: {{ validation_report.health_checks.api.version }}
+      
+      ### SSH
+      - **Statut**: {{ validation_report.health_checks.ssh.status }}
+      - **Port**: {{ validation_report.health_checks.ssh.port }}
+      
+      ## Monitoring
+      - **Activé**: {{ validation_report.monitoring.enabled }}
+      - **Métriques**: {{ validation_report.monitoring.metrics.status }}
+      - **ServiceMonitor**: {{ validation_report.monitoring.service_monitor.configured }}
+      
+      ## Sécurité
+      ### Politiques Réseau
+      - **Activées**: {{ validation_report.security.network_policies.enabled }}
+      - **Nombre**: {{ validation_report.security.network_policies.count }}
+      
+      ### TLS
+      - **Activé**: {{ validation_report.security.tls.enabled }}
+      - **Mode Staging**: {{ validation_report.security.tls.staging }}
+      
+      ## Performance
+      - **Temps de réponse moyen**: {{ validation_report.performance.average_response_time }}s
+      - **Taux de succès**: {{ validation_report.performance.success_rate }}%
+      
+      ---
+      Généré automatiquement par LIONS Infrastructure 5.0
+      Pour plus d'informations: https://docs.lions.dev
+    dest: "/var/log/lions/deployments/{{ app_environment }}/{{ app_name }}-validation-{{ ansible_date_time.date }}.md"
     mode: '0644'
-  ignore_errors: yes
+  delegate_to: localhost
+  tags: [validation, logging]
 
-- name: Nettoyage des fichiers temporaires
+# =========================================================================
+# AFFICHAGE DU RÉSUMÉ FINAL
+# =========================================================================
+- name: "📋 [{{ ansible_role_name }}] Résumé final de la validation"
+  debug:
+    msg: |
+      
+      ╔══════════════════════════════════════════════════════════════════════════════╗
+      ║                        🦁 LIONS Infrastructure 5.0                          ║
+      ║                           Rapport de Validation Gitea                       ║
+      ╠══════════════════════════════════════════════════════════════════════════════╣
+      ║ 📦 Application: {{ (app_name + ' v' + app_version) | center(60) }} ║
+      ║ 🌍 Environnement: {{ app_environment | upper | center(58) }} ║
+      ║ 📁 Namespace: {{ app_namespace | center(62) }} ║
+      ║ 🏗️  Mode: {{ (lions_deployment_mode | default('single')) | center(67) }} ║
+      ╠══════════════════════════════════════════════════════════════════════════════╣
+      ║ 🎯 ÉTAT GLOBAL: {{ ('🟢 HEALTHY' if validation_report.overall_status == 'HEALTHY' else '🔴 UNHEALTHY') | center(59) }} ║
+      ╠══════════════════════════════════════════════════════════════════════════════╣
+      ║ 🏥 Santé Interne: {{ ('✅ ' + validation_report.health_checks.internal_health.status) | center(57) }} ║
+      ║ 🌐 Accès Externe: {{ ('✅ ' + validation_report.health_checks.external_access.status) | center(57) }} ║
+      ║ 🔌 API Gitea: {{ ('✅ ' + validation_report.health_checks.api.status) | center(61) }} ║
+      ║ 🔐 Service SSH: {{ ('✅ ' + validation_report.health_checks.ssh.status) | center(59) }} ║
+      ║ 📊 Monitoring: {{ ('✅ Activé' if validation_report.monitoring.enabled else '❌ Désactivé') | center(59) }} ║
+      ║ 🛡️  Sécurité: {{ ('✅ Configurée' if validation_report.security.network_policies.enabled else '❌ Basique') | center(59) }} ║
+      ╠══════════════════════════════════════════════════════════════════════════════╣
+      ║ ⚡ Performance moyenne: {{ (validation_report.performance.average_response_time + 's') | center(47) }} ║
+      ║ 📈 Taux de succès: {{ (validation_report.performance.success_rate | string + '%') | center(52) }} ║
+      ╠══════════════════════════════════════════════════════════════════════════════╣
+      ║ 🔗 URL d'accès: {{ external_base_url if (external_access_check is not skipped) else 'Configuration interne uniquement' | center(54) }} ║
+      ╚══════════════════════════════════════════════════════════════════════════════╝
+      
+      📄 Rapport détaillé sauvegardé: /var/log/lions/deployments/{{ app_environment }}/{{ app_name }}-validation-{{ ansible_date_time.date }}.md
+      📚 Documentation: https://docs.lions.dev/infrastructure/gitea
+      🎯 Prochaines étapes: {{ 'Déploiement prêt pour la production' if validation_report.overall_status == 'HEALTHY' else 'Vérification des logs requise' }}
+
+  tags: [validation, summary]
+
+# =========================================================================
+# NETTOYAGE ET FINALISATION
+# =========================================================================
+- name: "🧹 [{{ ansible_role_name }}] Nettoyage des ressources temporaires"
   file:
     path: "{{ temp_dir.path }}"
     state: absent
+  when: temp_dir is defined
   changed_when: false
-  ignore_errors: yes
+  ignore_errors: true
+  tags: [validation, cleanup]
+
+- name: "🎉 [{{ ansible_role_name }}] Validation terminée avec succès"
+  debug:
+    msg: |
+      🎉 Validation de Gitea {{ app_name }} terminée!
+      ⏱️  Durée totale: {{ (ansible_date_time.epoch | int) - (hostvars[inventory_hostname]['ansible_date_time']['epoch'] | int) }}s
+      📊 État final: {{ validation_report.overall_status }}
+      🔄 Prêt pour les déploiements suivants: {{ validation_report.overall_status == 'HEALTHY' }}
+  tags: [validation, completion]

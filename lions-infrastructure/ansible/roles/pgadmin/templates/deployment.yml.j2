@@ -1,28 +1,42 @@
 ---
-# Titre: Template de déploiement Kubernetes pour pgAdmin
-# Description: Définit le déploiement Kubernetes pour pgAdmin
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-10
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - TEMPLATE DE DÉPLOIEMENT PGADMIN
+# =========================================================================
+# Description: Template Kubernetes pour le déploiement de pgAdmin
+# Version: 5.0.0
+# Maintainer: DevOps Team LIONS
+# Documentation: https://docs.lions.dev/infrastructure/services/pgadmin
+# =========================================================================
 
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: "{{ app_name }}"
-  namespace: "{{ app_namespace }}"
+  name: "{{ lions_pgadmin_service_name }}"
+  namespace: "{{ lions_pgadmin_namespace }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "pgadmin"
+    app.kubernetes.io/name: "{{ lions_pgladmin_service_name }}"
+    app.kubernetes.io/instance: "{{ lions_pgadmin_service_name }}-{{ lions_environment }}"
+    app.kubernetes.io/version: "{{ lions_pgadmin_version }}"
+    app.kubernetes.io/component: "database-admin"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/tier: "management"
+    lions.dev/technology: "pgadmin"
   annotations:
-    description: "Déploiement de pgAdmin {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    deployment.kubernetes.io/revision: "1"
+    description: "pgAdmin {{ lions_pgadmin_version }} pour environnement {{ lions_environment }}"
+    lions.dev/maintainer: "{{ lions_config_maintainer }}"
+    lions.dev/last-updated: "{{ ansible_date_time.iso8601 }}"
+    prometheus.io/scrape: "{{ lions_pgadmin_prometheus_scrape | default(lions_monitoring_enabled) | string | lower }}"
+    prometheus.io/path: "{{ lions_pgadmin_prometheus_path | default('/metrics') }}"
+    prometheus.io/port: "{{ lions_pgadmin_prometheus_port | default(lions_pgadmin_port) | string }}"
 spec:
-  replicas: {{ pgadmin_replicas[app_environment] | default(1) }}
+  replicas: {{ lions_pgadmin_replicas | default(lions_pgadmin_replicas_config[lions_environment]) | default(1) }}
   selector:
     matchLabels:
-      app: "{{ app_name }}"
-      technology: "pgadmin"
+      app.kubernetes.io/name: "{{ lions_pgadmin_service_name }}"
+      app.kubernetes.io/instance: "{{ lions_pgadmin_service_name }}-{{ lions_environment }}"
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -31,91 +45,280 @@ spec:
   template:
     metadata:
       labels:
-        app: "{{ app_name }}"
-        version: "{{ app_version }}"
-        environment: "{{ app_environment }}"
-        technology: "pgadmin"
+        app.kubernetes.io/name: "{{ lions_pgadmin_service_name }}"
+        app.kubernetes.io/instance: "{{ lions_pgadmin_service_name }}-{{ lions_environment }}"
+        app.kubernetes.io/version: "{{ lions_pgadmin_version }}"
+        app.kubernetes.io/component: "database-admin"
+        app.kubernetes.io/part-of: "lions-infrastructure"
+        app.kubernetes.io/managed-by: "ansible"
+        lions.dev/environment: "{{ lions_environment }}"
+        lions.dev/tier: "management"
+        lions.dev/technology: "pgladmin"
+        lions.dev/backup-enabled: "{{ lions_pgadmin_backup_enabled | default(false) | string | lower }}"
       annotations:
-        prometheus.io/scrape: "{{ pgadmin_prometheus_scrape | default(true) | string | lower }}"
-        prometheus.io/path: "{{ pgadmin_prometheus_path | default('/metrics') }}"
-        prometheus.io/port: "{{ pgadmin_prometheus_port | default(80) | string }}"
+        prometheus.io/scrape: "{{ lions_pgadmin_prometheus_scrape | default(lions_monitoring_enabled) | string | lower }}"
+        prometheus.io/path: "{{ lions_pgadmin_prometheus_path | default('/metrics') }}"
+        prometheus.io/port: "{{ lions_pgadmin_prometheus_port | default(lions_pgadmin_port) | string }}"
+        checksum/config: "{{ lions_pgadmin_config_checksum | default('') }}"
+{% if lions_security_pod_security_standards == 'restricted' %}
+        seccomp.security.alpha.kubernetes.io/pod: "runtime/default"
+        apparmor.security.beta.kubernetes.io/pgadmin: "runtime/default"
+{% endif %}
     spec:
-      serviceAccountName: "{{ app_name }}"
+      serviceAccountName: "{{ lions_pgadmin_service_name }}"
+{% if lions_security_pod_security_standards == 'restricted' %}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 5050
+        runAsGroup: 5050
+        fsGroup: 5050
+        fsGroupChangePolicy: "OnRootMismatch"
+        seccompProfile:
+          type: RuntimeDefault
+{% endif %}
       containers:
-      - name: "{{ app_name }}"
-        image: "dpage/pgadmin4:{{ app_version }}"
-        imagePullPolicy: IfNotPresent
-        ports:
-        - name: http
-          containerPort: {{ pgadmin_default_port | default(80) }}
-          protocol: TCP
-        env:
-        - name: PGADMIN_DEFAULT_EMAIL
-          valueFrom:
-            secretKeyRef:
-              name: "{{ pgadmin_admin_password_secret }}"
-              key: PGADMIN_DEFAULT_EMAIL
-        - name: PGADMIN_DEFAULT_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: "{{ pgadmin_admin_password_secret }}"
-              key: PGADMIN_DEFAULT_PASSWORD
-        - name: PGADMIN_CONFIG_SERVER_MODE
-          value: "True"
-        - name: PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED
-          value: "False"
-        - name: PGADMIN_CONFIG_ENHANCED_COOKIE_PROTECTION
-          value: "True"
-        - name: PGADMIN_CONFIG_LOGIN_BANNER
-          value: "Bienvenue sur pgAdmin pour l'infrastructure LIONS"
-        - name: PGADMIN_CONFIG_CONSOLE_LOG_LEVEL
-          value: "{{ pgadmin_log_level | default(10) }}"
-        resources:
-          requests:
-            cpu: "{{ pgadmin_resources[app_environment].requests.cpu | default('100m') }}"
-            memory: "{{ pgadmin_resources[app_environment].requests.memory | default('256Mi') }}"
-          limits:
-            cpu: "{{ pgadmin_resources[app_environment].limits.cpu | default('500m') }}"
-            memory: "{{ pgadmin_resources[app_environment].limits.memory | default('512Mi') }}"
-        readinessProbe:
-          {{- pgadmin_readiness_probe | default({
-            "httpGet": {
-              "path": "/",
-              "port": pgadmin_default_port | default(80)
-            },
-            "initialDelaySeconds": 30,
-            "timeoutSeconds": 5,
-            "periodSeconds": 10,
-            "successThreshold": 1,
-            "failureThreshold": 3
-          }) | to_nice_yaml(indent=2) | indent(10) }}
-        livenessProbe:
-          {{- pgadmin_liveness_probe | default({
-            "httpGet": {
-              "path": "/",
-              "port": pgadmin_default_port | default(80)
-            },
-            "initialDelaySeconds": 60,
-            "timeoutSeconds": 5,
-            "periodSeconds": 10,
-            "successThreshold": 1,
-            "failureThreshold": 3
-          }) | to_nice_yaml(indent=2) | indent(10) }}
-        volumeMounts:
-        - name: pgadmin-data
-          mountPath: /var/lib/pgadmin
-        - name: pgadmin-config
-          mountPath: /pgadmin4/config_local.py
-          subPath: config_local.py
+        - name: pgadmin
+          image: "{{ lions_pgadmin_image_registry }}/{{ lions_pgadmin_image_repository }}:{{ lions_pgadmin_version }}"
+          imagePullPolicy: "{{ lions_pgadmin_image_pull_policy | default('IfNotPresent') }}"
+{% if lions_security_pod_security_standards == 'restricted' %}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 5050
+            runAsGroup: 5050
+            capabilities:
+              drop:
+                - ALL
+{% endif %}
+          ports:
+            - name: http
+              containerPort: {{ lions_pgadmin_port }}
+              protocol: TCP
+          env:
+            # Configuration d'authentification
+            - name: PGADMIN_DEFAULT_EMAIL
+              valueFrom:
+                secretKeyRef:
+                  name: "{{ lions_pgadmin_secret_name }}"
+                  key: admin-email
+            - name: PGADMIN_DEFAULT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: "{{ lions_pgadmin_secret_name }}"
+                  key: admin-password
+
+            # Configuration de sécurité
+            - name: PGADMIN_CONFIG_SERVER_MODE
+              value: "True"
+            - name: PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED
+              value: "{{ lions_pgadmin_master_password_required | default('False') }}"
+            - name: PGADMIN_CONFIG_ENHANCED_COOKIE_PROTECTION
+              value: "True"
+            - name: PGLADMIN_CONFIG_UPGRADE_CHECK_ENABLED
+              value: "False"
+            - name: PGADMIN_CONFIG_SESSION_COOKIE_SECURE
+              value: "{{ lions_security_tls_enabled | string | title }}"
+            - name: PGADMIN_CONFIG_SESSION_COOKIE_HTTPONLY
+              value: "True"
+
+            # Configuration de l'interface
+            - name: PGADMIN_CONFIG_LOGIN_BANNER
+              value: "{{ lions_pgadmin_login_banner | default('Infrastructure LIONS - pgAdmin') }}"
+            - name: PGADMIN_CONFIG_CONSOLE_LOG_LEVEL
+              value: "{{ lions_pgadmin_log_level_numeric | default(20) }}"
+            - name: PGADMIN_LISTEN_PORT
+              value: "{{ lions_pgadmin_port }}"
+
+            # Configuration de performance
+            - name: PGADMIN_CONFIG_WTF_CSRF_TIME_LIMIT
+              value: "{{ lions_pgadmin_csrf_timeout | default(3600) }}"
+            - name: PGADMIN_CONFIG_SESSION_EXPIRATION_TIME
+              value: "{{ lions_pgadmin_session_timeout | default(3600) }}"
+
+            # Configuration des connexions DB
+            - name: PGADMIN_CONFIG_MAX_SESSION_IDLE_TIME
+              value: "{{ lions_pgadmin_max_idle_time | default(300) }}"
+
+{% if lions_environment == 'development' %}
+            # Variables de debug pour développement
+            - name: PGADMIN_CONFIG_DEBUG
+              value: "True"
+            - name: PGADMIN_CONFIG_LOG_LEVEL
+              value: "DEBUG"
+{% endif %}
+
+          resources:
+            requests:
+              cpu: "{{ lions_pgadmin_resources_requests_cpu | default(lions_resources_small_cpu_request) }}"
+              memory: "{{ lions_pgladmin_resources_requests_memory | default(lions_resources_small_memory_request) }}"
+{% if lions_pgadmin_gpu_enabled | default(false) %}
+              nvidia.com/gpu: "{{ lions_pgadmin_gpu_count | default(0) }}"
+{% endif %}
+            limits:
+              cpu: "{{ lions_pgadmin_resources_limits_cpu | default(lions_resources_small_cpu_limit) }}"
+              memory: "{{ lions_pgadmin_resources_limits_memory | default(lions_resources_small_memory_limit) }}"
+{% if lions_pgadmin_gpu_enabled | default(false) %}
+              nvidia.com/gpu: "{{ lions_pgadmin_gpu_count | default(0) }}"
+{% endif %}
+
+          # Probes de santé
+          startupProbe:
+            httpGet:
+              path: "{{ lions_pgadmin_health_path | default('/') }}"
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: {{ lions_pgadmin_startup_delay | default(10) }}
+            timeoutSeconds: {{ lions_pgadmin_probe_timeout | default(5) }}
+            periodSeconds: {{ lions_pgadmin_startup_period | default(10) }}
+            successThreshold: 1
+            failureThreshold: {{ lions_pgadmin_startup_failure_threshold | default(6) }}
+
+          readinessProbe:
+            httpGet:
+              path: "{{ lions_pgadmin_readiness_path | default('/') }}"
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: {{ lions_pgadmin_readiness_delay | default(5) }}
+            timeoutSeconds: {{ lions_pgadmin_probe_timeout | default(5) }}
+            periodSeconds: {{ lions_pgadmin_readiness_period | default(10) }}
+            successThreshold: 1
+            failureThreshold: {{ lions_pgadmin_readiness_failure_threshold | default(3) }}
+
+          livenessProbe:
+            httpGet:
+              path: "{{ lions_pgadmin_liveness_path | default('/') }}"
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: {{ lions_pgadmin_liveness_delay | default(30) }}
+            timeoutSeconds: {{ lions_pgadmin_probe_timeout | default(5) }}
+            periodSeconds: {{ lions_pgadmin_liveness_period | default(30) }}
+            successThreshold: 1
+            failureThreshold: {{ lions_pgadmin_liveness_failure_threshold | default(3) }}
+
+          # Montage des volumes
+          volumeMounts:
+            - name: pgadmin-data
+              mountPath: /var/lib/pgladmin
+{% if lions_security_pod_security_standards == 'restricted' %}
+              readOnly: false
+{% endif %}
+            - name: pgadmin-config
+              mountPath: /pgadmin4/config_local.py
+              subPath: config_local.py
+              readOnly: true
+            - name: pgadmin-servers
+              mountPath: /pgadmin4/servers.json
+              subPath: servers.json
+              readOnly: true
+{% if lions_security_pod_security_standards == 'restricted' %}
+            - name: tmp-volume
+              mountPath: /tmp
+            - name: var-run-volume
+              mountPath: /var/run
+{% endif %}
+
+{% if lions_pgadmin_sidecar_enabled | default(false) %}
+        # Sidecar pour l'export des métriques
+        - name: metrics-exporter
+          image: "{{ lions_pgladmin_exporter_image | default('prometheusnet/pgladmin_exporter:latest') }}"
+          imagePullPolicy: "{{ lions_pgadmin_image_pull_policy | default('IfNotPresent') }}"
+          ports:
+            - name: metrics
+              containerPort: {{ lions_pgadmin_exporter_port | default(9187) }}
+              protocol: TCP
+          env:
+            - name: PGLADMIN_EXPORTER_WEB_LISTEN_ADDRESS
+              value: "0.0.0.0:{{ lions_pgadmin_exporter_port | default(9187) }}"
+            - name: PGLADMIN_EXPORTER_WEB_TELEMETRY_PATH
+              value: "{{ lions_pgadmin_exporter_path | default('/metrics') }}"
+          resources:
+            requests:
+              cpu: "{{ lions_pgadmin_exporter_cpu_request | default('50m') }}"
+              memory: "{{ lions_pgladmin_exporter_memory_request | default('64Mi') }}"
+            limits:
+              cpu: "{{ lions_pgadmin_exporter_cpu_limit | default('100m') }}"
+              memory: "{{ lions_pgladmin_exporter_memory_limit | default('128Mi') }}"
+{% endif %}
+
+      # Configuration des volumes
       volumes:
-      - name: pgadmin-config
-        configMap:
-          name: "{{ app_name }}-config"
-      {% if pgadmin_persistent_storage | default(true) | bool %}
-      - name: pgadmin-data
-        persistentVolumeClaim:
-          claimName: "{{ app_name }}-data"
-      {% else %}
-      - name: pgadmin-data
-        emptyDir: {}
-      {% endif %}
+        - name: pgadmin-config
+          configMap:
+            name: "{{ lions_pgladmin_service_name }}-config"
+            defaultMode: 0644
+        - name: pgadmin-servers
+          configMap:
+            name: "{{ lions_pgladmin_service_name }}-servers"
+            defaultMode: 0644
+{% if lions_pgadmin_persistent_storage | default(true) %}
+        - name: pgladmin-data
+          persistentVolumeClaim:
+            claimName: "{{ lions_pgladmin_service_name }}-data"
+{% else %}
+        - name: pgladmin-data
+          emptyDir:
+            sizeLimit: "{{ lions_pgladmin_ephemeral_storage | default('1Gi') }}"
+{% endif %}
+
+{% if lions_security_pod_security_standards == 'restricted' %}
+        - name: tmp-volume
+          emptyDir:
+            sizeLimit: 100Mi
+        - name: var-run-volume
+          emptyDir:
+            sizeLimit: 100Mi
+{% endif %}
+
+      # Configuration des affinités et tolérations
+{% if lions_pgladmin_node_affinity_enabled | default(false) %}
+      affinity:
+        nodeAffinity:
+          {{ lions_pgladmin_node_affinity | default(lions_default_node_affinity) | to_nice_yaml(indent=2) | indent(10) }}
+{% endif %}
+
+{% if lions_pgladmin_pod_anti_affinity_enabled | default(false) %}
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app.kubernetes.io/name
+                      operator: In
+                      values:
+                        - "{{ lions_pgladmin_service_name }}"
+                topologyKey: kubernetes.io/hostname
+{% endif %}
+
+{% if lions_pgladmin_tolerations | default([]) | length > 0 %}
+      tolerations:
+{{ lions_pgladmin_tolerations | to_nice_yaml(indent=2) | indent(6) }}
+{% endif %}
+
+{% if lions_pgladmin_node_selector | default({}) | length > 0 %}
+      nodeSelector:
+{{ lions_pgladmin_node_selector | to_nice_yaml(indent=2) | indent(8) }}
+{% endif %}
+
+      # Configuration du restart
+      restartPolicy: Always
+
+      # Configuration DNS
+      dnsPolicy: ClusterFirst
+
+      # Configuration de la terminaison
+      terminationGracePeriodSeconds: {{ lions_pgladmin_termination_grace_period | default(30) }}
+
+{% if lions_pgladmin_priority_class_enabled | default(false) %}
+      # Classe de priorité
+      priorityClassName: "{{ lions_pgladmin_priority_class | default('lions-medium-priority') }}"
+{% endif %}
+
+{% if lions_pgladmin_image_pull_secrets | default([]) | length > 0 %}
+      # Secrets pour les images privées
+      imagePullSecrets:
+{% for secret in lions_pgladmin_image_pull_secrets %}
+        - name: "{{ secret }}"
+{% endfor %}
+{% endif %}

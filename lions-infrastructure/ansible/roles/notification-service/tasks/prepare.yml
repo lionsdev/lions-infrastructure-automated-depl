@@ -1,71 +1,234 @@
 ---
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - NOTIFICATION SERVICE PREPARATION TASKS
+# =========================================================================
 # Titre: Préparation des ressources pour le service de notification
-# Description: Prépare les ressources nécessaires pour déployer le service de notification
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-08
-# Version: 1.0.0
+# Description: Prépare et valide toutes les ressources nécessaires pour le déploiement du service de notification
+# Équipe: LIONS DevOps Team
+# Version: 5.0.0
+# Date: "{{ ansible_date_time.iso8601 }}"
+# Documentation: https://docs.lions.dev/notification/preparation
+# =========================================================================
 
-- name: Création du répertoire temporaire pour les templates
+# =========================================================================
+# VARIABLES ET VALIDATION INITIALE
+# =========================================================================
+- name: "🔍 [NOTIFICATION-PREP] Validation des variables d'environnement critiques"
+  assert:
+    that:
+      - notification_enabled is defined
+      - notification_namespace is defined
+      - notification_dns.full_domain is defined
+      - notification_service_meta.version is defined
+      - notification_environment is defined
+    fail_msg: "❌ Variables d'environnement LIONS critiques manquantes pour le service de notification"
+    success_msg: "✅ Variables d'environnement validées"
+  tags: [validation, environment]
+
+- name: "📊 [NOTIFICATION-PREP] Affichage de la configuration du service de notification"
+  debug:
+    msg:
+      - "🏗️  Environnement: {{ notification_environment }}"
+      - "📦 Version: {{ notification_service_meta.version }}"
+      - "🌐 Namespace: {{ notification_namespace }}"
+      - "🔗 Domaine: {{ notification_dns.full_domain }}"
+      - "💾 Stockage: {{ notification_storage.enabled }}"
+      - "🔐 TLS activé: {{ notification_tls.enabled }}"
+  when: notification_debug.enabled | default(false) | bool
+  tags: [debug, info]
+
+# =========================================================================
+# PRÉPARATION DE L'ENVIRONNEMENT
+# =========================================================================
+- name: "📁 [NOTIFICATION-PREP] Création du répertoire temporaire pour les templates"
   tempfile:
     state: directory
-    suffix: notification-deploy
-  register: temp_dir
+    suffix: "notification-deploy-{{ ansible_date_time.epoch }}"
+    prefix: "lions-"
+  register: lions_notification_temp_dir
   changed_when: false
+  failed_when: lions_notification_temp_dir.path is not defined
+  tags: [preparation, filesystem]
 
-- name: Génération des fichiers de configuration Kubernetes
+- name: "📂 [NOTIFICATION-PREP] Vérification des permissions du répertoire temporaire"
+  file:
+    path: "{{ lions_notification_temp_dir.path }}"
+    mode: '0750'
+    state: directory
+  tags: [preparation, security]
+
+- name: "🧹 [NOTIFICATION-PREP] Nettoyage préventif des anciennes ressources temporaires"
+  find:
+    paths: "/tmp"
+    patterns: "lions-notification-deploy-*"
+    file_type: directory
+    age: "1h"
+  register: old_temp_dirs
+  tags: [preparation, cleanup]
+
+- name: "🗑️  [NOTIFICATION-PREP] Suppression des répertoires temporaires obsolètes"
+  file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ old_temp_dirs.files }}"
+  when: old_temp_dirs.files | length > 0
+  tags: [preparation, cleanup]
+
+# =========================================================================
+# GÉNÉRATION DES TEMPLATES KUBERNETES
+# =========================================================================
+- name: "🏗️  [NOTIFICATION-PREP] Génération des manifestes Kubernetes depuis les templates"
   template:
     src: "{{ item.src }}"
-    dest: "{{ temp_dir.path }}/{{ item.dest }}"
+    dest: "{{ lions_notification_temp_dir.path }}/{{ item.dest }}"
+    mode: '0640'
+    backup: false
   loop:
-    - { src: "deployment.yml.j2", dest: "deployment.yml" }
-    - { src: "service.yml.j2", dest: "service.yml" }
-    - { src: "ingress.yml.j2", dest: "ingress.yml" }
-    - { src: "configmap.yml.j2", dest: "configmap.yml" }
-    - { src: "serviceaccount.yml.j2", dest: "serviceaccount.yml" }
-    - { src: "servicemonitor.yml.j2", dest: "servicemonitor.yml" }
-  register: templates_generated
+    - { src: "serviceaccount.yml.j2", dest: "01-serviceaccount.yml", priority: 1 }
+    - { src: "configmap.yml.j2", dest: "02-configmap.yml", priority: 2 }
+    - { src: "service.yml.j2", dest: "03-service.yml", priority: 3 }
+    - { src: "deployment.yml.j2", dest: "04-deployment.yml", priority: 4 }
+    - { src: "ingress.yml.j2", dest: "05-ingress.yml", priority: 5 }
+    - { src: "servicemonitor.yml.j2", dest: "06-servicemonitor.yml", priority: 6 }
+  register: lions_notification_templates_generated
+  notify:
+    - validate notification configuration
+    - cleanup temporary files
+  tags: [templates, kubernetes]
 
-- name: Vérification des fichiers générés
+- name: "✅ [NOTIFICATION-PREP] Validation de la génération des templates"
   stat:
-    path: "{{ temp_dir.path }}/{{ item }}"
+    path: "{{ lions_notification_temp_dir.path }}/{{ item.dest }}"
+    get_checksum: true
+  loop: "{{ lions_notification_templates_generated.results }}"
+  register: lions_notification_files_validation
+  failed_when: not lions_notification_files_validation.results[item.0].stat.exists
+  loop_control:
+    index_var: item_index
+    label: "{{ item.dest }}"
+  tags: [validation, templates]
+
+- name: "📋 [NOTIFICATION-PREP] Validation syntaxique des manifestes YAML"
+  shell: |
+    if command -v yamllint >/dev/null 2>&1; then
+      yamllint "{{ item.invocation.dest }}" || echo "WARN: yamllint validation failed for {{ item.invocation.dest }}"
+    else
+      python3 -c "import yaml; yaml.safe_load(open('{{ item.invocation.dest }}', 'r'))" && echo "✅ YAML syntax valid"
+    fi
+  loop: "{{ lions_notification_templates_generated.results }}"
+  register: lions_notification_yaml_validation
+  failed_when:
+    - lions_notification_yaml_validation.rc != 0
+    - "'WARN:' not in lions_notification_yaml_validation.stdout"
+  changed_when: false
+  tags: [validation, yaml]
+
+# =========================================================================
+# PRÉPARATION DES SECRETS ET SÉCURITÉ
+# =========================================================================
+- name: "🔍 [NOTIFICATION-PREP] Vérification de l'existence du namespace cible"
+  k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: "{{ notification_namespace }}"
+  register: lions_notification_namespace_info
+  tags: [validation, namespace]
+
+- name: "📛 [NOTIFICATION-PREP] Création du namespace si nécessaire"
+  k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ notification_namespace }}"
+        labels:
+          app.kubernetes.io/name: notification-service
+          app.kubernetes.io/component: notification
+          app.kubernetes.io/part-of: lions-infrastructure
+          lions.dev/environment: "{{ notification_environment }}"
+          lions.dev/managed-by: ansible
+          pod-security.kubernetes.io/enforce: restricted
+          pod-security.kubernetes.io/audit: restricted
+          pod-security.kubernetes.io/warn: restricted
+  when: lions_notification_namespace_info.resources | length == 0
+  tags: [namespace, security]
+
+- name: "🔐 [NOTIFICATION-PREP] Vérification des secrets critiques pour le service de notification"
+  k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: "{{ notification_namespace }}"
+    name: "{{ item.name }}"
+  register: lions_notification_secrets_check
   loop:
-    - "deployment.yml"
-    - "service.yml"
-    - "ingress.yml"
-    - "configmap.yml"
-    - "serviceaccount.yml"
-    - "servicemonitor.yml"
-  register: files_check
-  failed_when: not item.stat.exists
+    - name: "{{ notification_secrets.admin.password_secret }}"
+      description: "Identifiants administrateur du service de notification"
+      required: true
+    - name: "{{ notification_secrets.api.key_secret }}"
+      description: "Clé API du service de notification"
+      required: true
+    - name: "{{ notification_app_config.channels.email.user_secret }}"
+      description: "Identifiants SMTP"
+      required: false
+    - name: "{{ notification_app_config.channels.slack.webhook_secret }}"
+      description: "Webhook Slack"
+      required: false
+  loop_control:
+    label: "{{ item.description }}"
+  failed_when: false
+  tags: [validation, secrets]
 
-- name: Création du compte de service
+- name: "⚠️  [NOTIFICATION-PREP] Rapport des secrets manquants"
+  debug:
+    msg: "❌ Secret manquant: {{ item.item.name }} ({{ item.item.description }})"
+  loop: "{{ lions_notification_secrets_check.results }}"
+  when:
+    - item.resources | length == 0
+    - item.item.required | default(false)
+  loop_control:
+    label: "{{ item.item.name }}"
+  tags: [validation, secrets]
+
+- name: "🔑 [NOTIFICATION-PREP] Génération du secret JWT s'il n'existe pas"
   k8s:
     state: present
-    src: "{{ temp_dir.path }}/serviceaccount.yml"
-  register: serviceaccount_result
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ notification_secrets.jwt.secret_name }}"
+        namespace: "{{ notification_namespace }}"
+        labels:
+          app.kubernetes.io/name: notification-service
+          app.kubernetes.io/component: jwt-secret
+          lions.dev/environment: "{{ notification_environment }}"
+          lions.dev/managed-by: ansible
+      type: Opaque
+      data:
+        jwt-secret: "{{ (ansible_date_time.epoch + ansible_hostname) | hash('sha256') | b64encode }}"
+  when:
+    - lions_notification_secrets_check.results | selectattr('item.name', 'equalto', notification_secrets.jwt.secret_name) | map(attribute='resources') | first | length == 0
+  tags: [secrets, security]
 
-- name: Création du ConfigMap pour la configuration du service de notification
-  k8s:
-    state: present
-    src: "{{ temp_dir.path }}/configmap.yml"
-  register: configmap_result
-
-- name: Création du ConfigMap pour les templates d'email (si activé)
+# =========================================================================
+# CRÉATION DES CONFIGMAPS POUR LES TEMPLATES DE NOTIFICATION
+# =========================================================================
+- name: "📧 [NOTIFICATION-PREP] Création du ConfigMap pour les templates d'email"
   k8s:
     state: present
     definition:
       apiVersion: v1
       kind: ConfigMap
       metadata:
-        name: "{{ app_name }}-email-templates"
-        namespace: "{{ app_namespace }}"
+        name: "{{ notification_service_name }}-email-templates"
+        namespace: "{{ notification_namespace }}"
         labels:
-          app: "{{ app_name }}"
-          version: "{{ app_version }}"
-          environment: "{{ app_environment }}"
-          technology: "notification-service"
+          app.kubernetes.io/name: notification-service
+          app.kubernetes.io/component: email-templates
+          lions.dev/environment: "{{ notification_environment }}"
         annotations:
-          description: "Templates d'email pour le service de notification {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+          description: "Templates d'email pour le service de notification"
       data:
         "welcome_fr.html": |
           <!DOCTYPE html>
@@ -95,43 +258,157 @@
             <p>Best regards,<br>The LIONS Team</p>
           </body>
           </html>
+        "alert_fr.html": |
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <meta charset="UTF-8">
+            <title>Alerte</title>
+          </head>
+          <body>
+            <h1>Alerte Système</h1>
+            <p>Une alerte a été déclenchée : {{alert_message}}</p>
+            <p>Niveau de sévérité : {{severity}}</p>
+            <p>Timestamp : {{timestamp}}</p>
+          </body>
+          </html>
+        "alert_en.html": |
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <meta charset="UTF-8">
+            <title>Alert</title>
+          </head>
+          <body>
+            <h1>System Alert</h1>
+            <p>An alert has been triggered: {{alert_message}}</p>
+            <p>Severity level: {{severity}}</p>
+            <p>Timestamp: {{timestamp}}</p>
+          </body>
+          </html>
   register: email_templates_result
-  when: notification_channels.email.enabled | default(true) | bool
+  when: notification_app_config.channels.email.enabled | bool
+  tags: [templates, email]
 
-- name: Vérification de l'existence des secrets requis
-  k8s_info:
-    api_version: v1
-    kind: Secret
-    namespace: "{{ app_namespace }}"
-    name: "{{ app_name }}-secrets"
-  register: secrets_info
-  ignore_errors: yes
-
-- name: Création d'un secret temporaire si nécessaire
+# =========================================================================
+# CRÉATION DES RESSOURCES KUBERNETES PRÉPARATOIRES
+# =========================================================================
+- name: "🏗️  [NOTIFICATION-PREP] Création du compte de service"
   k8s:
     state: present
-    definition:
-      apiVersion: v1
-      kind: Secret
-      metadata:
-        name: "{{ app_name }}-secrets"
-        namespace: "{{ app_namespace }}"
-        labels:
-          app: "{{ app_name }}"
-          environment: "{{ app_environment }}"
-        annotations:
-          description: "Secret temporaire pour le service de notification. À remplacer par un secret sécurisé."
-      type: Opaque
-      stringData:
-        ADMIN_PASSWORD: "changeme"
-        SMTP_USER: "notification@example.com"
-        SMTP_PASSWORD: "changeme"
-        SLACK_WEBHOOK_URL: "https://hooks.slack.com/services/TXXXXXXXX/BXXXXXXXX/XXXXXXXXXXXXXXXXXXXXXXXX"
-  register: temp_secret_result
-  when: secrets_info is failed or secrets_info.resources | length == 0
-  ignore_errors: yes
+    src: "{{ lions_notification_temp_dir.path }}/01-serviceaccount.yml"
+    wait: true
+    wait_timeout: "{{ lions_timeout_default | default(300) }}"
+    wait_condition:
+      type: Ready
+      status: "True"
+  register: lions_notification_serviceaccount_result
+  tags: [kubernetes, serviceaccount]
 
-- name: Avertissement pour les secrets temporaires
+- name: "🗃️  [NOTIFICATION-PREP] Création du ConfigMap de configuration"
+  k8s:
+    state: present
+    src: "{{ lions_notification_temp_dir.path }}/02-configmap.yml"
+    wait: true
+    wait_timeout: "{{ lions_timeout_default | default(300) }}"
+  register: lions_notification_configmap_result
+  tags: [kubernetes, configmap]
+
+- name: "💾 [NOTIFICATION-PREP] Création du PersistentVolumeClaim (si stockage activé)"
+  k8s:
+    state: present
+    definition: "{{ lookup('template', 'persistentvolumeclaim.yml.j2') | from_yaml }}"
+    wait: true
+    wait_timeout: "{{ lions_timeout_default | default(300) }}"
+    wait_condition:
+      type: Bound
+      status: "True"
+  register: lions_notification_pvc_result
+  when: notification_storage.enabled | bool
+  tags: [kubernetes, storage]
+
+# =========================================================================
+# VALIDATION ET VÉRIFICATIONS FINALES
+# =========================================================================
+- name: "🔍 [NOTIFICATION-PREP] Vérification de l'état des ressources créées"
+  k8s_info:
+    api_version: "{{ item.api_version }}"
+    kind: "{{ item.kind }}"
+    namespace: "{{ notification_namespace }}"
+    name: "{{ item.name }}"
+  register: lions_notification_resources_check
+  loop:
+    - api_version: v1
+      kind: ServiceAccount
+      name: "{{ notification_service_name }}"
+    - api_version: v1
+      kind: ConfigMap
+      name: "{{ notification_service_name }}-config"
+  failed_when: item.resources | length == 0
+  loop_control:
+    label: "{{ item.kind }}/{{ item.name }}"
+  tags: [validation, resources]
+
+- name: "📊 [NOTIFICATION-PREP] Collecte des métriques de préparation"
+  set_fact:
+    lions_notification_preparation_metrics:
+      namespace_created: "{{ lions_notification_namespace_info.resources | length == 0 }}"
+      secrets_validated: "{{ lions_notification_secrets_check.results | length }}"
+      templates_generated: "{{ lions_notification_templates_generated.results | length }}"
+      resources_created: "{{ lions_notification_resources_check.results | length }}"
+      preparation_duration: "{{ ansible_date_time.epoch | int - (lions_notification_temp_dir.stat.mtime | default(ansible_date_time.epoch)) | int }}"
+  tags: [metrics, reporting]
+
+- name: "📈 [NOTIFICATION-PREP] Rapport de préparation"
   debug:
-    msg: "AVERTISSEMENT: Des secrets temporaires ont été créés pour le service de notification. Veuillez les remplacer par des secrets sécurisés."
-  when: temp_secret_result is succeeded
+    msg:
+      - "✅ Préparation du service de notification terminée avec succès"
+      - "📊 Métriques:"
+      - "  - Namespace créé: {{ lions_notification_preparation_metrics.namespace_created }}"
+      - "  - Secrets validés: {{ lions_notification_preparation_metrics.secrets_validated }}"
+      - "  - Templates générés: {{ lions_notification_preparation_metrics.templates_generated }}"
+      - "  - Ressources créées: {{ lions_notification_preparation_metrics.resources_created }}"
+      - "  - Durée: {{ lions_notification_preparation_metrics.preparation_duration }}s"
+      - "🚀 Prêt pour le déploiement"
+  tags: [reporting, summary]
+
+# =========================================================================
+# ENREGISTREMENT POUR LES ÉTAPES SUIVANTES
+# =========================================================================
+- name: "📝 [NOTIFICATION-PREP] Enregistrement des chemins des templates pour les étapes suivantes"
+  set_fact:
+    lions_notification_templates_path: "{{ lions_notification_temp_dir.path }}"
+    lions_notification_deployment_ready: true
+  tags: [state, handoff]
+
+# =========================================================================
+# POINTS DE CONTRÔLE POUR AUDIT
+# =========================================================================
+- name: "📋 [NOTIFICATION-PREP] Création du rapport d'audit de préparation"
+  copy:
+    content: |
+      # Rapport d'Audit - Préparation Service de Notification
+      Date: {{ ansible_date_time.iso8601 }}
+      Environnement: {{ notification_environment }}
+      Version: {{ notification_service_meta.version }}
+      Namespace: {{ notification_namespace }}
+      Utilisateur Ansible: {{ ansible_user | default('unknown') }}
+      Hôte de contrôle: {{ inventory_hostname }}
+      
+      ## Ressources créées
+      {% for result in lions_notification_resources_check.results %}
+      - {{ result.item.kind }}/{{ result.item.name }}: ✅ Créé
+      {% endfor %}
+      
+      ## Secrets validés
+      {% for secret in lions_notification_secrets_check.results %}
+      - {{ secret.item.name }}: {{ '✅ Présent' if secret.resources | length > 0 else '❌ Manquant' }}
+      {% endfor %}
+      
+      ## Métriques
+      - Durée de préparation: {{ lions_notification_preparation_metrics.preparation_duration }}s
+      - Templates générés: {{ lions_notification_preparation_metrics.templates_generated }}
+    dest: "{{ lions_notification_temp_dir.path }}/preparation-audit.md"
+    mode: '0640'
+  when: lions_audit_enabled | default(true) | bool
+  tags: [audit, documentation]

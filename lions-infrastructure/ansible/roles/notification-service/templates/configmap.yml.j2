@@ -1,117 +1,491 @@
 ---
-# Titre: Template de ConfigMap Kubernetes pour le service de notification
-# Description: Définit le ConfigMap Kubernetes pour le service de notification
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-08
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - NOTIFICATION SERVICE CONFIGMAP TEMPLATE
+# =========================================================================
+# Description: Template de ConfigMap Kubernetes pour le service de notification avec configuration complète
+# Version: 5.0.0
+# Date: {{ ansible_date_time.iso8601 }}
+# Maintainer: {{ notification_service_meta.maintainer | default('devops@lions.dev') }}
+# Environment: {{ notification_environment | upper }}
+# Application: {{ notification_service_name }}
+# =========================================================================
 
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: "{{ app_name }}-config"
-  namespace: "{{ app_namespace }}"
+  name: "{{ notification_service_name }}-config"
+  namespace: "{{ notification_namespace }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "notification-service"
+    # Labels standards LIONS
+    app.kubernetes.io/name: "{{ notification_service_name }}"
+    app.kubernetes.io/instance: "{{ notification_service_name }}-{{ notification_environment }}"
+    app.kubernetes.io/version: "{{ notification_service_meta.version }}"
+    app.kubernetes.io/component: "notification-service"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+
+    # Labels personnalisés LIONS
+    lions.dev/environment: "{{ notification_environment }}"
+    lions.dev/tier: "application"
+    lions.dev/technology: "notification-service"
+    lions.dev/backup-required: "{{ notification_storage.backup_enabled | string | lower }}"
+    lions.dev/monitoring-enabled: "{{ notification_monitoring.enabled | string | lower }}"
+    lions.dev/config-version: "5.0.0"
+
+    # Labels Helm-like pour compatibilité
+    helm.sh/chart: "notification-service-{{ notification_service_meta.version }}"
+
   annotations:
-    description: "ConfigMap pour le service de notification {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    # Annotations de metadata
+    description: "ConfigMap pour le service de notification {{ notification_service_name }} version {{ notification_service_meta.version }} en environnement {{ notification_environment }}"
+    maintainer: "{{ notification_service_meta.maintainer | default('devops@lions.dev') }}"
+    deployment.lions.dev/timestamp: "{{ ansible_date_time.iso8601 }}"
+    deployment.lions.dev/ansible-host: "{{ inventory_hostname }}"
+    deployment.lions.dev/config-hash: "{{ (notification_app_config | string) | hash('sha256') }}"
+
+    # Annotations de configuration
+    config.lions.dev/email-enabled: "{{ notification_app_config.channels.email.enabled | string | lower }}"
+    config.lions.dev/slack-enabled: "{{ notification_app_config.channels.slack.enabled | string | lower }}"
+    config.lions.dev/sms-enabled: "{{ notification_app_config.channels.sms.enabled | string | lower }}"
+    config.lions.dev/tls-enabled: "{{ notification_tls.enabled | string | lower }}"
+    config.lions.dev/auth-enabled: "{{ notification_security.authentication.enabled | string | lower }}"
+
+    # Annotations de monitoring
+    prometheus.io/scrape: "{{ notification_monitoring.enabled | string | lower }}"
+    prometheus.io/path: "{{ notification_endpoints.metrics | default('/metrics') }}"
+    prometheus.io/port: "{{ notification_network.service.port | string }}"
+
 data:
-  # Variables d'environnement pour l'application
-  SPRING_PROFILES_ACTIVE: "{{ app_environment }}"
-  SERVER_PORT: "{{ notification_default_port }}"
-  APPLICATION_NAME: "{{ app_name }}"
-  APPLICATION_VERSION: "{{ app_version }}"
+  # =========================================================================
+  # CONFIGURATION CORE APPLICATION
+  # =========================================================================
 
-  # Variables spécifiques à l'environnement
-  LOG_LEVEL: "{% if app_environment == 'production' %}WARN{% elif app_environment == 'staging' %}INFO{% else %}DEBUG{% endif %}"
-  
-  # Configuration des canaux de notification
-  NOTIFICATION_CHANNELS_EMAIL_ENABLED: "{{ notification_channels.email.enabled | string | lower }}"
-{% if notification_channels.email.enabled | default(true) | bool %}
-  NOTIFICATION_CHANNELS_EMAIL_HOST: "{{ notification_channels.email.smtp_host }}"
-  NOTIFICATION_CHANNELS_EMAIL_PORT: "{{ notification_channels.email.smtp_port }}"
-  NOTIFICATION_CHANNELS_EMAIL_FROM: "{{ notification_channels.email.from_address }}"
+  # Configuration du serveur principal
+  SERVER_PORT: "{{ notification_network.service.port | string }}"
+  APPLICATION_NAME: "{{ notification_service_name }}"
+  APPLICATION_VERSION: "{{ notification_service_meta.version }}"
+  APPLICATION_DESCRIPTION: "{{ notification_service_meta.description }}"
+  SPRING_PROFILES_ACTIVE: "{{ notification_environment }}"
+  JAVA_OPTS: "{{ notification_app_config.jvm.opts }}"
+  TZ: "{{ notification_app_config.timezone }}"
+
+  # Configuration de base
+  NOTIFICATION_SERVICE_ID: "{{ notification_service_name }}-{{ notification_environment }}"
+  NOTIFICATION_INSTANCE_ID: "{{ ansible_hostname }}-{{ ansible_date_time.epoch }}"
+  NOTIFICATION_DATACENTER: "{{ notification_app_config.datacenter }}"
+  NOTIFICATION_REGION: "{{ notification_app_config.region }}"
+
+  # =========================================================================
+  # CONFIGURATION DES CANAUX DE NOTIFICATION
+  # =========================================================================
+
+  # Canal Email
+  NOTIFICATION_CHANNELS_EMAIL_ENABLED: "{{ notification_app_config.channels.email.enabled | string | lower }}"
+{% if notification_app_config.channels.email.enabled | bool %}
+  NOTIFICATION_CHANNELS_EMAIL_HOST: "{{ notification_app_config.channels.email.smtp.host }}"
+  NOTIFICATION_CHANNELS_EMAIL_PORT: "{{ notification_app_config.channels.email.smtp.port | string }}"
+  NOTIFICATION_CHANNELS_EMAIL_FROM: "{{ notification_app_config.channels.email.from_address }}"
+  NOTIFICATION_CHANNELS_EMAIL_FROM_NAME: "{{ notification_app_config.channels.email.from_name }}"
+  NOTIFICATION_CHANNELS_EMAIL_REPLY_TO: "{{ notification_app_config.channels.email.reply_to }}"
+  NOTIFICATION_CHANNELS_EMAIL_ENCRYPTION: "{{ notification_app_config.channels.email.smtp.encryption }}"
+  NOTIFICATION_CHANNELS_EMAIL_AUTH_ENABLED: "{{ notification_app_config.channels.email.smtp.auth_enabled | string | lower }}"
+  NOTIFICATION_CHANNELS_EMAIL_CONNECTION_TIMEOUT: "{{ notification_app_config.channels.email.smtp.connection_timeout | string }}"
+  NOTIFICATION_CHANNELS_EMAIL_READ_TIMEOUT: "{{ notification_app_config.channels.email.smtp.read_timeout | string }}"
+  NOTIFICATION_CHANNELS_EMAIL_MAX_RETRIES: "{{ notification_app_config.channels.email.max_retries | string }}"
+  NOTIFICATION_CHANNELS_EMAIL_RATE_LIMIT: "{{ notification_app_config.channels.email.rate_limit.requests_per_minute | string }}"
 {% endif %}
 
-  NOTIFICATION_CHANNELS_SLACK_ENABLED: "{{ notification_channels.slack.enabled | string | lower }}"
-{% if notification_channels.slack.enabled | default(true) | bool %}
-  NOTIFICATION_CHANNELS_SLACK_DEFAULT_CHANNEL: "{{ notification_channels.slack.default_channel }}"
+  # Canal Slack
+  NOTIFICATION_CHANNELS_SLACK_ENABLED: "{{ notification_app_config.channels.slack.enabled | string | lower }}"
+{% if notification_app_config.channels.slack.enabled | bool %}
+  NOTIFICATION_CHANNELS_SLACK_DEFAULT_CHANNEL: "{{ notification_app_config.channels.slack.default_channel }}"
+  NOTIFICATION_CHANNELS_SLACK_BOT_NAME: "{{ notification_app_config.channels.slack.bot_name }}"
+  NOTIFICATION_CHANNELS_SLACK_BOT_EMOJI: "{{ notification_app_config.channels.slack.bot_emoji }}"
+  NOTIFICATION_CHANNELS_SLACK_CONNECTION_TIMEOUT: "{{ notification_app_config.channels.slack.connection_timeout | string }}"
+  NOTIFICATION_CHANNELS_SLACK_MAX_RETRIES: "{{ notification_app_config.channels.slack.max_retries | string }}"
+  NOTIFICATION_CHANNELS_SLACK_RATE_LIMIT: "{{ notification_app_config.channels.slack.rate_limit.requests_per_minute | string }}"
 {% endif %}
 
-  NOTIFICATION_CHANNELS_SMS_ENABLED: "{{ notification_channels.sms.enabled | string | lower }}"
-{% if notification_channels.sms.enabled | default(false) | bool %}
-  NOTIFICATION_CHANNELS_SMS_PROVIDER: "{{ notification_channels.sms.provider }}"
-  NOTIFICATION_CHANNELS_SMS_FROM_NUMBER: "{{ notification_channels.sms.from_number }}"
+  # Canal SMS
+  NOTIFICATION_CHANNELS_SMS_ENABLED: "{{ notification_app_config.channels.sms.enabled | string | lower }}"
+{% if notification_app_config.channels.sms.enabled | bool %}
+  NOTIFICATION_CHANNELS_SMS_PROVIDER: "{{ notification_app_config.channels.sms.provider }}"
+  NOTIFICATION_CHANNELS_SMS_FROM_NUMBER: "{{ notification_app_config.channels.sms.from_number }}"
+  NOTIFICATION_CHANNELS_SMS_CONNECTION_TIMEOUT: "{{ notification_app_config.channels.sms.connection_timeout | string }}"
+  NOTIFICATION_CHANNELS_SMS_MAX_RETRIES: "{{ notification_app_config.channels.sms.max_retries | string }}"
+  NOTIFICATION_CHANNELS_SMS_RATE_LIMIT: "{{ notification_app_config.channels.sms.rate_limit.requests_per_minute | string }}"
 {% endif %}
 
-  # Configuration des templates
-  NOTIFICATION_TEMPLATES_PATH: "{{ notification_templates_path }}"
-  NOTIFICATION_DEFAULT_LANGUAGE: "{{ notification_default_language }}"
-  NOTIFICATION_AVAILABLE_LANGUAGES: "{{ notification_available_languages | join(',') }}"
+  # Canal Webhook
+  NOTIFICATION_CHANNELS_WEBHOOK_ENABLED: "{{ notification_app_config.channels.webhook.enabled | string | lower }}"
+{% if notification_app_config.channels.webhook.enabled | bool %}
+  NOTIFICATION_CHANNELS_WEBHOOK_CONNECTION_TIMEOUT: "{{ notification_app_config.channels.webhook.connection_timeout | string }}"
+  NOTIFICATION_CHANNELS_WEBHOOK_MAX_RETRIES: "{{ notification_app_config.channels.webhook.max_retries | string }}"
+  NOTIFICATION_CHANNELS_WEBHOOK_RATE_LIMIT: "{{ notification_app_config.channels.webhook.rate_limit.requests_per_minute | string }}"
+{% endif %}
 
-  # Configuration du monitoring
-  MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: "health,info,prometheus,metrics"
+  # =========================================================================
+  # CONFIGURATION DES TEMPLATES
+  # =========================================================================
+
+  NOTIFICATION_TEMPLATES_PATH: "{{ notification_app_config.templates.path }}"
+  NOTIFICATION_TEMPLATES_CACHE_ENABLED: "{{ notification_app_config.templates.cache_enabled | string | lower }}"
+  NOTIFICATION_TEMPLATES_CACHE_TTL: "{{ notification_app_config.templates.cache_ttl | string }}"
+  NOTIFICATION_TEMPLATES_DEFAULT_LANGUAGE: "{{ notification_app_config.templates.default_language }}"
+  NOTIFICATION_TEMPLATES_AVAILABLE_LANGUAGES: "{{ notification_app_config.templates.available_languages | join(',') }}"
+  NOTIFICATION_TEMPLATES_AUTO_RELOAD: "{{ notification_app_config.templates.auto_reload | string | lower }}"
+  NOTIFICATION_TEMPLATES_VALIDATION_ENABLED: "{{ notification_app_config.templates.validation_enabled | string | lower }}"
+
+  # =========================================================================
+  # CONFIGURATION DE LA QUEUE
+  # =========================================================================
+
+  NOTIFICATION_QUEUE_PROVIDER: "{{ notification_app_config.queue.provider }}"
+  NOTIFICATION_QUEUE_MAX_SIZE: "{{ notification_app_config.queue.max_size | string }}"
+  NOTIFICATION_QUEUE_BATCH_SIZE: "{{ notification_app_config.queue.batch_size | string }}"
+  NOTIFICATION_QUEUE_RETRY_POLICY: "{{ notification_app_config.queue.retry_policy }}"
+  NOTIFICATION_QUEUE_MAX_RETRIES: "{{ notification_app_config.queue.max_retries | string }}"
+  NOTIFICATION_QUEUE_RETRY_DELAY: "{{ notification_app_config.queue.retry_delay | string }}"
+  NOTIFICATION_QUEUE_DEAD_LETTER_ENABLED: "{{ notification_app_config.queue.dead_letter_enabled | string | lower }}"
+  NOTIFICATION_QUEUE_PERSISTENCE_ENABLED: "{{ notification_app_config.queue.persistence_enabled | string | lower }}"
+
+  # =========================================================================
+  # CONFIGURATION DE LA SÉCURITÉ
+  # =========================================================================
+
+  SECURITY_REQUIRE_SSL: "{{ notification_tls.enabled | string | lower }}"
+  SECURITY_AUTHENTICATION_ENABLED: "{{ notification_security.authentication.enabled | string | lower }}"
+  SECURITY_AUTHENTICATION_PROVIDER: "{{ notification_security.authentication.provider }}"
+  SECURITY_RATE_LIMIT_ENABLED: "{{ notification_security.rate_limiting.enabled | string | lower }}"
+  SECURITY_RATE_LIMIT_REQUESTS_PER_MINUTE: "{{ notification_security.rate_limiting.requests_per_minute | string }}"
+  SECURITY_RATE_LIMIT_BURST: "{{ notification_security.rate_limiting.burst_size | string }}"
+  SECURITY_API_KEY_REQUIRED: "{{ notification_security.api_key.required | string | lower }}"
+  SECURITY_API_KEY_HEADER: "{{ notification_security.api_key.header_name }}"
+  SECURITY_CORS_ENABLED: "{{ notification_security.cors.enabled | string | lower }}"
+  SECURITY_CORS_ORIGINS: "{{ notification_security.cors.allowed_origins | join(',') }}"
+  SECURITY_ENCRYPTION_ENABLED: "{{ notification_security.encryption.enabled | string | lower }}"
+  SECURITY_ENCRYPTION_ALGORITHM: "{{ notification_security.encryption.algorithm }}"
+
+  # =========================================================================
+  # CONFIGURATION DU MONITORING
+  # =========================================================================
+
+  MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: "{{ notification_monitoring.endpoints.expose | join(',') }}"
+  MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: "{{ notification_monitoring.health.show_details }}"
+  MANAGEMENT_METRICS_EXPORT_PROMETHEUS_ENABLED: "{{ notification_monitoring.prometheus.enabled | string | lower }}"
+  MANAGEMENT_METRICS_EXPORT_PROMETHEUS_STEP: "{{ notification_monitoring.prometheus.step }}"
+  MANAGEMENT_METRICS_EXPORT_PROMETHEUS_DESCRIPTIONS: "{{ notification_monitoring.prometheus.descriptions | string | lower }}"
+  MONITORING_TRACING_ENABLED: "{{ notification_monitoring.tracing.enabled | string | lower }}"
+  MONITORING_TRACING_SAMPLE_RATE: "{{ notification_monitoring.tracing.sample_rate | string }}"
+  MONITORING_CUSTOM_METRICS_ENABLED: "{{ notification_monitoring.custom_metrics.enabled | string | lower }}"
+
+  # =========================================================================
+  # CONFIGURATION DU LOGGING
+  # =========================================================================
+
+  LOGGING_LEVEL_ROOT: "{{ notification_logging.levels.root }}"
+  LOGGING_LEVEL_NOTIFICATION: "{{ notification_logging.levels.notification }}"
+  LOGGING_LEVEL_SPRING: "{{ notification_logging.levels.spring }}"
+  LOGGING_LEVEL_HIBERNATE: "{{ notification_logging.levels.hibernate }}"
+  LOGGING_PATTERN_CONSOLE: "{{ notification_logging.patterns.console }}"
+  LOGGING_PATTERN_FILE: "{{ notification_logging.patterns.file }}"
+  LOGGING_FILE_NAME: "{{ notification_logging.file.name }}"
+  LOGGING_FILE_MAX_SIZE: "{{ notification_logging.file.max_size }}"
+  LOGGING_FILE_MAX_HISTORY: "{{ notification_logging.file.max_history | string }}"
+  LOGGING_STRUCTURED_ENABLED: "{{ notification_logging.structured.enabled | string | lower }}"
+  LOGGING_STRUCTURED_FORMAT: "{{ notification_logging.structured.format }}"
+
+  # =========================================================================
+  # CONFIGURATION DE LA BASE DE DONNÉES
+  # =========================================================================
+
+  DATABASE_DRIVER: "{{ notification_database.driver }}"
+  DATABASE_URL: "{{ notification_database.url }}"
+  DATABASE_USERNAME: "{{ notification_database.username }}"
+  DATABASE_CONNECTION_POOL_SIZE: "{{ notification_database.connection_pool.size | string }}"
+  DATABASE_CONNECTION_POOL_MAX_IDLE: "{{ notification_database.connection_pool.max_idle | string }}"
+  DATABASE_CONNECTION_POOL_MAX_WAIT: "{{ notification_database.connection_pool.max_wait | string }}"
+  DATABASE_CONNECTION_VALIDATION_QUERY: "{{ notification_database.validation_query }}"
+  DATABASE_CONNECTION_TEST_ON_BORROW: "{{ notification_database.test_on_borrow | string | lower }}"
+  DATABASE_MIGRATION_ENABLED: "{{ notification_database.migration.enabled | string | lower }}"
+  DATABASE_MIGRATION_BASELINE_ON_MIGRATE: "{{ notification_database.migration.baseline_on_migrate | string | lower }}"
+
+  # =========================================================================
+  # CONFIGURATION REDIS/CACHE
+  # =========================================================================
+
+  REDIS_ENABLED: "{{ notification_redis.enabled | string | lower }}"
+{% if notification_redis.enabled | bool %}
+  REDIS_HOST: "{{ notification_redis.host }}"
+  REDIS_PORT: "{{ notification_redis.port | string }}"
+  REDIS_DATABASE: "{{ notification_redis.database | string }}"
+  REDIS_CONNECTION_POOL_SIZE: "{{ notification_redis.connection_pool.size | string }}"
+  REDIS_CONNECTION_TIMEOUT: "{{ notification_redis.connection_timeout | string }}"
+  REDIS_COMMAND_TIMEOUT: "{{ notification_redis.command_timeout | string }}"
+{% endif %}
+
+  # =========================================================================
+  # CONFIGURATION SPÉCIFIQUE ENVIRONNEMENT
+  # =========================================================================
+{% if notification_environment == 'development' %}
+
+  # Configuration développement
+  LOGGING_LEVEL_ROOT: "DEBUG"
+  LOGGING_LEVEL_NOTIFICATION: "DEBUG"
   MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: "always"
-  MANAGEMENT_METRICS_EXPORT_PROMETHEUS_ENABLED: "{{ notification_prometheus_scrape | string | lower }}"
+  SECURITY_RATE_LIMIT_ENABLED: "false"
+  NOTIFICATION_TEMPLATES_AUTO_RELOAD: "true"
+  NOTIFICATION_TEMPLATES_VALIDATION_ENABLED: "true"
+  MONITORING_CUSTOM_METRICS_ENABLED: "true"
 
-  # Configuration de la sécurité
-  SECURITY_REQUIRE_SSL: "{{ notification_tls_enabled | string | lower }}"
-  SECURITY_AUTHENTICATION_ENABLED: "{{ notification_auth_enabled | string | lower }}"
-  SECURITY_RATE_LIMIT: "{{ notification_rate_limit }}"
+{% elif notification_environment == 'staging' %}
 
-  # Configuration de l'application
+  # Configuration staging
+  LOGGING_LEVEL_ROOT: "INFO"
+  LOGGING_LEVEL_NOTIFICATION: "INFO"
+  MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: "when-authorized"
+  SECURITY_RATE_LIMIT_ENABLED: "true"
+  NOTIFICATION_TEMPLATES_AUTO_RELOAD: "false"
+  NOTIFICATION_TEMPLATES_VALIDATION_ENABLED: "true"
+  MONITORING_CUSTOM_METRICS_ENABLED: "true"
+
+{% elif notification_environment == 'production' %}
+
+  # Configuration production
+  LOGGING_LEVEL_ROOT: "WARN"
+  LOGGING_LEVEL_NOTIFICATION: "INFO"
+  MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: "never"
+  SECURITY_RATE_LIMIT_ENABLED: "true"
+  SECURITY_REQUIRE_SSL: "true"
+  SECURITY_CORS_ENABLED: "false"
+  NOTIFICATION_TEMPLATES_AUTO_RELOAD: "false"
+  NOTIFICATION_TEMPLATES_VALIDATION_ENABLED: "false"
+  MONITORING_CUSTOM_METRICS_ENABLED: "false"
+  LOGGING_STRUCTURED_ENABLED: "true"
+
+{% endif %}
+
+  # =========================================================================
+  # CONFIGURATION HEALTH CHECKS
+  # =========================================================================
+
+  HEALTH_CHECK_ENABLED: "{{ notification_health_checks.enabled | string | lower }}"
+  HEALTH_CHECK_INTERVAL: "{{ notification_health_checks.interval | string }}"
+  HEALTH_CHECK_TIMEOUT: "{{ notification_health_checks.timeout | string }}"
+  HEALTH_CHECK_DATABASE_ENABLED: "{{ notification_health_checks.database.enabled | string | lower }}"
+  HEALTH_CHECK_REDIS_ENABLED: "{{ notification_health_checks.redis.enabled | string | lower }}"
+  HEALTH_CHECK_EMAIL_ENABLED: "{{ notification_health_checks.email.enabled | string | lower }}"
+  HEALTH_CHECK_SLACK_ENABLED: "{{ notification_health_checks.slack.enabled | string | lower }}"
+  HEALTH_CHECK_SMS_ENABLED: "{{ notification_health_checks.sms.enabled | string | lower }}"
+
+  # =========================================================================
+  # FICHIERS DE CONFIGURATION
+  # =========================================================================
+
+  # Configuration Spring Boot complète
   application.yml: |
     spring:
       application:
-        name: {{ app_name }}
+        name: {{ notification_service_name }}
       profiles:
-        active: {{ app_environment }}
+        active: {{ notification_environment }}
       
     server:
-      port: {{ notification_default_port }}
+      port: {{ notification_network.service.port }}
+      servlet:
+        context-path: {{ notification_network.context_path | default('/') }}
+      compression:
+        enabled: {{ notification_network.compression.enabled | default(true) }}
+        min-response-size: {{ notification_network.compression.min_size | default('1024') }}
+      tomcat:
+        max-threads: {{ notification_resources.limits.threads | default('200') }}
+        connection-timeout: {{ notification_network.connection_timeout | default('20000') }}
       
     management:
       endpoints:
         web:
           exposure:
-            include: health,info,prometheus,metrics
+            include: {{ notification_monitoring.endpoints.expose | join(',') }}
+          base-path: {{ notification_endpoints.management }}
       endpoint:
         health:
-          show-details: always
+          show-details: {{ notification_monitoring.health.show_details }}
+          show-components: {{ notification_monitoring.health.show_components | default('always') }}
       metrics:
         export:
           prometheus:
-            enabled: {{ notification_prometheus_scrape | string | lower }}
+            enabled: {{ notification_monitoring.prometheus.enabled }}
+            step: {{ notification_monitoring.prometheus.step }}
+            descriptions: {{ notification_monitoring.prometheus.descriptions }}
+        tags:
+          application: {{ notification_service_name }}
+          environment: {{ notification_environment }}
+          version: {{ notification_service_meta.version }}
             
     notification:
+      service:
+        id: {{ notification_service_name }}-{{ notification_environment }}
+        name: {{ notification_service_meta.name }}
+        description: {{ notification_service_meta.description }}
+        version: {{ notification_service_meta.version }}
+        
       channels:
         email:
-          enabled: {{ notification_channels.email.enabled | string | lower }}
-{% if notification_channels.email.enabled | default(true) | bool %}
-          host: {{ notification_channels.email.smtp_host }}
-          port: {{ notification_channels.email.smtp_port }}
-          from: {{ notification_channels.email.from_address }}
+          enabled: {{ notification_app_config.channels.email.enabled }}
+{% if notification_app_config.channels.email.enabled | bool %}
+          smtp:
+            host: {{ notification_app_config.channels.email.smtp.host }}
+            port: {{ notification_app_config.channels.email.smtp.port }}
+            encryption: {{ notification_app_config.channels.email.smtp.encryption }}
+            auth-enabled: {{ notification_app_config.channels.email.smtp.auth_enabled }}
+            connection-timeout: {{ notification_app_config.channels.email.smtp.connection_timeout }}
+            read-timeout: {{ notification_app_config.channels.email.smtp.read_timeout }}
+          from-address: {{ notification_app_config.channels.email.from_address }}
+          from-name: {{ notification_app_config.channels.email.from_name }}
+          reply-to: {{ notification_app_config.channels.email.reply_to }}
+          max-retries: {{ notification_app_config.channels.email.max_retries }}
+          rate-limit:
+            requests-per-minute: {{ notification_app_config.channels.email.rate_limit.requests_per_minute }}
 {% endif %}
+        
         slack:
-          enabled: {{ notification_channels.slack.enabled | string | lower }}
-{% if notification_channels.slack.enabled | default(true) | bool %}
-          default-channel: {{ notification_channels.slack.default_channel }}
+          enabled: {{ notification_app_config.channels.slack.enabled }}
+{% if notification_app_config.channels.slack.enabled | bool %}
+          default-channel: {{ notification_app_config.channels.slack.default_channel }}
+          bot-name: {{ notification_app_config.channels.slack.bot_name }}
+          bot-emoji: {{ notification_app_config.channels.slack.bot_emoji }}
+          connection-timeout: {{ notification_app_config.channels.slack.connection_timeout }}
+          max-retries: {{ notification_app_config.channels.slack.max_retries }}
+          rate-limit:
+            requests-per-minute: {{ notification_app_config.channels.slack.rate_limit.requests_per_minute }}
 {% endif %}
+        
         sms:
-          enabled: {{ notification_channels.sms.enabled | string | lower }}
-{% if notification_channels.sms.enabled | default(false) | bool %}
-          provider: {{ notification_channels.sms.provider }}
-          from-number: {{ notification_channels.sms.from_number }}
+          enabled: {{ notification_app_config.channels.sms.enabled }}
+{% if notification_app_config.channels.sms.enabled | bool %}
+          provider: {{ notification_app_config.channels.sms.provider }}
+          from-number: {{ notification_app_config.channels.sms.from_number }}
+          connection-timeout: {{ notification_app_config.channels.sms.connection_timeout }}
+          max-retries: {{ notification_app_config.channels.sms.max_retries }}
+          rate-limit:
+            requests-per-minute: {{ notification_app_config.channels.sms.rate_limit.requests_per_minute }}
 {% endif %}
       
       templates:
-        path: {{ notification_templates_path }}
-        default-language: {{ notification_default_language }}
-        available-languages: {{ notification_available_languages | to_json }}
+        path: {{ notification_app_config.templates.path }}
+        cache-enabled: {{ notification_app_config.templates.cache_enabled }}
+        cache-ttl: {{ notification_app_config.templates.cache_ttl }}
+        default-language: {{ notification_app_config.templates.default_language }}
+        available-languages: {{ notification_app_config.templates.available_languages | to_json }}
+        auto-reload: {{ notification_app_config.templates.auto_reload }}
+        validation-enabled: {{ notification_app_config.templates.validation_enabled }}
+        
+      queue:
+        provider: {{ notification_app_config.queue.provider }}
+        max-size: {{ notification_app_config.queue.max_size }}
+        batch-size: {{ notification_app_config.queue.batch_size }}
+        retry-policy: {{ notification_app_config.queue.retry_policy }}
+        max-retries: {{ notification_app_config.queue.max_retries }}
+        retry-delay: {{ notification_app_config.queue.retry_delay }}
+        dead-letter-enabled: {{ notification_app_config.queue.dead_letter_enabled }}
+        persistence-enabled: {{ notification_app_config.queue.persistence_enabled }}
         
       security:
-        require-ssl: {{ notification_tls_enabled | string | lower }}
-        authentication-enabled: {{ notification_auth_enabled | string | lower }}
-        rate-limit: {{ notification_rate_limit }}
+        require-ssl: {{ notification_tls.enabled }}
+        authentication:
+          enabled: {{ notification_security.authentication.enabled }}
+          provider: {{ notification_security.authentication.provider }}
+        rate-limiting:
+          enabled: {{ notification_security.rate_limiting.enabled }}
+          requests-per-minute: {{ notification_security.rate_limiting.requests_per_minute }}
+          burst-size: {{ notification_security.rate_limiting.burst_size }}
+        api-key:
+          required: {{ notification_security.api_key.required }}
+          header-name: {{ notification_security.api_key.header_name }}
+        cors:
+          enabled: {{ notification_security.cors.enabled }}
+          allowed-origins: {{ notification_security.cors.allowed_origins | to_json }}
+        encryption:
+          enabled: {{ notification_security.encryption.enabled }}
+          algorithm: {{ notification_security.encryption.algorithm }}
+
+    logging:
+      level:
+        root: {{ notification_logging.levels.root }}
+        com.lions.notification: {{ notification_logging.levels.notification }}
+        org.springframework: {{ notification_logging.levels.spring }}
+        org.hibernate: {{ notification_logging.levels.hibernate }}
+      pattern:
+        console: {{ notification_logging.patterns.console }}
+        file: {{ notification_logging.patterns.file }}
+      file:
+        name: {{ notification_logging.file.name }}
+        max-size: {{ notification_logging.file.max_size }}
+        max-history: {{ notification_logging.file.max_history }}
+
+  # =========================================================================
+  # SCRIPTS UTILITAIRES
+  # =========================================================================
+
+  # Script d'initialisation
+  init.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    echo "🚀 Initialisation du service de notification {{ notification_service_meta.version }} pour l'environnement {{ notification_environment }}"
+
+    # Création des répertoires nécessaires
+    mkdir -p {{ notification_app_config.data_path }}/{logs,templates,cache}
+    mkdir -p {{ notification_app_config.templates.path }}
+
+    # Configuration des permissions
+    chown -R {{ notification_security.run_as_user }}:{{ notification_security.run_as_group }} {{ notification_app_config.data_path }}
+
+    # Vérification de la configuration
+    if [[ -f "{{ notification_app_config.data_path }}/config/application-custom.yml" ]]; then
+        echo "✅ Configuration personnalisée trouvée"
+    else
+        echo "⚠️  Aucune configuration personnalisée, utilisation des variables d'environnement"
+    fi
+
+    echo "✅ Initialisation du service de notification terminée"
+
+  # Script de health check
+  health-check.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    NOTIFICATION_URL="http://localhost:{{ notification_network.service.port }}"
+    HEALTH_ENDPOINT="${NOTIFICATION_URL}{{ notification_endpoints.health }}"
+
+    # Vérification de la disponibilité de l'API
+    if curl -sf "${HEALTH_ENDPOINT}" >/dev/null 2>&1; then
+        echo "✅ Service de notification API accessible"
+        exit 0
+    else
+        echo "❌ Service de notification API non accessible"
+        exit 1
+    fi
+
+  # Script de configuration post-démarrage
+  post-start.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    echo "🔧 Configuration post-démarrage du service de notification"
+
+    # Attendre que le service soit disponible
+    timeout 120 bash -c 'until curl -sf http://localhost:{{ notification_network.service.port }}{{ notification_endpoints.health }}; do sleep 2; done'
+
+    # Configuration spécifique à l'environnement
+    if [[ "{{ notification_environment }}" == "production" ]]; then
+        echo "🔒 Application des configurations de sécurité pour la production"
+        # Configurations spécifiques production
+    fi
+
+    echo "✅ Configuration post-démarrage terminée"
+
+---
+# =========================================================================
+# FIN DU TEMPLATE CONFIGMAP NOTIFICATION SERVICE
+# =========================================================================

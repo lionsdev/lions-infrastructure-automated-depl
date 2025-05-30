@@ -1,80 +1,419 @@
 ---
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - VALIDATION PGADMIN
+# =========================================================================
 # Titre: Validation post-déploiement pour pgAdmin
-# Description: Valide le déploiement de pgAdmin
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-10
-# Version: 1.0.0
+# Description: Valide le déploiement et la santé de pgAdmin avec contrôles avancés
+# Auteur: Équipe LIONS Infrastructure DevOps
+# Date: 2025-05-30
+# Version: 5.0.0
+# Dépendances: kubernetes.core, ansible.builtin
+# Documentation: https://docs.lions.dev/infrastructure/pgadmin/validation
+# =========================================================================
 
-- name: Récupération des informations sur les pods après initialisation
+# =========================================================================
+# VALIDATION DES VARIABLES REQUISES
+# =========================================================================
+- name: "{{ lions_task_prefix }} Validation des variables critiques"
+  ansible.builtin.assert:
+    that:
+      - app_namespace is defined and app_namespace != ""
+      - app_name is defined and app_name != ""
+      - app_version is defined and app_version != ""
+      - lions_environment is defined
+    fail_msg: "Variables critiques manquantes pour la validation de pgAdmin"
+    success_msg: "Variables critiques validées avec succès"
+  tags: [validation, prerequisites]
+
+# =========================================================================
+# PRÉPARATION DE LA VALIDATION
+# =========================================================================
+- name: "{{ lions_task_prefix }} Définition des variables de validation"
+  ansible.builtin.set_fact:
+    pgadmin_validation_config:
+      namespace: "{{ app_namespace | default(lions_pgadmin_namespace) }}"
+      service_name: "{{ app_name }}"
+      service_port: "{{ pgadmin_port | default(lions_pgadmin_port) }}"
+      health_endpoint: "{{ pgadmin_health_path | default('/misc/ping') }}"
+      timeout_seconds: "{{ lions_timeout_default | default(300) }}"
+      retry_count: "{{ lions_validation_retry_count | default(30) }}"
+      retry_delay: "{{ lions_validation_retry_delay | default(10) }}"
+      postgres_service: "{{ pgadmin_database_service | default(lions_postgres_service_name) }}"
+      postgres_port: "{{ pgadmin_database_port | default(lions_postgres_port) }}"
+      external_url: "{{ pgadmin_external_url | default('https://' + app_name + '.' + lions_dns_full_domain) }}"
+    cacheable: yes
+  tags: [validation, setup]
+
+- name: "{{ lions_task_prefix }} Affichage de la configuration de validation"
+  ansible.builtin.debug:
+    var: pgladmin_validation_config
+    verbosity: "{{ 2 if lions_debug_mode else 1 }}"
+  tags: [validation, debug]
+
+# =========================================================================
+# VALIDATION DE L'INFRASTRUCTURE KUBERNETES
+# =========================================================================
+- name: "{{ lions_task_prefix }} Vérification de l'existence du namespace"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: "{{ pgadmin_validation_config.namespace }}"
+  register: namespace_info
+  failed_when: namespace_info.resources | length == 0
+  tags: [validation, infrastructure]
+
+- name: "{{ lions_task_prefix }} Validation du namespace"
+  ansible.builtin.assert:
+    that:
+      - namespace_info.resources | length > 0
+      - namespace_info.resources[0].status.phase == "Active"
+    fail_msg: "Le namespace {{ pgadmin_validation_config.namespace }} n'existe pas ou n'est pas actif"
+    success_msg: "Namespace {{ pgadmin_validation_config.namespace }} validé"
+  tags: [validation, infrastructure]
+
+# =========================================================================
+# VALIDATION DES RESSOURCES PGADMIN
+# =========================================================================
+- name: "{{ lions_task_prefix }} Récupération des informations sur le déploiement"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: "{{ pgadmin_validation_config.service_name }}"
+    namespace: "{{ pgadmin_validation_config.namespace }}"
+  register: deployment_info
+  tags: [validation, resources]
+
+- name: "{{ lions_task_prefix }} Validation du déploiement"
+  ansible.builtin.assert:
+    that:
+      - deployment_info.resources | length > 0
+      - deployment_info.resources[0].status.readyReplicas | default(0) > 0
+    fail_msg: "Le déploiement pgAdmin n'est pas prêt"
+    success_msg: "Déploiement pgAdmin validé"
+  tags: [validation, resources]
+
+- name: "{{ lions_task_prefix }} Récupération des informations sur les pods"
   kubernetes.core.k8s_info:
     api_version: v1
     kind: Pod
-    namespace: "{{ app_namespace }}"
+    namespace: "{{ pgadmin_validation_config.namespace }}"
     label_selectors:
-      - app={{ app_name }}
-  register: pods_info_after_init
+      - "app={{ pgadmin_validation_config.service_name }}"
+      - "lions.dev/component=pgadmin"
+  register: pods_info
+  tags: [validation, resources]
 
-- name: Attente que pgAdmin soit prêt
-  uri:
-    url: "http://{{ app_name }}.{{ app_namespace }}.svc.cluster.local:{{ pgadmin_default_port }}{{ pgadmin_health_path | default('/') }}"
-    status_code: 200
-    validate_certs: no
-  register: health_check
-  until: health_check.status == 200
-  retries: 30
-  delay: 10
-  failed_when: false
+- name: "{{ lions_task_prefix }} Validation des pods"
+  ansible.builtin.assert:
+    that:
+      - pods_info.resources | length > 0
+      - pods_info.resources | selectattr('status.phase', 'equalto', 'Running') | list | length > 0
+    fail_msg: "Aucun pod pgAdmin en cours d'exécution"
+    success_msg: "{{ pods_info.resources | length }} pod(s) pgAdmin en cours d'exécution"
+  tags: [validation, resources]
 
-- name: Vérification de l'état de santé de pgAdmin
-  debug:
-    msg: "pgAdmin {{ app_name }} est en bonne santé et prêt à recevoir des requêtes."
-  when: health_check.status is defined and health_check.status == 200
+- name: "{{ lions_task_prefix }} Validation du statut des conteneurs"
+  ansible.builtin.assert:
+    that:
+      - item.status.containerStatuses | selectattr('ready', 'equalto', true) | list | length > 0
+    fail_msg: "Le pod {{ item.metadata.name }} n'a pas de conteneurs prêts"
+    success_msg: "Conteneurs du pod {{ item.metadata.name }} prêts"
+  loop: "{{ pods_info.resources }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+  tags: [validation, resources]
 
-- name: Avertissement si pgAdmin n'est pas en bonne santé
-  debug:
-    msg: "AVERTISSEMENT: pgAdmin {{ app_name }} n'est pas en bonne santé. Vérifiez les logs pour plus d'informations."
-  when: health_check.status is not defined or health_check.status != 200
+# =========================================================================
+# VALIDATION DU SERVICE
+# =========================================================================
+- name: "{{ lions_task_prefix }} Récupération des informations sur le service"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Service
+    name: "{{ pgladmin_validation_config.service_name }}"
+    namespace: "{{ pgladmin_validation_config.namespace }}"
+  register: service_info
+  tags: [validation, service]
 
-- name: Affichage de l'URL d'accès
-  set_fact:
-    service_url: "{{ app_name }}.{{ app_namespace }}.svc.cluster.local:{{ pgadmin_default_port }}"
-    ingress_url: "{{ app_name }}.{{ app_environment }}.lions.dev"
+- name: "{{ lions_task_prefix }} Validation du service"
+  ansible.builtin.assert:
+    that:
+      - service_info.resources | length > 0
+      - service_info.resources[0].spec.ports | length > 0
+    fail_msg: "Service pgAdmin non trouvé ou mal configuré"
+    success_msg: "Service pgAdmin validé"
+  tags: [validation, service]
 
-- name: Affichage des informations d'accès
-  debug:
-    msg: 
-      - "pgAdmin {{ app_name }} est accessible à l'adresse interne: {{ service_url }}"
-      - "pgAdmin {{ app_name }} est accessible à l'adresse externe: https://{{ ingress_url }} (si l'ingress est configuré)"
-
-- name: Vérification de la connexion à Postgres
+# =========================================================================
+# VALIDATION DE LA CONNECTIVITÉ INTERNE
+# =========================================================================
+- name: "{{ lions_task_prefix }} Test de connectivité interne"
   kubernetes.core.k8s_exec:
-    namespace: "{{ app_namespace }}"
-    pod: "{{ pods_info_after_init.resources[0].metadata.name }}"
-    command: >
-      curl -s http://{{ pgadmin_database_service | default('postgres') }}:{{ pgadmin_database_port | default('5432') }}
-  register: postgres_connection
+    namespace: "{{ pgladmin_validation_config.namespace }}"
+    pod: "{{ pods_info.resources[0].metadata.name }}"
+    command: >-
+      /bin/sh -c "
+      timeout {{ pgladmin_validation_config.timeout_seconds }} 
+      wget --spider --quiet --timeout=10 --tries=3
+      http://localhost:{{ pgladmin_validation_config.service_port }}{{ pgladmin_validation_config.health_endpoint }} 
+      && echo 'SUCCESS' || echo 'FAILED'
+      "
+  register: internal_connectivity_test
   failed_when: false
-  when: pods_info_after_init.resources | length > 0
+  when: pods_info.resources | length > 0
+  tags: [validation, connectivity]
 
-- name: Affichage du statut de connexion à Postgres
-  debug:
-    msg: "La connexion à Postgres est {{ 'établie' if postgres_connection.rc == 0 else 'impossible' }}."
-  when: pods_info_after_init.resources | length > 0
+- name: "{{ lions_task_prefix }} Validation de la connectivité interne"
+  ansible.builtin.assert:
+    that:
+      - internal_connectivity_test.stdout is defined
+      - "'SUCCESS' in internal_connectivity_test.stdout"
+    fail_msg: "Test de connectivité interne échoué"
+    success_msg: "Connectivité interne validée"
+  when: pods_info.resources | length > 0
+  tags: [validation, connectivity]
 
-- name: Récupération des logs de pgAdmin
+# =========================================================================
+# VALIDATION DE LA SANTÉ DE L'APPLICATION
+# =========================================================================
+- name: "{{ lions_task_prefix }} Test de santé via service Kubernetes"
+  uri:
+    url: "http://{{ pgladmin_validation_config.service_name }}.{{ pgladmin_validation_config.namespace }}.svc.cluster.local:{{ pgladmin_validation_config.service_port }}{{ pgladmin_validation_config.health_endpoint }}"
+    method: GET
+    timeout: "{{ pgladmin_validation_config.timeout_seconds }}"
+    status_code: [200, 302]
+    validate_certs: false
+    follow_redirects: safe
+  register: health_check_internal
+  until: health_check_internal.status in [200, 302]
+  retries: "{{ pgladmin_validation_config.retry_count }}"
+  delay: "{{ pgladmin_validation_config.retry_delay }}"
+  failed_when: false
+  delegate_to: localhost
+  tags: [validation, health]
+
+- name: "{{ lions_task_prefix }} Validation de la santé interne"
+  ansible.builtin.debug:
+    msg:
+      - "✅ pgAdmin {{ pgladmin_validation_config.service_name }} est en bonne santé"
+      - "📊 Code de statut: {{ health_check_internal.status | default('N/A') }}"
+      - "⏱️  Temps de réponse: {{ health_check_internal.elapsed | default('N/A') }}s"
+  when: health_check_internal.status is defined and health_check_internal.status in [200, 302]
+  tags: [validation, health]
+
+- name: "{{ lions_task_prefix }} Avertissement santé interne"
+  ansible.builtin.debug:
+    msg:
+      - "⚠️  AVERTISSEMENT: pgAdmin {{ pgladmin_validation_config.service_name }} n'est pas en bonne santé"
+      - "📊 Code de statut: {{ health_check_internal.status | default('N/A') }}"
+      - "🔍 Vérifiez les logs pour plus d'informations"
+  when: health_check_internal.status is not defined or health_check_internal.status not in [200, 302]
+  tags: [validation, health]
+
+# =========================================================================
+# VALIDATION DE LA BASE DE DONNÉES POSTGRES
+# =========================================================================
+- name: "{{ lions_task_prefix }} Test de connectivité vers PostgreSQL"
+  kubernetes.core.k8s_exec:
+    namespace: "{{ pgladmin_validation_config.namespace }}"
+    pod: "{{ pods_info.resources[0].metadata.name }}"
+    command: >-
+      /bin/sh -c "
+      timeout 30 
+      nc -z {{ pgladmin_validation_config.postgres_service }}.{{ lions_postgres_namespace | default('database') }}.svc.cluster.local {{ pgladmin_validation_config.postgres_port }}
+      && echo 'POSTGRES_REACHABLE' || echo 'POSTGRES_UNREACHABLE'
+      "
+  register: postgres_connectivity_test
+  failed_when: false
+  when:
+    - pods_info.resources | length > 0
+    - lions_postgres_enabled | default(true) | bool
+  tags: [validation, database]
+
+- name: "{{ lions_task_prefix }} Validation de la connectivité PostgreSQL"
+  ansible.builtin.debug:
+    msg:
+      - "{{ '✅ Connexion à PostgreSQL établie' if 'POSTGRES_REACHABLE' in postgres_connectivity_test.stdout else '❌ Connexion à PostgreSQL impossible' }}"
+      - "🔗 Serveur: {{ pgladmin_validation_config.postgres_service }}.{{ lions_postgres_namespace | default('database') }}.svc.cluster.local:{{ pgladmin_validation_config.postgres_port }}"
+  when:
+    - postgres_connectivity_test is defined
+    - lions_postgres_enabled | default(true) | bool
+  tags: [validation, database]
+
+# =========================================================================
+# VALIDATION DE L'INGRESS (SI CONFIGURÉ)
+# =========================================================================
+- name: "{{ lions_task_prefix }} Vérification de l'existence de l'Ingress"
+  kubernetes.core.k8s_info:
+    api_version: networking.k8s.io/v1
+    kind: Ingress
+    name: "{{ pgladmin_validation_config.service_name }}"
+    namespace: "{{ pgladmin_validation_config.namespace }}"
+  register: ingress_info
+  when: lions_security_tls_enabled | default(true) | bool
+  tags: [validation, ingress]
+
+- name: "{{ lions_task_prefix }} Test de l'accès externe (si Ingress configuré)"
+  uri:
+    url: "{{ pgladmin_validation_config.external_url }}{{ pgladmin_validation_config.health_endpoint }}"
+    method: GET
+    timeout: 30
+    status_code: [200, 302, 401, 403]  # 401/403 acceptable si auth requise
+    validate_certs: "{{ not (lions_security_tls_staging | default(true) | bool) }}"
+    follow_redirects: safe
+  register: external_health_check
+  failed_when: false
+  when:
+    - ingress_info is defined
+    - ingress_info.resources | length > 0
+    - lions_security_tls_enabled | default(true) | bool
+  delegate_to: localhost
+  tags: [validation, external]
+
+# =========================================================================
+# COLLECTE DES LOGS ET DIAGNOSTICS
+# =========================================================================
+- name: "{{ lions_task_prefix }} Récupération des logs récents"
   kubernetes.core.k8s_log:
-    namespace: "{{ app_namespace }}"
-    name: "{{ pods_info_after_init.resources[0].metadata.name }}"
-    container: "{{ app_name }}"
-  register: pgadmin_logs
-  when: pods_info_after_init.resources | length > 0
+    namespace: "{{ pgladmin_validation_config.namespace }}"
+    name: "{{ pods_info.resources[0].metadata.name }}"
+    container: "{{ pgladmin_validation_config.service_name }}"
+    tail_lines: 50
+  register: pgladmin_logs
+  when:
+    - pods_info.resources | length > 0
+    - lions_debug_mode | default(false) | bool or health_check_internal.status | default(0) not in [200, 302]
+  tags: [validation, logs]
 
-- name: Vérification des erreurs dans les logs
-  debug:
-    msg: "AVERTISSEMENT: Des erreurs ont été détectées dans les logs de pgAdmin. Veuillez les vérifier."
-  when: pods_info_after_init.resources | length > 0 and pgadmin_logs.log is search("ERROR")
+- name: "{{ lions_task_prefix }} Analyse des logs pour erreurs critiques"
+  ansible.builtin.set_fact:
+    log_errors_found: "{{ pgladmin_logs.log | default('') | regex_findall('(ERROR|FATAL|CRITICAL|EXCEPTION).*') }}"
+  when: pgladmin_logs is defined and pgladmin_logs.log is defined
+  tags: [validation, logs]
 
-- name: Résumé du déploiement
-  debug:
-    msg: "Le déploiement de pgAdmin {{ app_name }} en version {{ app_version }} est terminé avec succès."
-  when: health_check.status is defined and health_check.status == 200
+- name: "{{ lions_task_prefix }} Rapport des erreurs dans les logs"
+  ansible.builtin.debug:
+    msg:
+      - "⚠️  ATTENTION: Erreurs détectées dans les logs de pgAdmin"
+      - "🔍 Erreurs trouvées:"
+      - "{{ log_errors_found }}"
+  when:
+    - log_errors_found is defined
+    - log_errors_found | length > 0
+  tags: [validation, logs]
+
+# =========================================================================
+# VALIDATION DES MÉTRIQUES ET MONITORING
+# =========================================================================
+- name: "{{ lions_task_prefix }} Vérification du ServiceMonitor"
+  kubernetes.core.k8s_info:
+    api_version: monitoring.coreos.com/v1
+    kind: ServiceMonitor
+    name: "{{ pgladmin_validation_config.service_name }}"
+    namespace: "{{ pgladmin_validation_config.namespace }}"
+  register: servicemonitor_info
+  when: lions_monitoring_enabled | default(true) | bool
+  tags: [validation, monitoring]
+
+- name: "{{ lions_task_prefix }} Validation du monitoring"
+  ansible.builtin.debug:
+    msg: "{{ '✅ ServiceMonitor configuré pour le monitoring' if servicemonitor_info.resources | length > 0 else '⚠️  ServiceMonitor non trouvé - monitoring non configuré' }}"
+  when: lions_monitoring_enabled | default(true) | bool
+  tags: [validation, monitoring]
+
+# =========================================================================
+# VALIDATION DES RESSOURCES ET PERFORMANCE
+# =========================================================================
+- name: "{{ lions_task_prefix }} Collecte des métriques de ressources"
+  kubernetes.core.k8s_exec:
+    namespace: "{{ pgladmin_validation_config.namespace }}"
+    pod: "{{ pods_info.resources[0].metadata.name }}"
+    command: >-
+      /bin/sh -c "
+      echo 'CPU_USAGE:' && cat /sys/fs/cgroup/cpu/cpuacct.usage 2>/dev/null || echo 'N/A';
+      echo 'MEMORY_USAGE:' && cat /sys/fs/cgroup/memory/memory.usage_in_bytes 2>/dev/null || echo 'N/A';
+      echo 'DISK_USAGE:' && df -h /var/lib/pgladmin 2>/dev/null || echo 'N/A'
+      "
+  register: resource_metrics
+  failed_when: false
+  when:
+    - pods_info.resources | length > 0
+    - lions_debug_mode | default(false) | bool
+  tags: [validation, performance]
+
+- name: "{{ lions_task_prefix }} Affichage des métriques de ressources"
+  ansible.builtin.debug:
+    var: resource_metrics.stdout_lines
+  when:
+    - resource_metrics is defined
+    - resource_metrics.stdout_lines is defined
+    - lions_debug_mode | default(false) | bool
+  tags: [validation, performance]
+
+# =========================================================================
+# RÉSUMÉ DE LA VALIDATION
+# =========================================================================
+- name: "{{ lions_task_prefix }} Génération du rapport de validation"
+  ansible.builtin.set_fact:
+    pgladmin_validation_report:
+      status: "{{ 'SUCCESS' if (health_check_internal.status | default(0) in [200, 302]) else 'WARNING' }}"
+      service_name: "{{ pgladmin_validation_config.service_name }}"
+      namespace: "{{ pgladmin_validation_config.namespace }}"
+      version: "{{ app_version }}"
+      environment: "{{ lions_environment }}"
+      pods_running: "{{ pods_info.resources | selectattr('status.phase', 'equalto', 'Running') | list | length }}"
+      internal_url: "http://{{ pgladmin_validation_config.service_name }}.{{ pgladmin_validation_config.namespace }}.svc.cluster.local:{{ pgladmin_validation_config.service_port }}"
+      external_url: "{{ pgladmin_validation_config.external_url if (ingress_info is defined and ingress_info.resources | length > 0) else 'Non configuré' }}"
+      postgres_connectivity: "{{ 'OK' if (postgres_connectivity_test is defined and 'POSTGRES_REACHABLE' in postgres_connectivity_test.stdout) else 'NOK' }}"
+      monitoring_enabled: "{{ 'OK' if (servicemonitor_info is defined and servicemonitor_info.resources | length > 0) else 'NOK' }}"
+      timestamp: "{{ ansible_date_time.iso8601 }}"
+  tags: [validation, report]
+
+- name: "{{ lions_task_prefix }} Affichage du rapport de validation final"
+  ansible.builtin.debug:
+    msg:
+      - "🎯 ===== RAPPORT DE VALIDATION PGADMIN ====="
+      - "📊 Statut global: {{ pgladmin_validation_report.status }}"
+      - "🏷️  Service: {{ pgladmin_validation_report.service_name }}"
+      - "📦 Version: {{ pgladmin_validation_report.version }}"
+      - "🌍 Environnement: {{ pgladmin_validation_report.environment }}"
+      - "🚀 Pods actifs: {{ pgladmin_validation_report.pods_running }}"
+      - "🔗 URL interne: {{ pgladmin_validation_report.internal_url }}"
+      - "🌐 URL externe: {{ pgladmin_validation_report.external_url }}"
+      - "🗄️  Connectivité PostgreSQL: {{ pgladmin_validation_report.postgres_connectivity }}"
+      - "📈 Monitoring: {{ pgladmin_validation_report.monitoring_enabled }}"
+      - "⏰ Validé le: {{ pgladmin_validation_report.timestamp }}"
+      - "============================================="
+  tags: [validation, report]
+
+- name: "{{ lions_task_prefix }} Sauvegarde du rapport de validation"
+  ansible.builtin.copy:
+    content: "{{ pgladmin_validation_report | to_nice_yaml }}"
+    dest: "/tmp/pgladmin-validation-{{ pgladmin_validation_config.service_name }}-{{ ansible_date_time.epoch }}.yml"
+    mode: '0644'
+  delegate_to: localhost
+  when: lions_debug_mode | default(false) | bool
+  tags: [validation, report]
+
+# =========================================================================
+# ACTIONS POST-VALIDATION
+# =========================================================================
+- name: "{{ lions_task_prefix }} Échec si validation critique échouée"
+  ansible.builtin.fail:
+    msg:
+      - "❌ Validation critique échouée pour pgAdmin {{ pgladmin_validation_config.service_name }}"
+      - "🔍 Vérifiez les logs et la configuration"
+      - "📊 Statut de santé: {{ health_check_internal.status | default('N/A') }}"
+  when:
+    - health_check_internal.status is not defined or health_check_internal.status not in [200, 302]
+    - not (lions_validation_ignore_failures | default(false) | bool)
+  tags: [validation, failure]
+
+- name: "{{ lions_task_prefix }} Validation pgAdmin terminée avec succès"
+  ansible.builtin.debug:
+    msg:
+      - "✅ Validation de pgAdmin {{ pgladmin_validation_config.service_name }} terminée avec succès"
+      - "🎯 Service opérationnel et prêt à recevoir des requêtes"
+      - "📈 Toutes les vérifications ont été effectuées"
+  when: health_check_internal.status is defined and health_check_internal.status in [200, 302]
+  tags: [validation, success]

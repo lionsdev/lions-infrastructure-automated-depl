@@ -1,27 +1,165 @@
 ---
-# Titre: Template de liaison de rôle RBAC pour la registry de conteneurs
-# Description: Définit la liaison de rôle RBAC pour la registry de conteneurs Docker
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-17
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - REGISTRY ROLEBINDING TEMPLATE
+# =========================================================================
+# Description: Template Jinja2 pour la liaison de rôle RBAC de la registry
+# Service: Container Registry (Docker Registry v2)
+# Component: RBAC RoleBinding
+# Maintainer: LIONS DevOps Team <devops@lions.dev>
+# Version: 5.0.0
+# Created: 2025-05-28
+# Last Updated: {{ ansible_date_time.iso8601 | default('2025-05-28T00:00:00Z') }}
+# =========================================================================
+# Security: This template defines RBAC permissions for registry operations
+# Dependencies: ServiceAccount, Role
+# Environment: {{ lions_environment | default(ansible_environment) | default('development') }}
+# =========================================================================
 
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: "{{ app_name | default('registry') }}-rolebinding"
-  namespace: "{{ app_namespace | default('registry') }}"
+  # Nom standardisé avec préfixe environnement pour éviter les conflits
+  name: "{{ lions_registry_service_name | default('registry') }}-rolebinding-{{ lions_environment | default('development') }}"
+
+  # Namespace dérivé des variables d'environnement LIONS
+  namespace: "{{ lions_registry_namespace | default('development') }}"
+
+  # Labels standardisés selon les conventions LIONS 5.0
   labels:
-    app: "{{ app_name | default('registry') }}"
-    version: "{{ app_version | default('latest') }}"
-    environment: "{{ app_environment | default('development') }}"
-    technology: "registry"
+    # Labels de base pour l'identification
+    app.kubernetes.io/name: "{{ lions_registry_service_name | default('registry') }}"
+    app.kubernetes.io/instance: "{{ lions_registry_service_name | default('registry') }}-{{ lions_environment | default('development') }}"
+    app.kubernetes.io/version: "{{ lions_registry_version | default('2.8') }}"
+    app.kubernetes.io/component: "rbac-rolebinding"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+
+    # Labels spécifiques LIONS
+    lions.dev/environment: "{{ lions_environment | default('development') }}"
+    lions.dev/tier: "infrastructure"
+    lions.dev/service-type: "registry"
+    lions.dev/deployment-mode: "{{ lions_deployment_mode | default('single') }}"
+    lions.dev/config-version: "{{ lions_config_version | default('5.0.0') }}"
+
+    # Labels pour la gestion du cycle de vie
+    lions.dev/created-by: "ansible-playbook"
+    lions.dev/creation-timestamp: "{{ ansible_date_time.epoch | default('0') }}"
+    lions.dev/backup-enabled: "{{ lions_backup_enabled | default('true') | string }}"
+    lions.dev/monitoring-enabled: "{{ lions_monitoring_enabled | default('true') | string }}"
+
+    # Labels pour la sécurité et la conformité
+    lions.dev/security-tier: "restricted"
+    lions.dev/rbac-scope: "namespace"
+    lions.dev/audit-required: "true"
+
+    # Labels pour le networking et les politiques
+    lions.dev/network-policy: "{{ lions_security_network_policies | default('true') | string }}"
+    lions.dev/tls-enabled: "{{ lions_security_tls_enabled | default('true') | string }}"
+
+    # Labels pour les ressources et la performance
+    lions.dev/resource-profile: "{{ registry_resource_profile | default('medium') }}"
+    lions.dev/autoscaling: "{{ lions_autoscaling_enabled | default('true') | string }}"
+
+  # Annotations enrichies pour la documentation et la traçabilité
   annotations:
-    description: "Liaison de rôle RBAC pour la registry {{ app_name | default('registry') }} ({{ app_version | default('latest') }}) en environnement {{ app_environment | default('development') }}"
+    # Documentation technique
+    description: "RBAC RoleBinding pour le service registry {{ lions_registry_service_name | default('registry') }} en environnement {{ lions_environment | default('development') }}"
+    lions.dev/service-description: "Container Registry service for storing and distributing Docker images"
+    lions.dev/rbac-description: "Grants necessary permissions for registry pod operations within namespace"
+
+    # Informations de déploiement
+    lions.dev/deployment-id: "{{ ansible_run_uuid | default('unknown') }}"
+    lions.dev/deployment-timestamp: "{{ ansible_date_time.iso8601 | default('2025-05-28T00:00:00Z') }}"
+    lions.dev/deployed-by: "{{ ansible_user_id | default('ansible') }}"
+    lions.dev/deployment-source: "ansible-playbook"
+
+    # Configuration et versions
+    lions.dev/ansible-playbook-version: "{{ ansible_version.full | default('unknown') }}"
+    lions.dev/kubernetes-version: "{{ lions_k8s_version | default('v1.30.2+k3s1') }}"
+    lions.dev/registry-config-hash: "{{ registry_config | default({}) | to_json | hash('sha256') }}"
+
+    # Informations de sécurité
+    lions.dev/security-context: "restricted"
+    lions.dev/rbac-permissions: "read,write,list,watch"
+    lions.dev/rbac-scope: "namespace-level"
+    lions.dev/security-scan-required: "true"
+
+    # Monitoring et alerting
+    lions.dev/monitoring-targets: "prometheus,grafana"
+    lions.dev/alert-severity: "warning"
+    lions.dev/sla-tier: "{{ registry_sla_tier | default('standard') }}"
+
+    # Backup et récupération
+    lions.dev/backup-strategy: "{{ lions_backup_enabled | default('true') | ternary('enabled', 'disabled') }}"
+    lions.dev/backup-retention: "{{ lions_backup_retention_days | default('30') }}d"
+    lions.dev/disaster-recovery-tier: "{{ registry_dr_tier | default('standard') }}"
+
+    # Documentation et support
+    lions.dev/documentation-url: "https://docs.lions.dev/infrastructure/registry"
+    lions.dev/support-contact: "devops@lions.dev"
+    lions.dev/runbook-url: "https://docs.lions.dev/runbooks/registry"
+
+    # Conformité et audit
+    lions.dev/compliance-required: "{{ registry_compliance_required | default('true') | string }}"
+    lions.dev/audit-log-enabled: "{{ lions_audit_enabled | default('true') | string }}"
+    lions.dev/policy-version: "{{ lions_security_policy_version | default('1.0') }}"
+
+# Référence vers le rôle à lier
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: "{{ app_name | default('registry') }}-role"
+  name: "{{ lions_registry_service_name | default('registry') }}-role-{{ lions_environment | default('development') }}"
+
+# Sujets auxquels les permissions sont accordées
 subjects:
-- kind: ServiceAccount
-  name: "{{ app_name | default('registry') }}"
-  namespace: "{{ app_namespace | default('registry') }}"
+  # Service Account principal pour le registry
+  - kind: ServiceAccount
+    name: "{{ lions_registry_service_name | default('registry') }}-sa-{{ lions_environment | default('development') }}"
+    namespace: "{{ lions_registry_namespace | default('development') }}"
+
+{% if registry_additional_service_accounts is defined and registry_additional_service_accounts | length > 0 %}
+  # Service Accounts additionnels si définis
+{% for sa in registry_additional_service_accounts %}
+  - kind: ServiceAccount
+    name: "{{ sa.name }}"
+    namespace: "{{ sa.namespace | default(lions_registry_namespace | default('development')) }}"
+{% endfor %}
+{% endif %}
+
+{% if registry_rbac_users is defined and registry_rbac_users | length > 0 %}
+  # Utilisateurs spécifiques si définis (pour les environnements de développement)
+{% for user in registry_rbac_users %}
+  - kind: User
+    name: "{{ user.name }}"
+    apiGroup: rbac.authorization.k8s.io
+{% endfor %}
+{% endif %}
+
+{% if registry_rbac_groups is defined and registry_rbac_groups | length > 0 %}
+  # Groupes d'utilisateurs si définis
+{% for group in registry_rbac_groups %}
+  - kind: Group
+    name: "{{ group.name }}"
+    apiGroup: rbac.authorization.k8s.io
+{% endfor %}
+{% endif %}
+
+# =========================================================================
+# CONFIGURATION NOTES
+# =========================================================================
+# Cette liaison de rôle accorde les permissions suivantes au service registry:
+# - Lecture/écriture des ConfigMaps pour la configuration
+# - Gestion des Secrets pour les certificats et authentification
+# - Lecture des Services et Endpoints pour la découverte
+# - Gestion des PersistentVolumeClaims pour le stockage
+# - Accès aux ressources de monitoring (ServiceMonitor)
+#
+# Permissions accordées:
+# - get, list, watch, create, update, patch sur les ressources spécifiées
+# - Limité au namespace {{ lions_registry_namespace | default('development') }}
+#
+# Sécurité:
+# - Principe du moindre privilège appliqué
+# - Permissions limitées au strict nécessaire
+# - Audit trail complet via les annotations
+# =========================================================================

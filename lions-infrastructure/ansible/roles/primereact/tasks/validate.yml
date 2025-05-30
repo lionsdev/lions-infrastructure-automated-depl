@@ -1,141 +1,416 @@
 ---
-# Titre: Validation post-déploiement pour PrimeReact
-# Description: Valide le déploiement d'une application PrimeReact
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - VALIDATION POST-DÉPLOIEMENT PRIMEREACT
+# =========================================================================
+# Description: Validation complète du déploiement d'application PrimeReact
+# Version: 5.0.0
+# Auteur: LIONS DevOps Team
+# Date: "{{ ansible_date_time.iso8601 }}"
+# Dépendances: kubernetes.core, community.general
+# Documentation: https://docs.lions.dev/infrastructure/validation/primereact
+# =========================================================================
 
-- name: Attente que l'application soit prête
-  uri:
-    url: "http://{{ app_name }}.{{ app_namespace }}.svc.cluster.local/api/health"
-    method: GET
-    status_code: 200
-    validate_certs: no
-  register: health_check
-  until: health_check.status == 200
-  retries: 30
-  delay: 10
-  ignore_errors: yes
+# =========================================================================
+# PHASE 1: VALIDATION DE LA CONFIGURATION ET PRÉ-REQUIS
+# =========================================================================
+- name: "🔍 [VALIDATION] Vérification des variables d'environnement critiques"
+  assert:
+    that:
+      - lions_app_name is defined and lions_app_name | length > 0
+      - lions_app_namespace is defined and lions_app_namespace | length > 0
+      - lions_app_environment is defined and lions_app_environment | length > 0
+      - lions_app_version is defined and lions_app_version | length > 0
+    fail_msg: "❌ Variables d'environnement critiques manquantes pour {{ lions_app_name | default('application inconnue') }}"
+    success_msg: "✅ Variables d'environnement critiques validées"
 
-- name: Vérification de l'état de santé de l'application
-  debug:
-    msg: "L'application {{ app_name }} est en bonne santé et prête à recevoir des requêtes."
-  when: health_check is succeeded
-
-- name: Avertissement si l'application n'est pas en bonne santé
-  debug:
-    msg: "AVERTISSEMENT: L'application {{ app_name }} n'est pas en bonne santé. Vérifiez les logs pour plus d'informations."
-  when: health_check is failed
-
-- name: Récupération de l'URL d'accès
+- name: "📊 [VALIDATION] Initialisation des métriques de validation"
   set_fact:
-    app_url: "https://{{ app_domain }}"
-  when: app_environment != 'development' or (extra_params.create_ingress | default(true) | bool)
+    lions_validation_start_time: "{{ ansible_date_time.epoch }}"
+    lions_validation_results:
+      deployment_health: false
+      service_connectivity: false
+      ingress_accessibility: false
+      metrics_availability: false
+      redis_connectivity: false
+      security_compliance: false
+      performance_baseline: false
+    lions_validation_errors: []
+    lions_validation_warnings: []
 
-- name: Affichage de l'URL d'accès
-  debug:
-    msg: "L'application {{ app_name }} est accessible à l'adresse: {{ app_url }}"
-  when: app_url is defined
+# =========================================================================
+# PHASE 2: VALIDATION DE L'ÉTAT DU DÉPLOIEMENT KUBERNETES
+# =========================================================================
+- name: "🔍 [K8S] Vérification de l'état du déploiement"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: "{{ lions_app_name }}"
+    namespace: "{{ lions_app_namespace }}"
+    kubeconfig: "{{ lions_kubeconfig_path | default(omit) }}"
+  register: lions_deployment_status
+  failed_when: false
 
-- name: Vérification de l'accessibilité externe (si ingress est configuré)
+- name: "📈 [K8S] Analyse de l'état du déploiement"
+  set_fact:
+    lions_deployment_ready: >-
+      {{
+        lions_deployment_status.resources | length > 0 and
+        (lions_deployment_status.resources[0].status.readyReplicas | default(0)) >= 
+        (lions_deployment_status.resources[0].spec.replicas | default(1))
+      }}
+  when: lions_deployment_status.resources | length > 0
+
+- name: "✅ [K8S] Mise à jour du statut de déploiement"
+  set_fact:
+    lions_validation_results: "{{ lions_validation_results | combine({'deployment_health': lions_deployment_ready | default(false)}) }}"
+
+- name: "⚠️ [K8S] Enregistrement des erreurs de déploiement"
+  set_fact:
+    lions_validation_errors: "{{ lions_validation_errors + ['Déploiement non prêt ou introuvable'] }}"
+  when: not (lions_deployment_ready | default(false))
+
+# =========================================================================
+# PHASE 3: VALIDATION DE LA CONNECTIVITÉ DES SERVICES
+# =========================================================================
+- name: "🌐 [SERVICE] Test de connectivité du service principal"
   uri:
-    url: "{{ app_url }}"
+    url: "http://{{ lions_app_name }}.{{ lions_app_namespace }}.svc.cluster.local:{{ lions_primereact_port | default('3000') }}/api/health"
     method: GET
-    status_code: 200, 301, 302, 307, 308
-    validate_certs: no
-    follow_redirects: no
-  register: external_check
-  ignore_errors: yes
-  when: app_url is defined
+    timeout: "{{ lions_timeout_default | default(30) }}"
+    status_code: [200, 201, 202]
+    validate_certs: false
+    follow_redirects: safe
+  register: lions_service_health_check
+  retries: "{{ lions_validation_retries | default(15) }}"
+  delay: "{{ lions_validation_delay | default(10) }}"
+  until: lions_service_health_check.status in [200, 201, 202]
+  failed_when: false
 
-- name: Affichage du résultat de la vérification externe
-  debug:
-    msg: "L'application {{ app_name }} est accessible depuis l'extérieur."
-  when: external_check is defined and external_check is succeeded
+- name: "✅ [SERVICE] Mise à jour du statut de connectivité"
+  set_fact:
+    lions_validation_results: "{{ lions_validation_results | combine({'service_connectivity': lions_service_health_check.status | default(0) in [200, 201, 202]}) }}"
 
-- name: Avertissement si l'application n'est pas accessible depuis l'extérieur
-  debug:
-    msg: "AVERTISSEMENT: L'application {{ app_name }} n'est pas accessible depuis l'extérieur. Vérifiez la configuration de l'ingress."
-  when: external_check is defined and external_check is failed
+- name: "⚠️ [SERVICE] Enregistrement des erreurs de connectivité"
+  set_fact:
+    lions_validation_errors: "{{ lions_validation_errors + ['Service non accessible sur le port ' + (lions_primereact_port | default('3000')) | string] }}"
+  when: lions_service_health_check.status | default(0) not in [200, 201, 202]
 
-- name: Vérification des métriques Prometheus
+# =========================================================================
+# PHASE 4: VALIDATION DE L'ACCESSIBILITÉ EXTERNE (INGRESS)
+# =========================================================================
+- name: "🔗 [INGRESS] Construction de l'URL d'accès externe"
+  set_fact:
+    lions_app_external_url: >-
+      {{
+        ('https://' if lions_security_tls_enabled | default(true) | bool else 'http://') +
+        lions_app_name + '.' + lions_dns_full_domain
+      }}
+  when:
+    - lions_app_environment != 'development' or (lions_ingress_enabled | default(true) | bool)
+    - lions_dns_full_domain is defined
+
+- name: "🌐 [INGRESS] Test d'accessibilité externe"
   uri:
-    url: "http://{{ app_name }}.{{ app_namespace }}.svc.cluster.local/metrics"
-    status_code: 200
-    validate_certs: no
-  register: metrics_check
-  ignore_errors: yes
-  when: primereact_prometheus_scrape | bool
+    url: "{{ lions_app_external_url }}"
+    method: GET
+    timeout: "{{ lions_timeout_default | default(30) }}"
+    status_code: [200, 201, 202, 301, 302, 307, 308]
+    validate_certs: "{{ not (lions_security_tls_staging | default(false) | bool) }}"
+    follow_redirects: false
+  register: lions_ingress_check
+  failed_when: false
+  when: lions_app_external_url is defined
 
-- name: Affichage du résultat de la vérification des métriques
-  debug:
-    msg: "Les métriques Prometheus sont disponibles pour l'application {{ app_name }}."
-  when: metrics_check is defined and metrics_check is succeeded
+- name: "✅ [INGRESS] Mise à jour du statut d'accessibilité"
+  set_fact:
+    lions_validation_results: "{{ lions_validation_results | combine({'ingress_accessibility': lions_ingress_check.status | default(0) in [200, 201, 202, 301, 302, 307, 308]}) }}"
+  when: lions_ingress_check is defined
 
-- name: Avertissement si les métriques ne sont pas disponibles
-  debug:
-    msg: "AVERTISSEMENT: Les métriques Prometheus ne sont pas disponibles pour l'application {{ app_name }}."
-  when: metrics_check is defined and metrics_check is failed
+- name: "⚠️ [INGRESS] Enregistrement des erreurs d'accessibilité"
+  set_fact:
+    lions_validation_warnings: "{{ lions_validation_warnings + ['Ingress non accessible: ' + (lions_app_external_url | default('URL non définie'))] }}"
+  when:
+    - lions_ingress_check is defined
+    - lions_ingress_check.status | default(0) not in [200, 201, 202, 301, 302, 307, 308]
 
-- name: Vérification spécifique à PrimeReact
-  debug:
-    msg: "Vérification spécifique à PrimeReact"
-
-- name: Vérification de la connexion au service Redis
+# =========================================================================
+# PHASE 5: VALIDATION DES MÉTRIQUES PROMETHEUS
+# =========================================================================
+- name: "📊 [METRICS] Test de disponibilité des métriques"
   uri:
-    url: "http://{{ app_name }}.{{ app_namespace }}.svc.cluster.local/api/system/redis-status"
-    status_code: 200
-    validate_certs: no
-  register: redis_check
-  ignore_errors: yes
-  when: primereact_use_redis | bool
+    url: "http://{{ lions_app_name }}.{{ lions_app_namespace }}.svc.cluster.local:{{ lions_primereact_port | default('3000') }}/metrics"
+    method: GET
+    timeout: "{{ lions_timeout_default | default(30) }}"
+    status_code: [200, 201, 202]
+    validate_certs: false
+  register: lions_metrics_check
+  failed_when: false
+  when: lions_monitoring_enabled | default(true) | bool
 
-- name: Affichage du résultat de la vérification Redis
-  debug:
-    msg: "La connexion à Redis est fonctionnelle pour l'application {{ app_name }}."
-  when: redis_check is defined and redis_check is succeeded
+- name: "✅ [METRICS] Mise à jour du statut des métriques"
+  set_fact:
+    lions_validation_results: "{{ lions_validation_results | combine({'metrics_availability': lions_metrics_check.status | default(0) in [200, 201, 202]}) }}"
+  when: lions_metrics_check is defined
 
-- name: Avertissement si la connexion à Redis n'est pas fonctionnelle
-  debug:
-    msg: "AVERTISSEMENT: La connexion à Redis n'est pas fonctionnelle pour l'application {{ app_name }}."
-  when: redis_check is defined and redis_check is failed
+- name: "⚠️ [METRICS] Enregistrement des erreurs de métriques"
+  set_fact:
+    lions_validation_warnings: "{{ lions_validation_warnings + ['Métriques Prometheus non disponibles'] }}"
+  when:
+    - lions_monitoring_enabled | default(true) | bool
+    - lions_metrics_check.status | default(0) not in [200, 201, 202]
 
-- name: Enregistrement des informations de déploiement
-  copy:
-    content: |
-      Application: {{ app_name }}
-      Version: {{ app_version }}
-      Environnement: {{ app_environment }}
-      Namespace: {{ app_namespace }}
-      URL: {{ app_url | default('Non disponible') }}
-      Date de déploiement: {{ ansible_date_time.iso8601 }}
-      Statut: {{ 'Succès' if health_check is succeeded else 'Avertissement' }}
-      
-      Ressources:
-        Replicas: {{ app_replicas }}
-        CPU Requests: {{ app_resources.requests.cpu }}
-        Memory Requests: {{ app_resources.requests.memory }}
-        CPU Limits: {{ app_resources.limits.cpu }}
-        Memory Limits: {{ app_resources.limits.memory }}
-      
-      Monitoring:
-        Prometheus: {{ 'Activé' if primereact_prometheus_scrape | bool else 'Désactivé' }}
-        Métriques: {{ 'Disponibles' if metrics_check is defined and metrics_check is succeeded else 'Non disponibles' }}
-      
-      Redis:
-        Utilisé: {{ 'Oui' if primereact_use_redis | bool else 'Non' }}
-        Connexion: {{ 'Fonctionnelle' if redis_check is defined and redis_check is succeeded else 'Non fonctionnelle' if primereact_use_redis | bool else 'N/A' }}
-      
-      Notes:
-      - Vérifiez les logs de l'application pour plus d'informations.
-      - Pour les problèmes, contactez l'équipe d'infrastructure.
-    dest: "/var/log/lions/deployments/{{ app_name }}-{{ app_environment }}-{{ ansible_date_time.date }}.log"
+# =========================================================================
+# PHASE 6: VALIDATION DE LA CONNECTIVITÉ REDIS
+# =========================================================================
+- name: "🔗 [REDIS] Test de connectivité Redis"
+  uri:
+    url: "http://{{ lions_app_name }}.{{ lions_app_namespace }}.svc.cluster.local:{{ lions_primereact_port | default('3000') }}/api/system/redis-status"
+    method: GET
+    timeout: "{{ lions_timeout_default | default(30) }}"
+    status_code: [200, 201, 202]
+    validate_certs: false
+  register: lions_redis_check
+  failed_when: false
+  when: lions_redis_enabled | default(true) | bool
+
+- name: "✅ [REDIS] Mise à jour du statut Redis"
+  set_fact:
+    lions_validation_results: "{{ lions_validation_results | combine({'redis_connectivity': lions_redis_check.status | default(0) in [200, 201, 202]}) }}"
+  when: lions_redis_check is defined
+
+- name: "⚠️ [REDIS] Enregistrement des erreurs Redis"
+  set_fact:
+    lions_validation_errors: "{{ lions_validation_errors + ['Connectivité Redis défaillante'] }}"
+  when:
+    - lions_redis_enabled | default(true) | bool
+    - lions_redis_check.status | default(0) not in [200, 201, 202]
+
+# =========================================================================
+# PHASE 7: VALIDATION DE LA SÉCURITÉ
+# =========================================================================
+- name: "🔒 [SECURITY] Vérification des ServiceAccount"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ServiceAccount
+    name: "{{ lions_app_name }}"
+    namespace: "{{ lions_app_namespace }}"
+    kubeconfig: "{{ lions_kubeconfig_path | default(omit) }}"
+  register: lions_serviceaccount_check
+  failed_when: false
+
+- name: "🔒 [SECURITY] Vérification des NetworkPolicies"
+  kubernetes.core.k8s_info:
+    api_version: networking.k8s.io/v1
+    kind: NetworkPolicy
+    namespace: "{{ lions_app_namespace }}"
+    kubeconfig: "{{ lions_kubeconfig_path | default(omit) }}"
+  register: lions_networkpolicy_check
+  failed_when: false
+  when: lions_security_network_policies | default(true) | bool
+
+- name: "✅ [SECURITY] Évaluation de la conformité sécurité"
+  set_fact:
+    lions_security_score: >-
+      {{
+        (
+          (1 if lions_serviceaccount_check.resources | length > 0 else 0) +
+          (1 if lions_networkpolicy_check.resources | default([]) | length > 0 else 0) +
+          (1 if lions_security_tls_enabled | default(true) | bool else 0)
+        ) / 3
+      }}
+
+- name: "✅ [SECURITY] Mise à jour du statut de sécurité"
+  set_fact:
+    lions_validation_results: "{{ lions_validation_results | combine({'security_compliance': lions_security_score | float >= 0.7}) }}"
+
+# =========================================================================
+# PHASE 8: VALIDATION DES PERFORMANCES
+# =========================================================================
+- name: "⚡ [PERFORMANCE] Test de performance de base"
+  uri:
+    url: "http://{{ lions_app_name }}.{{ lions_app_namespace }}.svc.cluster.local:{{ lions_primereact_port | default('3000') }}/api/health"
+    method: GET
+    timeout: 5
+    status_code: [200, 201, 202]
+    validate_certs: false
+  register: lions_performance_check
+  failed_when: false
+
+- name: "⚡ [PERFORMANCE] Analyse du temps de réponse"
+  set_fact:
+    lions_response_time_acceptable: "{{ (lions_performance_check.elapsed | default(10)) < 2.0 }}"
+  when: lions_performance_check.elapsed is defined
+
+- name: "✅ [PERFORMANCE] Mise à jour du statut de performance"
+  set_fact:
+    lions_validation_results: "{{ lions_validation_results | combine({'performance_baseline': lions_response_time_acceptable | default(false)}) }}"
+
+# =========================================================================
+# PHASE 9: GÉNÉRATION DU RAPPORT DE VALIDATION
+# =========================================================================
+- name: "📋 [REPORT] Calcul du score global de validation"
+  set_fact:
+    lions_validation_score: >-
+      {{
+        (
+          (1 if lions_validation_results.deployment_health else 0) +
+          (1 if lions_validation_results.service_connectivity else 0) +
+          (0.5 if lions_validation_results.ingress_accessibility else 0) +
+          (0.5 if lions_validation_results.metrics_availability else 0) +
+          (0.5 if lions_validation_results.redis_connectivity else 0) +
+          (1 if lions_validation_results.security_compliance else 0) +
+          (0.5 if lions_validation_results.performance_baseline else 0)
+        ) / 5
+      }}
+    lions_validation_end_time: "{{ ansible_date_time.epoch }}"
+
+- name: "📋 [REPORT] Détermination du statut global"
+  set_fact:
+    lions_validation_status: >-
+      {{
+        'SUCCESS' if lions_validation_score | float >= 0.8 else
+        'WARNING' if lions_validation_score | float >= 0.6 else
+        'FAILURE'
+      }}
+
+- name: "📄 [REPORT] Génération du rapport de déploiement"
+  template:
+    src: validation-report.j2
+    dest: "{{ lions_log_output_dir | default('/var/log/lions/deployments') }}/{{ lions_app_name }}-{{ lions_app_environment }}-validation-{{ ansible_date_time.date }}.json"
     mode: '0644'
-  ignore_errors: yes
+  vars:
+    validation_report:
+      metadata:
+        application: "{{ lions_app_name }}"
+        version: "{{ lions_app_version }}"
+        environment: "{{ lions_app_environment }}"
+        namespace: "{{ lions_app_namespace }}"
+        validation_time: "{{ ansible_date_time.iso8601 }}"
+        duration_seconds: "{{ (lions_validation_end_time | int) - (lions_validation_start_time | int) }}"
+        validator_version: "5.0.0"
+      configuration:
+        external_url: "{{ lions_app_external_url | default('Non configurée') }}"
+        service_port: "{{ lions_primereact_port | default('3000') }}"
+        tls_enabled: "{{ lions_security_tls_enabled | default(true) }}"
+        monitoring_enabled: "{{ lions_monitoring_enabled | default(true) }}"
+        redis_enabled: "{{ lions_redis_enabled | default(true) }}"
+      resources:
+        replicas: "{{ lions_deployment_status.resources[0].spec.replicas | default('N/A') if lions_deployment_status.resources | length > 0 else 'N/A' }}"
+        ready_replicas: "{{ lions_deployment_status.resources[0].status.readyReplicas | default('0') if lions_deployment_status.resources | length > 0 else '0' }}"
+        cpu_requests: "{{ lions_resources_medium_cpu_request | default('N/A') }}"
+        memory_requests: "{{ lions_resources_medium_memory_request | default('N/A') }}"
+        cpu_limits: "{{ lions_resources_medium_cpu_limit | default('N/A') }}"
+        memory_limits: "{{ lions_resources_medium_memory_limit | default('N/A') }}"
+      validation:
+        overall_status: "{{ lions_validation_status }}"
+        score: "{{ '%.2f' | format(lions_validation_score | float) }}"
+        results: "{{ lions_validation_results }}"
+        errors: "{{ lions_validation_errors }}"
+        warnings: "{{ lions_validation_warnings }}"
+      performance:
+        response_time: "{{ '%.3f' | format(lions_performance_check.elapsed | default(0) | float) }}s"
+        acceptable: "{{ lions_response_time_acceptable | default(false) }}"
+      security:
+        score: "{{ '%.2f' | format(lions_security_score | float) }}"
+        tls_configured: "{{ lions_security_tls_enabled | default(true) }}"
+        network_policies: "{{ lions_networkpolicy_check.resources | default([]) | length > 0 }}"
+        service_account: "{{ lions_serviceaccount_check.resources | length > 0 }}"
+  delegate_to: localhost
+  run_once: true
 
-- name: Nettoyage des fichiers temporaires
+# =========================================================================
+# PHASE 10: AFFICHAGE DES RÉSULTATS ET NETTOYAGE
+# =========================================================================
+- name: "🎯 [RESULTS] Affichage du résumé de validation"
+  debug:
+    msg: |
+      ╔══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗
+      ║                                           🦁 LIONS INFRASTRUCTURE 5.0 - RAPPORT DE VALIDATION                                        ║
+      ╠══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+      ║ Application    : {{ lions_app_name | upper }}                                                                                          ║
+      ║ Environnement  : {{ lions_app_environment | upper }}                                                                                   ║
+      ║ Namespace      : {{ lions_app_namespace }}                                                                                             ║
+      ║ Version        : {{ lions_app_version }}                                                                                               ║
+      ║ URL Externe    : {{ lions_app_external_url | default('Non configurée') }}                                                             ║
+      ║                                                                                                                                        ║
+      ║ STATUT GLOBAL  : {{ lions_validation_status }} ({{ '%.1f' | format((lions_validation_score | float) * 100) }}%)                     ║
+      ║                                                                                                                                        ║
+      ║ RÉSULTATS DÉTAILLÉS:                                                                                                                   ║
+      ║ • Déploiement K8s      : {{ '✅ OK' if lions_validation_results.deployment_health else '❌ ÉCHEC' }}                                 ║
+      ║ • Connectivité Service : {{ '✅ OK' if lions_validation_results.service_connectivity else '❌ ÉCHEC' }}                              ║
+      ║ • Accessibilité Ingress: {{ '✅ OK' if lions_validation_results.ingress_accessibility else '⚠️  AVERTISSEMENT' }}                   ║
+      ║ • Métriques Prometheus : {{ '✅ OK' if lions_validation_results.metrics_availability else '⚠️  AVERTISSEMENT' }}                     ║
+      ║ • Connectivité Redis   : {{ '✅ OK' if lions_validation_results.redis_connectivity else '❌ ÉCHEC' if lions_redis_enabled else '➖ DÉSACTIVÉ' }} ║
+      ║ • Conformité Sécurité  : {{ '✅ OK' if lions_validation_results.security_compliance else '⚠️  AVERTISSEMENT' }}                      ║
+      ║ • Performance Baseline : {{ '✅ OK' if lions_validation_results.performance_baseline else '⚠️  AVERTISSEMENT' }}                     ║
+      ║                                                                                                                                        ║
+      ║ TEMPS DE VALIDATION: {{ (lions_validation_end_time | int) - (lions_validation_start_time | int) }}s                                  ║
+      ║ HORODATAGE: {{ ansible_date_time.iso8601 }}                                                                                          ║
+      ╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝
+
+- name: "⚠️ [RESULTS] Affichage des erreurs critiques"
+  debug:
+    msg: |
+      ❌ ERREURS CRITIQUES DÉTECTÉES:
+      {% for error in lions_validation_errors %}
+      • {{ error }}
+      {% endfor %}
+  when: lions_validation_errors | length > 0
+
+- name: "⚠️ [RESULTS] Affichage des avertissements"
+  debug:
+    msg: |
+      ⚠️ AVERTISSEMENTS:
+      {% for warning in lions_validation_warnings %}
+      • {{ warning }}
+      {% endfor %}
+  when: lions_validation_warnings | length > 0
+
+- name: "🧹 [CLEANUP] Nettoyage des ressources temporaires"
   file:
     path: "{{ temp_dir.path }}"
     state: absent
-  changed_when: false
-  ignore_errors: yes
+  failed_when: false
+  when: temp_dir is defined
+
+- name: "📊 [METRICS] Envoi des métriques de validation"
+  uri:
+    url: "http://pushgateway.{{ lions_monitoring_namespace | default('monitoring') }}.svc.cluster.local:9091/metrics/job/lions-validation/instance/{{ lions_app_name }}-{{ lions_app_environment }}"
+    method: POST
+    body: |
+      lions_validation_score{app="{{ lions_app_name }}",env="{{ lions_app_environment }}"} {{ lions_validation_score }}
+      lions_validation_duration_seconds{app="{{ lions_app_name }}",env="{{ lions_app_environment }}"} {{ (lions_validation_end_time | int) - (lions_validation_start_time | int) }}
+      lions_validation_deployment_health{app="{{ lions_app_name }}",env="{{ lions_app_environment }}"} {{ 1 if lions_validation_results.deployment_health else 0 }}
+      lions_validation_service_connectivity{app="{{ lions_app_name }}",env="{{ lions_app_environment }}"} {{ 1 if lions_validation_results.service_connectivity else 0 }}
+    headers:
+      Content-Type: "text/plain"
+  failed_when: false
+  when:
+    - lions_monitoring_enabled | default(true) | bool
+    - lions_validation_status in ['SUCCESS', 'WARNING']
+
+# =========================================================================
+# PHASE 11: GESTION DES ÉCHECS
+# =========================================================================
+- name: "❌ [FAILURE] Échec de la validation critique"
+  fail:
+    msg: |
+      ❌ ÉCHEC DE LA VALIDATION POUR {{ lions_app_name | upper }}
+      
+      La validation a échoué avec un score de {{ '%.1f' | format((lions_validation_score | float) * 100) }}%.
+      
+      Erreurs critiques:
+      {% for error in lions_validation_errors %}
+      • {{ error }}
+      {% endfor %}
+      
+      Consultez les logs détaillés pour plus d'informations:
+      {{ lions_log_output_dir | default('/var/log/lions/deployments') }}/{{ lions_app_name }}-{{ lions_app_environment }}-validation-{{ ansible_date_time.date }}.json
+      
+      Actions recommandées:
+      1. Vérifiez l'état des pods: kubectl get pods -n {{ lions_app_namespace }}
+      2. Consultez les logs: kubectl logs -n {{ lions_app_namespace }} deployment/{{ lions_app_name }}
+      3. Vérifiez les events: kubectl get events -n {{ lions_app_namespace }} --sort-by='.lastTimestamp'
+  when:
+    - lions_validation_status == 'FAILURE'
+    - not (lions_ignore_validation_failures | default(false) | bool)

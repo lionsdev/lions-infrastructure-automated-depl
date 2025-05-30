@@ -1,74 +1,403 @@
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - QUARKUS VARIABLES PRINCIPALES
+# =========================================================================
+# Description: Variables Ansible pour le déploiement des applications Quarkus
+# Composant: Quarkus Application Variables
+# Version: 5.0.0
+# Maintainer: DevOps LIONS Team
+# Documentation: https://docs.lions.dev/infrastructure/quarkus/variables
+# =========================================================================
+
 ---
-# Titre: Variables pour le déploiement d'applications Quarkus
-# Description: Variables spécifiques aux applications Quarkus
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# CONFIGURATION DE BASE QUARKUS
+# =========================================================================
 
-# Configuration par défaut pour Quarkus
-quarkus_default_port: 8080
-quarkus_health_path: "/q/health"
-quarkus_metrics_path: "/q/metrics"
-quarkus_profile: "{{ app_environment }}"
+# Port par défaut pour les applications Quarkus
+lions_quarkus_port: "{{ lions_quarkus_custom_port | default('8080') }}"
+lions_quarkus_ssl_port: "{{ lions_quarkus_custom_ssl_port | default('8443') }}"
+lions_quarkus_management_port: "{{ lions_quarkus_custom_management_port | default('8081') }}"
+lions_quarkus_debug_port: "{{ lions_quarkus_custom_debug_port | default('5005') }}"
 
-# Configuration des sondes de santé
-quarkus_readiness_probe:
+# Configuration des chemins d'endpoints
+lions_quarkus_context_path: "{{ lions_quarkus_custom_context_path | default('/') }}"
+lions_quarkus_health_startup_path: "/q/health/started"
+lions_quarkus_health_readiness_path: "/q/health/ready"
+lions_quarkus_health_liveness_path: "/q/health/live"
+lions_quarkus_metrics_path: "/metrics"
+lions_quarkus_openapi_path: "/openapi"
+lions_quarkus_swagger_ui_path: "/swagger-ui"
+
+# Configuration du profil Quarkus
+lions_quarkus_profile: "{{ lions_environment }}"
+
+# =========================================================================
+# CONFIGURATION DES HEALTH CHECKS
+# =========================================================================
+
+# Sonde de démarrage (startup probe)
+lions_quarkus_startup_probe:
   httpGet:
-    path: "{{ quarkus_health_path }}/ready"
+    path: "{{ lions_quarkus_health_startup_path }}"
     port: http
-  initialDelaySeconds: 10
-  periodSeconds: 5
-  timeoutSeconds: 3
-  failureThreshold: 3
+    scheme: HTTP
+  initialDelaySeconds: "{{ lions_quarkus_startup_initial_delay | default('30') }}"
+  periodSeconds: "{{ lions_quarkus_startup_period | default('10') }}"
+  timeoutSeconds: "{{ lions_quarkus_startup_timeout | default('5') }}"
+  failureThreshold: "{{ lions_quarkus_startup_failure_threshold | default('6') }}"
+  successThreshold: 1
 
-quarkus_liveness_probe:
+# Sonde de disponibilité (readiness probe)
+lions_quarkus_readiness_probe:
   httpGet:
-    path: "{{ quarkus_health_path }}/live"
+    path: "{{ lions_quarkus_health_readiness_path }}"
     port: http
-  initialDelaySeconds: 20
-  periodSeconds: 10
-  timeoutSeconds: 3
-  failureThreshold: 3
+    scheme: HTTP
+  initialDelaySeconds: "{{ lions_quarkus_readiness_initial_delay | default('10') }}"
+  periodSeconds: "{{ lions_quarkus_readiness_period | default('10') }}"
+  timeoutSeconds: "{{ lions_quarkus_readiness_timeout | default('5') }}"
+  failureThreshold: "{{ lions_quarkus_readiness_failure_threshold | default('3') }}"
+  successThreshold: 1
 
-# Configuration du monitoring
-quarkus_prometheus_port: 8080
-quarkus_prometheus_path: "/q/metrics"
-quarkus_prometheus_scrape: true
-quarkus_init_delay: 15
+# Sonde de vitalité (liveness probe)
+lions_quarkus_liveness_probe:
+  httpGet:
+    path: "{{ lions_quarkus_health_liveness_path }}"
+    port: http
+    scheme: HTTP
+  initialDelaySeconds: "{{ lions_quarkus_liveness_initial_delay | default('60') }}"
+  periodSeconds: "{{ lions_quarkus_liveness_period | default('30') }}"
+  timeoutSeconds: "{{ lions_quarkus_liveness_timeout | default('10') }}"
+  failureThreshold: "{{ lions_quarkus_liveness_failure_threshold | default('3') }}"
+  successThreshold: 1
 
-# Configuration des ressources par environnement
-quarkus_resources:
+# =========================================================================
+# CONFIGURATION DES RESSOURCES PAR ENVIRONNEMENT
+# =========================================================================
+
+# Configuration des ressources CPU/Mémoire selon l'environnement
+lions_quarkus_resources:
   development:
-    requests:
-      cpu: "100m"
-      memory: "256Mi"
-    limits:
-      cpu: "500m"
-      memory: "512Mi"
+    cpu_request: "{{ lions_quarkus_dev_cpu_request | default('100m') }}"
+    cpu_limit: "{{ lions_quarkus_dev_cpu_limit | default('500m') }}"
+    memory_request: "{{ lions_quarkus_dev_memory_request | default('256Mi') }}"
+    memory_limit: "{{ lions_quarkus_dev_memory_limit | default('512Mi') }}"
+    ephemeral_storage_request: "{{ lions_quarkus_dev_ephemeral_request | default('1Gi') }}"
+    ephemeral_storage_limit: "{{ lions_quarkus_dev_ephemeral_limit | default('2Gi') }}"
+    
   staging:
-    requests:
-      cpu: "200m"
-      memory: "512Mi"
-    limits:
-      cpu: "1000m"
-      memory: "1Gi"
+    cpu_request: "{{ lions_quarkus_staging_cpu_request | default('200m') }}"
+    cpu_limit: "{{ lions_quarkus_staging_cpu_limit | default('1000m') }}"
+    memory_request: "{{ lions_quarkus_staging_memory_request | default('512Mi') }}"
+    memory_limit: "{{ lions_quarkus_staging_memory_limit | default('1Gi') }}"
+    ephemeral_storage_request: "{{ lions_quarkus_staging_ephemeral_request | default('2Gi') }}"
+    ephemeral_storage_limit: "{{ lions_quarkus_staging_ephemeral_limit | default('4Gi') }}"
+    
   production:
-    requests:
-      cpu: "500m"
-      memory: "1Gi"
-    limits:
-      cpu: "2000m"
-      memory: "2Gi"
+    cpu_request: "{{ lions_quarkus_prod_cpu_request | default('500m') }}"
+    cpu_limit: "{{ lions_quarkus_prod_cpu_limit | default('2000m') }}"
+    memory_request: "{{ lions_quarkus_prod_memory_request | default('1Gi') }}"
+    memory_limit: "{{ lions_quarkus_prod_memory_limit | default('2Gi') }}"
+    ephemeral_storage_request: "{{ lions_quarkus_prod_ephemeral_request | default('4Gi') }}"
+    ephemeral_storage_limit: "{{ lions_quarkus_prod_ephemeral_limit | default('8Gi') }}"
 
-# Configuration des réplicas par environnement
-quarkus_replicas:
-  development: 1
-  staging: 2
-  production: 3
+# Application des ressources selon l'environnement actuel
+lions_quarkus_cpu_request: "{{ lions_quarkus_resources[lions_environment].cpu_request }}"
+lions_quarkus_cpu_limit: "{{ lions_quarkus_resources[lions_environment].cpu_limit }}"
+lions_quarkus_memory_request: "{{ lions_quarkus_resources[lions_environment].memory_request }}"
+lions_quarkus_memory_limit: "{{ lions_quarkus_resources[lions_environment].memory_limit }}"
+lions_quarkus_ephemeral_storage_request: "{{ lions_quarkus_resources[lions_environment].ephemeral_storage_request }}"
+lions_quarkus_ephemeral_storage_limit: "{{ lions_quarkus_resources[lions_environment].ephemeral_storage_limit }}"
 
-# Configuration de l'ingress
-quarkus_ingress_annotations:
-  kubernetes.io/ingress.class: "nginx"
-  cert-manager.io/cluster-issuer: "letsencrypt-prod"
-  nginx.ingress.kubernetes.io/ssl-redirect: "true"
-  nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+# =========================================================================
+# CONFIGURATION DES RÉPLICAS PAR ENVIRONNEMENT
+# =========================================================================
+
+# Nombre de réplicas selon l'environnement
+lions_quarkus_replicas_config:
+  development: "{{ lions_quarkus_dev_replicas | default('1') }}"
+  staging: "{{ lions_quarkus_staging_replicas | default('2') }}"
+  production: "{{ lions_quarkus_prod_replicas | default('3') }}"
+
+# Application du nombre de réplicas selon l'environnement actuel
+lions_quarkus_replicas: "{{ lions_quarkus_replicas_config[lions_environment] }}"
+
+# =========================================================================
+# CONFIGURATION DE DÉPLOIEMENT
+# =========================================================================
+
+# Stratégie de déploiement
+lions_quarkus_deployment_strategy: "{{ lions_quarkus_custom_deployment_strategy | default('RollingUpdate') }}"
+lions_quarkus_max_surge: "{{ lions_quarkus_custom_max_surge | default('25%') }}"
+lions_quarkus_max_unavailable: "{{ lions_quarkus_custom_max_unavailable | default('0') }}"
+
+# Configuration de l'image
+lions_quarkus_image_pull_policy: "{{ lions_quarkus_custom_image_pull_policy | default('IfNotPresent') }}"
+lions_quarkus_image_name: "{{ lions_quarkus_custom_image_name | default(lions_quarkus_app_name | default(lions_quarkus_service_name)) }}"
+
+# =========================================================================
+# CONFIGURATION JVM ET PERFORMANCE
+# =========================================================================
+
+# Configuration JVM par environnement
+lions_quarkus_jvm_config:
+  development:
+    java_opts: "-Xmx512m -Xms256m -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0"
+    gc_opts: "-XX:+UseG1GC -XX:+UseStringDeduplication"
+    debug_opts: "-XX:+PrintGCDetails -XX:+PrintGCTimeStamps"
+    
+  staging:
+    java_opts: "-Xmx1g -Xms512m -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0"
+    gc_opts: "-XX:+UseG1GC -XX:+UseStringDeduplication -XX:MaxGCPauseMillis=200"
+    debug_opts: ""
+    
+  production:
+    java_opts: "-Xmx2g -Xms1g -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0"
+    gc_opts: "-XX:+UseG1GC -XX:+UseStringDeduplication -XX:MaxGCPauseMillis=100"
+    debug_opts: ""
+
+# Application de la configuration JVM selon l'environnement
+lions_quarkus_java_opts: >-
+  {{ lions_quarkus_jvm_config[lions_environment].java_opts }}
+  {{ lions_quarkus_jvm_config[lions_environment].gc_opts }}
+  {{ lions_quarkus_jvm_config[lions_environment].debug_opts if lions_environment == 'development' else '' }}
+
+# Configuration des threads
+lions_quarkus_thread_pool_config:
+  development:
+    core: "{{ lions_quarkus_dev_thread_pool_core | default('1') }}"
+    max: "{{ lions_quarkus_dev_thread_pool_max | default('8') }}"
+    queue: "{{ lions_quarkus_dev_thread_pool_queue | default('1000') }}"
+  staging:
+    core: "{{ lions_quarkus_staging_thread_pool_core | default('2') }}"
+    max: "{{ lions_quarkus_staging_thread_pool_max | default('16') }}"
+    queue: "{{ lions_quarkus_staging_thread_pool_queue | default('2000') }}"
+  production:
+    core: "{{ lions_quarkus_prod_thread_pool_core | default('4') }}"
+    max: "{{ lions_quarkus_prod_thread_pool_max | default('32') }}"
+    queue: "{{ lions_quarkus_prod_thread_pool_queue | default('5000') }}"
+
+# Application de la configuration des threads
+lions_quarkus_thread_pool_core: "{{ lions_quarkus_thread_pool_config[lions_environment].core }}"
+lions_quarkus_thread_pool_max: "{{ lions_quarkus_thread_pool_config[lions_environment].max }}"
+lions_quarkus_thread_pool_queue: "{{ lions_quarkus_thread_pool_config[lions_environment].queue }}"
+
+# =========================================================================
+# CONFIGURATION BASE DE DONNÉES
+# =========================================================================
+
+# Configuration des pools de connexions par environnement
+lions_quarkus_db_pool_config:
+  development:
+    initial: "{{ lions_quarkus_dev_db_pool_initial | default('2') }}"
+    min: "{{ lions_quarkus_dev_db_pool_min | default('2') }}"
+    max: "{{ lions_quarkus_dev_db_pool_max | default('10') }}"
+    timeout: "{{ lions_quarkus_dev_db_timeout | default('30000') }}"
+  staging:
+    initial: "{{ lions_quarkus_staging_db_pool_initial | default('5') }}"
+    min: "{{ lions_quarkus_staging_db_pool_min | default('5') }}"
+    max: "{{ lions_quarkus_staging_db_pool_max | default('20') }}"
+    timeout: "{{ lions_quarkus_staging_db_timeout | default('30000') }}"
+  production:
+    initial: "{{ lions_quarkus_prod_db_pool_initial | default('10') }}"
+    min: "{{ lions_quarkus_prod_db_pool_min | default('10') }}"
+    max: "{{ lions_quarkus_prod_db_pool_max | default('50') }}"
+    timeout: "{{ lions_quarkus_prod_db_timeout | default('30000') }}"
+
+# Application de la configuration de pool selon l'environnement
+lions_quarkus_db_pool_initial: "{{ lions_quarkus_db_pool_config[lions_environment].initial }}"
+lions_quarkus_db_pool_min: "{{ lions_quarkus_db_pool_config[lions_environment].min }}"
+lions_quarkus_db_pool_max: "{{ lions_quarkus_db_pool_config[lions_environment].max }}"
+lions_quarkus_db_timeout: "{{ lions_quarkus_db_pool_config[lions_environment].timeout }}"
+
+# =========================================================================
+# CONFIGURATION MONITORING
+# =========================================================================
+
+# Configuration Prometheus/Métriques
+lions_quarkus_monitoring_config:
+  scrape_interval: "{{ lions_quarkus_custom_scrape_interval | default('30s') }}"
+  scrape_timeout: "{{ lions_quarkus_custom_scrape_timeout | default('10s') }}"
+  sample_limit: "{{ lions_quarkus_custom_sample_limit | default('100000') }}"
+  target_limit: "{{ lions_quarkus_custom_target_limit | default('100') }}"
+  label_limit: "{{ lions_quarkus_custom_label_limit | default('200') }}"
+  label_name_limit: "{{ lions_quarkus_custom_label_name_limit | default('200') }}"
+  label_value_limit: "{{ lions_quarkus_custom_label_value_limit | default('200') }}"
+
+# Application de la configuration monitoring
+lions_quarkus_scrape_interval: "{{ lions_quarkus_monitoring_config.scrape_interval }}"
+lions_quarkus_scrape_timeout: "{{ lions_quarkus_monitoring_config.scrape_timeout }}"
+lions_quarkus_sample_limit: "{{ lions_quarkus_monitoring_config.sample_limit }}"
+lions_quarkus_target_limit: "{{ lions_quarkus_monitoring_config.target_limit }}"
+lions_quarkus_label_limit: "{{ lions_quarkus_monitoring_config.label_limit }}"
+lions_quarkus_label_name_limit: "{{ lions_quarkus_monitoring_config.label_name_limit }}"
+lions_quarkus_label_value_limit: "{{ lions_quarkus_monitoring_config.label_value_limit }}"
+
+# =========================================================================
+# CONFIGURATION SÉCURITÉ
+# =========================================================================
+
+# Configuration RBAC
+lions_quarkus_rbac_config:
+  automount_token: "{{ lions_quarkus_custom_automount_token | default('false') }}"
+  configmaps_read: "{{ lions_quarkus_custom_rbac_configmaps_read | default('true') }}"
+  secrets_read: "{{ lions_quarkus_custom_rbac_secrets_read | default('true') }}"
+  pods_read: "{{ lions_quarkus_custom_rbac_pods_read | default('false') }}"
+  services_read: "{{ lions_quarkus_custom_rbac_services_read | default('false') }}"
+  endpoints_read: "{{ lions_quarkus_custom_rbac_endpoints_read | default('false') }}"
+
+# Application de la configuration RBAC
+lions_quarkus_automount_token: "{{ lions_quarkus_rbac_config.automount_token }}"
+lions_quarkus_rbac_configmaps_read: "{{ lions_quarkus_rbac_config.configmaps_read }}"
+lions_quarkus_rbac_secrets_read: "{{ lions_quarkus_rbac_config.secrets_read }}"
+lions_quarkus_rbac_pods_read: "{{ lions_quarkus_rbac_config.pods_read }}"
+lions_quarkus_rbac_services_read: "{{ lions_quarkus_rbac_config.services_read }}"
+lions_quarkus_rbac_endpoints_read: "{{ lions_quarkus_rbac_config.endpoints_read }}"
+
+# =========================================================================
+# CONFIGURATION INGRESS ET RÉSEAU
+# =========================================================================
+
+# Configuration Nginx Ingress (par défaut)
+lions_quarkus_nginx_ingress_annotations:
+  nginx.ingress.kubernetes.io/ssl-redirect: "{{ lions_security_tls_enabled | lower }}"
+  nginx.ingress.kubernetes.io/force-ssl-redirect: "{{ lions_security_tls_enabled | lower }}"
+  nginx.ingress.kubernetes.io/proxy-connect-timeout: "{{ lions_timeout_default }}"
+  nginx.ingress.kubernetes.io/proxy-read-timeout: "{{ lions_timeout_default }}"
+  nginx.ingress.kubernetes.io/proxy-send-timeout: "{{ lions_timeout_default }}"
+  nginx.ingress.kubernetes.io/proxy-body-size: "{{ lions_quarkus_max_body_size | default('1m') }}"
+  nginx.ingress.kubernetes.io/client-max-body-size: "{{ lions_quarkus_max_body_size | default('1m') }}"
+  nginx.ingress.kubernetes.io/proxy-buffering: "{{ lions_quarkus_proxy_buffering | default('on') }}"
+  nginx.ingress.kubernetes.io/proxy-buffer-size: "{{ lions_quarkus_proxy_buffer_size | default('4k') }}"
+
+# Configuration du service
+lions_quarkus_service_config:
+  type: "{{ lions_quarkus_custom_service_type | default('ClusterIP') }}"
+  port: "{{ lions_quarkus_custom_service_port | default('80') }}"
+  session_affinity: "{{ lions_quarkus_custom_session_affinity | default('None') }}"
+  external_traffic_policy: "{{ lions_quarkus_custom_external_traffic_policy | default('Cluster') }}"
+  internal_traffic_policy: "{{ lions_quarkus_custom_internal_traffic_policy | default('Cluster') }}"
+
+# Application de la configuration service
+lions_quarkus_service_type: "{{ lions_quarkus_service_config.type }}"
+lions_quarkus_service_port: "{{ lions_quarkus_service_config.port }}"
+lions_quarkus_session_affinity: "{{ lions_quarkus_service_config.session_affinity }}"
+lions_quarkus_external_traffic_policy: "{{ lions_quarkus_service_config.external_traffic_policy }}"
+lions_quarkus_internal_traffic_policy: "{{ lions_quarkus_service_config.internal_traffic_policy }}"
+
+# =========================================================================
+# CONFIGURATION CACHE ET REDIS
+# =========================================================================
+
+# Configuration cache par environnement
+lions_quarkus_cache_config:
+  development:
+    enabled: "{{ lions_quarkus_dev_cache_enabled | default('false') }}"
+    initial_capacity: "{{ lions_quarkus_dev_cache_initial_capacity | default('100') }}"
+    maximum_size: "{{ lions_quarkus_dev_cache_maximum_size | default('1000') }}"
+    expire_after_write: "{{ lions_quarkus_dev_cache_expire_after_write | default('10M') }}"
+  staging:
+    enabled: "{{ lions_quarkus_staging_cache_enabled | default('true') }}"
+    initial_capacity: "{{ lions_quarkus_staging_cache_initial_capacity | default('500') }}"
+    maximum_size: "{{ lions_quarkus_staging_cache_maximum_size | default('10000') }}"
+    expire_after_write: "{{ lions_quarkus_staging_cache_expire_after_write | default('30M') }}"
+  production:
+    enabled: "{{ lions_quarkus_prod_cache_enabled | default('true') }}"
+    initial_capacity: "{{ lions_quarkus_prod_cache_initial_capacity | default('1000') }}"
+    maximum_size: "{{ lions_quarkus_prod_cache_maximum_size | default('100000') }}"
+    expire_after_write: "{{ lions_quarkus_prod_cache_expire_after_write | default('1H') }}"
+
+# Application de la configuration cache
+lions_quarkus_cache_enabled: "{{ lions_quarkus_cache_config[lions_environment].enabled }}"
+lions_quarkus_cache_initial_capacity: "{{ lions_quarkus_cache_config[lions_environment].initial_capacity }}"
+lions_quarkus_cache_maximum_size: "{{ lions_quarkus_cache_config[lions_environment].maximum_size }}"
+lions_quarkus_cache_expire_after_write: "{{ lions_quarkus_cache_config[lions_environment].expire_after_write }}"
+
+# Configuration Redis
+lions_quarkus_redis_config:
+  client_type: "{{ lions_quarkus_custom_redis_client_type | default('standalone') }}"
+  timeout: "{{ lions_quarkus_custom_redis_timeout | default('10s') }}"
+  pool_max_total: "{{ lions_quarkus_custom_redis_pool_max_total | default('8') }}"
+  pool_max_idle: "{{ lions_quarkus_custom_redis_pool_max_idle | default('8') }}"
+  pool_min_idle: "{{ lions_quarkus_custom_redis_pool_min_idle | default('0') }}"
+
+# Application de la configuration Redis
+lions_quarkus_redis_client_type: "{{ lions_quarkus_redis_config.client_type }}"
+lions_quarkus_redis_timeout: "{{ lions_quarkus_redis_config.timeout }}"
+lions_quarkus_redis_pool_max_total: "{{ lions_quarkus_redis_config.pool_max_total }}"
+lions_quarkus_redis_pool_max_idle: "{{ lions_quarkus_redis_config.pool_max_idle }}"
+lions_quarkus_redis_pool_min_idle: "{{ lions_quarkus_redis_config.pool_min_idle }}"
+
+# =========================================================================
+# CONFIGURATION PAR DÉFAUT DES FONCTIONNALITÉS
+# =========================================================================
+
+# Fonctionnalités activées par défaut
+lions_quarkus_features_default:
+  cors_enabled: "{{ lions_quarkus_custom_cors_enabled | default('true') }}"
+  health_path_exposed: "{{ lions_quarkus_custom_health_path_exposed | default('false') }}"
+  metrics_path_exposed: "{{ lions_quarkus_custom_metrics_path_exposed | default('false') }}"
+  openapi_path_exposed: "{{ lions_quarkus_custom_openapi_path_exposed | default('false') }}"
+  tracing_enabled: "{{ lions_quarkus_custom_tracing_enabled | default('false') }}"
+  websocket_enabled: "{{ lions_quarkus_custom_websocket_enabled | default('false') }}"
+  rate_limiting_enabled: "{{ lions_quarkus_custom_rate_limiting_enabled | default('false') }}"
+  auth_enabled: "{{ lions_quarkus_custom_auth_enabled | default('false') }}"
+
+# Application des fonctionnalités par défaut
+lions_quarkus_cors_enabled: "{{ lions_quarkus_features_default.cors_enabled }}"
+lions_quarkus_health_path_exposed: "{{ lions_quarkus_features_default.health_path_exposed }}"
+lions_quarkus_metrics_path_exposed: "{{ lions_quarkus_features_default.metrics_path_exposed }}"
+lions_quarkus_openapi_path_exposed: "{{ lions_quarkus_features_default.openapi_path_exposed }}"
+lions_quarkus_tracing_enabled: "{{ lions_quarkus_features_default.tracing_enabled }}"
+lions_quarkus_websocket_enabled: "{{ lions_quarkus_features_default.websocket_enabled }}"
+lions_quarkus_rate_limiting_enabled: "{{ lions_quarkus_features_default.rate_limiting_enabled }}"
+lions_quarkus_auth_enabled: "{{ lions_quarkus_features_default.auth_enabled }}"
+
+# =========================================================================
+# CONFIGURATION CORS
+# =========================================================================
+
+# Configuration CORS par défaut
+lions_quarkus_cors_defaults:
+  origins: "{{ lions_quarkus_custom_cors_origins | default('*') }}"
+  methods: "{{ lions_quarkus_custom_cors_methods | default('GET,POST,PUT,DELETE,OPTIONS') }}"
+  headers: "{{ lions_quarkus_custom_cors_headers | default('*') }}"
+  credentials: "{{ lions_quarkus_custom_cors_credentials | default('false') }}"
+  max_age: "{{ lions_quarkus_custom_cors_max_age | default('86400') }}"
+
+# Application de la configuration CORS
+lions_quarkus_cors_origins: "{{ lions_quarkus_cors_defaults.origins }}"
+lions_quarkus_cors_methods: "{{ lions_quarkus_cors_defaults.methods }}"
+lions_quarkus_cors_headers: "{{ lions_quarkus_cors_defaults.headers }}"
+lions_quarkus_cors_credentials: "{{ lions_quarkus_cors_defaults.credentials }}"
+lions_quarkus_cors_max_age: "{{ lions_quarkus_cors_defaults.max_age }}"
+
+# =========================================================================
+# CONFIGURATION RATE LIMITING
+# =========================================================================
+
+# Configuration rate limiting par défaut
+lions_quarkus_rate_limit_defaults:
+  rps: "{{ lions_quarkus_custom_rate_limit_rps | default('100') }}"
+  burst: "{{ lions_quarkus_custom_rate_limit_burst | default('50') }}"
+  period: "{{ lions_quarkus_custom_rate_limit_period | default('1m') }}"
+
+# Application de la configuration rate limiting
+lions_quarkus_rate_limit_rps: "{{ lions_quarkus_rate_limit_defaults.rps }}"
+lions_quarkus_rate_limit_burst: "{{ lions_quarkus_rate_limit_defaults.burst }}"
+lions_quarkus_rate_limit_period: "{{ lions_quarkus_rate_limit_defaults.period }}"
+
+# =========================================================================
+# CONFIGURATION VOLUMES ET STOCKAGE
+# =========================================================================
+
+# Configuration des volumes
+lions_quarkus_volumes_config:
+  tmp_size: "{{ lions_quarkus_custom_tmp_size | default('128Mi') }}"
+  logs_enabled: "{{ lions_quarkus_custom_logs_volume_enabled | default('false') }}"
+  logs_size: "{{ lions_quarkus_custom_logs_size | default('1Gi') }}"
+
+# Application de la configuration volumes
+lions_quarkus_tmp_size: "{{ lions_quarkus_volumes_config.tmp_size }}"
+lions_quarkus_logs_volume_enabled: "{{ lions_quarkus_volumes_config.logs_enabled }}"
+lions_quarkus_logs_size: "{{ lions_quarkus_volumes_config.logs_size }}"

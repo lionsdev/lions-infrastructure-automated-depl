@@ -1,82 +1,382 @@
 ---
-# Titre: Configuration du monitoring pour le service de notification
-# Description: Configure le monitoring pour le service de notification avec Prometheus
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-08
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - NOTIFICATION SERVICE MONITORING CONFIGURATION
+# =========================================================================
+# Description: Configuration complète du monitoring pour le service de notification avec intégration
+#              Prometheus/Grafana et alertes intelligentes
+# Version: 5.0.0
+# Maintainer: DevOps Team LIONS
+# Documentation: https://docs.lions.dev/notification/monitoring
+# =========================================================================
 
-- name: Vérification de l'existence de Prometheus Operator
+# =========================================================================
+# VÉRIFICATIONS PRÉALABLES
+# =========================================================================
+- name: "{{ ansible_role_name }} | Monitoring | Vérification de l'état du monitoring global"
+  assert:
+    that:
+      - lions_monitoring_enabled | bool
+      - lions_prometheus_enabled | bool
+    fail_msg: "Le monitoring global doit être activé pour configurer le monitoring du service de notification"
+    success_msg: "Monitoring global confirmé - Configuration du service de notification en cours"
+  tags:
+    - monitoring
+    - validation
+
+- name: "{{ ansible_role_name }} | Monitoring | Vérification de Prometheus Operator"
   k8s_info:
     api_version: apiextensions.k8s.io/v1
     kind: CustomResourceDefinition
     name: servicemonitors.monitoring.coreos.com
-  register: prometheus_operator_check
-  ignore_errors: yes
+  register: prometheus_operator_crd
+  ignore_errors: true
+  tags:
+    - monitoring
+    - prometheus
 
-- name: Avertissement si Prometheus Operator n'est pas installé
-  debug:
-    msg: "AVERTISSEMENT: Prometheus Operator n'est pas installé. Le monitoring ne sera pas configuré."
-  when: prometheus_operator_check is failed or prometheus_operator_check.resources | length == 0
+- name: "{{ ansible_role_name }} | Monitoring | Vérification des PrometheusRule CRD"
+  k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: prometheusrules.monitoring.coreos.com
+  register: prometheus_rules_crd
+  ignore_errors: true
+  tags:
+    - monitoring
+    - prometheus
 
-- name: Déploiement du ServiceMonitor pour le service de notification
+- name: "{{ ansible_role_name }} | Monitoring | Définition des variables de monitoring"
+  set_fact:
+    prometheus_operator_available: "{{ prometheus_operator_crd is succeeded and prometheus_operator_crd.resources | length > 0 }}"
+    prometheus_rules_available: "{{ prometheus_rules_crd is succeeded and prometheus_rules_crd.resources | length > 0 }}"
+    monitoring_labels:
+      app.kubernetes.io/name: "{{ notification_service_name }}"
+      app.kubernetes.io/instance: "{{ notification_service_name }}-{{ notification_environment }}"
+      app.kubernetes.io/component: monitoring
+      app.kubernetes.io/part-of: lions-infrastructure
+      app.kubernetes.io/managed-by: ansible
+      lions.dev/environment: "{{ notification_environment }}"
+      lions.dev/monitoring: "enabled"
+  tags:
+    - monitoring
+    - facts
+
+# =========================================================================
+# CONFIGURATION SERVICEMONITOR POUR PROMETHEUS
+# =========================================================================
+- name: "{{ ansible_role_name }} | Monitoring | Création du ServiceMonitor Prometheus"
   k8s:
     state: present
-    src: "{{ temp_dir.path }}/servicemonitor.yml"
+    definition:
+      apiVersion: monitoring.coreos.com/v1
+      kind: ServiceMonitor
+      metadata:
+        name: "{{ notification_service_name }}-monitor"
+        namespace: "{{ notification_namespace }}"
+        labels: "{{ monitoring_labels }}"
+        annotations:
+          lions.dev/created-by: "ansible-notification-role"
+          lions.dev/documentation: "https://docs.lions.dev/notification/monitoring"
+      spec:
+        selector:
+          matchLabels:
+            app.kubernetes.io/name: "{{ notification_service_name }}"
+        endpoints:
+          - port: http
+            path: "{{ notification_endpoints.metrics }}"
+            interval: "{{ notification_monitoring.prometheus.scrape_interval }}"
+            scrapeTimeout: "{{ notification_monitoring.prometheus.scrape_timeout }}"
+            honorLabels: true
+            metricRelabelings:
+              - sourceLabels: [__name__]
+                regex: 'go_.*'
+                action: drop
+              - sourceLabels: [__name__]
+                regex: 'process_.*'
+                action: drop
+            relabelings:
+              - sourceLabels: [__meta_kubernetes_pod_name]
+                targetLabel: pod
+              - sourceLabels: [__meta_kubernetes_namespace]
+                targetLabel: kubernetes_namespace
+              - sourceLabels: [__meta_kubernetes_service_name]
+                targetLabel: kubernetes_service_name
+              - targetLabel: service_type
+                replacement: notification
+              - targetLabel: environment
+                replacement: "{{ notification_environment }}"
+        namespaceSelector:
+          matchNames:
+            - "{{ notification_namespace }}"
   register: servicemonitor_result
-  when: prometheus_operator_check is succeeded and prometheus_operator_check.resources | length > 0 and notification_prometheus_scrape | default(true) | bool
+  when:
+    - prometheus_operator_available | bool
+    - notification_monitoring.enabled | bool
+  tags:
+    - monitoring
+    - prometheus
+    - servicemonitor
 
-- name: Vérification de l'existence du ServiceMonitor
-  k8s_info:
-    api_version: monitoring.coreos.com/v1
-    kind: ServiceMonitor
-    namespace: "{{ app_namespace }}"
-    name: "{{ app_name }}"
-  register: servicemonitor_check
-  ignore_errors: yes
-  when: prometheus_operator_check is succeeded and prometheus_operator_check.resources | length > 0 and notification_prometheus_scrape | default(true) | bool
+# =========================================================================
+# CONFIGURATION DES RÈGLES D'ALERTE PROMETHEUS
+# =========================================================================
+- name: "{{ ansible_role_name }} | Monitoring | Création des règles d'alerte du service de notification"
+  k8s:
+    state: present
+    definition:
+      apiVersion: monitoring.coreos.com/v1
+      kind: PrometheusRule
+      metadata:
+        name: "{{ notification_service_name }}-alerts"
+        namespace: "{{ notification_namespace }}"
+        labels: "{{ monitoring_labels }}"
+        annotations:
+          lions.dev/alert-severity-levels: "critical,warning,info"
+          lions.dev/alert-documentation: "https://docs.lions.dev/notification/alerts"
+      spec:
+        groups:
+          # Groupe d'alertes de disponibilité
+          - name: "notification.availability.{{ notification_environment }}"
+            interval: "{{ lions_alertmanager_evaluation_interval | default('30s') }}"
+            rules:
+              - alert: NotificationServiceInstanceDown
+                expr: 'up{job="{{ notification_service_name }}", kubernetes_namespace="{{ notification_namespace }}"} == 0'
+                for: "{{ lions_alertmanager_instance_down_threshold | default('2m') }}"
+                labels:
+                  severity: critical
+                  service: notification
+                  environment: "{{ notification_environment }}"
+                  team: platform
+                  component: notification-service
+                annotations:
+                  summary: "Notification service instance {{ notification_service_name }} is down"
+                  description: |
+                    L'instance du service de notification {{ notification_service_name }} dans l'environnement {{ notification_environment }}
+                    est indisponible depuis {{ lions_alertmanager_instance_down_threshold | default('2m') }}.
+                    
+                    Namespace: {{ notification_namespace }}
+                    Service: {{ notification_service_name }}
+                    Environment: {{ notification_environment }}
+                  runbook_url: "https://docs.lions.dev/runbooks/notification-service-down"
+                  dashboard_url: "https://grafana.{{ notification_dns.domain_base }}/d/notification-{{ notification_environment }}"
 
-- name: Avertissement si le ServiceMonitor n'a pas été créé
-  debug:
-    msg: "AVERTISSEMENT: Le ServiceMonitor pour le service de notification n'a pas été créé. Vérifiez les logs pour plus d'informations."
-  when: prometheus_operator_check is succeeded and prometheus_operator_check.resources | length > 0 and notification_prometheus_scrape | default(true) | bool and (servicemonitor_check is failed or servicemonitor_check.resources | length == 0)
+              - alert: NotificationServiceHighUnavailability
+                expr: |
+                  (
+                    sum(rate(http_requests_total{job="{{ notification_service_name }}", code=~"5.."}[5m])) /
+                    sum(rate(http_requests_total{job="{{ notification_service_name }}"}[5m]))
+                  ) > {{ notification_app_config.monitoring.error_rate_threshold | default('0.05') }}
+                for: 5m
+                labels:
+                  severity: warning
+                  service: notification
+                  environment: "{{ notification_environment }}"
+                  team: platform
+                annotations:
+                  summary: "High error rate for Notification Service {{ notification_service_name }}"
+                  description: |
+                    Le service de notification {{ notification_service_name }} a un taux d'erreur de {{ "{{ $value | humanizePercentage }}" }}
+                    supérieur au seuil de {{ notification_app_config.monitoring.error_rate_threshold | default('5') }}% depuis 5 minutes.
 
-- name: Vérification de l'existence de Grafana
-  k8s_info:
-    api_version: v1
-    kind: Service
-    namespace: monitoring
-    name: grafana
-  register: grafana_check
-  ignore_errors: yes
+          # Groupe d'alertes de performance
+          - name: "notification.performance.{{ notification_environment }}"
+            interval: "{{ lions_alertmanager_evaluation_interval | default('30s') }}"
+            rules:
+              - alert: NotificationServiceHighMemoryUsage
+                expr: |
+                  (
+                    container_memory_working_set_bytes{pod=~"{{ notification_service_name }}-.*", namespace="{{ notification_namespace }}"} /
+                    container_spec_memory_limit_bytes{pod=~"{{ notification_service_name }}-.*", namespace="{{ notification_namespace }}"}
+                  ) > {{ notification_app_config.monitoring.memory_usage_threshold | default('0.85') }}
+                for: "{{ lions_alertmanager_memory_threshold_duration | default('10m') }}"
+                labels:
+                  severity: warning
+                  service: notification
+                  environment: "{{ notification_environment }}"
+                  team: platform
+                  resource: memory
+                annotations:
+                  summary: "High memory usage for Notification Service {{ notification_service_name }}"
+                  description: |
+                    Le service de notification {{ notification_service_name }} utilise {{ "{{ $value | humanizePercentage }}" }} de sa limite mémoire
+                    depuis {{ lions_alertmanager_memory_threshold_duration | default('10m') }}.
+                    
+                    Seuil configuré: {{ notification_app_config.monitoring.memory_usage_threshold | default('85') }}%
+                    Valeur actuelle: {{ "{{ $value | humanizePercentage }}" }}
 
-- name: Avertissement si Grafana n'est pas installé
-  debug:
-    msg: "AVERTISSEMENT: Grafana n'est pas installé. Les dashboards ne seront pas configurés."
-  when: grafana_check is failed or grafana_check.resources | length == 0
+              - alert: NotificationServiceHighCPUUsage
+                expr: |
+                  (
+                    rate(container_cpu_usage_seconds_total{pod=~"{{ notification_service_name }}-.*", namespace="{{ notification_namespace }}"}[5m]) /
+                    container_spec_cpu_quota{pod=~"{{ notification_service_name }}-.*", namespace="{{ notification_namespace }}"} * 100000
+                  ) > {{ notification_app_config.monitoring.cpu_usage_threshold | default('0.85') }}
+                for: "{{ lions_alertmanager_cpu_threshold_duration | default('10m') }}"
+                labels:
+                  severity: warning
+                  service: notification
+                  environment: "{{ notification_environment }}"
+                  team: platform
+                  resource: cpu
+                annotations:
+                  summary: "High CPU usage for Notification Service {{ notification_service_name }}"
+                  description: |
+                    Le service de notification {{ notification_service_name }} utilise {{ "{{ $value | humanizePercentage }}" }} de sa limite CPU
+                    depuis {{ lions_alertmanager_cpu_threshold_duration | default('10m') }}.
 
-- name: Création du ConfigMap pour le dashboard du service de notification
+              - alert: NotificationServiceSlowResponseTime
+                expr: |
+                  histogram_quantile(0.95, 
+                    rate(http_request_duration_seconds_bucket{job="{{ notification_service_name }}"}[5m])
+                  ) > {{ notification_app_config.monitoring.response_time_threshold | default('2') }}
+                for: 5m
+                labels:
+                  severity: warning
+                  service: notification
+                  environment: "{{ notification_environment }}"
+                  team: platform
+                  component: performance
+                annotations:
+                  summary: "Slow response time for Notification Service {{ notification_service_name }}"
+                  description: |
+                    Le 95ème percentile des temps de réponse du service de notification {{ notification_service_name }}
+                    est de {{ "{{ $value }}s" }}, supérieur au seuil de {{ notification_app_config.monitoring.response_time_threshold | default('2') }}s.
+
+          # Groupe d'alertes spécifiques aux notifications
+          - name: "notification.application.{{ notification_environment }}"
+            interval: "{{ lions_alertmanager_evaluation_interval | default('30s') }}"
+            rules:
+              - alert: NotificationDeliveryFailureRate
+                expr: |
+                  (
+                    sum(rate(notification_delivery_failure_total{job="{{ notification_service_name }}"}[5m])) /
+                    sum(rate(notification_delivery_total{job="{{ notification_service_name }}"}[5m]))
+                  ) > {{ notification_app_config.monitoring.delivery_failure_threshold | default('0.10') }}
+                for: 5m
+                labels:
+                  severity: warning
+                  service: notification
+                  environment: "{{ notification_environment }}"
+                  team: platform
+                  component: delivery
+                annotations:
+                  summary: "High notification delivery failure rate"
+                  description: |
+                    Le taux d'échec de livraison des notifications est de {{ "{{ $value | humanizePercentage }}" }}
+                    supérieur au seuil de {{ notification_app_config.monitoring.delivery_failure_threshold | default('10') }}%.
+
+              - alert: NotificationChannelDown
+                expr: 'notification_channel_status{job="{{ notification_service_name }}"} == 0'
+                for: 2m
+                labels:
+                  severity: critical
+                  service: notification
+                  environment: "{{ notification_environment }}"
+                  team: platform
+                  component: channel
+                annotations:
+                  summary: "Notification channel {{ "{{ $labels.channel }}" }} is down"
+                  description: |
+                    Le canal de notification {{ "{{ $labels.channel }}" }} du service {{ notification_service_name }}
+                    est indisponible depuis 2 minutes dans l'environnement {{ notification_environment }}.
+
+              - alert: NotificationQueueBacklog
+                expr: |
+                  notification_queue_size{job="{{ notification_service_name }}"} > {{ notification_app_config.monitoring.queue_size_threshold | default('1000') }}
+                for: 5m
+                labels:
+                  severity: warning
+                  service: notification
+                  environment: "{{ notification_environment }}"
+                  team: platform
+                  component: queue
+                annotations:
+                  summary: "Notification queue backlog is high"
+                  description: |
+                    La file d'attente des notifications contient {{ "{{ $value }}" }} éléments,
+                    supérieur au seuil de {{ notification_app_config.monitoring.queue_size_threshold | default('1000') }}.
+
+              - alert: NotificationRateLimitExceeded
+                expr: |
+                  increase(notification_rate_limit_exceeded_total{job="{{ notification_service_name }}"}[5m]) > 10
+                for: 2m
+                labels:
+                  severity: warning
+                  service: notification
+                  environment: "{{ notification_environment }}"
+                  team: platform
+                  component: rate-limit
+                annotations:
+                  summary: "Notification rate limit exceeded frequently"
+                  description: |
+                    Les limites de taux de notification ont été dépassées {{ "{{ $value }}" }} fois
+                    au cours des 5 dernières minutes pour le service {{ notification_service_name }}.
+
+  register: prometheus_rules_result
+  when:
+    - prometheus_rules_available | bool
+    - notification_monitoring.enabled | bool
+  tags:
+    - monitoring
+    - prometheus
+    - alerts
+
+# =========================================================================
+# CONFIGURATION GRAFANA DASHBOARD
+# =========================================================================
+- name: "{{ ansible_role_name }} | Monitoring | Configuration du dashboard Grafana du service de notification"
   k8s:
     state: present
     definition:
       apiVersion: v1
       kind: ConfigMap
       metadata:
-        name: "{{ app_name }}-dashboard"
-        namespace: monitoring
+        name: "{{ notification_service_name }}-dashboard"
+        namespace: "{{ lions_monitoring_namespace | default('monitoring') }}"
         labels:
-          app: "{{ app_name }}"
           grafana_dashboard: "1"
+          grafana_folder: "LIONS Infrastructure"
+          app.kubernetes.io/name: grafana-dashboard
+          app.kubernetes.io/instance: "{{ notification_service_name }}-dashboard"
+          app.kubernetes.io/component: monitoring
+          app.kubernetes.io/part-of: lions-infrastructure
+          lions.dev/service: notification
+          lions.dev/environment: "{{ notification_environment }}"
+        annotations:
+          lions.dev/dashboard-version: "5.0.0"
+          lions.dev/dashboard-description: "Dashboard Grafana complet pour le service de notification"
       data:
-        notification-service-dashboard.json: |
+        "{{ notification_service_name }}-dashboard.json": |
           {
             "annotations": {
-              "list": []
+              "list": [
+                {
+                  "builtIn": 1,
+                  "datasource": "-- Grafana --",
+                  "enable": true,
+                  "hide": true,
+                  "iconColor": "rgba(0, 211, 255, 1)",
+                  "name": "Annotations & Alerts",
+                  "type": "dashboard"
+                }
+              ]
             },
+            "description": "Dashboard LIONS Infrastructure - Service de Notification {{ notification_environment }}",
             "editable": true,
             "fiscalYearStartMonth": 0,
-            "graphTooltip": 0,
+            "graphTooltip": 1,
             "id": null,
-            "links": [],
+            "links": [
+              {
+                "asDropdown": false,
+                "icon": "external link",
+                "includeVars": false,
+                "keepTime": false,
+                "tags": ["lions-infrastructure"],
+                "title": "LIONS Infrastructure Dashboards",
+                "type": "dashboards",
+                "url": ""
+              }
+            ],
             "liveNow": false,
             "panels": [
               {
@@ -90,8 +390,6 @@
                       "mode": "palette-classic"
                     },
                     "custom": {
-                      "axisCenteredZero": false,
-                      "axisColorMode": "text",
                       "axisLabel": "",
                       "axisPlacement": "auto",
                       "barAlignment": 0,
@@ -101,7 +399,185 @@
                       "hideFrom": {
                         "legend": false,
                         "tooltip": false,
-                        "viz": false
+                        "vis": false
+                      },
+                      "lineInterpolation": "linear",
+                      "lineWidth": 1,
+                      "pointSize": 5,
+                      "scaleDistribution": {
+                        "type": "linear"
+                      },
+                      "showPoints": "never",
+                      "spanNulls": false,
+                      "stacking": {
+                        "group": "A",
+                        "mode": "none"
+                      },
+                      "thresholdsStyle": {
+                        "mode": "off"
+                      }
+                    },
+                    "mappings": [],
+                    "thresholds": {
+                      "mode": "absolute",
+                      "steps": [
+                        {
+                          "color": "green",
+                          "value": null
+                        },
+                        {
+                          "color": "red",
+                          "value": 80
+                        }
+                      ]
+                    },
+                    "unit": "percent"
+                  },
+                  "overrides": []
+                },
+                "gridPos": {
+                  "h": 8,
+                  "w": 12,
+                  "x": 0,
+                  "y": 0
+                },
+                "id": 1,
+                "options": {
+                  "legend": {
+                    "calcs": ["lastNotNull"],
+                    "displayMode": "table",
+                    "placement": "bottom"
+                  },
+                  "tooltip": {
+                    "mode": "single",
+                    "sort": "none"
+                  }
+                },
+                "targets": [
+                  {
+                    "datasource": {
+                      "type": "prometheus",
+                      "uid": "prometheus"
+                    },
+                    "expr": "rate(container_cpu_usage_seconds_total{pod=~\"{{ notification_service_name }}-.*\", namespace=\"{{ notification_namespace }}\"}[5m]) * 100",
+                    "interval": "",
+                    "legendFormat": "CPU Usage - {{ "{{pod}}" }}",
+                    "refId": "A"
+                  }
+                ],
+                "title": "Notification Service CPU Usage",
+                "type": "timeseries"
+              },
+              {
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "fieldConfig": {
+                  "defaults": {
+                    "color": {
+                      "mode": "palette-classic"
+                    },
+                    "custom": {
+                      "axisLabel": "",
+                      "axisPlacement": "auto",
+                      "barAlignment": 0,
+                      "drawStyle": "line",
+                      "fillOpacity": 10,
+                      "gradientMode": "none",
+                      "hideFrom": {
+                        "legend": false,
+                        "tooltip": false,
+                        "vis": false
+                      },
+                      "lineInterpolation": "linear",
+                      "lineWidth": 1,
+                      "pointSize": 5,
+                      "scaleDistribution": {
+                        "type": "linear"
+                      },
+                      "showPoints": "never",
+                      "spanNulls": false,
+                      "stacking": {
+                        "group": "A",
+                        "mode": "none"
+                      },
+                      "thresholdsStyle": {
+                        "mode": "off"
+                      }
+                    },
+                    "mappings": [],
+                    "thresholds": {
+                      "mode": "absolute",
+                      "steps": [
+                        {
+                          "color": "green",
+                          "value": null
+                        },
+                        {
+                          "color": "red",
+                          "value": 80
+                        }
+                      ]
+                    },
+                    "unit": "bytes"
+                  },
+                  "overrides": []
+                },
+                "gridPos": {
+                  "h": 8,
+                  "w": 12,
+                  "x": 12,
+                  "y": 0
+                },
+                "id": 2,
+                "options": {
+                  "legend": {
+                    "calcs": ["lastNotNull"],
+                    "displayMode": "table",
+                    "placement": "bottom"
+                  },
+                  "tooltip": {
+                    "mode": "single",
+                    "sort": "none"
+                  }
+                },
+                "targets": [
+                  {
+                    "datasource": {
+                      "type": "prometheus",
+                      "uid": "prometheus"
+                    },
+                    "expr": "container_memory_working_set_bytes{pod=~\"{{ notification_service_name }}-.*\", namespace=\"{{ notification_namespace }}\"}",
+                    "interval": "",
+                    "legendFormat": "Memory Usage - {{ "{{pod}}" }}",
+                    "refId": "A"
+                  }
+                ],
+                "title": "Notification Service Memory Usage",
+                "type": "timeseries"
+              },
+              {
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "fieldConfig": {
+                  "defaults": {
+                    "color": {
+                      "mode": "palette-classic"
+                    },
+                    "custom": {
+                      "axisLabel": "",
+                      "axisPlacement": "auto",
+                      "barAlignment": 0,
+                      "drawStyle": "line",
+                      "fillOpacity": 10,
+                      "gradientMode": "none",
+                      "hideFrom": {
+                        "legend": false,
+                        "tooltip": false,
+                        "vis": false
                       },
                       "lineInterpolation": "linear",
                       "lineWidth": 1,
@@ -141,15 +617,14 @@
                   "h": 8,
                   "w": 12,
                   "x": 0,
-                  "y": 0
+                  "y": 8
                 },
-                "id": 1,
+                "id": 3,
                 "options": {
                   "legend": {
-                    "calcs": [],
-                    "displayMode": "list",
-                    "placement": "bottom",
-                    "showLegend": true
+                    "calcs": ["lastNotNull"],
+                    "displayMode": "table",
+                    "placement": "bottom"
                   },
                   "tooltip": {
                     "mode": "single",
@@ -162,11 +637,13 @@
                       "type": "prometheus",
                       "uid": "prometheus"
                     },
-                    "expr": "sum(rate(http_server_requests_seconds_count{application=\"$application\"}[1m])) by (uri)",
+                    "expr": "rate(notification_sent_total{job=\"{{ notification_service_name }}\"}[5m])",
+                    "interval": "",
+                    "legendFormat": "Notifications Sent - {{ "{{channel}}" }}",
                     "refId": "A"
                   }
                 ],
-                "title": "Requêtes HTTP par URI",
+                "title": "Notification Delivery Rate by Channel",
                 "type": "timeseries"
               },
               {
@@ -180,8 +657,6 @@
                       "mode": "palette-classic"
                     },
                     "custom": {
-                      "axisCenteredZero": false,
-                      "axisColorMode": "text",
                       "axisLabel": "",
                       "axisPlacement": "auto",
                       "barAlignment": 0,
@@ -191,7 +666,7 @@
                       "hideFrom": {
                         "legend": false,
                         "tooltip": false,
-                        "viz": false
+                        "vis": false
                       },
                       "lineInterpolation": "linear",
                       "lineWidth": 1,
@@ -223,7 +698,7 @@
                         }
                       ]
                     },
-                    "unit": "short"
+                    "unit": "reqps"
                   },
                   "overrides": []
                 },
@@ -231,15 +706,14 @@
                   "h": 8,
                   "w": 12,
                   "x": 12,
-                  "y": 0
+                  "y": 8
                 },
-                "id": 2,
+                "id": 4,
                 "options": {
                   "legend": {
-                    "calcs": [],
-                    "displayMode": "list",
-                    "placement": "bottom",
-                    "showLegend": true
+                    "calcs": ["lastNotNull"],
+                    "displayMode": "table",
+                    "placement": "bottom"
                   },
                   "tooltip": {
                     "mode": "single",
@@ -252,48 +726,26 @@
                       "type": "prometheus",
                       "uid": "prometheus"
                     },
-                    "expr": "sum(notification_sent_total{application=\"$application\"}) by (channel)",
+                    "expr": "rate(http_requests_total{job=\"{{ notification_service_name }}\"}[5m])",
+                    "interval": "",
+                    "legendFormat": "Request Rate - {{ "{{method}} {{status}}" }}",
                     "refId": "A"
                   }
                 ],
-                "title": "Notifications envoyées par canal",
+                "title": "Notification Service Request Rate",
                 "type": "timeseries"
               }
             ],
-            "refresh": "",
-            "schemaVersion": 38,
+            "refresh": "{{ lions_grafana_refresh_interval | default('30s') }}",
+            "schemaVersion": 36,
             "style": "dark",
-            "tags": ["notification-service"],
+            "tags": [
+              "lions-infrastructure",
+              "notification",
+              "{{ notification_environment }}"
+            ],
             "templating": {
-              "list": [
-                {
-                  "current": {
-                    "selected": false,
-                    "text": "All",
-                    "value": "$__all"
-                  },
-                  "datasource": {
-                    "type": "prometheus",
-                    "uid": "prometheus"
-                  },
-                  "definition": "label_values(application)",
-                  "hide": 0,
-                  "includeAll": true,
-                  "label": "Application",
-                  "multi": false,
-                  "name": "application",
-                  "options": [],
-                  "query": {
-                    "query": "label_values(application)",
-                    "refId": "StandardVariableQuery"
-                  },
-                  "refresh": 1,
-                  "regex": "",
-                  "skipUrlSync": false,
-                  "sort": 0,
-                  "type": "query"
-                }
-              ]
+              "list": []
             },
             "time": {
               "from": "now-6h",
@@ -301,71 +753,76 @@
             },
             "timepicker": {},
             "timezone": "",
-            "title": "Service de Notification",
-            "uid": "notification-service-dashboard",
+            "title": "LIONS Notification Service - {{ notification_environment | title }}",
+            "uid": "lions-notification-{{ notification_environment }}",
             "version": 1,
             "weekStart": ""
           }
-  register: dashboard_result
-  ignore_errors: yes
-  when: grafana_check is succeeded and grafana_check.resources | length > 0
+  register: grafana_dashboard_result
+  when:
+    - lions_grafana_enabled | default(true) | bool
+    - notification_monitoring.enabled | bool
+  tags:
+    - monitoring
+    - grafana
+    - dashboard
 
-- name: Avertissement si le dashboard n'a pas été créé
+# =========================================================================
+# VÉRIFICATIONS POST-DÉPLOIEMENT
+# =========================================================================
+- name: "{{ ansible_role_name }} | Monitoring | Vérification du ServiceMonitor"
+  k8s_info:
+    api_version: monitoring.coreos.com/v1
+    kind: ServiceMonitor
+    name: "{{ notification_service_name }}-monitor"
+    namespace: "{{ notification_namespace }}"
+  register: servicemonitor_check
+  when:
+    - prometheus_operator_available | bool
+    - notification_monitoring.enabled | bool
+  tags:
+    - monitoring
+    - validation
+
+- name: "{{ ansible_role_name }} | Monitoring | Vérification des règles Prometheus"
+  k8s_info:
+    api_version: monitoring.coreos.com/v1
+    kind: PrometheusRule
+    name: "{{ notification_service_name }}-alerts"
+    namespace: "{{ notification_namespace }}"
+  register: rules_check
+  when:
+    - prometheus_rules_available | bool
+    - notification_monitoring.enabled | bool
+  tags:
+    - monitoring
+    - validation
+
+# =========================================================================
+# RÉSULTATS ET LOGGING
+# =========================================================================
+- name: "{{ ansible_role_name }} | Monitoring | Affichage du statut de configuration"
   debug:
-    msg: "AVERTISSEMENT: Le dashboard Grafana pour le service de notification n'a pas été créé. Vérifiez les logs pour plus d'informations."
-  when: grafana_check is succeeded and grafana_check.resources | length > 0 and dashboard_result is failed
+    msg:
+      - "✅ Configuration monitoring du service de notification terminée"
+      - "🏷️  Service: {{ notification_service_name }}"
+      - "🏗️  Namespace: {{ notification_namespace }}"
+      - "🌐 Environnement: {{ notification_environment }}"
+      - "📊 ServiceMonitor: {{ 'Configuré' if servicemonitor_result is succeeded else 'Non configuré' }}"
+      - "🚨 Alertes: {{ 'Configurées' if prometheus_rules_result is succeeded else 'Non configurées' }}"
+      - "📈 Dashboard: {{ 'Configuré' if grafana_dashboard_result is succeeded else 'Non configuré' }}"
+      - "🔍 Prometheus Operator: {{ 'Disponible' if prometheus_operator_available else 'Non disponible' }}"
+  tags:
+    - monitoring
+    - summary
 
-- name: Création des règles d'alerte pour le service de notification
-  k8s:
-    state: present
-    definition:
-      apiVersion: monitoring.coreos.com/v1
-      kind: PrometheusRule
-      metadata:
-        name: "{{ app_name }}-alerts"
-        namespace: monitoring
-        labels:
-          app: "{{ app_name }}"
-          prometheus: kube-prometheus
-          role: alert-rules
-      spec:
-        groups:
-          - name: notification-service.rules
-            rules:
-              - alert: NotificationServiceDown
-                expr: up{job="{{ app_name }}"} == 0
-                for: 5m
-                labels:
-                  severity: critical
-                  service: notification
-                annotations:
-                  summary: "Service de notification indisponible"
-                  description: "Le service de notification {{ app_name }} est indisponible depuis 5 minutes."
-              
-              - alert: NotificationServiceHighErrorRate
-                expr: sum(rate(http_server_requests_seconds_count{application="{{ app_name }}",status=~"5.."}[5m])) / sum(rate(http_server_requests_seconds_count{application="{{ app_name }}"}[5m])) > 0.05
-                for: 5m
-                labels:
-                  severity: warning
-                  service: notification
-                annotations:
-                  summary: "Taux d'erreur élevé pour le service de notification"
-                  description: "Le service de notification {{ app_name }} a un taux d'erreur supérieur à 5% depuis 5 minutes."
-              
-              - alert: NotificationDeliveryFailure
-                expr: sum(increase(notification_delivery_failure_total{application="{{ app_name }}"}[15m])) > 10
-                for: 5m
-                labels:
-                  severity: warning
-                  service: notification
-                annotations:
-                  summary: "Échecs de livraison de notifications"
-                  description: "Le service de notification {{ app_name }} a rencontré plus de 10 échecs de livraison au cours des 15 dernières minutes."
-  register: alerts_result
-  ignore_errors: yes
-  when: prometheus_operator_check is succeeded and prometheus_operator_check.resources | length > 0
-
-- name: Avertissement si les règles d'alerte n'ont pas été créées
+- name: "{{ ansible_role_name }} | Monitoring | Avertissements si composants manquants"
   debug:
-    msg: "AVERTISSEMENT: Les règles d'alerte pour le service de notification n'ont pas été créées. Vérifiez les logs pour plus d'informations."
-  when: prometheus_operator_check is succeeded and prometheus_operator_check.resources | length > 0 and alerts_result is failed
+    msg:
+      - "⚠️  AVERTISSEMENT: Prometheus Operator n'est pas installé"
+      - "   Le monitoring automatique ne sera pas configuré"
+      - "   Installez Prometheus Operator pour activer le monitoring"
+  when: not prometheus_operator_available | bool
+  tags:
+    - monitoring
+    - warning

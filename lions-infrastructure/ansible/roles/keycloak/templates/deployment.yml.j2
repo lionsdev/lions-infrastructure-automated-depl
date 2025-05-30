@@ -1,93 +1,220 @@
 ---
-# Titre: Template de déploiement Kubernetes pour Keycloak
-# Description: Définit le déploiement Kubernetes pour Keycloak
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - KEYCLOAK DEPLOYMENT TEMPLATE
+# =========================================================================
+# Description: Template de déploiement Kubernetes pour Keycloak optimisé
+# Version: 5.0.0
+# Date: {{ ansible_date_time.iso8601 }}
+# Maintainer: DevOps Team LIONS
+# Technology: Keycloak {{ lions_keycloak_version }}
+# Environment: {{ lions_environment }}
+# =========================================================================
 
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: "{{ app_name }}"
-  namespace: "{{ app_namespace }}"
+  name: {{ lions_keycloak_service_name }}
+  namespace: {{ lions_keycloak_namespace }}
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "keycloak"
+    # Labels standards LIONS 5.0
+    app.kubernetes.io/name: {{ lions_keycloak_service_name }}
+    app.kubernetes.io/instance: {{ lions_keycloak_service_name }}-{{ lions_environment }}
+    app.kubernetes.io/version: "{{ lions_keycloak_version }}"
+    app.kubernetes.io/component: identity-provider
+    app.kubernetes.io/part-of: lions-infrastructure
+    app.kubernetes.io/managed-by: ansible
+    # Labels métier LIONS
+    lions.dev/environment: {{ lions_environment }}
+    lions.dev/tier: security
+    lions.dev/technology: keycloak
+    lions.dev/backup-required: "true"
+    lions.dev/monitoring-enabled: "{{ lions_monitoring_enabled | string | lower }}"
+    # Labels de versioning
+    version: "{{ lions_keycloak_version }}"
+    lions.dev/config-version: "{{ lions_config_version }}"
   annotations:
-    description: "Déploiement de Keycloak {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    # Annotations de documentation
+    description: "Keycloak Identity Provider pour LIONS Infrastructure {{ lions_environment }}"
+    lions.dev/documentation: "https://docs.lions.dev/services/keycloak"
+    lions.dev/runbook: "https://docs.lions.dev/runbooks/keycloak"
+    lions.dev/support: "{{ lions_config_maintainer }}"
+    # Annotations de déploiement
     deployment.kubernetes.io/revision: "1"
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {{ ansible_date_time.iso8601 | to_json }}
+    # Annotations de sécurité
+    seccomp.security.alpha.kubernetes.io/pod: runtime/default
+    container.apparmor.security.beta.kubernetes.io/{{ lions_keycloak_service_name }}: runtime/default
+
 spec:
-  replicas: {{ keycloak_replicas[app_environment] }}
+  # Configuration du déploiement dynamique selon l'environnement
+  replicas: {% if lions_environment == 'production' %}{{ lions_keycloak_replicas_production | default(3) }}{% elif lions_environment == 'staging' %}{{ lions_keycloak_replicas_staging | default(2) }}{% else %}{{ lions_keycloak_replicas_development | default(1) }}{% endif %}
+
   selector:
     matchLabels:
-      app: "{{ app_name }}"
+      app.kubernetes.io/name: {{ lions_keycloak_service_name }}
+      app.kubernetes.io/instance: {{ lions_keycloak_service_name }}-{{ lions_environment }}
+
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxSurge: 1
+      maxSurge: {% if lions_environment == 'production' %}1{% else %}"25%"{% endif %}
       maxUnavailable: 0
+
   template:
     metadata:
       labels:
-        app: "{{ app_name }}"
-        version: "{{ app_version }}"
-        environment: "{{ app_environment }}"
-        technology: "keycloak"
+        # Labels de pod alignés avec le deployment
+        app.kubernetes.io/name: {{ lions_keycloak_service_name }}
+        app.kubernetes.io/instance: {{ lions_keycloak_service_name }}-{{ lions_environment }}
+        app.kubernetes.io/version: "{{ lions_keycloak_version }}"
+        app.kubernetes.io/component: identity-provider
+        app.kubernetes.io/part-of: lions-infrastructure
+        lions.dev/environment: {{ lions_environment }}
+        lions.dev/tier: security
+        lions.dev/technology: keycloak
+        # Labels pour les services mesh et monitoring
+        version: "{{ lions_keycloak_version }}"
+        sidecar.istio.io/inject: "{{ lions_service_mesh_enabled | default('false') | string | lower }}"
+
       annotations:
-        prometheus.io/scrape: "{{ keycloak_prometheus_scrape | string | lower }}"
-        prometheus.io/path: "{{ keycloak_prometheus_path }}"
-        prometheus.io/port: "{{ keycloak_prometheus_port | string }}"
+        # Annotations de monitoring Prometheus
+        prometheus.io/scrape: "{{ lions_monitoring_enabled | string | lower }}"
+        prometheus.io/path: "/auth/realms/master/metrics"
+        prometheus.io/port: "{{ lions_keycloak_port | string }}"
+        prometheus.io/scheme: "http"
+        # Annotations de logging
+        fluentd.active: "{{ lions_logging_enabled | default('true') | string | lower }}"
+        logging.coreos.com/enabled: "{{ lions_logging_enabled | default('true') | string | lower }}"
+        # Annotations de configuration
+        lions.dev/config-hash: "{{ (keycloak_config_content | default('') | hash('sha256'))[:8] }}"
+        lions.dev/secret-hash: "{{ (keycloak_secret_content | default('') | hash('sha256'))[:8] }}"
+        # Annotations de sécurité
+        container.apparmor.security.beta.kubernetes.io/{{ lions_keycloak_service_name }}: runtime/default
+
     spec:
-      serviceAccountName: "{{ app_name }}"
+      # Configuration du service account
+      serviceAccountName: {{ lions_keycloak_service_name }}
+      automountServiceAccountToken: false
+
+      # Configuration de sécurité du pod
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
+        runAsGroup: 1000
         fsGroup: 1000
-      containers:
-        - name: "{{ app_name }}"
-          image: "quay.io/keycloak/keycloak:{{ app_version }}"
+        fsGroupChangePolicy: "OnRootMismatch"
+        seccompProfile:
+          type: RuntimeDefault
+
+      # Configuration de priorité et préemption
+      priorityClassName: {% if lions_environment == 'production' %}system-cluster-critical{% else %}system-node-critical{% endif %}
+
+      # Configuration d'initialisation
+      initContainers:
+        - name: wait-for-database
+          image: "postgres:{{ lions_postgres_version }}-alpine"
           imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Attente de la disponibilité de PostgreSQL..."
+              until pg_isready -h {{ lions_postgres_service_name }}.{{ lions_postgres_namespace }}.svc.cluster.local -p {{ lions_postgres_port }} -U {{ lions_keycloak_db_user | default('keycloak') }}; do
+                echo "PostgreSQL non disponible - attente..."
+                sleep 5
+              done
+              echo "PostgreSQL disponible !"
+          env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ lions_keycloak_service_name }}-db-secret
+                  key: password
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 999
+            capabilities:
+              drop: ["ALL"]
+
+      # Configuration du conteneur principal
+      containers:
+        - name: {{ lions_keycloak_service_name }}
+          image: "quay.io/keycloak/keycloak:{{ lions_keycloak_version }}"
+          imagePullPolicy: {% if lions_environment == 'development' %}Always{% else %}IfNotPresent{% endif %}
+
+          # Configuration des ports
           ports:
             - name: http
-              containerPort: {{ keycloak_default_port }}
+              containerPort: {{ lions_keycloak_port }}
               protocol: TCP
+            - name: management
+              containerPort: 9990
+              protocol: TCP
+
+          # Variables d'environnement structurées
           env:
+            # Configuration de base de données
             - name: KC_DB
               value: "postgres"
             - name: KC_DB_URL
-              value: "jdbc:postgresql://{{ keycloak_database_service }}.{{ keycloak_database_namespace }}:5432/{{ keycloak_database_name }}"
+              value: "jdbc:postgresql://{{ lions_postgres_service_name }}.{{ lions_postgres_namespace }}.svc.cluster.local:{{ lions_postgres_port }}/{{ lions_keycloak_database | default('keycloak') }}"
             - name: KC_DB_USERNAME
-              value: "{{ keycloak_database_user }}"
+              value: "{{ lions_keycloak_db_user | default('keycloak') }}"
             - name: KC_DB_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: "{{ keycloak_database_password_secret }}"
-                  key: "password"
+                  name: {{ lions_keycloak_service_name }}-db-secret
+                  key: password
+
+            # Configuration d'administration
             - name: KEYCLOAK_ADMIN
-              value: "{{ keycloak_admin_user }}"
+              value: "{{ lions_keycloak_admin_user }}"
             - name: KEYCLOAK_ADMIN_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: "{{ keycloak_admin_password_secret }}"
-                  key: "password"
+                  name: {{ lions_keycloak_service_name }}-admin-secret
+                  key: password
+
+            # Configuration réseau et proxy
             - name: KC_PROXY
               value: "edge"
             - name: KC_HOSTNAME_STRICT
               value: "false"
+            - name: KC_HOSTNAME_URL
+              value: "https://keycloak.{{ lions_dns_full_domain }}"
+            - name: KC_HOSTNAME_ADMIN_URL
+              value: "https://keycloak.{{ lions_dns_full_domain }}"
             - name: KC_HTTP_RELATIVE_PATH
               value: "/auth"
+            - name: KC_PROXY_ADDRESS_FORWARDING
+              value: "true"
+
+            # Configuration des fonctionnalités
             - name: KC_HEALTH_ENABLED
               value: "true"
             - name: KC_METRICS_ENABLED
-              value: "{{ keycloak_prometheus_scrape | string | lower }}"
+              value: "{{ lions_monitoring_enabled | string | lower }}"
+            - name: KC_LOG_LEVEL
+              value: {% if lions_environment == 'development' %}DEBUG{% elif lions_environment == 'staging' %}INFO{% else %}WARN{% endif %}
+            - name: KC_LOG_CONSOLE_OUTPUT
+              value: json
+
+            # Configuration JVM optimisée
             - name: JAVA_OPTS_APPEND
-              value: "-Dkeycloak.profile.feature.upload_scripts=enabled -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0"
-            - name: KC_HOSTNAME_URL
-              value: "{{ keycloak_frontend_url }}"
-            - name: KC_PROXY_ADDRESS_FORWARDING
-              value: "{{ keycloak_proxy_address_forwarding | string | lower }}"
+              value: >-
+                -Dkeycloak.profile.feature.upload_scripts=enabled
+                -XX:+UseContainerSupport
+                -XX:MaxRAMPercentage=75.0
+                -XX:+UseG1GC
+                -XX:+UnlockExperimentalVMOptions
+                -XX:+UseCGroupMemoryLimitForHeap
+                -XX:+DisableExplicitGC
+                {% if lions_environment == 'development' %}-XX:+PrintGC -XX:+PrintGCDetails -XX:+PrintGCTimeStamps{% endif %}
+
+            # Variables d'environnement Kubernetes
             - name: KUBERNETES_NAMESPACE
               valueFrom:
                 fieldRef:
@@ -96,57 +223,269 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+
+            # Variables LIONS personnalisées
+            - name: LIONS_ENVIRONMENT
+              value: "{{ lions_environment }}"
+            - name: LIONS_SERVICE_NAME
+              value: "{{ lions_keycloak_service_name }}"
+            - name: LIONS_VERSION
+              value: "{{ lions_config_version }}"
+
+          # Configuration depuis ConfigMap
           envFrom:
             - configMapRef:
-                name: "{{ app_name }}-config"
+                name: {{ lions_keycloak_service_name }}-config
+                optional: false
+            - secretRef:
+                name: {{ lions_keycloak_service_name }}-env-secret
+                optional: true
+
+          # Configuration des ressources dynamique
           resources:
             requests:
-              cpu: "{{ keycloak_resources[app_environment].requests.cpu }}"
-              memory: "{{ keycloak_resources[app_environment].requests.memory }}"
+              cpu: {% if lions_environment == 'production' %}{{ lions_resources_large_cpu_request }}{% elif lions_environment == 'staging' %}{{ lions_resources_medium_cpu_request }}{% else %}{{ lions_resources_small_cpu_request }}{% endif %}
+              memory: {% if lions_environment == 'production' %}{{ lions_resources_large_memory_request }}{% elif lions_environment == 'staging' %}{{ lions_resources_medium_memory_request }}{% else %}{{ lions_resources_small_memory_request }}{% endif %}
             limits:
-              cpu: "{{ keycloak_resources[app_environment].limits.cpu }}"
-              memory: "{{ keycloak_resources[app_environment].limits.memory }}"
+              cpu: {% if lions_environment == 'production' %}{{ lions_resources_large_cpu_limit }}{% elif lions_environment == 'staging' %}{{ lions_resources_medium_cpu_limit }}{% else %}{{ lions_resources_small_cpu_limit }}{% endif %}
+              memory: {% if lions_environment == 'production' %}{{ lions_resources_large_memory_limit }}{% elif lions_environment == 'staging' %}{{ lions_resources_medium_memory_limit }}{% else %}{{ lions_resources_small_memory_limit }}{% endif %}
+
+          # Probes de santé optimisées
+          startupProbe:
+            httpGet:
+              path: /auth/health/ready
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+            successThreshold: 1
+
           readinessProbe:
-            {{- keycloak_readiness_probe | to_nice_yaml(indent=2) | indent(12) }}
+            httpGet:
+              path: /auth/health/ready
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+            successThreshold: 1
+
           livenessProbe:
-            {{- keycloak_liveness_probe | to_nice_yaml(indent=2) | indent(12) }}
+            httpGet:
+              path: /auth/health/live
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+            successThreshold: 1
+
+          # Configuration des volumes
           volumeMounts:
+            # Volume temporaire sécurisé
             - name: tmp-volume
               mountPath: /tmp
+            - name: var-cache-volume
+              mountPath: /var/cache
+            # Configuration personnalisée
             - name: config-volume
-              mountPath: /opt/keycloak/conf
+              mountPath: /opt/keycloak/conf/keycloak.conf
+              subPath: keycloak.conf
               readOnly: true
-            {% if keycloak_persistent_storage | bool %}
+            # Logs structurés
+            - name: logs-volume
+              mountPath: /opt/keycloak/logs
+            # Thèmes personnalisés (si activés)
+            {% if lions_keycloak_custom_themes_enabled | default(false) %}
+            - name: themes-volume
+              mountPath: /opt/keycloak/themes/custom
+              readOnly: true
+            {% endif %}
+            # Stockage persistant (si activé)
+            {% if lions_keycloak_persistent_storage | default(false) %}
             - name: data-volume
               mountPath: /opt/keycloak/data
             {% endif %}
+
+          # Configuration de sécurité du conteneur
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false  # Keycloak nécessite l'écriture
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
             capabilities:
-              drop:
-                - ALL
-            readOnlyRootFilesystem: false
+              drop: ["ALL"]
+              add: ["NET_BIND_SERVICE"]  # Pour bind sur les ports < 1024 si nécessaire
+            seccompProfile:
+              type: RuntimeDefault
+
+        # Sidecar de monitoring (optionnel en production)
+        {% if lions_monitoring_enabled and lions_environment == 'production' %}
+        - name: monitoring-exporter
+          image: "prom/jmx-exporter:{{ lions_jmx_exporter_version | default('0.19.0') }}"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: metrics
+              containerPort: 9404
+              protocol: TCP
+          env:
+            - name: SERVICE_PORT
+              value: "9404"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65534
+            capabilities:
+              drop: ["ALL"]
+        {% endif %}
+
+      # Configuration des volumes
       volumes:
+        # Volumes temporaires
         - name: tmp-volume
-          emptyDir: {}
+          emptyDir:
+            sizeLimit: 1Gi
+        - name: var-cache-volume
+          emptyDir:
+            sizeLimit: 500Mi
+        - name: logs-volume
+          emptyDir:
+            sizeLimit: 2Gi
+
+        # Configuration depuis ConfigMap
         - name: config-volume
           configMap:
-            name: "{{ app_name }}-config"
-        {% if keycloak_persistent_storage | bool %}
+            name: {{ lions_keycloak_service_name }}-config
+            defaultMode: 0444
+
+        # Thèmes personnalisés
+        {% if lions_keycloak_custom_themes_enabled | default(false) %}
+        - name: themes-volume
+          configMap:
+            name: {{ lions_keycloak_service_name }}-themes
+            defaultMode: 0444
+        {% endif %}
+
+        # Stockage persistant
+        {% if lions_keycloak_persistent_storage | default(false) %}
         - name: data-volume
           persistentVolumeClaim:
-            claimName: "{{ app_name }}-pvc"
+            claimName: {{ lions_keycloak_service_name }}-pvc
         {% endif %}
+
+      # Configuration d'affinité et tolérance
       affinity:
+        # Anti-affinité pour éviter plusieurs instances sur le même nœud
         podAntiAffinity:
+          {% if lions_environment == 'production' %}
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app.kubernetes.io/name
+                    operator: In
+                    values: [{{ lions_keycloak_service_name }}]
+              topologyKey: kubernetes.io/hostname
+          {% else %}
           preferredDuringSchedulingIgnoredDuringExecution:
             - weight: 100
               podAffinityTerm:
                 labelSelector:
                   matchExpressions:
-                    - key: app
+                    - key: app.kubernetes.io/name
                       operator: In
-                      values:
-                        - "{{ app_name }}"
+                      values: [{{ lions_keycloak_service_name }}]
                 topologyKey: kubernetes.io/hostname
-      terminationGracePeriodSeconds: 60
+          {% endif %}
+
+        # Affinité avec les nœuds appropriés
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: lions.dev/workload-type
+                    operator: In
+                    values: ["security", "general"]
+            - weight: 50
+              preference:
+                matchExpressions:
+                  - key: kubernetes.io/arch
+                    operator: In
+                    values: ["amd64"]
+
+      # Tolérances pour nœuds spécialisés
+      tolerations:
+        {% if lions_environment == 'production' %}
+        - key: "lions.dev/security-workload"
+          operator: "Equal"
+          value: "true"
+          effect: "NoSchedule"
+        {% endif %}
+        - key: "node.kubernetes.io/not-ready"
+          operator: "Exists"
+          effect: "NoExecute"
+          tolerationSeconds: 300
+        - key: "node.kubernetes.io/unreachable"
+          operator: "Exists"
+          effect: "NoExecute"
+          tolerationSeconds: 300
+
+      # Configuration DNS
+      dnsPolicy: ClusterFirst
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "2"
+          - name: edns0
+
+      # Délai de terminaison gracieuse
+      terminationGracePeriodSeconds: {% if lions_environment == 'production' %}120{% else %}60{% endif %}
+
+      # Politique de redémarrage
+      restartPolicy: Always
+
+      # Configuration du nom d'hôte
+      hostname: {{ lions_keycloak_service_name }}
+      subdomain: {{ lions_keycloak_namespace }}
+
+---
+# =========================================================================
+# CONFIGURATION DE DISRUPTION BUDGET (Production uniquement)
+# =========================================================================
+{% if lions_environment == 'production' %}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ lions_keycloak_service_name }}-pdb
+  namespace: {{ lions_keycloak_namespace }}
+  labels:
+    app.kubernetes.io/name: {{ lions_keycloak_service_name }}
+    app.kubernetes.io/component: identity-provider
+    app.kubernetes.io/part-of: lions-infrastructure
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ lions_keycloak_service_name }}
+{% endif %}

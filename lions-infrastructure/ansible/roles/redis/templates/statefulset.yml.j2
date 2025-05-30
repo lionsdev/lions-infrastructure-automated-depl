@@ -1,71 +1,311 @@
 ---
-# Titre: Template de StatefulSet Kubernetes pour Redis
-# Description: Définit le StatefulSet Kubernetes pour Redis
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-08
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - REDIS STATEFULSET TEMPLATE
+# =========================================================================
+# Description: Template Kubernetes StatefulSet pour déploiement Redis
+# Version: 5.0.0
+# Maintainer: DevOps Team LIONS
+# Documentation: https://docs.lions.dev/infrastructure/redis
+# Compatible: Kubernetes 1.24+, Redis 7.x
+# =========================================================================
 
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: "{{ app_name }}"
-  namespace: "{{ app_namespace }}"
+  name: "{{ lions_redis_service_name | default('redis') }}"
+  namespace: "{{ lions_redis_namespace | default('database') }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
+    # Labels standards LIONS
+    app.kubernetes.io/name: "{{ lions_redis_service_name | default('redis') }}"
+    app.kubernetes.io/instance: "{{ lions_redis_service_name | default('redis') }}-{{ lions_environment }}"
+    app.kubernetes.io/version: "{{ lions_redis_version | default('7.2') }}"
+    app.kubernetes.io/component: "database"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+
+    # Labels spécifiques
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/tier: "data"
+    lions.dev/technology: "redis"
+    lions.dev/backup-enabled: "{{ lions_redis_backup_enabled | default('true') | string }}"
+    lions.dev/monitoring-enabled: "{{ lions_redis_monitoring_enabled | default('true') | string }}"
+
+    # Labels legacy (compatibilité)
+    app: "{{ lions_redis_service_name | default('redis') }}"
+    version: "{{ lions_redis_version | default('7.2') }}"
+    environment: "{{ lions_environment }}"
     technology: "redis"
+
   annotations:
-    description: "Déploiement de Redis {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
-    deployment.kubernetes.io/revision: "1"
+    # Annotations LIONS
+    lions.dev/description: "Redis {{ lions_redis_version | default('7.2') }} StatefulSet pour environnement {{ lions_environment }}"
+    lions.dev/contact: "{{ lions_config_maintainer | default('devops@lions.dev') }}"
+    lions.dev/documentation: "https://docs.lions.dev/infrastructure/redis"
+    lions.dev/last-updated: "{{ ansible_date_time.iso8601 }}"
+
+    # Annotations Kubernetes
+    deployment.kubernetes.io/revision: "{{ lions_redis_deployment_revision | default('1') }}"
+    kubernetes.io/description: "Redis database for LIONS Infrastructure"
+
+    # Annotations de monitoring
+    prometheus.io/scrape: "{{ lions_redis_monitoring_enabled | default('true') | string }}"
+    grafana.com/dashboard: "redis-dashboard"
+
+{% if lions_redis_backup_enabled | default('true') | bool %}
+    # Annotations de backup
+    backup.lions.dev/enabled: "true"
+    backup.lions.dev/schedule: "{{ lions_redis_backup_schedule | default('0 2 * * *') }}"
+    backup.lions.dev/retention: "{{ lions_backup_retention_days | default('30') }}d"
+{% endif %}
+
 spec:
-  serviceName: "{{ app_name }}"
-  replicas: {{ redis_replicas[app_environment] | default(1) }}
+  # Configuration du service
+  serviceName: "{{ lions_redis_service_name | default('redis') }}"
+
+  # Stratégie de mise à jour
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      partition: 0
+      maxUnavailable: 0
+
+  # Configuration des réplicas selon l'environnement
+  replicas: {{ lions_redis_replicas[lions_environment] | default(lions_redis_replicas_default | default(1)) }}
+
+  # Délai avant suppression forcée
+  podManagementPolicy: {{ lions_redis_pod_management_policy | default('OrderedReady') }}
+
+  # Sélecteur de pods
   selector:
     matchLabels:
-      app: "{{ app_name }}"
+      app.kubernetes.io/name: "{{ lions_redis_service_name | default('redis') }}"
+      app.kubernetes.io/instance: "{{ lions_redis_service_name | default('redis') }}-{{ lions_environment }}"
+      lions.dev/environment: "{{ lions_environment }}"
+
+  # Template des pods
   template:
     metadata:
       labels:
-        app: "{{ app_name }}"
-        version: "{{ app_version }}"
-        environment: "{{ app_environment }}"
-        technology: "redis"
+        # Labels identiques au selector + labels additionnels
+        app.kubernetes.io/name: "{{ lions_redis_service_name | default('redis') }}"
+        app.kubernetes.io/instance: "{{ lions_redis_service_name | default('redis') }}-{{ lions_environment }}"
+        app.kubernetes.io/version: "{{ lions_redis_version | default('7.2') }}"
+        app.kubernetes.io/component: "database"
+        app.kubernetes.io/part-of: "lions-infrastructure"
+        app.kubernetes.io/managed-by: "ansible"
+        lions.dev/environment: "{{ lions_environment }}"
+        lions.dev/tier: "data"
+        lions.dev/technology: "redis"
+
+        # Labels pour le réseau et sécurité
+        lions.dev/network-policy: "database-tier"
+        lions.dev/security-profile: "{{ lions_redis_security_profile | default('standard') }}"
+
+        # Labels legacy
+        app: "{{ lions_redis_service_name | default('redis') }}"
+        version: "{{ lions_redis_version | default('7.2') }}"
+        environment: "{{ lions_environment }}"
+
       annotations:
-        prometheus.io/scrape: "{{ redis_prometheus_scrape | string | lower }}"
-        prometheus.io/path: "{{ redis_prometheus_path }}"
-        prometheus.io/port: "{{ redis_prometheus_port }}"
+        # Annotations de monitoring
+        prometheus.io/scrape: "{{ lions_redis_monitoring_enabled | default('true') | string }}"
+        prometheus.io/path: "{{ lions_redis_prometheus_path | default('/metrics') }}"
+        prometheus.io/port: "{{ lions_redis_prometheus_port | default('9121') }}"
+
+        # Annotations de configuration
+        config.lions.dev/hash: "{{ lions_redis_config_hash | default('') }}"
+        config.lions.dev/version: "{{ lions_redis_config_version | default('1.0') }}"
+
+        # Annotations de sécurité
+{% if lions_security_pod_security_standards == 'restricted' %}
+        seccomp.security.alpha.kubernetes.io/pod: "runtime/default"
+        container.apparmor.security.beta.kubernetes.io/redis: "runtime/default"
+{% if lions_redis_monitoring_enabled | default('true') | bool %}
+        container.apparmor.security.beta.kubernetes.io/redis-exporter: "runtime/default"
+{% endif %}
+{% endif %}
+
     spec:
-      serviceAccountName: "{{ app_name }}"
+      # Configuration du service account
+      serviceAccountName: "{{ lions_redis_service_name | default('redis') }}"
+      automountServiceAccountToken: {{ lions_redis_automount_sa_token | default('false') | string }}
+
+      # Configuration de sécurité du pod
       securityContext:
+        # Utilisateur non-root
         runAsNonRoot: true
-        runAsUser: 999
-        fsGroup: 999
+        runAsUser: {{ lions_redis_user_id | default('999') }}
+        runAsGroup: {{ lions_redis_group_id | default('999') }}
+        fsGroup: {{ lions_redis_fs_group_id | default('999') }}
+        fsGroupChangePolicy: "OnRootMismatch"
+
+        # Sécurité avancée selon l'environnement
+{% if lions_environment == 'production' or lions_security_pod_security_standards == 'restricted' %}
+        seccompProfile:
+          type: RuntimeDefault
+        supplementalGroups: []
+{% endif %}
+
+      # Configuration DNS
+      dnsPolicy: {{ lions_redis_dns_policy | default('ClusterFirst') }}
+{% if lions_redis_dns_config is defined %}
+      dnsConfig:
+        {{- lions_redis_dns_config | to_nice_yaml | indent(8) }}
+{% endif %}
+
+      # Priorité et préemption
+{% if lions_redis_priority_class is defined %}
+      priorityClassName: "{{ lions_redis_priority_class }}"
+{% endif %}
+
+      # Tolérance et affinité
+      tolerations:
+        {{- lions_redis_tolerations | default([]) | to_nice_yaml | indent(8) }}
+
       affinity:
+        # Anti-affinité pour éviter les pods sur le même nœud
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
             - weight: 100
               podAffinityTerm:
                 labelSelector:
                   matchExpressions:
-                    - key: app
+                    - key: app.kubernetes.io/name
                       operator: In
                       values:
-                        - "{{ app_name }}"
+                        - "{{ lions_redis_service_name | default('redis') }}"
+                    - key: lions.dev/environment
+                      operator: In
+                      values:
+                        - "{{ lions_environment }}"
                 topologyKey: kubernetes.io/hostname
-      terminationGracePeriodSeconds: 60
+
+        # Affinité de nœud si configurée
+{% if lions_redis_node_affinity is defined %}
+        nodeAffinity:
+          {{- lions_redis_node_affinity | to_nice_yaml | indent(10) }}
+{% endif %}
+
+      # Sélecteur de nœud
+{% if lions_redis_node_selector is defined %}
+      nodeSelector:
+        {{- lions_redis_node_selector | to_nice_yaml | indent(8) }}
+{% endif %}
+
+      # Période de grâce pour arrêt
+      terminationGracePeriodSeconds: {{ lions_redis_termination_grace_period | default('60') }}
+
+      # Configuration des volumes
+      volumes:
+        # Configuration Redis
+        - name: redis-config
+          configMap:
+            name: "{{ lions_redis_service_name | default('redis') }}-config"
+            defaultMode: 0444
+
+        # Répertoire temporaire
+        - name: tmp
+          emptyDir:
+            sizeLimit: "{{ lions_redis_tmp_size | default('1Gi') }}"
+
+        # Scripts d'initialisation
+        - name: init-scripts
+          configMap:
+            name: "{{ lions_redis_service_name | default('redis') }}-scripts"
+            defaultMode: 0555
+
+{% if not lions_redis_persistent_storage | default('true') | bool %}
+        # Stockage éphémère (développement)
+        - name: redis-data
+          emptyDir:
+            sizeLimit: "{{ lions_redis_storage_size | default('5Gi') }}"
+{% endif %}
+
+{% if lions_redis_tls_enabled | default('false') | bool %}
+        # Certificats TLS
+        - name: tls-certs
+          secret:
+            secretName: "{{ lions_redis_service_name | default('redis') }}-tls"
+            defaultMode: 0400
+{% endif %}
+
+      # Containers d'initialisation
+      initContainers:
+        # Préparation des données
+        - name: redis-init
+          image: "{{ lions_redis_init_image | default('busybox:1.36') }}"
+          imagePullPolicy: {{ lions_redis_image_pull_policy | default('IfNotPresent') }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: {{ lions_redis_user_id | default('999') }}
+            runAsGroup: {{ lions_redis_group_id | default('999') }}
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              echo "🚀 Initialisation Redis pour {{ lions_environment }}"
+
+              # Vérification des permissions
+              if [ -w /data ]; then
+                echo "✅ Répertoire de données accessible en écriture"
+              else
+                echo "❌ Erreur: Répertoire de données non accessible"
+                exit 1
+              fi
+
+              # Préparation des répertoires
+              mkdir -p /data/logs
+              touch /data/logs/redis.log
+
+              echo "✅ Initialisation terminée"
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "16Mi"
+            limits:
+              cpu: "50m"
+              memory: "64Mi"
+
+      # Containers principaux
       containers:
-        - name: "{{ app_name }}"
-          image: "redis:{{ redis_version }}"
-          imagePullPolicy: IfNotPresent
+        # Container Redis principal
+        - name: redis
+          image: "{{ lions_redis_image_registry | default('') }}redis:{{ lions_redis_version | default('7.2') }}"
+          imagePullPolicy: {{ lions_redis_image_pull_policy | default('IfNotPresent') }}
+
+          # Commande de démarrage
           command:
             - redis-server
             - /etc/redis/redis.conf
+            - --dir
+            - /data
+{% if lions_redis_log_to_file | default('true') | bool %}
+            - --logfile
+            - /data/logs/redis.log
+{% endif %}
+
+          # Ports exposés
           ports:
             - name: redis
-              containerPort: {{ redis_default_port }}
+              containerPort: {{ lions_redis_port | default('6379') }}
               protocol: TCP
+{% if lions_redis_cluster_enabled | default('false') | bool %}
+            - name: cluster
+              containerPort: {{ lions_redis_cluster_port | default('16379') }}
+              protocol: TCP
+{% endif %}
+
+          # Variables d'environnement
           env:
+            # Informations Kubernetes
             - name: KUBERNETES_NAMESPACE
               valueFrom:
                 fieldRef:
@@ -78,81 +318,218 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
-          resources:
-            requests:
-              cpu: "{{ redis_resources[app_environment].requests.cpu }}"
-              memory: "{{ redis_resources[app_environment].requests.memory }}"
-            limits:
-              cpu: "{{ redis_resources[app_environment].limits.cpu }}"
-              memory: "{{ redis_resources[app_environment].limits.memory }}"
-          readinessProbe:
-            {{- redis_readiness_probe | to_nice_yaml(indent=2) | indent(12) }}
-          livenessProbe:
-            {{- redis_liveness_probe | to_nice_yaml(indent=2) | indent(12) }}
-          volumeMounts:
-            - name: data
-              mountPath: /data
-            - name: config
-              mountPath: /etc/redis
-              readOnly: true
-            - name: tmp
-              mountPath: /tmp
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop:
-                - ALL
-            readOnlyRootFilesystem: false
-{% if redis_prometheus_scrape | bool %}
-        - name: redis-exporter
-          image: "oliver006/redis_exporter:latest"
-          imagePullPolicy: IfNotPresent
-          ports:
-            - name: metrics
-              containerPort: {{ redis_prometheus_port }}
-              protocol: TCP
-          env:
-            - name: REDIS_ADDR
-              value: "redis://localhost:{{ redis_default_port }}"
-{% if redis_password_enabled | bool %}
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+
+            # Configuration Redis
+            - name: REDIS_PORT
+              value: "{{ lions_redis_port | default('6379') }}"
+            - name: LIONS_ENVIRONMENT
+              value: "{{ lions_environment }}"
+
+{% if lions_redis_password_enabled | default('false') | bool %}
+            # Authentification Redis
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: "{{ redis_password_secret }}"
-                  key: password
+                  name: "{{ lions_redis_password_secret | default('redis-auth') }}"
+                  key: "{{ lions_redis_password_key | default('password') }}"
 {% endif %}
+
+{% if lions_redis_custom_env_vars is defined %}
+            # Variables personnalisées
+            {{- lions_redis_custom_env_vars | to_nice_yaml | indent(12) }}
+{% endif %}
+
+          # Configuration des ressources
           resources:
             requests:
-              cpu: "50m"
-              memory: "64Mi"
+              cpu: "{{ lions_redis_resources[lions_environment].requests.cpu | default(lions_resources_small_cpu_request) }}"
+              memory: "{{ lions_redis_resources[lions_environment].requests.memory | default(lions_resources_small_memory_request) }}"
             limits:
-              cpu: "100m"
-              memory: "128Mi"
+              cpu: "{{ lions_redis_resources[lions_environment].limits.cpu | default(lions_resources_small_cpu_limit) }}"
+              memory: "{{ lions_redis_resources[lions_environment].limits.memory | default(lions_resources_small_memory_limit) }}"
+
+          # Sondes de santé
+          startupProbe:
+            {{- lions_redis_startup_probe | default({
+              'tcpSocket': {
+                'port': lions_redis_port | default('6379')
+              },
+              'initialDelaySeconds': 10,
+              'periodSeconds': 5,
+              'timeoutSeconds': 3,
+              'successThreshold': 1,
+              'failureThreshold': 30
+            }) | to_nice_yaml | indent(12) }}
+
+          readinessProbe:
+            {{- lions_redis_readiness_probe | default({
+              'exec': {
+                'command': [
+                  'redis-cli',
+                  '-p', lions_redis_port | default('6379') | string,
+                  'ping'
+                ]
+              },
+              'initialDelaySeconds': 5,
+              'periodSeconds': 10,
+              'timeoutSeconds': 5,
+              'successThreshold': 1,
+              'failureThreshold': 3
+            }) | to_nice_yaml | indent(12) }}
+
+          livenessProbe:
+            {{- lions_redis_liveness_probe | default({
+              'exec': {
+                'command': [
+                  'redis-cli',
+                  '-p', lions_redis_port | default('6379') | string,
+                  'ping'
+                ]
+              },
+              'initialDelaySeconds': 30,
+              'periodSeconds': 30,
+              'timeoutSeconds': 10,
+              'successThreshold': 1,
+              'failureThreshold': 3
+            }) | to_nice_yaml | indent(12) }}
+
+          # Points de montage
+          volumeMounts:
+            # Données persistantes
+            - name: redis-data
+              mountPath: /data
+
+            # Configuration
+            - name: redis-config
+              mountPath: /etc/redis
+              readOnly: true
+
+            # Répertoire temporaire
+            - name: tmp
+              mountPath: /tmp
+
+            # Scripts
+            - name: init-scripts
+              mountPath: /scripts
+              readOnly: true
+
+{% if lions_redis_tls_enabled | default('false') | bool %}
+            # Certificats TLS
+            - name: tls-certs
+              mountPath: /etc/ssl/redis
+              readOnly: true
+{% endif %}
+
+          # Configuration de sécurité du container
           securityContext:
+            runAsNonRoot: true
+            runAsUser: {{ lions_redis_user_id | default('999') }}
+            runAsGroup: {{ lions_redis_group_id | default('999') }}
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false  # Redis a besoin d'écrire ses logs
             capabilities:
-              drop:
-                - ALL
+              drop: ["ALL"]
+              add: ["CHOWN", "SETGID", "SETUID"]  # Minimal pour Redis
+
+{% if lions_redis_monitoring_enabled | default('true') | bool %}
+        # Container Redis Exporter pour Prometheus
+        - name: redis-exporter
+          image: "{{ lions_redis_exporter_image | default('oliver006/redis_exporter:v1.55.0') }}"
+          imagePullPolicy: {{ lions_redis_image_pull_policy | default('IfNotPresent') }}
+
+          # Arguments de configuration
+          args:
+            - "--redis.addr=redis://127.0.0.1:{{ lions_redis_port | default('6379') }}"
+            - "--web.listen-address=:{{ lions_redis_prometheus_port | default('9121') }}"
+            - "--log-format={{ lions_redis_exporter_log_format | default('txt') }}"
+{% if lions_redis_password_enabled | default('false') | bool %}
+            - "--redis.password=$(REDIS_PASSWORD)"
+{% endif %}
+{% if lions_redis_exporter_custom_args is defined %}
+            {{- lions_redis_exporter_custom_args | to_nice_yaml | indent(12) }}
+{% endif %}
+
+          # Port d'exposition des métriques
+          ports:
+            - name: metrics
+              containerPort: {{ lions_redis_prometheus_port | default('9121') }}
+              protocol: TCP
+
+          # Variables d'environnement pour l'exporter
+          env:
+            - name: REDIS_ADDR
+              value: "redis://127.0.0.1:{{ lions_redis_port | default('6379') }}"
+{% if lions_redis_password_enabled | default('false') | bool %}
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: "{{ lions_redis_password_secret | default('redis-auth') }}"
+                  key: "{{ lions_redis_password_key | default('password') }}"
+{% endif %}
+
+          # Ressources pour l'exporter
+          resources:
+            requests:
+              cpu: "{{ lions_redis_exporter_resources.requests.cpu | default('10m') }}"
+              memory: "{{ lions_redis_exporter_resources.requests.memory | default('32Mi') }}"
+            limits:
+              cpu: "{{ lions_redis_exporter_resources.limits.cpu | default('100m') }}"
+              memory: "{{ lions_redis_exporter_resources.limits.memory | default('128Mi') }}"
+
+          # Sondes de santé pour l'exporter
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: {{ lions_redis_prometheus_port | default('9121') }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: {{ lions_redis_prometheus_port | default('9121') }}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 10
+
+          # Configuration de sécurité
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534  # nobody
+            runAsGroup: 65534
+            allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
 {% endif %}
-      volumes:
-        - name: config
-          configMap:
-            name: "{{ app_name }}-config"
-        - name: tmp
-          emptyDir: {}
-{% if not redis_persistent_storage | bool %}
-        - name: data
-          emptyDir: {}
-{% endif %}
-{% if redis_persistent_storage | bool %}
+
+{% if lions_redis_persistent_storage | default('true') | bool %}
+  # Templates de volumes persistants
   volumeClaimTemplates:
     - metadata:
-        name: data
+        name: redis-data
+        labels:
+          app.kubernetes.io/name: "{{ lions_redis_service_name | default('redis') }}"
+          app.kubernetes.io/instance: "{{ lions_redis_service_name | default('redis') }}-{{ lions_environment }}"
+          lions.dev/environment: "{{ lions_environment }}"
+          lions.dev/component: "redis-data"
+        annotations:
+          lions.dev/backup-enabled: "{{ lions_redis_backup_enabled | default('true') | string }}"
+          lions.dev/snapshot-schedule: "{{ lions_redis_snapshot_schedule | default('0 1 * * *') }}"
       spec:
-        accessModes: ["ReadWriteOnce"]
-        storageClassName: "{{ redis_storage_class }}"
+        accessModes:
+          - "ReadWriteOnce"
+        storageClassName: "{{ lions_redis_storage_class | default(lions_storage_class_default) }}"
         resources:
           requests:
-            storage: "{{ redis_storage_size }}"
+            storage: "{{ lions_redis_storage_size | default('5Gi') }}"
 {% endif %}
+
+# =========================================================================
+# FIN DU TEMPLATE REDIS STATEFULSET
+# =========================================================================

@@ -1,96 +1,380 @@
 ---
-# Titre: Vérification des prérequis pour Gitea
-# Description: Vérifie que tous les prérequis sont satisfaits pour déployer Gitea
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - GITEA PREREQUISITES
+# =========================================================================
+# Description: Vérification et préparation des prérequis pour le déploiement de Gitea
+# Version: 5.0.0
+# Maintainer: DevOps Team LIONS
+# Date: "{{ ansible_date_time.iso8601 }}"
+# Documentation: https://docs.lions.dev/services/gitea/prerequisites
+# =========================================================================
 
-- name: Vérification de l'existence du namespace
-  k8s_info:
-    api_version: v1
-    kind: Namespace
-    name: "{{ app_namespace }}"
-  register: namespace_info
+# =========================================================================
+# VALIDATION DES VARIABLES REQUISES
+# =========================================================================
+- name: "📋 Validation des variables d'environnement critiques"
+  block:
+    - name: "🔍 Vérification des variables obligatoires pour Gitea"
+      ansible.builtin.assert:
+        that:
+          - lions_gitea_namespace is defined and lions_gitea_namespace != ""
+          - lions_gitea_service_name is defined and lions_gitea_service_name != ""
+          - lions_gitea_version is defined and lions_gitea_version != ""
+          - lions_dns_full_domain is defined and lions_dns_full_domain != ""
+          - lions_environment is defined and lions_environment != ""
+        fail_msg: "❌ Variables d'environnement critiques manquantes pour Gitea"
+        success_msg: "✅ Variables d'environnement critiques validées"
 
-- name: Création du namespace si nécessaire
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Namespace
-      metadata:
-        name: "{{ app_namespace }}"
-        labels:
-          app: "{{ app_name | string }}"
-          env: "{{ app_environment | string }}"
-  when: namespace_info.resources | length == 0
+    - name: "📊 Affichage de la configuration Gitea"
+      ansible.builtin.debug:
+        msg:
+          - "🏷️  Service: {{ lions_gitea_service_name }}"
+          - "📦 Version: {{ lions_gitea_version }}"
+          - "🏠 Namespace: {{ lions_gitea_namespace }}"
+          - "🌐 Domaine: {{ lions_dns_full_domain }}"
+          - "🔧 Environnement: {{ lions_environment }}"
+      when: lions_debug_mode | default(false) | bool
 
-- name: Vérification des droits d'accès au namespace
-  k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: ConfigMap
-      metadata:
-        name: "access-check"
-        namespace: "{{ app_namespace }}"
-      data:
-        check: "true"
-  register: access_check
-  ignore_errors: yes
+  tags:
+    - gitea
+    - prerequisites
+    - validation
 
-- name: Suppression du ConfigMap de vérification
-  k8s:
-    state: absent
-    api_version: v1
-    kind: ConfigMap
-    name: "access-check"
-    namespace: "{{ app_namespace }}"
-  when: access_check is succeeded
+# =========================================================================
+# VÉRIFICATION ET CRÉATION DU NAMESPACE
+# =========================================================================
+- name: "🏗️  Gestion du namespace Gitea"
+  block:
+    - name: "🔍 Vérification de l'existence du namespace {{ lions_gitea_namespace }}"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Namespace
+        name: "{{ lions_gitea_namespace }}"
+      register: _gitea_namespace_info
+      failed_when: false
 
-- name: Échec si les droits d'accès sont insuffisants
-  fail:
-    msg: "Droits d'accès insuffisants pour déployer dans le namespace {{ app_namespace }}"
-  when: access_check is failed
+    - name: "📝 Information sur le namespace existant"
+      ansible.builtin.debug:
+        msg: "✅ Namespace {{ lions_gitea_namespace }} existe déjà"
+      when:
+        - _gitea_namespace_info.resources is defined
+        - _gitea_namespace_info.resources | length > 0
 
-- name: Vérification de l'existence du registre Docker
-  k8s_info:
-    api_version: v1
-    kind: Service
-    name: registry
-    namespace: registry
-  register: registry_info
-  ignore_errors: yes
+    - name: "🚀 Création du namespace {{ lions_gitea_namespace }}"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ lions_gitea_namespace }}"
+            labels:
+              app.kubernetes.io/name: "{{ lions_gitea_service_name }}"
+              app.kubernetes.io/component: "development"
+              app.kubernetes.io/part-of: "lions-infrastructure"
+              app.kubernetes.io/managed-by: "ansible"
+              app.kubernetes.io/version: "{{ lions_gitea_version }}"
+              environment: "{{ lions_environment }}"
+              tier: "development"
+            annotations:
+              lions.dev/created-by: "ansible-playbook"
+              lions.dev/creation-date: "{{ ansible_date_time.iso8601 }}"
+              lions.dev/description: "Namespace pour les services Gitea"
+      when:
+        - _gitea_namespace_info.resources is not defined or _gitea_namespace_info.resources | length == 0
+      register: _gitea_namespace_creation
 
-- name: Avertissement si le registre Docker n'est pas trouvé
-  debug:
-    msg: "AVERTISSEMENT: Le registre Docker n'a pas été trouvé. Certaines fonctionnalités de déploiement d'images pourraient ne pas fonctionner correctement."
-  when: registry_info is failed or registry_info.resources | length == 0
+    - name: "✅ Confirmation de création du namespace"
+      ansible.builtin.debug:
+        msg: "🎉 Namespace {{ lions_gitea_namespace }} créé avec succès"
+      when: _gitea_namespace_creation is changed
 
-- name: Vérification de l'existence de l'ingress controller
-  k8s_info:
-    api_version: v1
-    kind: Service
-    name: ingress-nginx-controller
-    namespace: ingress-nginx
-  register: ingress_info
-  ignore_errors: yes
+  tags:
+    - gitea
+    - prerequisites
+    - namespace
 
-- name: Avertissement si l'ingress controller n'est pas trouvé
-  debug:
-    msg: "AVERTISSEMENT: L'ingress controller n'a pas été trouvé. Gitea ne sera pas accessible via une URL."
-  when: ingress_info is failed or ingress_info.resources | length == 0
+# =========================================================================
+# VÉRIFICATION DES DROITS D'ACCÈS KUBERNETES
+# =========================================================================
+- name: "🔐 Vérification des droits d'accès Kubernetes"
+  block:
+    - name: "🧪 Test des droits d'écriture dans le namespace"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: "lions-gitea-access-check"
+            namespace: "{{ lions_gitea_namespace }}"
+            labels:
+              app.kubernetes.io/name: "access-check"
+              app.kubernetes.io/component: "test"
+              temporary: "true"
+          data:
+            test: "access-verification"
+            timestamp: "{{ ansible_date_time.iso8601 }}"
+      register: _gitea_access_test
+      failed_when: false
 
-- name: Vérification de l'existence de PostgreSQL
-  k8s_info:
-    api_version: v1
-    kind: Service
-    name: "{{ gitea_database_service | default('postgres') }}"
-    namespace: "{{ gitea_database_namespace | default(app_namespace) }}"
-  register: postgres_info
-  ignore_errors: yes
+    - name: "🗑️  Nettoyage du ConfigMap de test"
+      kubernetes.core.k8s:
+        state: absent
+        api_version: v1
+        kind: ConfigMap
+        name: "lions-gitea-access-check"
+        namespace: "{{ lions_gitea_namespace }}"
+      when: _gitea_access_test is succeeded
+      failed_when: false
 
-- name: Avertissement si PostgreSQL n'est pas trouvé
-  debug:
-    msg: "AVERTISSEMENT: Le service PostgreSQL n'a pas été trouvé. Gitea nécessite une base de données PostgreSQL pour fonctionner correctement."
-  when: postgres_info is failed or postgres_info.resources | length == 0
+    - name: "❌ Échec de la vérification des droits d'accès"
+      ansible.builtin.fail:
+        msg: |
+          🚫 Droits d'accès insuffisants pour déployer Gitea dans le namespace {{ lions_gitea_namespace }}
+          💡 Vérifiez que le ServiceAccount a les permissions RBAC appropriées
+      when: _gitea_access_test is failed
+
+    - name: "✅ Droits d'accès validés"
+      ansible.builtin.debug:
+        msg: "🔓 Droits d'accès au namespace {{ lions_gitea_namespace }} confirmés"
+      when: _gitea_access_test is succeeded
+
+  tags:
+    - gitea
+    - prerequisites
+    - rbac
+
+# =========================================================================
+# VÉRIFICATION DES DÉPENDANCES INFRASTRUCTURE
+# =========================================================================
+- name: "🏗️  Vérification des dépendances infrastructure"
+  block:
+    # Vérification du registre Docker si activé
+    - name: "🐳 Vérification du registre Docker"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Service
+        name: "{{ lions_registry_service_name | default('registry') }}"
+        namespace: "{{ lions_registry_namespace | default('development') }}"
+      register: _gitea_registry_info
+      failed_when: false
+      when: lions_registry_enabled | default(false) | bool
+
+    - name: "⚠️  Avertissement registre Docker manquant"
+      ansible.builtin.debug:
+        msg: |
+          ⚠️  AVERTISSEMENT: Registre Docker non disponible
+          📍 Service: {{ lions_registry_service_name | default('registry') }}
+          📍 Namespace: {{ lions_registry_namespace | default('development') }}
+          💡 Impact: Les fonctionnalités de CI/CD intégrées pourraient être limitées
+      when:
+        - lions_registry_enabled | default(false) | bool
+        - _gitea_registry_info is failed or (_gitea_registry_info.resources | default([]) | length == 0)
+
+    # Vérification de l'ingress controller (Traefik pour K3s)
+    - name: "🌐 Vérification de l'ingress controller"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Service
+        name: "traefik"
+        namespace: "kube-system"
+      register: _gitea_ingress_info
+      failed_when: false
+
+    - name: "❌ Ingress controller critique manquant"
+      ansible.builtin.fail:
+        msg: |
+          🚫 ERREUR CRITIQUE: Ingress controller Traefik non trouvé
+          📍 Service attendu: traefik dans kube-system
+          💡 Solution: Vérifiez que K3s est correctement installé avec Traefik
+      when:
+        - _gitea_ingress_info is failed or (_gitea_ingress_info.resources | default([]) | length == 0)
+        - not (lions_dry_run | default(false) | bool)
+
+    - name: "✅ Ingress controller validé"
+      ansible.builtin.debug:
+        msg: "🎯 Ingress controller Traefik disponible pour Gitea"
+      when: _gitea_ingress_info.resources | default([]) | length > 0
+
+  tags:
+    - gitea
+    - prerequisites
+    - infrastructure
+
+# =========================================================================
+# VÉRIFICATION DE LA BASE DE DONNÉES
+# =========================================================================
+- name: "🗄️  Vérification de la base de données PostgreSQL"
+  block:
+    - name: "🔍 Recherche du service PostgreSQL"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Service
+        name: "{{ lions_postgres_service_name | default('postgresql') }}"
+        namespace: "{{ lions_postgres_namespace | default('database') }}"
+      register: _gitea_postgres_info
+      failed_when: false
+      when: lions_postgres_enabled | default(true) | bool
+
+    - name: "❌ Base de données critique manquante"
+      ansible.builtin.fail:
+        msg: |
+          🚫 ERREUR CRITIQUE: Service PostgreSQL non trouvé
+          📍 Service attendu: {{ lions_postgres_service_name | default('postgresql') }}
+          📍 Namespace: {{ lions_postgres_namespace | default('database') }}
+          💡 Solution: Déployez PostgreSQL avant Gitea ou configurez une base externe
+      when:
+        - lions_postgres_enabled | default(true) | bool
+        - _gitea_postgres_info is failed or (_gitea_postgres_info.resources | default([]) | length == 0)
+        - not (lions_dry_run | default(false) | bool)
+
+    - name: "✅ Base de données PostgreSQL validée"
+      ansible.builtin.debug:
+        msg: |
+          ✅ Service PostgreSQL disponible
+          📍 Service: {{ lions_postgres_service_name | default('postgresql') }}
+          📍 Namespace: {{ lions_postgres_namespace | default('database') }}
+      when:
+        - lions_postgres_enabled | default(true) | bool
+        - _gitea_postgres_info.resources | default([]) | length > 0
+
+    - name: "ℹ️  PostgreSQL désactivé"
+      ansible.builtin.debug:
+        msg: "ℹ️  PostgreSQL désactivé - utilisation d'une base de données externe"
+      when: not (lions_postgres_enabled | default(true) | bool)
+
+  tags:
+    - gitea
+    - prerequisites
+    - database
+
+# =========================================================================
+# VÉRIFICATION DU STOCKAGE
+# =========================================================================
+- name: "💾 Vérification du stockage"
+  block:
+    - name: "🔍 Vérification de la StorageClass"
+      kubernetes.core.k8s_info:
+        api_version: storage.k8s.io/v1
+        kind: StorageClass
+        name: "{{ lions_storage_class_default | default('local-path') }}"
+      register: _gitea_storage_info
+      failed_when: false
+
+    - name: "❌ StorageClass critique manquante"
+      ansible.builtin.fail:
+        msg: |
+          🚫 ERREUR CRITIQUE: StorageClass non trouvée
+          📍 StorageClass attendue: {{ lions_storage_class_default | default('local-path') }}
+          💡 Solution: Vérifiez la configuration du provisioner de stockage K3s
+      when:
+        - _gitea_storage_info is failed or (_gitea_storage_info.resources | default([]) | length == 0)
+        - not (lions_dry_run | default(false) | bool)
+
+    - name: "✅ StorageClass validée"
+      ansible.builtin.debug:
+        msg: |
+          ✅ StorageClass disponible pour Gitea
+          📍 StorageClass: {{ lions_storage_class_default | default('local-path') }}
+          📍 Provisioner: {{ _gitea_storage_info.resources[0].provisioner | default('unknown') }}
+      when: _gitea_storage_info.resources | default([]) | length > 0
+
+  tags:
+    - gitea
+    - prerequisites
+    - storage
+
+# =========================================================================
+# VÉRIFICATION DE LA SÉCURITÉ
+# =========================================================================
+- name: "🔒 Vérification de la configuration sécurité"
+  block:
+    - name: "🛡️  Vérification des Network Policies"
+      kubernetes.core.k8s_info:
+        api_version: networking.k8s.io/v1
+        kind: NetworkPolicy
+        namespace: "{{ lions_gitea_namespace }}"
+      register: _gitea_netpol_info
+      failed_when: false
+      when: lions_security_network_policies | default(true) | bool
+
+    - name: "ℹ️  Network Policies status"
+      ansible.builtin.debug:
+        msg: |
+          {% if lions_security_network_policies | default(true) | bool %}
+          🛡️  Network Policies activées ({{ _gitea_netpol_info.resources | default([]) | length }} politiques trouvées)
+          {% else %}
+          ⚠️  Network Policies désactivées - sécurité réseau réduite
+          {% endif %}
+
+    - name: "🔐 Vérification TLS/SSL"
+      ansible.builtin.debug:
+        msg: |
+          {% if lions_security_tls_enabled | default(true) | bool %}
+          🔐 TLS activé - communications chiffrées
+          📍 Provider: {{ lions_security_tls_provider | default('letsencrypt') }}
+          {% if lions_security_tls_staging | default(true) | bool %}
+          ⚠️  Mode staging activé - certificats de test
+          {% endif %}
+          {% else %}
+          ⚠️  TLS désactivé - communications non chiffrées
+          {% endif %}
+
+  tags:
+    - gitea
+    - prerequisites
+    - security
+
+# =========================================================================
+# VÉRIFICATION DU MONITORING
+# =========================================================================
+- name: "📊 Vérification du monitoring"
+  block:
+    - name: "🔍 Vérification de Prometheus"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Service
+        name: "prometheus-server"
+        namespace: "{{ lions_monitoring_namespace | default('monitoring') }}"
+      register: _gitea_prometheus_info
+      failed_when: false
+      when: lions_monitoring_enabled | default(true) | bool
+
+    - name: "📈 Status monitoring"
+      ansible.builtin.debug:
+        msg: |
+          {% if lions_monitoring_enabled | default(true) | bool %}
+          {% if _gitea_prometheus_info.resources | default([]) | length > 0 %}
+          ✅ Monitoring Prometheus disponible - métriques Gitea activées
+          {% else %}
+          ⚠️  Prometheus non trouvé - métriques limitées
+          {% endif %}
+          {% else %}
+          ℹ️  Monitoring désactivé
+          {% endif %}
+
+  tags:
+    - gitea
+    - prerequisites
+    - monitoring
+
+# =========================================================================
+# RÉSUMÉ DES PRÉREQUIS
+# =========================================================================
+- name: "📋 Résumé de la vérification des prérequis Gitea"
+  ansible.builtin.debug:
+    msg:
+      - "🎯 === RÉSUMÉ PRÉREQUIS GITEA ==="
+      - "✅ Namespace: {{ lions_gitea_namespace }}"
+      - "✅ Droits d'accès: Validés"
+      - "{% if _gitea_ingress_info.resources | default([]) | length > 0 %}✅{% else %}❌{% endif %} Ingress Controller: {% if _gitea_ingress_info.resources | default([]) | length > 0 %}Disponible{% else %}Manquant{% endif %}"
+      - "{% if _gitea_postgres_info.resources | default([]) | length > 0 or not lions_postgres_enabled | default(true) | bool %}✅{% else %}❌{% endif %} Base de données: {% if _gitea_postgres_info.resources | default([]) | length > 0 %}PostgreSQL OK{% elif not lions_postgres_enabled | default(true) | bool %}Externe{% else %}Manquante{% endif %}"
+      - "{% if _gitea_storage_info.resources | default([]) | length > 0 %}✅{% else %}❌{% endif %} Stockage: {% if _gitea_storage_info.resources | default([]) | length > 0 %}{{ lions_storage_class_default | default('local-path') }}{% else %}Manquant{% endif %}"
+      - "🔒 Sécurité: TLS {% if lions_security_tls_enabled | default(true) | bool %}✅{% else %}❌{% endif %} | NetPol {% if lions_security_network_policies | default(true) | bool %}✅{% else %}❌{% endif %}"
+      - "📊 Monitoring: {% if lions_monitoring_enabled | default(true) | bool and _gitea_prometheus_info.resources | default([]) | length > 0 %}✅ Activé{% elif lions_monitoring_enabled | default(true) | bool %}⚠️ Partiel{% else %}❌ Désactivé{% endif %}"
+      - "🚀 Prêt pour le déploiement: {% if not (lions_dry_run | default(false) | bool) %}OUI{% else %}MODE DRY-RUN{% endif %}"
+  tags:
+    - gitea
+    - prerequisites
+    - summary

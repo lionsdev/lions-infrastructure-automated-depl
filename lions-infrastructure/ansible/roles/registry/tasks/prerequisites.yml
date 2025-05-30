@@ -1,82 +1,525 @@
 ---
-# Titre: Vérification des prérequis pour la registry de conteneurs
-# Description: Vérifie que tous les prérequis sont satisfaits pour déployer la registry
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-10
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - PRÉREQUIS REGISTRY
+# =========================================================================
+# Description: Validation et préparation des prérequis pour le déploiement de la registry de conteneurs
+# Version: 5.0.0
+# Maintainer: DevOps Team LIONS
+# Date: "{{ ansible_date_time.date }}"
+# Documentation: https://docs.lions.dev/infrastructure/registry/prerequisites
+# =========================================================================
 
-- name: Vérification de l'existence du namespace
+# =========================================================================
+# CONFIGURATION ET VARIABLES
+# =========================================================================
+- name: "Registry Prerequisites | Configuration des variables par défaut"
+  set_fact:
+    registry_config:
+      namespace: "{{ lions_registry_namespace | default(lookup('env', 'LIONS_REGISTRY_NAMESPACE') | default('development', true)) }}"
+      service_name: "{{ lions_registry_service_name | default(lookup('env', 'LIONS_REGISTRY_SERVICE_NAME') | default('registry', true)) }}"
+      storage_class: "{{ lions_storage_class_default | default(lookup('env', 'LIONS_STORAGE_CLASS_DEFAULT') | default('local-path', true)) }}"
+      storage_size: "{{ lions_registry_storage_size | default(lookup('env', 'LIONS_REGISTRY_STORAGE_SIZE') | default('50Gi', true)) }}"
+      version: "{{ lions_registry_version | default(lookup('env', 'LIONS_REGISTRY_VERSION') | default('2.8', true)) }}"
+      port: "{{ lions_registry_port | default(lookup('env', 'LIONS_REGISTRY_PORT') | default('5000', true)) }}"
+      environment: "{{ lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT') | default('development', true)) }}"
+      domain: "{{ lions_dns_full_domain | default(lookup('env', 'LIONS_DNS_FULL_DOMAIN') | default('lions.local', true)) }}"
+      tls_enabled: "{{ lions_security_tls_enabled | default(lookup('env', 'LIONS_SECURITY_TLS_ENABLED') | default('true', true)) | bool }}"
+      rbac_enabled: "{{ lions_security_rbac_enabled | default(lookup('env', 'LIONS_SECURITY_RBAC_ENABLED') | default('true', true)) | bool }}"
+      monitoring_enabled: "{{ lions_monitoring_enabled | default(lookup('env', 'LIONS_MONITORING_ENABLED') | default('true', true)) | bool }}"
+      debug_mode: "{{ lions_debug_mode | default(lookup('env', 'LIONS_DEBUG_MODE') | default('false', true)) | bool }}"
+  tags:
+    - registry
+    - prerequisites
+    - configuration
+
+- name: "Registry Prerequisites | Affichage de la configuration en mode debug"
+  debug:
+    var: registry_config
+    verbosity: 1
+  when: registry_config.debug_mode | bool
+  tags:
+    - registry
+    - prerequisites
+    - debug
+
+# =========================================================================
+# VALIDATION DE L'ENVIRONNEMENT KUBERNETES
+# =========================================================================
+- name: "Registry Prerequisites | Vérification de la connectivité Kubernetes"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Node
+  register: k8s_connectivity_check
+  failed_when: false
+  tags:
+    - registry
+    - prerequisites
+    - connectivity
+
+- name: "Registry Prerequisites | Échec si Kubernetes n'est pas accessible"
+  fail:
+    msg: |
+      ❌ ERREUR CRITIQUE: Impossible de se connecter au cluster Kubernetes.
+      
+      Causes possibles:
+      - kubectl n'est pas configuré correctement
+      - Le cluster K3s n'est pas démarré
+      - Permissions insuffisantes
+      - KUBECONFIG incorrect
+      
+      Actions recommandées:
+      1. Vérifiez que K3s est démarré: sudo systemctl status k3s
+      2. Vérifiez votre KUBECONFIG: kubectl cluster-info
+      3. Testez la connectivité: kubectl get nodes
+  when: k8s_connectivity_check.failed | default(false)
+  tags:
+    - registry
+    - prerequisites
+    - connectivity
+
+- name: "Registry Prerequisites | Validation de la version Kubernetes"
+  set_fact:
+    k8s_version_info: "{{ k8s_connectivity_check.resources[0].status.nodeInfo.kubeletVersion | default('unknown') }}"
+  when: not k8s_connectivity_check.failed | default(false)
+  tags:
+    - registry
+    - prerequisites
+    - version-check
+
+- name: "Registry Prerequisites | Avertissement version Kubernetes"
+  debug:
+    msg: |
+      ⚠️  AVERTISSEMENT: Version Kubernetes détectée: {{ k8s_version_info }}
+      Version recommandée: v1.30+
+      Certaines fonctionnalités pourraient ne pas être disponibles avec des versions antérieures.
+  when:
+    - not k8s_connectivity_check.failed | default(false)
+    - k8s_version_info is version('v1.30.0', '<')
+  tags:
+    - registry
+    - prerequisites
+    - version-check
+
+# =========================================================================
+# GESTION DU NAMESPACE
+# =========================================================================
+- name: "Registry Prerequisites | Vérification de l'existence du namespace {{ registry_config.namespace }}"
   kubernetes.core.k8s_info:
     api_version: v1
     kind: Namespace
-    name: "{{ app_namespace | default('registry') }}"
-  register: namespace_info
+    name: "{{ registry_config.namespace }}"
+  register: registry_namespace_check
   failed_when: false
-  ignore_errors: true
+  tags:
+    - registry
+    - prerequisites
+    - namespace
 
-- name: Création du namespace si nécessaire
+- name: "Registry Prerequisites | Création du namespace {{ registry_config.namespace }}"
   kubernetes.core.k8s:
     state: present
     definition:
       apiVersion: v1
       kind: Namespace
       metadata:
-        name: "{{ app_namespace | default('registry') }}"
+        name: "{{ registry_config.namespace }}"
         labels:
-          name: "{{ app_namespace | default('registry') }}"
-          app: "{{ app_name | default('registry') }}"
-          environment: "{{ app_environment | default('production') }}"
-  when: namespace_info.resources | length == 0
+          name: "{{ registry_config.namespace }}"
+          app.kubernetes.io/name: "{{ registry_config.service_name }}"
+          app.kubernetes.io/component: "registry"
+          app.kubernetes.io/part-of: "lions-infrastructure"
+          app.kubernetes.io/managed-by: "ansible"
+          lions.dev/environment: "{{ registry_config.environment }}"
+          lions.dev/version: "{{ registry_config.version }}"
+        annotations:
+          lions.dev/created-by: "ansible-{{ ansible_user | default('unknown') }}"
+          lions.dev/created-at: "{{ ansible_date_time.iso8601 }}"
+          lions.dev/description: "Namespace pour la registry de conteneurs LIONS"
+    wait: true
+    wait_condition:
+      type: Complete
+      status: "True"
+    wait_timeout: 60
+  when: registry_namespace_check.resources | length == 0
+  register: namespace_creation
+  tags:
+    - registry
+    - prerequisites
+    - namespace
 
-- name: Vérification des droits d'accès
-  kubernetes.core.k8s_info:
-    api_version: rbac.authorization.k8s.io/v1
-    kind: Role
-    name: "{{ app_name }}-role"
-    namespace: "{{ app_namespace | default('registry') }}"
-  register: role_info
-  failed_when: false
-
-- name: Avertissement si les droits d'accès ne sont pas configurés
+- name: "Registry Prerequisites | Validation de la création du namespace"
   debug:
-    msg: "AVERTISSEMENT: Les droits d'accès pour la registry ne sont pas configurés. Certaines fonctionnalités pourraient ne pas fonctionner correctement."
-  when: role_info.resources | length == 0
+    msg: "✅ Namespace {{ registry_config.namespace }} créé avec succès"
+  when:
+    - registry_namespace_check.resources | length == 0
+    - namespace_creation is succeeded
+  tags:
+    - registry
+    - prerequisites
+    - namespace
 
-- name: Vérification de l'existence du contrôleur d'ingress (Traefik)
+# =========================================================================
+# VALIDATION DU STOCKAGE
+# =========================================================================
+- name: "Registry Prerequisites | Vérification de la classe de stockage {{ registry_config.storage_class }}"
+  kubernetes.core.k8s_info:
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+    name: "{{ registry_config.storage_class }}"
+  register: storage_class_check
+  failed_when: false
+  tags:
+    - registry
+    - prerequisites
+    - storage
+
+- name: "Registry Prerequisites | Échec si la classe de stockage n'existe pas"
+  fail:
+    msg: |
+      ❌ ERREUR CRITIQUE: Classe de stockage '{{ registry_config.storage_class }}' introuvable.
+      
+      Classes de stockage disponibles:
+      {% for sc in available_storage_classes.resources | default([]) %}
+      - {{ sc.metadata.name }}{% if sc.metadata.annotations['storageclass.kubernetes.io/is-default-class'] | default('false') == 'true' %} (par défaut){% endif %}
+      {% endfor %}
+      
+      Actions recommandées:
+      1. Utilisez une classe de stockage existante
+      2. Créez la classe de stockage requise
+      3. Définissez LIONS_STORAGE_CLASS_DEFAULT dans votre configuration
+  when: storage_class_check.resources | length == 0
+  vars:
+    available_storage_classes: "{{ lookup('kubernetes.core.k8s', api_version='storage.k8s.io/v1', kind='StorageClass') | default({'resources': []}) }}"
+  tags:
+    - registry
+    - prerequisites
+    - storage
+
+- name: "Registry Prerequisites | Validation de la classe de stockage"
+  debug:
+    msg: |
+      ✅ Classe de stockage validée: {{ registry_config.storage_class }}
+      Provisioner: {{ storage_class_check.resources[0].provisioner | default('unknown') }}
+      Politique de récupération: {{ storage_class_check.resources[0].reclaimPolicy | default('unknown') }}
+  when: storage_class_check.resources | length > 0
+  tags:
+    - registry
+    - prerequisites
+    - storage
+
+# =========================================================================
+# VALIDATION DU CONTRÔLEUR D'INGRESS
+# =========================================================================
+- name: "Registry Prerequisites | Vérification du contrôleur d'ingress Traefik"
   kubernetes.core.k8s_info:
     api_version: v1
     kind: Pod
     namespace: kube-system
     label_selectors:
-      - app=traefik
-  register: ingress_info
+      - "app.kubernetes.io/name=traefik"
+  register: traefik_check
   failed_when: false
+  tags:
+    - registry
+    - prerequisites
+    - ingress
 
-- name: Avertissement si le contrôleur d'ingress n'est pas trouvé
-  debug:
-    msg: "AVERTISSEMENT: Le contrôleur d'ingress Traefik n'a pas été trouvé. La registry ne sera pas accessible depuis l'extérieur."
-  when: ingress_info.resources | length == 0
-
-- name: Vérification de la classe de stockage
+- name: "Registry Prerequisites | Vérification alternative du contrôleur d'ingress"
   kubernetes.core.k8s_info:
-    api_version: storage.k8s.io/v1
-    kind: StorageClass
-    name: "{{ registry_storage_class | default('standard') }}"
-  register: storage_class_info
+    api_version: v1
+    kind: Pod
+    namespace: kube-system
+    label_selectors:
+      - "app=traefik"
+  register: traefik_legacy_check
   failed_when: false
+  when: traefik_check.resources | length == 0
+  tags:
+    - registry
+    - prerequisites
+    - ingress
 
-- name: Avertissement si la classe de stockage n'est pas trouvée
+- name: "Registry Prerequisites | Validation du contrôleur d'ingress"
+  set_fact:
+    ingress_controller_available: "{{ (traefik_check.resources | length > 0) or (traefik_legacy_check.resources | default([]) | length > 0) }}"
+  tags:
+    - registry
+    - prerequisites
+    - ingress
+
+- name: "Registry Prerequisites | Avertissement si contrôleur d'ingress indisponible"
   debug:
-    msg: "AVERTISSEMENT: La classe de stockage {{ registry_storage_class | default('standard') }} n'a pas été trouvée. La registry nécessite un stockage persistant pour fonctionner correctement."
-  when: storage_class_info.resources | length == 0
+    msg: |
+      ⚠️  AVERTISSEMENT: Aucun contrôleur d'ingress Traefik détecté dans kube-system.
+      
+      Impact:
+      - La registry ne sera pas accessible depuis l'extérieur du cluster
+      - L'ingress ne pourra pas être configuré automatiquement
+      
+      Solutions:
+      1. Installez Traefik: kubectl apply -f https://raw.githubusercontent.com/traefik/traefik/master/docs/content/getting-started/install-traefik.yaml
+      2. Vérifiez que K3s est installé avec Traefik activé
+      3. Utilisez un service NodePort ou LoadBalancer comme alternative
+  when: not ingress_controller_available | bool
+  tags:
+    - registry
+    - prerequisites
+    - ingress
 
-- name: Vérification des ressources disponibles sur les nœuds
+# =========================================================================
+# VALIDATION RBAC ET SÉCURITÉ
+# =========================================================================
+- name: "Registry Prerequisites | Vérification des ServiceAccounts existants"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ServiceAccount
+    name: "{{ registry_config.service_name }}"
+    namespace: "{{ registry_config.namespace }}"
+  register: service_account_check
+  failed_when: false
+  when: registry_config.rbac_enabled | bool
+  tags:
+    - registry
+    - prerequisites
+    - rbac
+
+- name: "Registry Prerequisites | Vérification des rôles RBAC"
+  kubernetes.core.k8s_info:
+    api_version: rbac.authorization.k8s.io/v1
+    kind: Role
+    name: "{{ registry_config.service_name }}-role"
+    namespace: "{{ registry_config.namespace }}"
+  register: rbac_role_check
+  failed_when: false
+  when: registry_config.rbac_enabled | bool
+  tags:
+    - registry
+    - prerequisites
+    - rbac
+
+- name: "Registry Prerequisites | Information RBAC"
+  debug:
+    msg: |
+      📋 État RBAC pour {{ registry_config.service_name }}:
+      - ServiceAccount: {{ 'présent' if service_account_check.resources | default([]) | length > 0 else 'à créer' }}
+      - Role: {{ 'présent' if rbac_role_check.resources | default([]) | length > 0 else 'à créer' }}
+      
+      Les ressources RBAC manquantes seront créées automatiquement lors du déploiement.
+  when: registry_config.rbac_enabled | bool
+  tags:
+    - registry
+    - prerequisites
+    - rbac
+
+# =========================================================================
+# VALIDATION DES RESSOURCES SYSTÈME
+# =========================================================================
+- name: "Registry Prerequisites | Collecte des informations sur les nœuds"
   kubernetes.core.k8s_info:
     api_version: v1
     kind: Node
   register: nodes_info
+  tags:
+    - registry
+    - prerequisites
+    - resources
 
-- name: Avertissement sur les ressources
+- name: "Registry Prerequisites | Analyse des ressources disponibles"
+  set_fact:
+    cluster_resources:
+      node_count: "{{ nodes_info.resources | length }}"
+      total_cpu: "{{ nodes_info.resources | map(attribute='status.capacity.cpu') | map('int') | sum }}"
+      total_memory: "{{ nodes_info.resources | map(attribute='status.capacity.memory') | map('regex_replace', 'Ki$', '') | map('int') | sum }}"
+      schedulable_nodes: "{{ nodes_info.resources | selectattr('spec.unschedulable', 'undefined') | list | length }}"
+  tags:
+    - registry
+    - prerequisites
+    - resources
+
+- name: "Registry Prerequisites | Validation des ressources minimales"
   debug:
-    msg: "AVERTISSEMENT: Vérifiez que les nœuds disposent de suffisamment de ressources pour la registry. Ressources recommandées: 1 CPU, 2Gi mémoire, 10Gi stockage."
-  when: nodes_info.resources | length > 0
+    msg: |
+      📊 Ressources du cluster:
+      - Nœuds: {{ cluster_resources.node_count }} ({{ cluster_resources.schedulable_nodes }} planifiables)
+      - CPU total: {{ cluster_resources.total_cpu }} cores
+      - Mémoire totale: {{ (cluster_resources.total_memory / 1024 / 1024) | round(2) }} Gi
+      
+      Ressources requises pour Registry:
+      - CPU: 500m (recommandé)
+      - Mémoire: 1Gi (recommandé)
+      - Stockage: {{ registry_config.storage_size }}
+      
+      {% if cluster_resources.total_cpu | int < 1 %}
+      ⚠️  AVERTISSEMENT: CPU disponible potentiellement insuffisant
+      {% endif %}
+      {% if (cluster_resources.total_memory / 1024 / 1024) < 2 %}
+      ⚠️  AVERTISSEMENT: Mémoire disponible potentiellement insuffisante
+      {% endif %}
+  tags:
+    - registry
+    - prerequisites
+    - resources
+
+# =========================================================================
+# VALIDATION DU MONITORING (OPTIONNEL)
+# =========================================================================
+- name: "Registry Prerequisites | Vérification de Prometheus (optionnel)"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Service
+    namespace: "{{ lions_monitoring_namespace | default('monitoring') }}"
+    name: prometheus-server
+  register: prometheus_check
+  failed_when: false
+  when: registry_config.monitoring_enabled | bool
+  tags:
+    - registry
+    - prerequisites
+    - monitoring
+
+- name: "Registry Prerequisites | Information monitoring"
+  debug:
+    msg: |
+      📈 État du monitoring:
+      - Prometheus: {{ 'disponible' if prometheus_check.resources | default([]) | length > 0 else 'non détecté' }}
+      
+      {% if prometheus_check.resources | default([]) | length == 0 %}
+      ℹ️  Le monitoring de la registry sera configuré mais Prometheus n'est pas encore déployé.
+      Les métriques seront disponibles une fois Prometheus installé.
+      {% endif %}
+  when: registry_config.monitoring_enabled | bool
+  tags:
+    - registry
+    - prerequisites
+    - monitoring
+
+# =========================================================================
+# VALIDATION DE LA CONNECTIVITÉ RÉSEAU
+# =========================================================================
+- name: "Registry Prerequisites | Test de résolution DNS interne"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: "{{ registry_config.service_name }}-dns-test"
+        namespace: "{{ registry_config.namespace }}"
+        labels:
+          app: dns-test
+          component: registry-prerequisites
+      spec:
+        restartPolicy: Never
+        containers:
+          - name: dns-test
+            image: busybox:1.35
+            command:
+              - /bin/sh
+              - -c
+              - |
+                echo "Test de résolution DNS..."
+                nslookup kubernetes.default.svc.cluster.local
+                echo "DNS test completed"
+        terminationGracePeriodSeconds: 0
+    wait: true
+    wait_condition:
+      type: PodReadyCondition
+      status: "True"
+    wait_timeout: 30
+  register: dns_test_pod
+  failed_when: false
+  tags:
+    - registry
+    - prerequisites
+    - network
+
+- name: "Registry Prerequisites | Nettoyage du pod de test DNS"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: v1
+    kind: Pod
+    name: "{{ registry_config.service_name }}-dns-test"
+    namespace: "{{ registry_config.namespace }}"
+    wait: true
+    wait_timeout: 30
+  when: dns_test_pod is not failed
+  tags:
+    - registry
+    - prerequisites
+    - network
+
+# =========================================================================
+# RÉSUMÉ DES PRÉREQUIS
+# =========================================================================
+- name: "Registry Prerequisites | Génération du rapport de validation"
+  set_fact:
+    prerequisites_report:
+      status: "success"
+      kubernetes_connectivity: "{{ not k8s_connectivity_check.failed | default(false) }}"
+      namespace_ready: "{{ (registry_namespace_check.resources | length > 0) or (namespace_creation is succeeded) }}"
+      storage_class_available: "{{ storage_class_check.resources | length > 0 }}"
+      ingress_controller_available: "{{ ingress_controller_available | bool }}"
+      sufficient_resources: "{{ cluster_resources.total_cpu | int >= 1 and (cluster_resources.total_memory / 1024 / 1024) >= 2 }}"
+      monitoring_available: "{{ prometheus_check.resources | default([]) | length > 0 if registry_config.monitoring_enabled | bool else true }}"
+      dns_functional: "{{ dns_test_pod is not failed }}"
+  tags:
+    - registry
+    - prerequisites
+    - summary
+
+- name: "Registry Prerequisites | Affichage du rapport final"
+  debug:
+    msg: |
+      
+      ╔══════════════════════════════════════════════════════════════════╗
+      ║                    RAPPORT DE VALIDATION REGISTRY                ║
+      ╠══════════════════════════════════════════════════════════════════╣
+      ║ Composant                    │ État                              ║
+      ╠══════════════════════════════════════════════════════════════════╣
+      ║ Connectivité Kubernetes      │ {{ '✅ OK' if prerequisites_report.kubernetes_connectivity else '❌ ÉCHEC' }}                           ║
+      ║ Namespace {{ registry_config.namespace | ljust(15) }} │ {{ '✅ OK' if prerequisites_report.namespace_ready else '❌ ÉCHEC' }}                           ║
+      ║ Classe de stockage           │ {{ '✅ OK' if prerequisites_report.storage_class_available else '❌ ÉCHEC' }}                           ║
+      ║ Contrôleur d'ingress         │ {{ '✅ OK' if prerequisites_report.ingress_controller_available else '⚠️  MANQUANT' }}                      ║
+      ║ Ressources suffisantes       │ {{ '✅ OK' if prerequisites_report.sufficient_resources else '⚠️  LIMITÉES' }}                     ║
+      ║ Monitoring disponible        │ {{ '✅ OK' if prerequisites_report.monitoring_available else '⚠️  OPTIONNEL' }}                    ║
+      ║ DNS fonctionnel              │ {{ '✅ OK' if prerequisites_report.dns_functional else '❌ ÉCHEC' }}                           ║
+      ╚══════════════════════════════════════════════════════════════════╝
+      
+      Configuration:
+      - Namespace: {{ registry_config.namespace }}
+      - Service: {{ registry_config.service_name }}
+      - Domaine: registry.{{ registry_config.domain }}
+      - Version: {{ registry_config.version }}
+      - Stockage: {{ registry_config.storage_size }} ({{ registry_config.storage_class }})
+      
+      {% if not prerequisites_report.kubernetes_connectivity or not prerequisites_report.namespace_ready or not prerequisites_report.storage_class_available or not prerequisites_report.dns_functional %}
+      ❌ PRÉREQUIS CRITIQUES NON SATISFAITS - Le déploiement échouera
+      {% elif not prerequisites_report.ingress_controller_available or not prerequisites_report.sufficient_resources %}
+      ⚠️  PRÉREQUIS PARTIELS - Le déploiement peut continuer avec des limitations
+      {% else %}
+      ✅ TOUS LES PRÉREQUIS SONT SATISFAITS - Prêt pour le déploiement
+      {% endif %}
+  tags:
+    - registry
+    - prerequisites
+    - summary
+
+- name: "Registry Prerequisites | Échec si prérequis critiques non satisfaits"
+  fail:
+    msg: |
+      ❌ ÉCHEC DE VALIDATION: Des prérequis critiques ne sont pas satisfaits.
+      
+      Veuillez corriger les problèmes signalés ci-dessus avant de continuer le déploiement.
+      
+      Pour obtenir de l'aide:
+      - Documentation: https://docs.lions.dev/infrastructure/registry/troubleshooting
+      - Support: devops@lions.dev
+  when: >
+    not prerequisites_report.kubernetes_connectivity or
+    not prerequisites_report.namespace_ready or
+    not prerequisites_report.storage_class_available or
+    not prerequisites_report.dns_functional
+  tags:
+    - registry
+    - prerequisites
+    - validation

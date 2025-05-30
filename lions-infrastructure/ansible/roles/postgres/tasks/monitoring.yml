@@ -1,525 +1,431 @@
 ---
-# Titre: Configuration du monitoring pour PostgreSQL
-# Description: Configure le monitoring pour PostgreSQL
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - MONITORING POSTGRESQL
+# =========================================================================
+# Description: Configuration complète du monitoring PostgreSQL avec Prometheus/Grafana
+# Version: 5.0.0
+# Maintainer: DevOps Team
+# Documentation: https://docs.lions.dev/roles/postgres/monitoring
+# =========================================================================
 
-- name: Vérification de l'existence de Prometheus Operator
-  k8s_info:
+# =========================================================================
+# VALIDATION DES PRÉREQUIS DE MONITORING
+# =========================================================================
+- name: "MONITORING | Validation de l'activation du monitoring PostgreSQL"
+  assert:
+    that:
+      - lions_postgres_monitoring_enabled | bool
+      - lions_monitoring_enabled | bool
+    fail_msg: "Le monitoring PostgreSQL ou global n'est pas activé"
+    success_msg: "Configuration monitoring PostgreSQL validée"
+  tags:
+    - monitoring
+    - validation
+
+- name: "MONITORING | Définition des variables de monitoring PostgreSQL"
+  set_fact:
+    postgres_monitoring_config:
+      service_name: "{{ lions_postgres_service_name }}"
+      namespace: "{{ lions_postgres_namespace }}"
+      app_label: "{{ lions_postgres_service_name }}"
+      monitoring_namespace: "{{ lions_monitoring_namespace }}"
+      scrape_interval: "{{ lions_postgres_monitoring_scrape_interval | default('30s') }}"
+      scrape_timeout: "{{ lions_postgres_monitoring_scrape_timeout | default('10s') }}"
+      metrics_port: "{{ lions_postgres_metrics_port | default(9187) }}"
+      alerts_enabled: "{{ lions_postgres_alerts_enabled | default(true) }}"
+      dashboard_enabled: "{{ lions_postgres_dashboard_enabled | default(true) }}"
+  tags:
+    - monitoring
+    - configuration
+
+# =========================================================================
+# VÉRIFICATION DE PROMETHEUS OPERATOR
+# =========================================================================
+- name: "MONITORING | Vérification de l'existence de Prometheus Operator"
+  kubernetes.core.k8s_info:
     api_version: apiextensions.k8s.io/v1
     kind: CustomResourceDefinition
     name: servicemonitors.monitoring.coreos.com
-  register: prometheus_operator_check
-  ignore_errors: yes
+  register: prometheus_operator_crd
+  failed_when: false
   environment:
-    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+    KUBECONFIG: "{{ lions_k8s_config_file }}"
+  tags:
+    - monitoring
+    - validation
 
-- name: Création du ServiceMonitor pour Prometheus
-  k8s:
+- name: "MONITORING | Validation de Prometheus Operator"
+  assert:
+    that:
+      - prometheus_operator_crd is succeeded
+      - prometheus_operator_crd.resources | length > 0
+    fail_msg: |
+      Prometheus Operator n'est pas installé ou configuré correctement.
+      Veuillez installer Prometheus Operator avant de configurer le monitoring PostgreSQL.
+    success_msg: "Prometheus Operator détecté et opérationnel"
+  when: lions_postgres_monitoring_enabled | bool
+  tags:
+    - monitoring
+    - validation
+
+# =========================================================================
+# DÉPLOIEMENT DU POSTGRES EXPORTER
+# =========================================================================
+- name: "MONITORING | Création du template postgres-exporter"
+  template:
+    src: postgres-exporter.yml.j2
+    dest: "{{ lions_temp_dir }}/postgres-exporter.yml"
+    mode: '0600'
+  vars:
+    postgres_exporter_config: "{{ postgres_monitoring_config }}"
+  when: lions_postgres_monitoring_enabled | bool
+  tags:
+    - monitoring
+    - template
+
+- name: "MONITORING | Déploiement du postgres-exporter"
+  kubernetes.core.k8s:
     state: present
-    src: "{{ temp_dir.path }}/servicemonitor.yml"
-  register: servicemonitor_result
-  when: 
-    - prometheus_operator_check is succeeded
-    - prometheus_operator_check.resources | length > 0
-    - postgres_prometheus_scrape | bool
+    src: "{{ lions_temp_dir }}/postgres-exporter.yml"
+    wait: true
+    wait_condition:
+      type: Available
+      status: "True"
+    wait_timeout: "{{ lions_timeout_deployment }}"
+  register: postgres_exporter_deployment
   environment:
-    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+    KUBECONFIG: "{{ lions_k8s_config_file }}"
+  when: lions_postgres_monitoring_enabled | bool
+  tags:
+    - monitoring
+    - deployment
 
-- name: Avertissement si Prometheus Operator n'est pas installé
-  debug:
-    msg: "AVERTISSEMENT: Prometheus Operator n'est pas installé. Le monitoring automatique ne sera pas configuré."
-  when: prometheus_operator_check is failed or prometheus_operator_check.resources | length == 0
+# =========================================================================
+# CONFIGURATION SERVICEMONITOR PROMETHEUS
+# =========================================================================
+- name: "MONITORING | Création du template ServiceMonitor"
+  template:
+    src: servicemonitor.yml.j2
+    dest: "{{ lions_temp_dir }}/postgres-servicemonitor.yml"
+    mode: '0600'
+  vars:
+    servicemonitor_config: "{{ postgres_monitoring_config }}"
+  when:
+    - lions_postgres_monitoring_enabled | bool
+    - prometheus_operator_crd is succeeded
+  tags:
+    - monitoring
+    - template
 
-- name: Configuration des règles d'alerte pour PostgreSQL
-  k8s:
+- name: "MONITORING | Déploiement du ServiceMonitor PostgreSQL"
+  kubernetes.core.k8s:
     state: present
-    definition:
-      apiVersion: monitoring.coreos.com/v1
-      kind: PrometheusRule
-      metadata:
-        name: "{{ app_name }}-alerts"
-        namespace: "{{ app_namespace }}"
-        labels:
-          app: "{{ app_name }}"
-          prometheus: k8s
-          role: alert-rules
-      spec:
-        groups:
-          - name: "{{ app_name }}.rules"
-            rules:
-              - alert: PostgreSQLInstanceDown
-                expr: up{job="{{ app_name }}"} == 0
-                for: 5m
-                labels:
-                  severity: critical
-                annotations:
-                  summary: "Instance PostgreSQL {{ app_name }} down"
-                  description: "L'instance PostgreSQL {{ app_name }} est indisponible depuis plus de 5 minutes."
-              - alert: PostgreSQLHighMemoryUsage
-                expr: container_memory_usage_bytes{pod=~"{{ app_name }}.*"} / container_spec_memory_limit_bytes{pod=~"{{ app_name }}.*"} > 0.85
-                for: 10m
-                labels:
-                  severity: warning
-                annotations:
-                  summary: "Utilisation mémoire élevée pour PostgreSQL {{ app_name }}"
-                  description: "PostgreSQL {{ app_name }} utilise plus de 85% de sa limite mémoire depuis plus de 10 minutes."
-              - alert: PostgreSQLHighCPUUsage
-                expr: container_cpu_usage_seconds_total{pod=~"{{ app_name }}.*"} / container_spec_cpu_quota{pod=~"{{ app_name }}.*"} > 0.85
-                for: 10m
-                labels:
-                  severity: warning
-                annotations:
-                  summary: "Utilisation CPU élevée pour PostgreSQL {{ app_name }}"
-                  description: "PostgreSQL {{ app_name }} utilise plus de 85% de sa limite CPU depuis plus de 10 minutes."
-              - alert: PostgreSQLHighDiskUsage
-                expr: kubelet_volume_stats_used_bytes{persistentvolumeclaim=~"{{ app_name }}.*"} / kubelet_volume_stats_capacity_bytes{persistentvolumeclaim=~"{{ app_name }}.*"} > 0.85
-                for: 10m
-                labels:
-                  severity: warning
-                annotations:
-                  summary: "Utilisation disque élevée pour PostgreSQL {{ app_name }}"
-                  description: "PostgreSQL {{ app_name }} utilise plus de 85% de son espace disque depuis plus de 10 minutes."
-              - alert: PostgreSQLTooManyConnections
-                expr: pg_stat_activity_count{datname!~"template.*|postgres"} > (pg_settings_max_connections * 0.8)
-                for: 5m
-                labels:
-                  severity: warning
-                annotations:
-                  summary: "Trop de connexions pour PostgreSQL {{ app_name }}"
-                  description: "PostgreSQL {{ app_name }} a plus de 80% de ses connexions maximales utilisées depuis plus de 5 minutes."
-              - alert: PostgreSQLSlowQueries
-                expr: pg_stat_activity_max_tx_duration{datname!~"template.*|postgres"} > 300
-                for: 5m
-                labels:
-                  severity: warning
-                annotations:
-                  summary: "Requêtes lentes détectées pour PostgreSQL {{ app_name }}"
-                  description: "PostgreSQL {{ app_name }} a des requêtes qui s'exécutent depuis plus de 5 minutes."
-              - alert: PostgreSQLReplicationLag
-                expr: pg_replication_lag > 300
-                for: 5m
-                labels:
-                  severity: warning
-                annotations:
-                  summary: "Retard de réplication pour PostgreSQL {{ app_name }}"
-                  description: "PostgreSQL {{ app_name }} a un retard de réplication de plus de 5 minutes."
-                when: postgres_ha_enabled | bool
-              - alert: PostgreSQLReplicationStopped
-                expr: pg_stat_replication_state{state="streaming"} != 1
-                for: 5m
-                labels:
-                  severity: critical
-                annotations:
-                  summary: "Réplication arrêtée pour PostgreSQL {{ app_name }}"
-                  description: "La réplication PostgreSQL {{ app_name }} est arrêtée depuis plus de 5 minutes."
-                when: postgres_ha_enabled | bool
-  when: 
-    - prometheus_operator_check is succeeded
-    - prometheus_operator_check.resources | length > 0
-    - postgres_prometheus_scrape | bool
+    src: "{{ lions_temp_dir }}/postgres-servicemonitor.yml"
+    wait: true
+    wait_timeout: 60
+  register: postgres_servicemonitor
   environment:
-    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+    KUBECONFIG: "{{ lions_k8s_config_file }}"
+  when:
+    - lions_postgres_monitoring_enabled | bool
+    - prometheus_operator_crd is succeeded
+  tags:
+    - monitoring
+    - deployment
 
-- name: Configuration de Grafana Dashboard pour PostgreSQL
-  k8s:
+# =========================================================================
+# CONFIGURATION DES RÈGLES D'ALERTE PROMETHEUS
+# =========================================================================
+- name: "MONITORING | Création du template PrometheusRule"
+  template:
+    src: prometheus-rules.yml.j2
+    dest: "{{ lions_temp_dir }}/postgres-prometheus-rules.yml"
+    mode: '0600'
+  vars:
+    prometheus_rules_config:
+      service_name: "{{ postgres_monitoring_config.service_name }}"
+      namespace: "{{ postgres_monitoring_config.namespace }}"
+      app_label: "{{ postgres_monitoring_config.app_label }}"
+      environment: "{{ lions_environment }}"
+      high_availability: "{{ lions_postgres_ha_enabled | default(false) }}"
+      alert_thresholds:
+        memory_usage_warning: "{{ lions_postgres_alert_memory_threshold | default(85) }}"
+        cpu_usage_warning: "{{ lions_postgres_alert_cpu_threshold | default(85) }}"
+        disk_usage_warning: "{{ lions_postgres_alert_disk_threshold | default(85) }}"
+        connections_warning: "{{ lions_postgres_alert_connections_threshold | default(80) }}"
+        replication_lag_warning: "{{ lions_postgres_alert_replication_lag | default(300) }}"
+        query_duration_warning: "{{ lions_postgres_alert_query_duration | default(300) }}"
+  when:
+    - lions_postgres_monitoring_enabled | bool
+    - lions_postgres_alerts_enabled | default(true) | bool
+    - prometheus_operator_crd is succeeded
+  tags:
+    - monitoring
+    - template
+    - alerts
+
+- name: "MONITORING | Déploiement des règles d'alerte PostgreSQL"
+  kubernetes.core.k8s:
+    state: present
+    src: "{{ lions_temp_dir }}/postgres-prometheus-rules.yml"
+    wait: true
+    wait_timeout: 60
+  register: postgres_prometheus_rules
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file }}"
+  when:
+    - lions_postgres_monitoring_enabled | bool
+    - lions_postgres_alerts_enabled | default(true) | bool
+    - prometheus_operator_crd is succeeded
+  tags:
+    - monitoring
+    - deployment
+    - alerts
+
+# =========================================================================
+# CONFIGURATION DASHBOARD GRAFANA
+# =========================================================================
+- name: "MONITORING | Vérification de l'existence de Grafana"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: grafana
+    namespace: "{{ lions_monitoring_namespace }}"
+  register: grafana_deployment
+  failed_when: false
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file }}"
+  when: lions_postgres_dashboard_enabled | default(true) | bool
+  tags:
+    - monitoring
+    - validation
+
+- name: "MONITORING | Chargement du template dashboard Grafana"
+  set_fact:
+    postgres_dashboard_config:
+      service_name: "{{ postgres_monitoring_config.service_name }}"
+      namespace: "{{ postgres_monitoring_config.namespace }}"
+      app_label: "{{ postgres_monitoring_config.app_label }}"
+      environment: "{{ lions_environment }}"
+      dashboard_uid: "{{ lions_postgres_service_name }}-{{ lions_environment }}-dashboard"
+      dashboard_title: "PostgreSQL {{ lions_postgres_service_name | title }} - {{ lions_environment | title }}"
+      refresh_interval: "{{ lions_postgres_dashboard_refresh | default('30s') }}"
+      time_range: "{{ lions_postgres_dashboard_time_range | default('6h') }}"
+  when:
+    - lions_postgres_dashboard_enabled | default(true) | bool
+    - grafana_deployment is succeeded
+    - grafana_deployment.resources | length > 0
+  tags:
+    - monitoring
+    - configuration
+
+- name: "MONITORING | Création du template dashboard Grafana"
+  template:
+    src: grafana-dashboard.json.j2
+    dest: "{{ lions_temp_dir }}/postgres-grafana-dashboard.json"
+    mode: '0600'
+  vars:
+    dashboard_config: "{{ postgres_dashboard_config }}"
+  when:
+    - lions_postgres_dashboard_enabled | default(true) | bool
+    - grafana_deployment is succeeded
+    - grafana_deployment.resources | length > 0
+  tags:
+    - monitoring
+    - template
+
+- name: "MONITORING | Déploiement du dashboard Grafana PostgreSQL"
+  kubernetes.core.k8s:
     state: present
     definition:
       apiVersion: v1
       kind: ConfigMap
       metadata:
-        name: "{{ app_name }}-dashboard"
-        namespace: monitoring
+        name: "{{ postgres_monitoring_config.service_name }}-dashboard"
+        namespace: "{{ lions_monitoring_namespace }}"
         labels:
+          app: "{{ postgres_monitoring_config.app_label }}"
+          component: dashboard
           grafana_dashboard: "1"
+          lions.dev/service: "{{ postgres_monitoring_config.service_name }}"
+          lions.dev/environment: "{{ lions_environment }}"
+          lions.dev/version: "{{ lions_config_version }}"
       data:
-        "{{ app_name }}-dashboard.json": >-
-          {
-            "annotations": {
-              "list": [
-                {
-                  "builtIn": 1,
-                  "datasource": "-- Grafana --",
-                  "enable": true,
-                  "hide": true,
-                  "iconColor": "rgba(0, 211, 255, 1)",
-                  "name": "Annotations & Alerts",
-                  "type": "dashboard"
-                }
-              ]
-            },
-            "editable": true,
-            "gnetId": null,
-            "graphTooltip": 0,
-            "id": null,
-            "links": [],
-            "panels": [
-              {
-                "aliasColors": {},
-                "bars": false,
-                "dashLength": 10,
-                "dashes": false,
-                "datasource": "Prometheus",
-                "fill": 1,
-                "fillGradient": 0,
-                "gridPos": {
-                  "h": 8,
-                  "w": 12,
-                  "x": 0,
-                  "y": 0
-                },
-                "hiddenSeries": false,
-                "id": 2,
-                "legend": {
-                  "avg": false,
-                  "current": true,
-                  "max": false,
-                  "min": false,
-                  "show": true,
-                  "total": false,
-                  "values": true
-                },
-                "lines": true,
-                "linewidth": 1,
-                "nullPointMode": "null",
-                "options": {
-                  "dataLinks": []
-                },
-                "percentage": false,
-                "pointradius": 2,
-                "points": false,
-                "renderer": "flot",
-                "seriesOverrides": [],
-                "spaceLength": 10,
-                "stack": false,
-                "steppedLine": false,
-                "targets": [
-                  {
-                    "expr": "container_memory_usage_bytes{pod=~\"{{ app_name }}.*\"}",
-                    "refId": "A"
-                  }
-                ],
-                "thresholds": [],
-                "timeFrom": null,
-                "timeRegions": [],
-                "timeShift": null,
-                "title": "Utilisation Mémoire",
-                "tooltip": {
-                  "shared": true,
-                  "sort": 0,
-                  "value_type": "individual"
-                },
-                "type": "graph",
-                "xaxis": {
-                  "buckets": null,
-                  "mode": "time",
-                  "name": null,
-                  "show": true,
-                  "values": []
-                },
-                "yaxes": [
-                  {
-                    "format": "bytes",
-                    "label": null,
-                    "logBase": 1,
-                    "max": null,
-                    "min": null,
-                    "show": true
-                  },
-                  {
-                    "format": "short",
-                    "label": null,
-                    "logBase": 1,
-                    "max": null,
-                    "min": null,
-                    "show": true
-                  }
-                ],
-                "yaxis": {
-                  "align": false,
-                  "alignLevel": null
-                }
-              },
-              {
-                "aliasColors": {},
-                "bars": false,
-                "dashLength": 10,
-                "dashes": false,
-                "datasource": "Prometheus",
-                "fill": 1,
-                "fillGradient": 0,
-                "gridPos": {
-                  "h": 8,
-                  "w": 12,
-                  "x": 12,
-                  "y": 0
-                },
-                "hiddenSeries": false,
-                "id": 3,
-                "legend": {
-                  "avg": false,
-                  "current": true,
-                  "max": false,
-                  "min": false,
-                  "show": true,
-                  "total": false,
-                  "values": true
-                },
-                "lines": true,
-                "linewidth": 1,
-                "nullPointMode": "null",
-                "options": {
-                  "dataLinks": []
-                },
-                "percentage": false,
-                "pointradius": 2,
-                "points": false,
-                "renderer": "flot",
-                "seriesOverrides": [],
-                "spaceLength": 10,
-                "stack": false,
-                "steppedLine": false,
-                "targets": [
-                  {
-                    "expr": "rate(container_cpu_usage_seconds_total{pod=~\"{{ app_name }}.*\"}[5m])",
-                    "refId": "A"
-                  }
-                ],
-                "thresholds": [],
-                "timeFrom": null,
-                "timeRegions": [],
-                "timeShift": null,
-                "title": "Utilisation CPU",
-                "tooltip": {
-                  "shared": true,
-                  "sort": 0,
-                  "value_type": "individual"
-                },
-                "type": "graph",
-                "xaxis": {
-                  "buckets": null,
-                  "mode": "time",
-                  "name": null,
-                  "show": true,
-                  "values": []
-                },
-                "yaxes": [
-                  {
-                    "format": "short",
-                    "label": null,
-                    "logBase": 1,
-                    "max": null,
-                    "min": null,
-                    "show": true
-                  },
-                  {
-                    "format": "short",
-                    "label": null,
-                    "logBase": 1,
-                    "max": null,
-                    "min": null,
-                    "show": true
-                  }
-                ],
-                "yaxis": {
-                  "align": false,
-                  "alignLevel": null
-                }
-              },
-              {
-                "aliasColors": {},
-                "bars": false,
-                "dashLength": 10,
-                "dashes": false,
-                "datasource": "Prometheus",
-                "fill": 1,
-                "fillGradient": 0,
-                "gridPos": {
-                  "h": 8,
-                  "w": 12,
-                  "x": 0,
-                  "y": 8
-                },
-                "hiddenSeries": false,
-                "id": 4,
-                "legend": {
-                  "avg": false,
-                  "current": true,
-                  "max": false,
-                  "min": false,
-                  "show": true,
-                  "total": false,
-                  "values": true
-                },
-                "lines": true,
-                "linewidth": 1,
-                "nullPointMode": "null",
-                "options": {
-                  "dataLinks": []
-                },
-                "percentage": false,
-                "pointradius": 2,
-                "points": false,
-                "renderer": "flot",
-                "seriesOverrides": [],
-                "spaceLength": 10,
-                "stack": false,
-                "steppedLine": false,
-                "targets": [
-                  {
-                    "expr": "pg_stat_activity_count{datname!~\"template.*|postgres\"}",
-                    "refId": "A"
-                  }
-                ],
-                "thresholds": [],
-                "timeFrom": null,
-                "timeRegions": [],
-                "timeShift": null,
-                "title": "Connexions actives",
-                "tooltip": {
-                  "shared": true,
-                  "sort": 0,
-                  "value_type": "individual"
-                },
-                "type": "graph",
-                "xaxis": {
-                  "buckets": null,
-                  "mode": "time",
-                  "name": null,
-                  "show": true,
-                  "values": []
-                },
-                "yaxes": [
-                  {
-                    "format": "short",
-                    "label": null,
-                    "logBase": 1,
-                    "max": null,
-                    "min": null,
-                    "show": true
-                  },
-                  {
-                    "format": "short",
-                    "label": null,
-                    "logBase": 1,
-                    "max": null,
-                    "min": null,
-                    "show": true
-                  }
-                ],
-                "yaxis": {
-                  "align": false,
-                  "alignLevel": null
-                }
-              },
-              {
-                "aliasColors": {},
-                "bars": false,
-                "dashLength": 10,
-                "dashes": false,
-                "datasource": "Prometheus",
-                "fill": 1,
-                "fillGradient": 0,
-                "gridPos": {
-                  "h": 8,
-                  "w": 12,
-                  "x": 12,
-                  "y": 8
-                },
-                "hiddenSeries": false,
-                "id": 5,
-                "legend": {
-                  "avg": false,
-                  "current": true,
-                  "max": false,
-                  "min": false,
-                  "show": true,
-                  "total": false,
-                  "values": true
-                },
-                "lines": true,
-                "linewidth": 1,
-                "nullPointMode": "null",
-                "options": {
-                  "dataLinks": []
-                },
-                "percentage": false,
-                "pointradius": 2,
-                "points": false,
-                "renderer": "flot",
-                "seriesOverrides": [],
-                "spaceLength": 10,
-                "stack": false,
-                "steppedLine": false,
-                "targets": [
-                  {
-                    "expr": "kubelet_volume_stats_used_bytes{persistentvolumeclaim=~\"{{ app_name }}.*\"} / kubelet_volume_stats_capacity_bytes{persistentvolumeclaim=~\"{{ app_name }}.*\"} * 100",
-                    "refId": "A"
-                  }
-                ],
-                "thresholds": [],
-                "timeFrom": null,
-                "timeRegions": [],
-                "timeShift": null,
-                "title": "Utilisation Disque (%)",
-                "tooltip": {
-                  "shared": true,
-                  "sort": 0,
-                  "value_type": "individual"
-                },
-                "type": "graph",
-                "xaxis": {
-                  "buckets": null,
-                  "mode": "time",
-                  "name": null,
-                  "show": true,
-                  "values": []
-                },
-                "yaxes": [
-                  {
-                    "format": "percent",
-                    "label": null,
-                    "logBase": 1,
-                    "max": 100,
-                    "min": 0,
-                    "show": true
-                  },
-                  {
-                    "format": "short",
-                    "label": null,
-                    "logBase": 1,
-                    "max": null,
-                    "min": null,
-                    "show": true
-                  }
-                ],
-                "yaxis": {
-                  "align": false,
-                  "alignLevel": null
-                }
-              }
-            ],
-            "schemaVersion": 22,
-            "style": "dark",
-            "tags": ["postgresql", "database"],
-            "templating": {
-              "list": []
-            },
-            "time": {
-              "from": "now-6h",
-              "to": "now"
-            },
-            "timepicker": {},
-            "timezone": "",
-            "title": "PostgreSQL - {{ app_name }} Dashboard",
-            "uid": "{{ app_name }}-postgresql-dashboard",
-            "version": 1
-          }
-  when: 
-    - prometheus_operator_check is succeeded
-    - prometheus_operator_check.resources | length > 0
-    - postgres_prometheus_scrape | bool
-  ignore_errors: yes
+        dashboard.json: "{{ lookup('file', lions_temp_dir + '/postgres-grafana-dashboard.json') }}"
+  register: postgres_dashboard
   environment:
-    KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+    KUBECONFIG: "{{ lions_k8s_config_file }}"
+  when:
+    - lions_postgres_dashboard_enabled | default(true) | bool
+    - grafana_deployment is succeeded
+    - grafana_deployment.resources | length > 0
+  tags:
+    - monitoring
+    - deployment
+    - dashboard
+
+# =========================================================================
+# CONFIGURATION NETWORK POLICY POUR MONITORING
+# =========================================================================
+- name: "MONITORING | Création de la NetworkPolicy pour le monitoring PostgreSQL"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: "{{ postgres_monitoring_config.service_name }}-monitoring"
+        namespace: "{{ postgres_monitoring_config.namespace }}"
+        labels:
+          app: "{{ postgres_monitoring_config.app_label }}"
+          component: monitoring
+          lions.dev/service: "{{ postgres_monitoring_config.service_name }}"
+          lions.dev/environment: "{{ lions_environment }}"
+      spec:
+        podSelector:
+          matchLabels:
+            app: "{{ postgres_monitoring_config.app_label }}"
+        policyTypes:
+          - Ingress
+        ingress:
+          - from:
+              - namespaceSelector:
+                  matchLabels:
+                    name: "{{ lions_monitoring_namespace }}"
+              - podSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: prometheus
+            ports:
+              - protocol: TCP
+                port: "{{ postgres_monitoring_config.metrics_port }}"
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file }}"
+  when:
+    - lions_postgres_monitoring_enabled | bool
+    - lions_security_network_policies | bool
+  tags:
+    - monitoring
+    - security
+    - network-policy
+
+# =========================================================================
+# VÉRIFICATION DE LA SANTÉ DU MONITORING
+# =========================================================================
+- name: "MONITORING | Vérification de la collecte des métriques PostgreSQL"
+  uri:
+    url: "http://{{ postgres_monitoring_config.service_name }}-exporter.{{ postgres_monitoring_config.namespace }}.svc.cluster.local:{{ postgres_monitoring_config.metrics_port }}/metrics"
+    method: GET
+    timeout: 10
+  register: postgres_metrics_check
+  retries: 3
+  delay: 10
+  until: postgres_metrics_check.status == 200
+  when: lions_postgres_monitoring_enabled | bool
+  tags:
+    - monitoring
+    - validation
+    - health-check
+
+- name: "MONITORING | Validation des métriques PostgreSQL disponibles"
+  assert:
+    that:
+      - postgres_metrics_check is succeeded
+      - "'pg_up' in postgres_metrics_check.content"
+    fail_msg: "Les métriques PostgreSQL ne sont pas collectées correctement"
+    success_msg: "Collecte des métriques PostgreSQL opérationnelle"
+  when: lions_postgres_monitoring_enabled | bool
+  tags:
+    - monitoring
+    - validation
+
+# =========================================================================
+# CONFIGURATION DES TESTS DE MONITORING
+# =========================================================================
+- name: "MONITORING | Création du Job de test de monitoring"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: "{{ postgres_monitoring_config.service_name }}-monitoring-test"
+        namespace: "{{ postgres_monitoring_config.namespace }}"
+        labels:
+          app: "{{ postgres_monitoring_config.app_label }}"
+          component: monitoring-test
+          lions.dev/service: "{{ postgres_monitoring_config.service_name }}"
+          lions.dev/environment: "{{ lions_environment }}"
+      spec:
+        template:
+          spec:
+            restartPolicy: Never
+            containers:
+              - name: monitoring-test
+                image: curlimages/curl:latest
+                command:
+                  - /bin/sh
+                  - -c
+                  - |
+                    echo "Test de connectivité aux métriques PostgreSQL..."
+                    curl -f http://{{ postgres_monitoring_config.service_name }}-exporter:{{ postgres_monitoring_config.metrics_port }}/metrics
+                    if [ $? -eq 0 ]; then
+                      echo "✅ Métriques PostgreSQL accessibles"
+                    else
+                      echo "❌ Échec d'accès aux métriques PostgreSQL"
+                      exit 1
+                    fi
+            ttlSecondsAfterFinished: 300
+  environment:
+    KUBECONFIG: "{{ lions_k8s_config_file }}"
+  when:
+    - lions_postgres_monitoring_enabled | bool
+    - lions_postgres_monitoring_test_enabled | default(true) | bool
+  tags:
+    - monitoring
+    - testing
+
+# =========================================================================
+# NETTOYAGE DES FICHIERS TEMPORAIRES
+# =========================================================================
+- name: "MONITORING | Nettoyage des fichiers temporaires de monitoring"
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ lions_temp_dir }}/postgres-exporter.yml"
+    - "{{ lions_temp_dir }}/postgres-servicemonitor.yml"
+    - "{{ lions_temp_dir }}/postgres-prometheus-rules.yml"
+    - "{{ lions_temp_dir }}/postgres-grafana-dashboard.json"
+  when: lions_postgres_monitoring_enabled | bool
+  tags:
+    - monitoring
+    - cleanup
+
+# =========================================================================
+# RAPPORT DE MONITORING
+# =========================================================================
+- name: "MONITORING | Génération du rapport de monitoring PostgreSQL"
+  debug:
+    msg:
+      - "✅ Configuration monitoring PostgreSQL terminée avec succès"
+      - "📊 Service PostgreSQL: {{ postgres_monitoring_config.service_name }}"
+      - "🏷️  Namespace: {{ postgres_monitoring_config.namespace }}"
+      - "📈 Métriques disponibles sur le port: {{ postgres_monitoring_config.metrics_port }}"
+      - "🔔 Alertes configurées: {{ lions_postgres_alerts_enabled | default(true) }}"
+      - "📋 Dashboard Grafana: {{ lions_postgres_dashboard_enabled | default(true) }}"
+      - "🌐 Monitoring Namespace: {{ lions_monitoring_namespace }}"
+      - "🔧 Configuration monitoring terminée le: {{ ansible_date_time.iso8601 }}"
+  when: lions_postgres_monitoring_enabled | bool
+  tags:
+    - monitoring
+    - reporting
+
+- name: "MONITORING | Message d'information - Monitoring désactivé"
+  debug:
+    msg:
+      - "ℹ️  Le monitoring PostgreSQL est désactivé"
+      - "🔧 Pour l'activer, définir lions_postgres_monitoring_enabled=true"
+  when: not (lions_postgres_monitoring_enabled | bool)
+  tags:
+    - monitoring
+    - information

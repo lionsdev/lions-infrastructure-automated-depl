@@ -1,35 +1,253 @@
 ---
-# Titre: Template de service Kubernetes pour Gitea
-# Description: Définit le service Kubernetes pour Gitea
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - GITEA SERVICE TEMPLATE
+# =========================================================================
+# Description: Template Kubernetes Service pour Gitea avec configuration avancée
+# Version: 5.0.0
+# Auteur: LIONS DevOps Team
+# Date: {{ ansible_date_time.iso8601 }}
+# Documentation: https://docs.lions.dev/infrastructure/services/gitea
+# =========================================================================
 
 apiVersion: v1
 kind: Service
 metadata:
-  name: "{{ app_name }}"
-  namespace: "{{ app_namespace }}"
+  name: "{{ lions_gitea_service_name | default('gitea') }}"
+  namespace: "{{ lions_gitea_namespace | default('development') }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "gitea"
+    # Labels de base pour l'identification
+    app.kubernetes.io/name: "{{ lions_gitea_service_name | default('gitea') }}"
+    app.kubernetes.io/instance: "{{ lions_gitea_service_name }}-{{ lions_environment }}"
+    app.kubernetes.io/version: "{{ lions_gitea_version | default('1.20.5') }}"
+    app.kubernetes.io/component: "git-server"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+
+    # Labels pour l'environnement et la technologie
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/service-type: "development"
+    lions.dev/technology: "gitea"
+    lions.dev/backup-required: "{{ lions_gitea_backup_enabled | default('true') | string | lower }}"
+
+    # Labels pour le monitoring et l'observabilité
+    lions.dev/monitoring: "{{ lions_monitoring_enabled | default('true') | string | lower }}"
+    lions.dev/logging: "{{ lions_gitea_logging_enabled | default('true') | string | lower }}"
+    lions.dev/metrics: "{{ lions_gitea_metrics_enabled | default('true') | string | lower }}"
+
+    # Labels pour la sécurité
+    lions.dev/security-policy: "{{ lions_gitea_security_policy | default('standard') }}"
+    lions.dev/network-policy: "{{ lions_security_network_policies | default('true') | string | lower }}"
+    lions.dev/tls-enabled: "{{ lions_security_tls_enabled | default('true') | string | lower }}"
+
+    # Labels pour le scaling et les ressources
+    lions.dev/scaling-enabled: "{{ lions_autoscaling_enabled | default('true') | string | lower }}"
+    lions.dev/resource-tier: "{{ lions_gitea_resource_tier | default('medium') }}"
+
   annotations:
-    description: "Service pour Gitea {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
-    prometheus.io/scrape: "{{ gitea_prometheus_scrape | string | lower }}"
-    prometheus.io/path: "{{ gitea_prometheus_path }}"
-    prometheus.io/port: "{{ gitea_prometheus_port | string }}"
+    # Annotations de base
+    description: "Service Kubernetes pour Gitea {{ lions_gitea_version }} en environnement {{ lions_environment }}"
+    version: "{{ lions_config_version | default('5.0.0') }}"
+    created-by: "lions-infrastructure-ansible"
+    last-updated: "{{ ansible_date_time.iso8601 }}"
+
+    # Annotations pour le monitoring Prometheus
+    prometheus.io/scrape: "{{ lions_gitea_prometheus_scrape | default('true') | string | lower }}"
+    prometheus.io/port: "{{ lions_gitea_prometheus_port | default('3000') | string }}"
+    prometheus.io/path: "{{ lions_gitea_prometheus_path | default('/metrics') }}"
+    prometheus.io/interval: "{{ lions_gitea_prometheus_interval | default('30s') }}"
+    prometheus.io/scheme: "{{ 'https' if lions_security_tls_enabled | default('true') | bool else 'http' }}"
+
+    # Annotations pour la sécurité
+    security.lions.dev/scan-enabled: "{{ lions_gitea_security_scan_enabled | default('true') | string | lower }}"
+    security.lions.dev/vulnerability-scanning: "{{ lions_gitea_vuln_scan_enabled | default('true') | string | lower }}"
+
+    # Annotations pour les réseaux
+    networking.lions.dev/ingress-class: "{{ lions_gitea_ingress_class | default('traefik') }}"
+    networking.lions.dev/load-balancer-class: "{{ lions_gitea_lb_class | default('metallb') }}"
+{% if lions_gitea_service_type == 'LoadBalancer' and lions_gitea_lb_ip is defined and lions_gitea_lb_ip != '' %}
+    # Configuration LoadBalancer IP via annotations (remplacement de loadBalancerIP déprécié)
+    metallb.universe.tf/loadBalancerIPs: "{{ lions_gitea_lb_ip }}"
+{% endif %}
+
+    # Annotations pour le backup
+    backup.lions.dev/enabled: "{{ lions_gitea_backup_enabled | default('true') | string | lower }}"
+    backup.lions.dev/schedule: "{{ lions_gitea_backup_schedule | default('0 2 * * *') }}"
+    backup.lions.dev/retention: "{{ lions_backup_retention_days | default('30') }}d"
+
+    # Annotations conditionnelles pour les environnements spéciaux
+{% if lions_environment == 'production' %}
+    production.lions.dev/critical-service: "true"
+    production.lions.dev/disaster-recovery: "true"
+    production.lions.dev/sla-tier: "{{ lions_gitea_sla_tier | default('gold') }}"
+{% endif %}
+{% if lions_environment == 'development' %}
+    development.lions.dev/auto-cleanup: "{{ lions_gitea_dev_auto_cleanup | default('false') | string | lower }}"
+    development.lions.dev/debug-mode: "{{ lions_debug_mode | default('false') | string | lower }}"
+{% endif %}
+
+spec:
+  type: "{{ lions_gitea_service_type | default('ClusterIP') }}"
+
+  # Configuration des ports
+  ports:
+    # Port HTTP principal
+    - name: http
+      port: {{ lions_gitea_port | default('3000') | int }}
+      targetPort: http
+      protocol: TCP
+      appProtocol: "{{ 'https' if lions_security_tls_enabled | default('true') | bool else 'http' }}"
+{% if lions_gitea_service_type == 'NodePort' and lions_gitea_nodeport_http is defined %}
+      nodePort: {{ lions_gitea_nodeport_http | int }}
+{% endif %}
+
+    # Port SSH pour Git over SSH
+    - name: ssh
+      port: {{ lions_gitea_ssh_port | default('2222') | int }}
+      targetPort: ssh
+      protocol: TCP
+      appProtocol: ssh
+{% if lions_gitea_service_type == 'NodePort' and lions_gitea_nodeport_ssh is defined %}
+      nodePort: {{ lions_gitea_nodeport_ssh | int }}
+{% endif %}
+
+{% if lions_gitea_metrics_enabled | default('true') | bool %}
+    # Port pour les métriques Prometheus
+    - name: metrics
+      port: {{ lions_gitea_prometheus_port | default('3001') | int }}
+      targetPort: metrics
+      protocol: TCP
+      appProtocol: http
+{% if lions_gitea_service_type == 'NodePort' and lions_gitea_nodeport_metrics is defined %}
+      nodePort: {{ lions_gitea_nodeport_metrics | int }}
+{% endif %}
+{% endif %}
+
+{% if lions_gitea_grpc_enabled | default('false') | bool %}
+    # Port gRPC (si activé)
+    - name: grpc
+      port: {{ lions_gitea_grpc_port | default('9090') | int }}
+      targetPort: grpc
+      protocol: TCP
+      appProtocol: grpc
+{% if lions_gitea_service_type == 'NodePort' and lions_gitea_nodeport_grpc is defined %}
+      nodePort: {{ lions_gitea_nodeport_grpc | int }}
+{% endif %}
+{% endif %}
+
+  # Sélecteurs pour cibler les pods
+  selector:
+    app.kubernetes.io/name: "{{ lions_gitea_service_name | default('gitea') }}"
+    app.kubernetes.io/instance: "{{ lions_gitea_service_name }}-{{ lions_environment }}"
+    app.kubernetes.io/component: "git-server"
+
+{% if lions_gitea_service_type == 'LoadBalancer' %}
+  # Configuration spécifique pour LoadBalancer
+  loadBalancerClass: "{{ lions_gitea_lb_class | default('metallb') }}"
+{% if lions_gitea_lb_source_ranges is defined and lions_gitea_lb_source_ranges | length > 0 %}
+  loadBalancerSourceRanges:
+{% for range in lions_gitea_lb_source_ranges %}
+    - "{{ range }}"
+{% endfor %}
+{% endif %}
+{% endif %}
+
+{% if lions_gitea_external_traffic_policy is defined %}
+  # Politique de trafic externe
+  externalTrafficPolicy: "{{ lions_gitea_external_traffic_policy }}"
+{% endif %}
+
+{% if lions_gitea_session_affinity_enabled | default('false') | bool %}
+  # Configuration de l'affinité de session
+  sessionAffinity: "{{ lions_gitea_session_affinity | default('ClientIP') }}"
+{% if lions_gitea_session_affinity == 'ClientIP' %}
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: {{ lions_gitea_session_timeout | default('10800') | int }}
+{% endif %}
+{% endif %}
+
+{% if lions_gitea_ip_families is defined and lions_gitea_ip_families | length > 0 %}
+  # Configuration IPv4/IPv6
+  ipFamilies:
+{% for family in lions_gitea_ip_families %}
+    - {{ family }}
+{% endfor %}
+  ipFamilyPolicy: "{{ lions_gitea_ip_family_policy | default('SingleStack') }}"
+{% endif %}
+
+---
+# =========================================================================
+# SERVICE DE MÉTRIQUES DÉDIÉ (si séparé du service principal)
+# =========================================================================
+{% if lions_gitea_metrics_separate_service | default('false') | bool %}
+apiVersion: v1
+kind: Service
+metadata:
+  name: "{{ lions_gitea_service_name }}-metrics"
+  namespace: "{{ lions_gitea_namespace | default('development') }}"
+  labels:
+    app.kubernetes.io/name: "{{ lions_gitea_service_name }}-metrics"
+    app.kubernetes.io/instance: "{{ lions_gitea_service_name }}-{{ lions_environment }}"
+    app.kubernetes.io/version: "{{ lions_gitea_version | default('1.20.5') }}"
+    app.kubernetes.io/component: "metrics"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/service-type: "metrics"
+    lions.dev/monitoring: "true"
+  annotations:
+    description: "Service de métriques pour Gitea {{ lions_gitea_version }}"
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "{{ lions_gitea_prometheus_port | default('3001') | string }}"
+    prometheus.io/path: "{{ lions_gitea_prometheus_path | default('/metrics') }}"
 spec:
   type: ClusterIP
   ports:
+    - name: metrics
+      port: {{ lions_gitea_prometheus_port | default('3001') | int }}
+      targetPort: metrics
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: "{{ lions_gitea_service_name | default('gitea') }}"
+    app.kubernetes.io/instance: "{{ lions_gitea_service_name }}-{{ lions_environment }}"
+    app.kubernetes.io/component: "git-server"
+{% endif %}
+
+---
+# =========================================================================
+# HEADLESS SERVICE (pour StatefulSet ou découverte de services)
+# =========================================================================
+{% if lions_gitea_headless_service | default('false') | bool %}
+apiVersion: v1
+kind: Service
+metadata:
+  name: "{{ lions_gitea_service_name }}-headless"
+  namespace: "{{ lions_gitea_namespace | default('development') }}"
+  labels:
+    app.kubernetes.io/name: "{{ lions_gitea_service_name }}-headless"
+    app.kubernetes.io/instance: "{{ lions_gitea_service_name }}-{{ lions_environment }}"
+    app.kubernetes.io/version: "{{ lions_gitea_version | default('1.20.5') }}"
+    app.kubernetes.io/component: "git-server"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/service-type: "headless"
+  annotations:
+    description: "Service headless pour Gitea {{ lions_gitea_version }} - Découverte de services"
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
     - name: http
-      port: 80
+      port: {{ lions_gitea_port | default('3000') | int }}
       targetPort: http
       protocol: TCP
     - name: ssh
-      port: 22
+      port: {{ lions_gitea_ssh_port | default('2222') | int }}
       targetPort: ssh
       protocol: TCP
   selector:
-    app: "{{ app_name }}"
+    app.kubernetes.io/name: "{{ lions_gitea_service_name | default('gitea') }}"
+    app.kubernetes.io/instance: "{{ lions_gitea_service_name }}-{{ lions_environment }}"
+    app.kubernetes.io/component: "git-server"
+{% endif %}

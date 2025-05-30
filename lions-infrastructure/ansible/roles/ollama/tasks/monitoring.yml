@@ -1,48 +1,424 @@
 ---
-# Titre: Tâches de monitoring pour Ollama
-# Description: Configure le monitoring pour Ollama
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-14
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - MONITORING OLLAMA
+# =========================================================================
+# Description: Configuration du monitoring et observabilité pour Ollama
+# Version: 5.0.0
+# Maintainer: DevOps Team LIONS
+# Documentation: https://docs.lions.dev/infrastructure/monitoring/ollama
+# Dependencies: Prometheus Operator, Grafana
+# =========================================================================
 
-- name: "[Ollama] Déployer ServiceMonitor pour Prometheus"
-  kubernetes.core.k8s:
-    state: present
-    definition: "{{ lookup('template', 'servicemonitor.yml.j2') | from_yaml }}"
-  when: ollama_prometheus_scrape | bool
+# =========================================================================
+# VALIDATION DES PRÉ-REQUIS
+# =========================================================================
+- name: "[OLLAMA-MONITORING] Vérifier la disponibilité de Prometheus Operator"
+  kubernetes.core.k8s_info:
+    api_version: monitoring.coreos.com/v1
+    kind: PrometheusRule
+    namespace: "{{ lions_monitoring_namespace }}"
+  register: prometheus_operator_check
+  failed_when: false
+  when: lions_monitoring_enabled | bool
 
-- name: "[Ollama] Créer les alertes personnalisées"
+- name: "[OLLAMA-MONITORING] Afficher le statut de Prometheus Operator"
+  ansible.builtin.debug:
+    msg: "Prometheus Operator détecté: {{ prometheus_operator_check.resources | length > 0 if prometheus_operator_check.resources is defined else false }}"
+  when: lions_monitoring_enabled | bool
+
+# =========================================================================
+# DÉPLOIEMENT SERVICEMONITOR
+# =========================================================================
+- name: "[OLLAMA-MONITORING] Déployer ServiceMonitor pour métriques Ollama"
   kubernetes.core.k8s:
-    state: present
+    state: "{{ 'present' if lions_monitoring_enabled | bool else 'absent' }}"
+    definition:
+      apiVersion: monitoring.coreos.com/v1
+      kind: ServiceMonitor
+      metadata:
+        name: "{{ lions_ollama_service_name }}-metrics"
+        namespace: "{{ lions_ollama_namespace }}"
+        labels:
+          app.kubernetes.io/name: "{{ lions_ollama_service_name }}"
+          app.kubernetes.io/instance: "{{ lions_ollama_service_name }}-{{ lions_environment }}"
+          app.kubernetes.io/version: "{{ lions_ollama_version }}"
+          app.kubernetes.io/component: "ai-service"
+          app.kubernetes.io/part-of: "lions-infrastructure"
+          app.kubernetes.io/managed-by: "ansible"
+          lions.dev/service-type: "ai"
+          lions.dev/environment: "{{ lions_environment }}"
+          prometheus: "kube-prometheus"
+        annotations:
+          lions.dev/monitoring-config: "ollama-metrics"
+          lions.dev/scrape-interval: "30s"
+          lions.dev/created-by: "ansible-automation"
+          lions.dev/created-at: "{{ ansible_date_time.iso8601 }}"
+      spec:
+        selector:
+          matchLabels:
+            app.kubernetes.io/name: "{{ lions_ollama_service_name }}"
+        endpoints:
+          - port: http-metrics
+            interval: 30s
+            path: /metrics
+            scheme: http
+            scrapeTimeout: 10s
+            honorLabels: true
+            metricRelabelings:
+              - sourceLabels: [__name__]
+                regex: 'ollama_.*'
+                action: keep
+              - sourceLabels: [__meta_kubernetes_pod_name]
+                targetLabel: pod
+              - sourceLabels: [__meta_kubernetes_namespace]
+                targetLabel: kubernetes_namespace
+        namespaceSelector:
+          matchNames:
+            - "{{ lions_ollama_namespace }}"
+  when: lions_monitoring_enabled | bool
+  register: servicemonitor_result
+  until: servicemonitor_result is succeeded
+  retries: 3
+  delay: 10
+
+# =========================================================================
+# RÈGLES PROMETHEUS
+# =========================================================================
+- name: "[OLLAMA-MONITORING] Déployer les règles d'alerte Prometheus pour Ollama"
+  kubernetes.core.k8s:
+    state: "{{ 'present' if lions_monitoring_enabled | bool else 'absent' }}"
     definition:
       apiVersion: monitoring.coreos.com/v1
       kind: PrometheusRule
       metadata:
-        name: "{{ app_name }}-alerts"
-        namespace: "{{ app_namespace }}"
+        name: "{{ lions_ollama_service_name }}-alerts"
+        namespace: "{{ lions_ollama_namespace }}"
         labels:
-          app: "{{ app_name }}"
-          prometheus: kube-prometheus
+          app.kubernetes.io/name: "{{ lions_ollama_service_name }}"
+          app.kubernetes.io/instance: "{{ lions_ollama_service_name }}-{{ lions_environment }}"
+          app.kubernetes.io/version: "{{ lions_ollama_version }}"
+          app.kubernetes.io/component: "ai-service"
+          app.kubernetes.io/part-of: "lions-infrastructure"
+          app.kubernetes.io/managed-by: "ansible"
+          lions.dev/service-type: "ai"
+          lions.dev/environment: "{{ lions_environment }}"
+          prometheus: "kube-prometheus"
+          release: "kube-prometheus-stack"
+        annotations:
+          lions.dev/alert-config: "ollama-rules"
+          lions.dev/created-by: "ansible-automation"
+          lions.dev/created-at: "{{ ansible_date_time.iso8601 }}"
       spec:
         groups:
-          - name: ollama.rules
+          # ===== RÈGLES DE DISPONIBILITÉ =====
+          - name: "ollama.availability.rules"
             interval: 30s
             rules:
-              - alert: OllamaDown
-                expr: up{job="{{ app_name }}"} == 0
+              - alert: "OllamaServiceDown"
+                expr: 'up{job="{{ lions_ollama_service_name }}"} == 0'
                 for: 2m
                 labels:
-                  severity: critical
-                  technology: ollama
+                  severity: "critical"
+                  service: "{{ lions_ollama_service_name }}"
+                  environment: "{{ lions_environment }}"
+                  category: "availability"
+                  component: "ai-service"
+                  team: "devops"
                 annotations:
-                  summary: "Ollama {{ app_name }} est down"
-                  description: "Ollama {{ app_name }} dans {{ app_namespace }} est inaccessible"
-              - alert: OllamaHighMemoryUsage
-                expr: container_memory_usage_bytes{pod=~"{{ app_name }}.*"} / container_spec_memory_limit_bytes{pod=~"{{ app_name }}.*"} > 0.9
+                  summary: "Service Ollama indisponible dans {{ lions_environment }}"
+                  description: "Le service Ollama {{ lions_ollama_service_name }} dans le namespace {{ lions_ollama_namespace }} est inaccessible depuis 2 minutes"
+                  runbook_url: "https://docs.lions.dev/runbooks/ollama/service-down"
+                  dashboard_url: "https://grafana.{{ lions_dns_full_domain }}/d/ollama-overview"
+
+              - alert: "OllamaHighErrorRate"
+                expr: 'rate(ollama_requests_total{status=~"5.."}[5m]) / rate(ollama_requests_total[5m]) > 0.1'
                 for: 5m
                 labels:
-                  severity: warning
-                  technology: ollama
+                  severity: "warning"
+                  service: "{{ lions_ollama_service_name }}"
+                  environment: "{{ lions_environment }}"
+                  category: "performance"
+                  component: "ai-service"
+                  team: "devops"
+                annotations:
+                  summary: "Taux d'erreur élevé pour Ollama"
+                  description: "Le service Ollama {{ lions_ollama_service_name }} a un taux d'erreur de {{ "{{ $value | humanizePercentage }}" }} sur les 5 dernières minutes"
+                  runbook_url: "https://docs.lions.dev/runbooks/ollama/high-error-rate"
+
+          # ===== RÈGLES DE PERFORMANCE =====
+          - name: "ollama.performance.rules"
+            interval: 30s
+            rules:
+              - alert: "OllamaHighMemoryUsage"
+                expr: '(container_memory_working_set_bytes{pod=~"{{ lions_ollama_service_name }}-.*", container!="POD"} / container_spec_memory_limit_bytes{pod=~"{{ lions_ollama_service_name }}-.*", container!="POD"}) > 0.85'
+                for: 5m
+                labels:
+                  severity: "warning"
+                  service: "{{ lions_ollama_service_name }}"
+                  environment: "{{ lions_environment }}"
+                  category: "resources"
+                  component: "ai-service"
+                  team: "devops"
                 annotations:
                   summary: "Utilisation mémoire élevée pour Ollama"
-                  description: "Ollama {{ app_name }} utilise plus de 90% de sa mémoire limite"
+                  description: "Le pod {{ "{{ $labels.pod }}" }} utilise {{ "{{ $value | humanizePercentage }}" }} de sa limite mémoire"
+                  runbook_url: "https://docs.lions.dev/runbooks/ollama/high-memory-usage"
+
+              - alert: "OllamaHighCPUUsage"
+                expr: '(rate(container_cpu_usage_seconds_total{pod=~"{{ lions_ollama_service_name }}-.*", container!="POD"}[5m]) / container_spec_cpu_quota{pod=~"{{ lions_ollama_service_name }}-.*", container!="POD"} * container_spec_cpu_period{pod=~"{{ lions_ollama_service_name }}-.*", container!="POD"}) > 0.8'
+                for: 10m
+                labels:
+                  severity: "warning"
+                  service: "{{ lions_ollama_service_name }}"
+                  environment: "{{ lions_environment }}"
+                  category: "resources"
+                  component: "ai-service"
+                  team: "devops"
+                annotations:
+                  summary: "Utilisation CPU élevée pour Ollama"
+                  description: "Le pod {{ "{{ $labels.pod }}" }} utilise {{ "{{ $value | humanizePercentage }}" }} de sa limite CPU sur 10 minutes"
+                  runbook_url: "https://docs.lions.dev/runbooks/ollama/high-cpu-usage"
+
+              - alert: "OllamaSlowResponses"
+                expr: 'histogram_quantile(0.95, rate(ollama_request_duration_seconds_bucket[5m])) > 30'
+                for: 5m
+                labels:
+                  severity: "warning"
+                  service: "{{ lions_ollama_service_name }}"
+                  environment: "{{ lions_environment }}"
+                  category: "performance"
+                  component: "ai-service"
+                  team: "devops"
+                annotations:
+                  summary: "Réponses lentes d'Ollama"
+                  description: "95% des requêtes Ollama prennent plus de 30 secondes à répondre"
+                  runbook_url: "https://docs.lions.dev/runbooks/ollama/slow-responses"
+
+          # ===== RÈGLES DE STOCKAGE =====
+          - name: "ollama.storage.rules"
+            interval: 60s
+            rules:
+              - alert: "OllamaStorageSpaceLow"
+                expr: '(kubelet_volume_stats_available_bytes{persistentvolumeclaim=~"{{ lions_ollama_service_name }}-.*"} / kubelet_volume_stats_capacity_bytes{persistentvolumeclaim=~"{{ lions_ollama_service_name }}-.*"}) < 0.15'
+                for: 10m
+                labels:
+                  severity: "warning"
+                  service: "{{ lions_ollama_service_name }}"
+                  environment: "{{ lions_environment }}"
+                  category: "storage"
+                  component: "ai-service"
+                  team: "devops"
+                annotations:
+                  summary: "Espace de stockage faible pour Ollama"
+                  description: "Le volume persistant {{ "{{ $labels.persistentvolumeclaim }}" }} a moins de 15% d'espace libre"
+                  runbook_url: "https://docs.lions.dev/runbooks/ollama/low-storage"
+
+              - alert: "OllamaStorageSpaceCritical"
+                expr: '(kubelet_volume_stats_available_bytes{persistentvolumeclaim=~"{{ lions_ollama_service_name }}-.*"} / kubelet_volume_stats_capacity_bytes{persistentvolumeclaim=~"{{ lions_ollama_service_name }}-.*"}) < 0.05'
+                for: 5m
+                labels:
+                  severity: "critical"
+                  service: "{{ lions_ollama_service_name }}"
+                  environment: "{{ lions_environment }}"
+                  category: "storage"
+                  component: "ai-service"
+                  team: "devops"
+                annotations:
+                  summary: "Espace de stockage critique pour Ollama"
+                  description: "Le volume persistant {{ "{{ $labels.persistentvolumeclaim }}" }} a moins de 5% d'espace libre"
+                  runbook_url: "https://docs.lions.dev/runbooks/ollama/critical-storage"
+
+          # ===== RÈGLES GPU (SI ACTIVÉ) =====
+          - name: "ollama.gpu.rules"
+            interval: 30s
+            rules:
+              - alert: "OllamaGPUUnavailable"
+                expr: 'nvidia_smi_attached_gpus{pod=~"{{ lions_ollama_service_name }}-.*"} == 0'
+                for: 2m
+                labels:
+                  severity: "critical"
+                  service: "{{ lions_ollama_service_name }}"
+                  environment: "{{ lions_environment }}"
+                  category: "gpu"
+                  component: "ai-service"
+                  team: "devops"
+                annotations:
+                  summary: "GPU indisponible pour Ollama"
+                  description: "Aucun GPU détecté pour le pod {{ "{{ $labels.pod }}" }}"
+                  runbook_url: "https://docs.lions.dev/runbooks/ollama/gpu-unavailable"
+            # Cette règle ne s'applique que si GPU est activé
+            when: lions_ollama_gpu_enabled | bool
+  when: lions_monitoring_enabled | bool
+  register: prometheus_rules_result
+  until: prometheus_rules_result is succeeded
+  retries: 3
+  delay: 10
+
+# =========================================================================
+# DASHBOARD GRAFANA
+# =========================================================================
+- name: "[OLLAMA-MONITORING] Créer ConfigMap pour dashboard Grafana Ollama"
+  kubernetes.core.k8s:
+    state: "{{ 'present' if lions_monitoring_enabled | bool else 'absent' }}"
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ lions_ollama_service_name }}-dashboard"
+        namespace: "{{ lions_monitoring_namespace }}"
+        labels:
+          app.kubernetes.io/name: "grafana-dashboard"
+          app.kubernetes.io/instance: "{{ lions_ollama_service_name }}-dashboard"
+          app.kubernetes.io/component: "monitoring"
+          app.kubernetes.io/part-of: "lions-infrastructure"
+          app.kubernetes.io/managed-by: "ansible"
+          lions.dev/service-type: "monitoring"
+          lions.dev/environment: "{{ lions_environment }}"
+          grafana_dashboard: "1"
+        annotations:
+          lions.dev/dashboard-config: "ollama-overview"
+          lions.dev/created-by: "ansible-automation"
+          lions.dev/created-at: "{{ ansible_date_time.iso8601 }}"
+      data:
+        dashboard.json: |
+          {
+            "dashboard": {
+              "id": null,
+              "title": "Ollama - {{ lions_environment | title }}",
+              "tags": ["lions", "ollama", "ai", "{{ lions_environment }}"],
+              "style": "dark",
+              "timezone": "browser",
+              "panels": [
+                {
+                  "id": 1,
+                  "title": "Service Status",
+                  "type": "stat",
+                  "targets": [
+                    {
+                      "expr": "up{job=\"{{ lions_ollama_service_name }}\"}",
+                      "legendFormat": "Status"
+                    }
+                  ],
+                  "fieldConfig": {
+                    "defaults": {
+                      "mappings": [
+                        {"options": {"0": {"text": "DOWN", "color": "red"}}, "type": "value"},
+                        {"options": {"1": {"text": "UP", "color": "green"}}, "type": "value"}
+                      ]
+                    }
+                  }
+                },
+                {
+                  "id": 2,
+                  "title": "Request Rate",
+                  "type": "graph",
+                  "targets": [
+                    {
+                      "expr": "rate(ollama_requests_total[5m])",
+                      "legendFormat": "Requests/sec"
+                    }
+                  ]
+                },
+                {
+                  "id": 3,
+                  "title": "Memory Usage",
+                  "type": "graph",
+                  "targets": [
+                    {
+                      "expr": "container_memory_working_set_bytes{pod=~\"{{ lions_ollama_service_name }}-.*\"} / 1024 / 1024",
+                      "legendFormat": "Memory MB"
+                    }
+                  ]
+                },
+                {
+                  "id": 4,
+                  "title": "Storage Usage",
+                  "type": "graph",
+                  "targets": [
+                    {
+                      "expr": "kubelet_volume_stats_used_bytes{persistentvolumeclaim=~\"{{ lions_ollama_service_name }}-.*\"} / 1024 / 1024 / 1024",
+                      "legendFormat": "Storage GB"
+                    }
+                  ]
+                }
+              ],
+              "time": {"from": "now-1h", "to": "now"},
+              "refresh": "30s"
+            }
+          }
+  when: lions_monitoring_enabled | bool
+  register: dashboard_result
+  until: dashboard_result is succeeded
+  retries: 3
+  delay: 5
+
+# =========================================================================
+# VÉRIFICATION ET VALIDATION
+# =========================================================================
+- name: "[OLLAMA-MONITORING] Vérifier le déploiement du ServiceMonitor"
+  kubernetes.core.k8s_info:
+    api_version: monitoring.coreos.com/v1
+    kind: ServiceMonitor
+    name: "{{ lions_ollama_service_name }}-metrics"
+    namespace: "{{ lions_ollama_namespace }}"
+  register: servicemonitor_status
+  when: lions_monitoring_enabled | bool
+
+- name: "[OLLAMA-MONITORING] Vérifier le déploiement des règles Prometheus"
+  kubernetes.core.k8s_info:
+    api_version: monitoring.coreos.com/v1
+    kind: PrometheusRule
+    name: "{{ lions_ollama_service_name }}-alerts"
+    namespace: "{{ lions_ollama_namespace }}"
+  register: prometheus_rules_status
+  when: lions_monitoring_enabled | bool
+
+- name: "[OLLAMA-MONITORING] Afficher le statut du monitoring"
+  ansible.builtin.debug:
+    msg:
+      - "✅ Configuration monitoring Ollama terminée"
+      - "📊 ServiceMonitor: {{ 'Déployé' if servicemonitor_status.resources | length > 0 else 'Non trouvé' }}"
+      - "🚨 Règles d'alerte: {{ 'Déployées' if prometheus_rules_status.resources | length > 0 else 'Non trouvées' }}"
+      - "📈 Dashboard: {{ 'Créé' if dashboard_result is succeeded else 'Échec' }}"
+      - "🔧 Environnement: {{ lions_environment }}"
+      - "🏷️  Namespace: {{ lions_ollama_namespace }}"
+  when: lions_monitoring_enabled | bool
+
+# =========================================================================
+# NETTOYAGE EN CAS DE DÉSACTIVATION
+# =========================================================================
+- name: "[OLLAMA-MONITORING] Information de désactivation"
+  ansible.builtin.debug:
+    msg:
+      - "ℹ️  Monitoring Ollama désactivé"
+      - "🧹 Les ressources de monitoring existantes ont été supprimées"
+      - "🔧 Pour réactiver: LIONS_MONITORING_ENABLED=true"
+  when: not (lions_monitoring_enabled | bool)
+
+# =========================================================================
+# GESTION DES ERREURS
+# =========================================================================
+- name: "[OLLAMA-MONITORING] Gestion des erreurs de déploiement"
+  ansible.builtin.fail:
+    msg:
+      - "❌ Échec du déploiement du monitoring Ollama"
+      - "🔍 Vérifiez les logs Kubernetes pour plus de détails"
+      - "📚 Documentation: https://docs.lions.dev/troubleshooting/monitoring"
+  when:
+    - lions_monitoring_enabled | bool
+    - (servicemonitor_result is failed or prometheus_rules_result is failed)
+
+# =========================================================================
+# MÉTRIQUES DE PERFORMANCE
+# =========================================================================
+- name: "[OLLAMA-MONITORING] Enregistrer les métriques de déploiement"
+  ansible.builtin.set_fact:
+    ollama_monitoring_metrics:
+      deployment_time: "{{ ansible_date_time.iso8601 }}"
+      servicemonitor_deployed: "{{ servicemonitor_result is succeeded }}"
+      prometheus_rules_deployed: "{{ prometheus_rules_result is succeeded }}"
+      dashboard_deployed: "{{ dashboard_result is succeeded }}"
+      environment: "{{ lions_environment }}"
+      namespace: "{{ lions_ollama_namespace }}"
+      service_name: "{{ lions_ollama_service_name }}"
+  when: lions_monitoring_enabled | bool

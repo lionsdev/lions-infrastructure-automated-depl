@@ -1,21 +1,309 @@
 ---
-# Titre: Tâches pour le déploiement de Redis
-# Description: Déploie Redis sur Kubernetes
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-08
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - REDIS DEPLOYMENT ORCHESTRATOR
+# =========================================================================
+# Titre: Orchestrateur de déploiement Redis
+# Description: Gestion complète du cycle de vie Redis sur Kubernetes
+# Auteur: DevOps Team - LIONS Infrastructure
+# Date: "{{ ansible_date_time.date }}"
+# Version: 5.0.0
+# Compatibilité: Kubernetes 1.30+, Redis 7.2+
+# Documentation: https://docs.lions.dev/infrastructure/services/redis
+# =========================================================================
 
-- name: Vérification des prérequis pour Redis
+# =========================================================================
+# PHASE 1: INITIALISATION ET VALIDATION DE L'ENVIRONNEMENT
+# =========================================================================
+- name: "🔍 REDIS | Affichage des informations de déploiement"
+  debug:
+    msg:
+      - "=========================================="
+      - "🚀 DÉMARRAGE DU DÉPLOIEMENT REDIS"
+      - "=========================================="
+      - "Environnement cible: {{ lions_environment | default('non-défini') }}"
+      - "Namespace: {{ lions_redis_namespace | default('database') }}"
+      - "Version Redis: {{ lions_redis_version | default('7.2') }}"
+      - "Mode HA: {{ lions_redis_ha_enabled | default(false) | bool }}"
+      - "Stockage: {{ lions_redis_storage_size | default('5Gi') }}"
+      - "Debug activé: {{ lions_debug_mode | default(false) | bool }}"
+      - "=========================================="
+  when: lions_debug_mode | default(false) | bool
+  tags:
+    - redis
+    - debug
+    - info
+
+- name: "✅ REDIS | Vérification de l'activation du service Redis"
+  assert:
+    that:
+      - lions_redis_enabled | default(false) | bool
+    fail_msg: "❌ Le service Redis n'est pas activé (LIONS_REDIS_ENABLED=false)"
+    success_msg: "✅ Service Redis activé pour le déploiement"
+  tags:
+    - redis
+    - validation
+
+- name: "🔧 REDIS | Validation des variables d'environnement critiques"
+  assert:
+    that:
+      - lions_environment is defined
+      - lions_environment in ['development', 'staging', 'production']
+      - lions_redis_namespace is defined
+      - lions_redis_version is defined
+      - lions_redis_storage_size is defined
+    fail_msg: "❌ Variables d'environnement Redis manquantes ou invalides"
+    success_msg: "✅ Variables d'environnement Redis validées"
+  tags:
+    - redis
+    - validation
+    - environment
+
+# =========================================================================
+# PHASE 2: GESTION CONDITIONNELLE PAR ENVIRONNEMENT
+# =========================================================================
+- name: "🏗️ REDIS | Configuration spécifique environnement {{ lions_environment }}"
+  set_fact:
+    redis_deployment_config:
+      replicas: "{{ lions_redis_replicas | default(_redis_default_replicas[lions_environment]) }}"
+      resources: "{{ _redis_default_resources[lions_environment] }}"
+      persistence: "{{ lions_redis_persistence | default(_redis_default_persistence[lions_environment]) }}"
+      monitoring: "{{ lions_monitoring_enabled | default(true) | bool }}"
+      backup_enabled: "{{ lions_backup_enabled | default(_redis_default_backup[lions_environment]) }}"
+      security_context: "{{ _redis_security_contexts[lions_environment] }}"
+  vars:
+    _redis_default_replicas:
+      development: 1
+      staging: 1
+      production: 3
+    _redis_default_resources:
+      development:
+        requests:
+          cpu: "{{ lions_resources_small_cpu_request | default('100m') }}"
+          memory: "{{ lions_resources_small_memory_request | default('256Mi') }}"
+        limits:
+          cpu: "{{ lions_resources_small_cpu_limit | default('500m') }}"
+          memory: "{{ lions_resources_small_memory_limit | default('512Mi') }}"
+      staging:
+        requests:
+          cpu: "{{ lions_resources_medium_cpu_request | default('200m') }}"
+          memory: "{{ lions_resources_medium_memory_request | default('512Mi') }}"
+        limits:
+          cpu: "{{ lions_resources_medium_cpu_limit | default('1000m') }}"
+          memory: "{{ lions_resources_medium_memory_limit | default('1Gi') }}"
+      production:
+        requests:
+          cpu: "{{ lions_resources_medium_cpu_request | default('500m') }}"
+          memory: "{{ lions_resources_medium_memory_request | default('1Gi') }}"
+        limits:
+          cpu: "{{ lions_resources_medium_cpu_limit | default('2000m') }}"
+          memory: "{{ lions_resources_medium_memory_limit | default('2Gi') }}"
+    _redis_default_persistence:
+      development: false
+      staging: true
+      production: true
+    _redis_default_backup:
+      development: false
+      staging: true
+      production: true
+    _redis_security_contexts:
+      development:
+        runAsNonRoot: false
+        readOnlyRootFilesystem: false
+      staging:
+        runAsNonRoot: true
+        runAsUser: 999
+        readOnlyRootFilesystem: true
+      production:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        readOnlyRootFilesystem: true
+        allowPrivilegeEscalation: false
+  tags:
+    - redis
+    - configuration
+    - environment
+
+- name: "📊 REDIS | Affichage de la configuration calculée"
+  debug:
+    var: redis_deployment_config
+  when: lions_debug_mode | default(false) | bool
+  tags:
+    - redis
+    - debug
+    - configuration
+
+# =========================================================================
+# PHASE 3: EXÉCUTION DES TÂCHES DE DÉPLOIEMENT
+# =========================================================================
+- name: "🔍 REDIS | Phase 1 - Vérification des prérequis"
   include_tasks: prerequisites.yml
+  vars:
+    task_phase: "prerequisites"
+    task_description: "Vérification des prérequis système et Kubernetes"
+  tags:
+    - redis
+    - prerequisites
+    - phase1
 
-- name: Préparation des ressources Kubernetes
+- name: "⚙️ REDIS | Phase 2 - Préparation des ressources Kubernetes"
   include_tasks: prepare.yml
+  vars:
+    task_phase: "preparation"
+    task_description: "Création des namespaces, secrets et configmaps"
+  tags:
+    - redis
+    - preparation
+    - phase2
 
-- name: Déploiement de Redis
+- name: "🚀 REDIS | Phase 3 - Déploiement principal"
   include_tasks: deploy.yml
+  vars:
+    task_phase: "deployment"
+    task_description: "Déploiement des ressources Redis sur Kubernetes"
+  tags:
+    - redis
+    - deployment
+    - phase3
 
-- name: Configuration du monitoring pour Redis
+- name: "📊 REDIS | Phase 4 - Configuration du monitoring"
   include_tasks: monitoring.yml
+  vars:
+    task_phase: "monitoring"
+    task_description: "Configuration Prometheus/Grafana pour Redis"
+  when: redis_deployment_config.monitoring | bool
+  tags:
+    - redis
+    - monitoring
+    - phase4
 
-- name: Validation post-déploiement
+- name: "🔧 REDIS | Phase 5 - Configuration des sauvegardes"
+  include_tasks: backup.yml
+  vars:
+    task_phase: "backup"
+    task_description: "Configuration des stratégies de sauvegarde Redis"
+  when:
+    - redis_deployment_config.backup_enabled | bool
+    - lions_backup_enabled | default(false) | bool
+  tags:
+    - redis
+    - backup
+    - phase5
+
+- name: "✅ REDIS | Phase 6 - Validation et tests post-déploiement"
   include_tasks: validate.yml
+  vars:
+    task_phase: "validation"
+    task_description: "Tests de connectivité et validation fonctionnelle"
+  tags:
+    - redis
+    - validation
+    - phase6
+
+# =========================================================================
+# PHASE 4: GESTION DES ÉCHECS ET ROLLBACK
+# =========================================================================
+- name: "🛡️ REDIS | Gestion des échecs de déploiement"
+  block:
+    - name: "📝 REDIS | Collecte des logs d'erreur"
+      k8s_info:
+        api_version: v1
+        kind: Pod
+        namespace: "{{ lions_redis_namespace }}"
+        label_selectors:
+          - "app=redis"
+        wait: false
+      register: redis_pods_status
+      failed_when: false
+
+    - name: "🔄 REDIS | Tentative de rollback automatique"
+      include_tasks: rollback.yml
+      vars:
+        rollback_reason: "Échec lors de {{ task_phase | default('déploiement') }}"
+      when:
+        - lions_auto_rollback_enabled | default(false) | bool
+        - lions_environment != 'production'
+
+  rescue:
+    - name: "❌ REDIS | Échec critique du déploiement Redis"
+      fail:
+        msg: |
+          ===============================================
+          ❌ ÉCHEC CRITIQUE DU DÉPLOIEMENT REDIS
+          ===============================================
+          Phase échouée: {{ task_phase | default('inconnue') }}
+          Description: {{ task_description | default('Non spécifiée') }}
+          Environnement: {{ lions_environment }}
+          Namespace: {{ lions_redis_namespace }}
+          
+          Actions recommandées:
+          1. Vérifier les logs: kubectl logs -n {{ lions_redis_namespace }} -l app=redis
+          2. Vérifier les événements: kubectl get events -n {{ lions_redis_namespace }}
+          3. Vérifier les ressources: kubectl get all -n {{ lions_redis_namespace }}
+          4. Consulter la documentation: https://docs.lions.dev/troubleshooting/redis
+          ===============================================
+
+  always:
+    - name: "📊 REDIS | Collecte des métriques de déploiement"
+      set_fact:
+        redis_deployment_metrics:
+          start_time: "{{ ansible_date_time.epoch }}"
+          environment: "{{ lions_environment }}"
+          namespace: "{{ lions_redis_namespace }}"
+          version: "{{ lions_redis_version }}"
+          phase_completed: "{{ task_phase | default('none') }}"
+          success: "{{ ansible_failed_result is not defined }}"
+      tags:
+        - redis
+        - metrics
+        - always
+
+# =========================================================================
+# PHASE 5: POST-DÉPLOIEMENT ET REPORTING
+# =========================================================================
+- name: "🎉 REDIS | Déploiement Redis terminé avec succès"
+  debug:
+    msg:
+      - "=============================================="
+      - "🎉 DÉPLOIEMENT REDIS TERMINÉ AVEC SUCCÈS"
+      - "=============================================="
+      - "Environnement: {{ lions_environment }}"
+      - "Namespace: {{ lions_redis_namespace }}"
+      - "Service: redis.{{ lions_redis_namespace }}.svc.cluster.local"
+      - "Port: {{ lions_redis_port | default(6379) }}"
+      - "Réplicas: {{ redis_deployment_config.replicas }}"
+      - "Stockage: {{ lions_redis_storage_size }}"
+      - "Monitoring: {{ 'Activé' if redis_deployment_config.monitoring else 'Désactivé' }}"
+      - "Sauvegarde: {{ 'Activée' if redis_deployment_config.backup_enabled else 'Désactivée' }}"
+      - "=============================================="
+      - "🔗 Commandes utiles:"
+      - "   kubectl get pods -n {{ lions_redis_namespace }}"
+      - "   kubectl logs -n {{ lions_redis_namespace }} -l app=redis"
+      - "   kubectl exec -n {{ lions_redis_namespace }} -it redis-0 -- redis-cli"
+      - "=============================================="
+  when: ansible_failed_result is not defined
+  tags:
+    - redis
+    - success
+    - info
+
+- name: "📧 REDIS | Notification de fin de déploiement"
+  uri:
+    url: "{{ lions_notification_webhook_url }}"
+    method: POST
+    body_format: json
+    body:
+      service: "Redis"
+      environment: "{{ lions_environment }}"
+      status: "{{ 'success' if ansible_failed_result is not defined else 'failed' }}"
+      namespace: "{{ lions_redis_namespace }}"
+      timestamp: "{{ ansible_date_time.iso8601 }}"
+      metrics: "{{ redis_deployment_metrics | default({}) }}"
+  when:
+    - lions_notification_webhook_url is defined
+    - lions_notification_enabled | default(false) | bool
+  failed_when: false
+  tags:
+    - redis
+    - notification
+    - webhook

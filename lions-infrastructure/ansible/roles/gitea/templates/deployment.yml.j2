@@ -1,98 +1,269 @@
 ---
-# Titre: Template de déploiement Kubernetes pour Gitea
-# Description: Définit le déploiement Kubernetes pour Gitea
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - GITEA DEPLOYMENT TEMPLATE
+# =========================================================================
+# Description: Template Kubernetes pour le déploiement de Gitea
+# Version: 5.0.0
+# Maintainer: DevOps Team LIONS
+# Date: {{ ansible_date_time.iso8601 }}
+# Environment: {{ lions_environment }}
+# =========================================================================
 
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: "{{ app_name }}"
-  namespace: "{{ app_namespace }}"
+  name: "{{ lions_gitea_service_name }}"
+  namespace: "{{ lions_gitea_namespace }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
+    # Labels standardisés LIONS
+    app.kubernetes.io/name: "{{ lions_gitea_service_name }}"
+    app.kubernetes.io/instance: "{{ lions_gitea_service_name }}-{{ lions_environment }}"
+    app.kubernetes.io/version: "{{ lions_gitea_version }}"
+    app.kubernetes.io/component: "git-server"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+
+    # Labels LIONS spécifiques
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/service-type: "development-tools"
+    lions.dev/backup-policy: "{% if lions_backup_enabled %}daily{% else %}none{% endif %}"
+    lions.dev/monitoring: "{% if lions_monitoring_enabled %}enabled{% else %}disabled{% endif %}"
+    lions.dev/security-level: "{% if lions_environment == 'production' %}high{% else %}medium{% endif %}"
+
+    # Labels techniques
+    version: "{{ lions_gitea_version }}"
     technology: "gitea"
+    tier: "application"
+
   annotations:
-    description: "Déploiement de Gitea {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    # Annotations de déploiement
     deployment.kubernetes.io/revision: "1"
+    lions.dev/deployment-strategy: "rolling-update"
+    lions.dev/created-by: "ansible-{{ ansible_version.full }}"
+    lions.dev/config-version: "{{ lions_config_version | default('1.0.0') }}"
+
+    # Documentation
+    lions.dev/description: "Gitea Git server for LIONS infrastructure in {{ lions_environment }} environment"
+    lions.dev/documentation: "https://docs.lions.dev/services/gitea"
+    lions.dev/support-contact: "{{ lions_config_maintainer | default('devops@lions.dev') }}"
+
+    # Informations de configuration
+    lions.dev/database-dependency: "postgresql.{{ lions_postgres_namespace }}"
+    lions.dev/storage-class: "{{ lions_storage_class_default }}"
+    lions.dev/tls-enabled: "{{ lions_security_tls_enabled | string }}"
+
 spec:
-  replicas: {{ gitea_replicas[app_environment] }}
+  replicas: {% if lions_environment == 'production' %}{{ lions_gitea_replicas_production | default(2) }}{% elif lions_environment == 'staging' %}{{ lions_gitea_replicas_staging | default(1) }}{% else %}{{ lions_gitea_replicas_development | default(1) }}{% endif %}
+
+  revisionHistoryLimit: {{ lions_deployment_revision_history_limit | default(5) }}
+
+  progressDeadlineSeconds: {{ lions_timeout_deployment | default(1800) }}
+
   selector:
     matchLabels:
-      app: "{{ app_name }}"
+      app.kubernetes.io/name: "{{ lions_gitea_service_name }}"
+      app.kubernetes.io/instance: "{{ lions_gitea_service_name }}-{{ lions_environment }}"
+
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxSurge: 1
-      maxUnavailable: 0
+      maxSurge: {% if lions_environment == 'production' %}1{% else %}1{% endif %}
+      maxUnavailable: {% if lions_environment == 'production' %}0{% else %}1{% endif %}
+
   template:
     metadata:
       labels:
-        app: "{{ app_name }}"
-        version: "{{ app_version }}"
-        environment: "{{ app_environment }}"
+        # Labels du pod identiques au Deployment
+        app.kubernetes.io/name: "{{ lions_gitea_service_name }}"
+        app.kubernetes.io/instance: "{{ lions_gitea_service_name }}-{{ lions_environment }}"
+        app.kubernetes.io/version: "{{ lions_gitea_version }}"
+        app.kubernetes.io/component: "git-server"
+        app.kubernetes.io/part-of: "lions-infrastructure"
+
+        # Labels spécifiques au pod
+        lions.dev/environment: "{{ lions_environment }}"
+        lions.dev/pod-template-hash: "{{ ansible_date_time.epoch }}"
+        version: "{{ lions_gitea_version }}"
         technology: "gitea"
+
       annotations:
-        prometheus.io/scrape: "{{ gitea_prometheus_scrape | string | lower }}"
-        prometheus.io/path: "{{ gitea_prometheus_path }}"
-        prometheus.io/port: "{{ gitea_prometheus_port | string }}"
+        # Monitoring et observabilité
+        prometheus.io/scrape: "{{ lions_monitoring_enabled | string }}"
+        prometheus.io/path: "/api/healthz"
+        prometheus.io/port: "{{ lions_gitea_port | string }}"
+        prometheus.io/scheme: "{% if lions_security_tls_enabled %}https{% else %}http{% endif %}"
+
+        # Configuration de mise à jour
+        lions.dev/config-checksum: "{{ (gitea_config_content | default('default')) | hash('sha256') }}"
+        lions.dev/last-restart: "{{ ansible_date_time.iso8601 }}"
+
+        # Sécurité
+        container.apparmor.security.beta.kubernetes.io/gitea: "runtime/default"
+        seccomp.security.alpha.kubernetes.io/pod: "runtime/default"
+
+        # Politiques réseau
+        {% if lions_security_network_policies %}
+        lions.dev/network-policy: "enabled"
+        {% endif %}
+
     spec:
-      serviceAccountName: "{{ app_name }}"
+      serviceAccountName: "{{ lions_gitea_service_name }}"
+
+      # Configuration de sécurité renforcée
       securityContext:
         runAsNonRoot: true
-        runAsUser: 1000
-        fsGroup: 1000
+        runAsUser: {{ lions_gitea_user_id | default(1000) }}
+        runAsGroup: {{ lions_gitea_group_id | default(1000) }}
+        fsGroup: {{ lions_gitea_fs_group | default(1000) }}
+        seccompProfile:
+          type: RuntimeDefault
+        supplementalGroups: []
+
+      # Stratégie de redémarrage
+      restartPolicy: Always
+      terminationGracePeriodSeconds: {{ lions_gitea_termination_grace_period | default(60) }}
+
+      # DNS et résolution de noms
+      dnsPolicy: ClusterFirst
+      dnsConfig:
+        options:
+          - name: timeout
+            value: "2"
+          - name: attempts
+            value: "2"
+
+      # Configuration des volumes
+      volumes:
+        # Volume temporaire sécurisé
+        - name: tmp-volume
+          emptyDir:
+            sizeLimit: 1Gi
+
+        # Configuration Gitea
+        - name: config-volume
+          configMap:
+            name: "{{ lions_gitea_service_name }}-config"
+            defaultMode: 0644
+
+        {% if lions_gitea_storage_size | default(lions_storage_pv_size_medium) %}
+        # Stockage persistant des données
+        - name: data-volume
+          persistentVolumeClaim:
+            claimName: "{{ lions_gitea_service_name }}-pvc"
+        {% endif %}
+
+        # Clés SSH sécurisées
+        - name: ssh-keys
+          secret:
+            secretName: "{{ lions_gitea_service_name }}-ssh-keys"
+            defaultMode: 0400
+            optional: true
+
+        # Cache et logs temporaires
+        - name: cache-volume
+          emptyDir:
+            sizeLimit: 500Mi
+
+      # Configuration des conteneurs
       containers:
-        - name: "{{ app_name }}"
-          image: "gitea/gitea:{{ app_version }}"
-          imagePullPolicy: IfNotPresent
+        - name: gitea
+          image: "{{ lions_gitea_image_registry | default('gitea/gitea') }}:{{ lions_gitea_version }}"
+          imagePullPolicy: {% if lions_environment == 'production' %}Always{% else %}IfNotPresent{% endif %}
+
+          # Ports exposés
           ports:
             - name: http
-              containerPort: {{ gitea_default_port }}
+              containerPort: {{ lions_gitea_port }}
               protocol: TCP
             - name: ssh
-              containerPort: {{ gitea_ssh_port }}
+              containerPort: {{ lions_gitea_ssh_port | default(2222) }}
               protocol: TCP
+
+          # Variables d'environnement
           env:
+            # Configuration base
+            - name: GITEA_WORK_DIR
+              value: "/data"
+            - name: GITEA_CUSTOM
+              value: "/data/gitea"
+
+            # Configuration base de données
             - name: GITEA__database__DB_TYPE
               value: "postgres"
             - name: GITEA__database__HOST
-              value: "{{ gitea_database_service }}.{{ gitea_database_namespace }}:5432"
+              value: "{{ lions_postgres_service_name }}.{{ lions_postgres_namespace }}:{{ lions_postgres_port }}"
             - name: GITEA__database__NAME
-              value: "{{ gitea_database_name }}"
+              value: "{{ lions_gitea_database_name | default('gitea') }}"
             - name: GITEA__database__USER
-              value: "{{ gitea_database_user }}"
+              value: "{{ lions_gitea_database_user | default('gitea') }}"
             - name: GITEA__database__PASSWD
               valueFrom:
                 secretKeyRef:
-                  name: "{{ gitea_database_password_secret }}"
+                  name: "{{ lions_gitea_service_name }}-database-secret"
                   key: "password"
+            - name: GITEA__database__SSL_MODE
+              value: "{% if lions_security_tls_enabled %}require{% else %}disable{% endif %}"
+
+            # Configuration serveur
+            - name: GITEA__server__DOMAIN
+              value: "gitea.{{ lions_dns_full_domain }}"
+            - name: GITEA__server__ROOT_URL
+              value: "{% if lions_security_tls_enabled %}https{% else %}http{% endif %}://gitea.{{ lions_dns_full_domain }}"
+            - name: GITEA__server__HTTP_PORT
+              value: "{{ lions_gitea_port | string }}"
+            - name: GITEA__server__SSH_DOMAIN
+              value: "gitea.{{ lions_dns_full_domain }}"
+            - name: GITEA__server__SSH_PORT
+              value: "{{ lions_gitea_ssh_port | default(2222) | string }}"
+            - name: GITEA__server__DISABLE_SSH
+              value: "false"
+            - name: GITEA__server__START_SSH_SERVER
+              value: "true"
+            - name: GITEA__server__APP_NAME
+              value: "LIONS Gitea ({{ lions_environment }})"
+
+            # Configuration sécurité
             - name: GITEA__security__INSTALL_LOCK
               value: "true"
-            - name: GITEA__server__DOMAIN
-              value: "{{ app_domain }}"
-            - name: GITEA__server__ROOT_URL
-              value: "{{ gitea_root_url }}"
-            - name: GITEA__server__SSH_DOMAIN
-              value: "{{ app_domain }}"
-            - name: GITEA__server__SSH_PORT
-              value: "{{ gitea_ssh_port | string }}"
-            - name: GITEA__server__APP_NAME
-              value: "{{ gitea_app_name }}"
-            - name: GITEA__service__DISABLE_REGISTRATION
-              value: "{{ gitea_disable_registration | string | lower }}"
-            - name: GITEA__service__REQUIRE_SIGNIN_VIEW
-              value: "{{ gitea_require_signin_view | string | lower }}"
-            - name: GITEA_ADMIN_USER
-              value: "{{ gitea_admin_user }}"
-            - name: GITEA_ADMIN_PASSWORD
+            - name: GITEA__security__SECRET_KEY
               valueFrom:
                 secretKeyRef:
-                  name: "{{ gitea_admin_password_secret }}"
-                  key: "password"
+                  name: "{{ lions_gitea_service_name }}-secret"
+                  key: "secret-key"
+            - name: GITEA__security__INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: "{{ lions_gitea_service_name }}-secret"
+                  key: "internal-token"
+
+            # Configuration services
+            - name: GITEA__service__DISABLE_REGISTRATION
+              value: "{% if lions_environment == 'production' %}true{% else %}false{% endif %}"
+            - name: GITEA__service__REQUIRE_SIGNIN_VIEW
+              value: "{% if lions_environment == 'production' %}true{% else %}false{% endif %}"
+            - name: GITEA__service__DEFAULT_KEEP_EMAIL_PRIVATE
+              value: "true"
+            - name: GITEA__service__DEFAULT_ALLOW_CREATE_ORGANIZATION
+              value: "{% if lions_environment == 'production' %}false{% else %}true{% endif %}"
+
+            # Configuration logs
+            - name: GITEA__log__MODE
+              value: "console"
+            - name: GITEA__log__LEVEL
+              value: "{% if lions_log_level == 'DEBUG' %}Trace{% elif lions_log_level == 'INFO' %}Info{% elif lions_log_level == 'WARN' %}Warn{% else %}Error{% endif %}"
+
+            # Configuration metrics (si monitoring activé)
+            {% if lions_monitoring_enabled %}
+            - name: GITEA__metrics__ENABLED
+              value: "true"
+            - name: GITEA__metrics__TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: "{{ lions_gitea_service_name }}-secret"
+                  key: "metrics-token"
+            {% endif %}
+
+            # Variables d'environnement Kubernetes
             - name: KUBERNETES_NAMESPACE
               valueFrom:
                 fieldRef:
@@ -101,64 +272,195 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+
+          # Configuration depuis ConfigMap
           envFrom:
             - configMapRef:
-                name: "{{ app_name }}-config"
+                name: "{{ lions_gitea_service_name }}-config"
+                optional: true
+
+          # Gestion des ressources
           resources:
             requests:
-              cpu: "{{ gitea_resources[app_environment].requests.cpu }}"
-              memory: "{{ gitea_resources[app_environment].requests.memory }}"
+              cpu: "{{ lions_gitea_cpu_request | default(lions_resources_medium_cpu_request) }}"
+              memory: "{{ lions_gitea_memory_request | default(lions_resources_medium_memory_request) }}"
+              {% if lions_gitea_storage_size %}
+              ephemeral-storage: "{{ lions_gitea_ephemeral_storage_request | default('1Gi') }}"
+              {% endif %}
             limits:
-              cpu: "{{ gitea_resources[app_environment].limits.cpu }}"
-              memory: "{{ gitea_resources[app_environment].limits.memory }}"
+              cpu: "{{ lions_gitea_cpu_limit | default(lions_resources_medium_cpu_limit) }}"
+              memory: "{{ lions_gitea_memory_limit | default(lions_resources_medium_memory_limit) }}"
+              {% if lions_gitea_storage_size %}
+              ephemeral-storage: "{{ lions_gitea_ephemeral_storage_limit | default('5Gi') }}"
+              {% endif %}
+
+          # Health checks améliorés
+          startupProbe:
+            httpGet:
+              path: /api/healthz
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: {{ lions_gitea_startup_probe_initial_delay | default(30) }}
+            periodSeconds: {{ lions_gitea_startup_probe_period | default(10) }}
+            timeoutSeconds: {{ lions_gitea_startup_probe_timeout | default(5) }}
+            failureThreshold: {{ lions_gitea_startup_probe_failure_threshold | default(30) }}
+            successThreshold: 1
+
           readinessProbe:
-            {{- gitea_readiness_probe | to_nice_yaml(indent=2) | indent(12) }}
+            httpGet:
+              path: /api/healthz
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: {{ lions_gitea_readiness_probe_initial_delay | default(10) }}
+            periodSeconds: {{ lions_gitea_readiness_probe_period | default(10) }}
+            timeoutSeconds: {{ lions_gitea_readiness_probe_timeout | default(5) }}
+            failureThreshold: {{ lions_gitea_readiness_probe_failure_threshold | default(3) }}
+            successThreshold: 1
+
           livenessProbe:
-            {{- gitea_liveness_probe | to_nice_yaml(indent=2) | indent(12) }}
+            httpGet:
+              path: /api/healthz
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: {{ lions_gitea_liveness_probe_initial_delay | default(60) }}
+            periodSeconds: {{ lions_gitea_liveness_probe_period | default(30) }}
+            timeoutSeconds: {{ lions_gitea_liveness_probe_timeout | default(10) }}
+            failureThreshold: {{ lions_gitea_liveness_probe_failure_threshold | default(3) }}
+            successThreshold: 1
+
+          # Points de montage des volumes
           volumeMounts:
+            # Volume temporaire
             - name: tmp-volume
               mountPath: /tmp
+
+            # Configuration
             - name: config-volume
               mountPath: /etc/gitea
               readOnly: true
-            {% if gitea_persistent_storage | bool %}
+
+            {% if lions_gitea_storage_size | default(lions_storage_pv_size_medium) %}
+            # Données persistantes
             - name: data-volume
               mountPath: /data
             {% endif %}
+
+            # Clés SSH
             - name: ssh-keys
               mountPath: /data/ssh
               readOnly: true
+
+            # Cache
+            - name: cache-volume
+              mountPath: /data/gitea/queues
+
+          # Sécurité du conteneur
           securityContext:
             allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: {{ lions_gitea_user_id | default(1000) }}
+            runAsGroup: {{ lions_gitea_group_id | default(1000) }}
+            readOnlyRootFilesystem: false  # Gitea a besoin d'écrire dans certains répertoires
             capabilities:
               drop:
                 - ALL
-            readOnlyRootFilesystem: false
-      volumes:
-        - name: tmp-volume
-          emptyDir: {}
-        - name: config-volume
-          configMap:
-            name: "{{ app_name }}-config"
-        {% if gitea_persistent_storage | bool %}
-        - name: data-volume
-          persistentVolumeClaim:
-            claimName: "{{ app_name }}-pvc"
-        {% endif %}
-        - name: ssh-keys
-          secret:
-            secretName: "{{ app_name }}-ssh-keys"
-            defaultMode: 0600
+              add: []
+            seccompProfile:
+              type: RuntimeDefault
+
+          # Configuration du cycle de vie
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - "sleep 15; killall gitea"
+
+      # Affinité et anti-affinité
       affinity:
+        # Anti-affinité pour éviter de placer plusieurs pods sur le même nœud
         podAntiAffinity:
+          {% if lions_environment == 'production' %}
+          requiredDuringSchedulingIgnoredDuringExecution:
+          {% else %}
           preferredDuringSchedulingIgnoredDuringExecution:
-            - weight: 100
-              podAffinityTerm:
+          {% endif %}
+            - {% if lions_environment != 'production' %}weight: 100
+              {% endif %}podAffinityTerm:
                 labelSelector:
                   matchExpressions:
-                    - key: app
+                    - key: app.kubernetes.io/name
                       operator: In
                       values:
-                        - "{{ app_name }}"
+                        - "{{ lions_gitea_service_name }}"
                 topologyKey: kubernetes.io/hostname
-      terminationGracePeriodSeconds: 60
+
+        # Affinité de nœud si spécifiée
+        {% if lions_gitea_node_selector | default({}) %}
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                {% for key, value in lions_gitea_node_selector.items() %}
+                  - key: "{{ key }}"
+                    operator: In
+                    values:
+                      - "{{ value }}"
+                {% endfor %}
+        {% endif %}
+
+      # Tolérations pour les nœuds spécialisés
+      {% if lions_gitea_tolerations | default([]) %}
+      tolerations:
+        {% for toleration in lions_gitea_tolerations %}
+        - key: "{{ toleration.key }}"
+          operator: "{{ toleration.operator | default('Equal') }}"
+          value: "{{ toleration.value | default('') }}"
+          effect: "{{ toleration.effect }}"
+          {% if toleration.tolerationSeconds is defined %}
+          tolerationSeconds: {{ toleration.tolerationSeconds }}
+          {% endif %}
+        {% endfor %}
+      {% endif %}
+
+      # Priorité du pod
+      priorityClassName: {% if lions_environment == 'production' %}"high-priority"{% else %}"normal-priority"{% endif %}
+
+      # Configuration automatique du pull d'images
+      {% if lions_gitea_image_pull_secrets | default([]) %}
+      imagePullSecrets:
+        {% for secret in lions_gitea_image_pull_secrets %}
+        - name: "{{ secret }}"
+        {% endfor %}
+      {% endif %}
+
+---
+# =========================================================================
+# CONFIGURATION AUTOMATIQUE - PodDisruptionBudget
+# =========================================================================
+{% if lions_environment == 'production' and (lions_gitea_replicas_production | default(2)) > 1 %}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: "{{ lions_gitea_service_name }}-pdb"
+  namespace: "{{ lions_gitea_namespace }}"
+  labels:
+    app.kubernetes.io/name: "{{ lions_gitea_service_name }}"
+    app.kubernetes.io/instance: "{{ lions_gitea_service_name }}-{{ lions_environment }}"
+    lions.dev/environment: "{{ lions_environment }}"
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: "{{ lions_gitea_service_name }}"
+      app.kubernetes.io/instance: "{{ lions_gitea_service_name }}-{{ lions_environment }}"
+{% endif %}

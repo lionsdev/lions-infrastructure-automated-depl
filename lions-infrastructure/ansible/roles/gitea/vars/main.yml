@@ -1,97 +1,404 @@
 ---
-# Titre: Variables pour le déploiement de Gitea
-# Description: Variables spécifiques à Gitea
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - GITEA SERVICE VARIABLES
+# =========================================================================
+# Description: Variables centralisées pour le déploiement de Gitea
+# Version: 5.0.0
+# Date: 2025-05-28
+# Maintainer: DevOps Team
+# Documentation: https://docs.lions.dev/services/gitea
+# =========================================================================
 
-# Configuration par défaut pour Gitea
-gitea_default_port: 3000
-gitea_ssh_port: 22
-gitea_health_path: "/api/healthz"
-gitea_metrics_path: "/metrics"
-gitea_admin_user: "gitea_admin"
-gitea_admin_password_secret: "gitea-admin-password"
-gitea_database_service: "postgres"
-gitea_database_name: "gitea"
-gitea_database_user: "gitea"
-gitea_database_password_secret: "gitea-db-password"
-gitea_database_namespace: "{{ app_namespace }}"
+# =========================================================================
+# MÉTADONNÉES DU SERVICE
+# =========================================================================
+gitea_service_meta:
+  name: "gitea"
+  version: "{{ lookup('env', 'LIONS_GITEA_VERSION') | default('1.20.5', true) }}"
+  component: "development"
+  tier: "application"
+  managed_by: "lions-infrastructure"
+  part_of: "lions-platform"
 
-# Configuration des sondes de santé
-gitea_readiness_probe:
-  httpGet:
-    path: "{{ gitea_health_path }}"
-    port: http
-  initialDelaySeconds: 30
-  periodSeconds: 10
-  timeoutSeconds: 5
-  failureThreshold: 3
+# =========================================================================
+# CONFIGURATION PRINCIPALE
+# =========================================================================
+# Configuration basée sur les variables d'environnement LIONS
+gitea_enabled: "{{ lookup('env', 'LIONS_GITEA_ENABLED') | default('true', true) | bool }}"
+gitea_namespace: "{{ lookup('env', 'LIONS_GITEA_NAMESPACE') | default('development', true) }}"
+gitea_service_name: "{{ lookup('env', 'LIONS_GITEA_SERVICE_NAME') | default('gitea', true) }}"
+gitea_environment: "{{ lookup('env', 'LIONS_ENVIRONMENT') | default('development', true) }}"
 
-gitea_liveness_probe:
-  httpGet:
-    path: "{{ gitea_health_path }}"
-    port: http
-  initialDelaySeconds: 60
-  periodSeconds: 20
-  timeoutSeconds: 5
-  failureThreshold: 3
+# =========================================================================
+# CONFIGURATION RÉSEAU ET PORTS
+# =========================================================================
+gitea_ports:
+  http: "{{ lookup('env', 'LIONS_GITEA_PORT') | default('3000', true) | int }}"
+  ssh: "{{ lookup('env', 'LIONS_GITEA_SSH_PORT') | default('2222', true) | int }}"
+  metrics: "{{ lookup('env', 'LIONS_GITEA_METRICS_PORT') | default('3001', true) | int }}"
 
-# Configuration du monitoring
-gitea_prometheus_port: 3000
-gitea_prometheus_path: "/metrics"
-gitea_prometheus_scrape: true
-gitea_init_delay: 45
+# Configuration des endpoints
+gitea_endpoints:
+  health: "{{ lookup('env', 'LIONS_GITEA_HEALTH_PATH') | default('/api/healthz', true) }}"
+  metrics: "{{ lookup('env', 'LIONS_GITEA_METRICS_PATH') | default('/metrics', true) }}"
+  ready: "{{ lookup('env', 'LIONS_GITEA_READY_PATH') | default('/api/v1/version', true) }}"
 
-# Configuration des ressources par environnement
-gitea_resources:
+# =========================================================================
+# CONFIGURATION DNS ET DOMAINES
+# =========================================================================
+gitea_dns:
+  domain_base: "{{ lookup('env', 'LIONS_DNS_DOMAIN_BASE') | default('lions.local', true) }}"
+  subdomain: "{{ lookup('env', 'LIONS_GITEA_SUBDOMAIN') | default('git', true) }}"
+  full_domain: "{{ lookup('env', 'LIONS_GITEA_SUBDOMAIN') | default('git', true) }}.{{ lookup('env', 'LIONS_DNS_FULL_DOMAIN') | default('dev.lions.local', true) }}"
+
+# Configuration URLs
+gitea_urls:
+  external: "{{ 'https' if (lookup('env', 'LIONS_SECURITY_TLS_ENABLED') | default('true', true) | bool) else 'http' }}://{{ gitea_dns.full_domain }}"
+  internal: "http://{{ gitea_service_name }}.{{ gitea_namespace }}.svc.cluster.local:{{ gitea_ports.http }}"
+
+# =========================================================================
+# CONFIGURATION DES RESSOURCES
+# =========================================================================
+# Ressources dynamiques basées sur l'environnement
+gitea_resources_config:
   development:
     requests:
-      cpu: "100m"
-      memory: "256Mi"
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_CPU_REQUEST') | default('100m', true) }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_MEMORY_REQUEST') | default('256Mi', true) }}"
     limits:
-      cpu: "500m"
-      memory: "512Mi"
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_CPU_LIMIT') | default('500m', true) }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_MEMORY_LIMIT') | default('512Mi', true) }}"
   staging:
     requests:
-      cpu: "200m"
-      memory: "512Mi"
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_CPU_REQUEST') | default('200m', true) }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_MEMORY_REQUEST') | default('512Mi', true) }}"
     limits:
-      cpu: "1000m"
-      memory: "1Gi"
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_CPU_LIMIT') | default('1000m', true) }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_MEMORY_LIMIT') | default('1Gi', true) }}"
   production:
     requests:
-      cpu: "500m"
-      memory: "1Gi"
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_CPU_REQUEST') | default('500m', true) }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_MEMORY_REQUEST') | default('1Gi', true) }}"
     limits:
-      cpu: "1500m"
-      memory: "2Gi"
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_CPU_LIMIT') | default('1500m', true) }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_MEMORY_LIMIT') | default('2Gi', true) }}"
 
+# Ressources actives pour l'environnement courant
+gitea_resources: "{{ gitea_resources_config[gitea_environment] }}"
+
+# =========================================================================
+# CONFIGURATION DE LA HAUTE DISPONIBILITÉ
+# =========================================================================
 # Configuration des réplicas par environnement
-gitea_replicas:
-  development: 1
-  staging: 2
-  production: 2
+gitea_replicas_config:
+  development: "{{ lookup('env', 'LIONS_GITEA_REPLICAS_DEV') | default('1', true) | int }}"
+  staging: "{{ lookup('env', 'LIONS_GITEA_REPLICAS_STAGING') | default('2', true) | int }}"
+  production: "{{ lookup('env', 'LIONS_GITEA_REPLICAS_PROD') | default('3', true) | int }}"
 
-# Configuration de l'ingress
-gitea_ingress_annotations:
-  cert-manager.io/cluster-issuer: "letsencrypt-prod"
-  traefik.ingress.kubernetes.io/router.entrypoints: "websecure"
-  traefik.ingress.kubernetes.io/router.tls: "true"
-  traefik.ingress.kubernetes.io/ssl-redirect: "true"
-  traefik.ingress.kubernetes.io/ssl-permanent-redirect: "true"
-  traefik.ingress.kubernetes.io/request-timeout: "300"
-  traefik.ingress.kubernetes.io/compress: "true"
-  traefik.ingress.kubernetes.io/headers-customrequestheaders: "X-Forwarded-Proto:https||X-Forwarded-Port:443"
-  traefik.ingress.kubernetes.io/headers-customresponseheaders: "X-Content-Type-Options:nosniff||X-Frame-Options:SAMEORIGIN||X-XSS-Protection:1; mode=block"
+gitea_replicas: "{{ gitea_replicas_config[gitea_environment] }}"
 
-# Configuration de la persistance
-gitea_persistent_storage: true
-gitea_storage_size: "10Gi"
-gitea_storage_class: "local-path"
+# Configuration de l'auto-scaling
+gitea_autoscaling:
+  enabled: "{{ lookup('env', 'LIONS_AUTOSCALING_ENABLED') | default('true', true) | bool }}"
+  min_replicas: "{{ gitea_replicas }}"
+  max_replicas: "{{ lookup('env', 'LIONS_AUTOSCALING_MAX_REPLICAS') | default('10', true) | int }}"
+  target_cpu_utilization: "{{ lookup('env', 'LIONS_AUTOSCALING_CPU_TARGET') | default('70', true) | int }}"
+  target_memory_utilization: "{{ lookup('env', 'LIONS_AUTOSCALING_MEMORY_TARGET') | default('80', true) | int }}"
 
-# Configuration de Gitea
-gitea_app_name: "LIONS Git Service"
-gitea_root_url: "https://{{ app_domain }}"
-gitea_disable_registration: "{{ app_environment == 'production' }}"
-gitea_require_signin_view: "{{ app_environment == 'production' }}"
+# =========================================================================
+# CONFIGURATION DU STOCKAGE
+# =========================================================================
+gitea_storage:
+  enabled: "{{ lookup('env', 'LIONS_GITEA_STORAGE_ENABLED') | default('true', true) | bool }}"
+  size: "{{ lookup('env', 'LIONS_GITEA_STORAGE_SIZE') | default('10Gi', true) }}"
+  class: "{{ lookup('env', 'LIONS_STORAGE_CLASS_DEFAULT') | default('local-path', true) }}"
+  access_mode: "{{ lookup('env', 'LIONS_GITEA_STORAGE_ACCESS_MODE') | default('ReadWriteOnce', true) }}"
+  reclaim_policy: "{{ lookup('env', 'LIONS_STORAGE_RECLAIM_POLICY') | default('Retain', true) }}"
+  mount_path: "{{ lookup('env', 'LIONS_GITEA_DATA_PATH') | default('/data', true) }}"
+
+# Configuration des volumes additionnels
+gitea_volumes:
+  config:
+    name: "gitea-config"
+    mount_path: "/data/gitea/conf"
+    size: "{{ lookup('env', 'LIONS_GITEA_CONFIG_SIZE') | default('1Gi', true) }}"
+  repos:
+    name: "gitea-repos"
+    mount_path: "/data/git/repositories"
+    size: "{{ lookup('env', 'LIONS_GITEA_REPOS_SIZE') | default('50Gi', true) }}"
+
+# =========================================================================
+# CONFIGURATION DE LA BASE DE DONNÉES
+# =========================================================================
+gitea_database:
+  enabled: "{{ lookup('env', 'LIONS_POSTGRES_ENABLED') | default('true', true) | bool }}"
+  type: "{{ lookup('env', 'LIONS_GITEA_DB_TYPE') | default('postgres', true) }}"
+  host: "{{ lookup('env', 'LIONS_POSTGRES_SERVICE_NAME') | default('postgresql', true) }}.{{ lookup('env', 'LIONS_POSTGRES_NAMESPACE') | default('database', true) }}.svc.cluster.local"
+  port: "{{ lookup('env', 'LIONS_POSTGRES_PORT') | default('5432', true) | int }}"
+  name: "{{ lookup('env', 'LIONS_GITEA_DB_NAME') | default('gitea', true) }}"
+  user: "{{ lookup('env', 'LIONS_GITEA_DB_USER') | default('gitea', true) }}"
+  password_secret: "{{ lookup('env', 'LIONS_GITEA_DB_PASSWORD_SECRET') | default('gitea-db-password', true) }}"
+  ssl_mode: "{{ lookup('env', 'LIONS_GITEA_DB_SSL_MODE') | default('require', true) }}"
+  charset: "{{ lookup('env', 'LIONS_GITEA_DB_CHARSET') | default('utf8mb4', true) }}"
+
+# =========================================================================
+# CONFIGURATION DE LA SÉCURITÉ
+# =========================================================================
+# Configuration TLS
+gitea_tls:
+  enabled: "{{ lookup('env', 'LIONS_SECURITY_TLS_ENABLED') | default('true', true) | bool }}"
+  cert_manager_issuer: "{{ lookup('env', 'LIONS_SECURITY_TLS_PROVIDER') | default('letsencrypt', true) }}"
+  secret_name: "gitea-tls-secret"
+
+# Configuration des secrets
+gitea_secrets:
+  admin:
+    username: "{{ lookup('env', 'LIONS_GITEA_ADMIN_USER') | default('lions-admin', true) }}"
+    password_secret: "{{ lookup('env', 'LIONS_GITEA_ADMIN_PASSWORD_SECRET') | default('gitea-admin-password', true) }}"
+    email: "{{ lookup('env', 'LIONS_GITEA_ADMIN_EMAIL') | default('admin@' + gitea_dns.domain_base, true) }}"
+  jwt:
+    secret_name: "{{ lookup('env', 'LIONS_GITEA_JWT_SECRET') | default('gitea-jwt-secret', true) }}"
+  internal:
+    token_secret: "{{ lookup('env', 'LIONS_GITEA_INTERNAL_TOKEN_SECRET') | default('gitea-internal-token', true) }}"
+  secret_key: "{{ lookup('env', 'LIONS_GITEA_SECRET_KEY') | default('gitea-secret-key', true) }}"
+
+# Configuration RBAC
+gitea_rbac:
+  enabled: "{{ lookup('env', 'LIONS_SECURITY_RBAC_ENABLED') | default('true', true) | bool }}"
+  service_account_name: "gitea-sa"
+  role_name: "gitea-role"
+  role_binding_name: "gitea-role-binding"
+
+# =========================================================================
+# CONFIGURATION DES SONDES DE SANTÉ
+# =========================================================================
+gitea_health_checks:
+  readiness:
+    http_get:
+      path: "{{ gitea_endpoints.ready }}"
+      port: "http"
+      scheme: "HTTP"
+    initial_delay_seconds: "{{ lookup('env', 'LIONS_GITEA_READINESS_INITIAL_DELAY') | default('30', true) | int }}"
+    period_seconds: "{{ lookup('env', 'LIONS_GITEA_READINESS_PERIOD') | default('10', true) | int }}"
+    timeout_seconds: "{{ lookup('env', 'LIONS_GITEA_READINESS_TIMEOUT') | default('5', true) | int }}"
+    failure_threshold: "{{ lookup('env', 'LIONS_GITEA_READINESS_FAILURE_THRESHOLD') | default('3', true) | int }}"
+    success_threshold: "{{ lookup('env', 'LIONS_GITEA_READINESS_SUCCESS_THRESHOLD') | default('1', true) | int }}"
+
+  liveness:
+    http_get:
+      path: "{{ gitea_endpoints.health }}"
+      port: "http"
+      scheme: "HTTP"
+    initial_delay_seconds: "{{ lookup('env', 'LIONS_GITEA_LIVENESS_INITIAL_DELAY') | default('60', true) | int }}"
+    period_seconds: "{{ lookup('env', 'LIONS_GITEA_LIVENESS_PERIOD') | default('20', true) | int }}"
+    timeout_seconds: "{{ lookup('env', 'LIONS_GITEA_LIVENESS_TIMEOUT') | default('5', true) | int }}"
+    failure_threshold: "{{ lookup('env', 'LIONS_GITEA_LIVENESS_FAILURE_THRESHOLD') | default('3', true) | int }}"
+
+  startup:
+    http_get:
+      path: "{{ gitea_endpoints.health }}"
+      port: "http"
+      scheme: "HTTP"
+    initial_delay_seconds: "{{ lookup('env', 'LIONS_GITEA_STARTUP_INITIAL_DELAY') | default('15', true) | int }}"
+    period_seconds: "{{ lookup('env', 'LIONS_GITEA_STARTUP_PERIOD') | default('5', true) | int }}"
+    timeout_seconds: "{{ lookup('env', 'LIONS_GITEA_STARTUP_TIMEOUT') | default('3', true) | int }}"
+    failure_threshold: "{{ lookup('env', 'LIONS_GITEA_STARTUP_FAILURE_THRESHOLD') | default('20', true) | int }}"
+
+# =========================================================================
+# CONFIGURATION INGRESS
+# =========================================================================
+gitea_ingress:
+  enabled: "{{ lookup('env', 'LIONS_GITEA_INGRESS_ENABLED') | default('true', true) | bool }}"
+  class_name: "{{ lookup('env', 'LIONS_INGRESS_CLASS') | default('traefik', true) }}"
+  annotations:
+    # Annotations TLS/SSL
+    cert-manager.io/cluster-issuer: "{{ 'letsencrypt-prod' if gitea_environment == 'production' else 'letsencrypt-staging' }}"
+    traefik.ingress.kubernetes.io/router.entrypoints: "websecure"
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/ssl-redirect: "true"
+    traefik.ingress.kubernetes.io/ssl-permanent-redirect: "true"
+
+    # Annotations de performance
+    traefik.ingress.kubernetes.io/request-timeout: "{{ lookup('env', 'LIONS_TIMEOUT_DEFAULT') | default('300', true) }}"
+    traefik.ingress.kubernetes.io/compress: "true"
+    traefik.ingress.kubernetes.io/router.middlewares: "{{ gitea_namespace }}-gitea-headers@kubernetescrd"
+
+    # Annotations de sécurité
+    traefik.ingress.kubernetes.io/headers-customrequestheaders: "X-Forwarded-Proto:https||X-Forwarded-Port:443"
+    traefik.ingress.kubernetes.io/headers-customresponseheaders: "X-Content-Type-Options:nosniff||X-Frame-Options:SAMEORIGIN||X-XSS-Protection:1; mode=block||Strict-Transport-Security:max-age=31536000; includeSubDomains"
+
+    # Annotations de monitoring
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "{{ gitea_ports.metrics }}"
+    prometheus.io/path: "{{ gitea_endpoints.metrics }}"
+
+# =========================================================================
+# CONFIGURATION MONITORING
+# =========================================================================
+gitea_monitoring:
+  enabled: "{{ lookup('env', 'LIONS_MONITORING_ENABLED') | default('true', true) | bool }}"
+  prometheus:
+    enabled: "{{ lookup('env', 'LIONS_PROMETHEUS_ENABLED') | default('true', true) | bool }}"
+    scrape_interval: "{{ lookup('env', 'LIONS_GITEA_METRICS_SCRAPE_INTERVAL') | default('30s', true) }}"
+    scrape_timeout: "{{ lookup('env', 'LIONS_GITEA_METRICS_SCRAPE_TIMEOUT') | default('10s', true) }}"
+    port: "{{ gitea_ports.metrics }}"
+    path: "{{ gitea_endpoints.metrics }}"
+    service_monitor:
+      enabled: true
+      labels:
+        app.kubernetes.io/name: "gitea"
+        app.kubernetes.io/component: "development"
+
+# =========================================================================
+# CONFIGURATION APPLICATIVE GITEA
+# =========================================================================
+gitea_app_config:
+  # Configuration générale
+  app_name: "{{ lookup('env', 'LIONS_GITEA_APP_NAME') | default('LIONS Git Service', true) }}"
+  run_mode: "{{ lookup('env', 'LIONS_GITEA_RUN_MODE') | default('prod', true) }}"
+  root_url: "{{ gitea_urls.external }}"
+
+  # Configuration sécurité
+  disable_registration: "{{ lookup('env', 'LIONS_GITEA_DISABLE_REGISTRATION') | default('true' if gitea_environment == 'production' else 'false', true) | bool }}"
+  require_signin_view: "{{ lookup('env', 'LIONS_GITEA_REQUIRE_SIGNIN') | default('true' if gitea_environment == 'production' else 'false', true) | bool }}"
+  enable_captcha: "{{ lookup('env', 'LIONS_GITEA_ENABLE_CAPTCHA') | default('true' if gitea_environment == 'production' else 'false', true) | bool }}"
+
+  # Configuration Git
+  disable_http_git: "{{ lookup('env', 'LIONS_GITEA_DISABLE_HTTP_GIT') | default('false', true) | bool }}"
+  use_compat_ssh_uri: "{{ lookup('env', 'LIONS_GITEA_COMPAT_SSH_URI') | default('false', true) | bool }}"
+
+  # Configuration des fonctionnalités
+  enable_gzip: "{{ lookup('env', 'LIONS_GITEA_ENABLE_GZIP') | default('true', true) | bool }}"
+  landing_page: "{{ lookup('env', 'LIONS_GITEA_LANDING_PAGE') | default('explore', true) }}"
+
+  # Configuration des logs
+  log_level: "{{ lookup('env', 'LIONS_LOG_LEVEL') | default('INFO', true) }}"
+  log_format: "{{ lookup('env', 'LIONS_LOG_FORMAT') | default('json', true) }}"
+
+# =========================================================================
+# CONFIGURATION DES LABELS KUBERNETES
+# =========================================================================
+gitea_labels:
+  common:
+    app.kubernetes.io/name: "gitea"
+    app.kubernetes.io/instance: "{{ gitea_service_name }}"
+    app.kubernetes.io/version: "{{ gitea_service_meta.version }}"
+    app.kubernetes.io/component: "{{ gitea_service_meta.component }}"
+    app.kubernetes.io/part-of: "{{ gitea_service_meta.part_of }}"
+    app.kubernetes.io/managed-by: "{{ gitea_service_meta.managed_by }}"
+    lions.dev/environment: "{{ gitea_environment }}"
+    lions.dev/tier: "{{ gitea_service_meta.tier }}"
+    lions.dev/service: "gitea"
+
+# =========================================================================
+# CONFIGURATION DES ANNOTATIONS
+# =========================================================================
+gitea_annotations:
+  common:
+    lions.dev/version: "{{ gitea_service_meta.version }}"
+    lions.dev/config-version: "{{ lookup('env', 'LIONS_CONFIG_VERSION') | default('5.0.0', true) }}"
+    lions.dev/deployment-date: "{{ ansible_date_time.iso8601 }}"
+    lions.dev/maintainer: "{{ lookup('env', 'LIONS_CONFIG_MAINTAINER') | default('devops@lions.dev', true) }}"
+
+# =========================================================================
+# CONFIGURATION DE LA TOLÉRANCE AUX PANNES
+# =========================================================================
+gitea_disruption_budget:
+  enabled: "{{ gitea_replicas | int > 1 }}"
+  min_available: "{{ (gitea_replicas | int * 0.5) | round(0, 'floor') | int }}"
+  max_unavailable: "{{ (gitea_replicas | int * 0.5) | round(0, 'ceil') | int }}"
+
+# =========================================================================
+# CONFIGURATION DES POLITIQUES RÉSEAU
+# =========================================================================
+gitea_network_policy:
+  enabled: "{{ lookup('env', 'LIONS_SECURITY_NETWORK_POLICIES') | default('true', true) | bool }}"
+  ingress_rules:
+    - from:
+        - namespace_selector:
+            match_labels:
+              name: "{{ lookup('env', 'LIONS_K8S_INGRESS_NAMESPACE') | default('kube-system', true) }}"
+        - namespace_selector:
+            match_labels:
+              name: "{{ lookup('env', 'LIONS_MONITORING_NAMESPACE') | default('monitoring', true) }}"
+      ports:
+        - protocol: "TCP"
+          port: "{{ gitea_ports.http }}"
+        - protocol: "TCP"
+          port: "{{ gitea_ports.metrics }}"
+  egress_rules:
+    - to:
+        - namespace_selector:
+            match_labels:
+              name: "{{ gitea_database.host.split('.')[1] }}"
+      ports:
+        - protocol: "TCP"
+          port: "{{ gitea_database.port }}"
+    - to: []
+      ports:
+        - protocol: "TCP"
+          port: 443
+        - protocol: "TCP"
+          port: 80
+        - protocol: "UDP"
+          port: 53
+
+# =========================================================================
+# CONFIGURATION DES VARIABLES D'ENVIRONNEMENT POUR GITEA
+# =========================================================================
+gitea_environment_variables:
+  # Configuration de base
+  GITEA__server__DOMAIN: "{{ gitea_dns.full_domain }}"
+  GITEA__server__ROOT_URL: "{{ gitea_urls.external }}"
+  GITEA__server__HTTP_PORT: "{{ gitea_ports.http }}"
+  GITEA__server__SSH_PORT: "{{ gitea_ports.ssh }}"
+
+  # Configuration de la base de données
+  GITEA__database__DB_TYPE: "{{ gitea_database.type }}"
+  GITEA__database__HOST: "{{ gitea_database.host }}:{{ gitea_database.port }}"
+  GITEA__database__NAME: "{{ gitea_database.name }}"
+  GITEA__database__USER: "{{ gitea_database.user }}"
+  GITEA__database__CHARSET: "{{ gitea_database.charset }}"
+  GITEA__database__SSL_MODE: "{{ gitea_database.ssl_mode }}"
+
+  # Configuration de sécurité
+  GITEA__security__INSTALL_LOCK: "true"
+  GITEA__security__SECRET_KEY: "{{ gitea_secrets.secret_key }}"
+
+  # Configuration des logs
+  GITEA__log__LEVEL: "{{ gitea_app_config.log_level }}"
+  GITEA__log__FORMAT: "{{ gitea_app_config.log_format }}"
+
+  # Configuration des fonctionnalités
+  GITEA__service__DISABLE_REGISTRATION: "{{ gitea_app_config.disable_registration }}"
+  GITEA__service__REQUIRE_SIGNIN_VIEW: "{{ gitea_app_config.require_signin_view }}"
+
+  # Configuration des métriques
+  GITEA__metrics__ENABLED: "{{ gitea_monitoring.enabled }}"
+  GITEA__metrics__TOKEN: "{{ gitea_secrets.internal.token_secret }}"
+
+# =========================================================================
+# VALIDATION DE LA CONFIGURATION
+# =========================================================================
+gitea_config_validation:
+  required_vars:
+    - "gitea_namespace"
+    - "gitea_service_name"
+    - "gitea_dns.full_domain"
+    - "gitea_database.host"
+    - "gitea_database.name"
+
+  required_secrets:
+    - "{{ gitea_secrets.admin.password_secret }}"
+    - "{{ gitea_database.password_secret }}"
+    - "{{ gitea_secrets.jwt.secret_name }}"
+    - "{{ gitea_secrets.internal.token_secret }}"
+    - "{{ gitea_secrets.secret_key }}"
+
+# =========================================================================
+# CONFIGURATION DE DEBUG
+# =========================================================================
+gitea_debug:
+  enabled: "{{ lookup('env', 'LIONS_DEBUG_MODE') | default('false', true) | bool }}"
+  log_queries: "{{ gitea_debug.enabled }}"
+  profiling_enabled: "{{ gitea_debug.enabled }}"

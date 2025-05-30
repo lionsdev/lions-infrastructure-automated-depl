@@ -1,108 +1,321 @@
----
-# Titre: Configuration du monitoring pour PrimeFaces
-# Description: Configure le monitoring pour une application PrimeFaces
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - PRIMEFACES MONITORING TASKS
+# =========================================================================
+# Description: Tâches Ansible pour la configuration du monitoring des applications PrimeFaces
+# Composant: PrimeFaces Application Monitoring
+# Version: 5.0.0
+# Maintainer: DevOps LIONS Team
+# Documentation: https://docs.lions.dev/infrastructure/primefaces/monitoring
+# =========================================================================
 
-- name: Vérification de l'existence de Prometheus Operator
-  k8s_info:
+---
+# =========================================================================
+# PHASE DE MONITORING - INITIALISATION
+# =========================================================================
+
+- name: "PrimeFaces Monitoring | {{ current_phase | default('monitoring') | title }} - Initialisation"
+  set_fact:
+    primefaces_monitoring_start_time: "{{ ansible_date_time.epoch }}"
+    primefaces_monitoring_components:
+      prometheus_operator: false
+      servicemonitor: false
+      prometheusrule: false
+      grafana_dashboard: false
+      jmx_exporter: false
+      custom_metrics: false
+    primefaces_monitoring_errors: []
+    primefaces_monitoring_config:
+      namespace: "{{ lions_monitoring_namespace | default('monitoring') }}"
+      scrape_interval: "{{ lions_primefaces_scrape_interval | default('30s') }}"
+      evaluation_interval: "{{ lions_primefaces_evaluation_interval | default('30s') }}"
+      retention: "{{ lions_primefaces_metrics_retention | default('15d') }}"
+  tags:
+    - primefaces
+    - monitoring
+    - init
+
+- name: "PrimeFaces Monitoring | Affichage des informations de monitoring"
+  debug:
+    msg:
+      - "📊 Configuration du monitoring PrimeFaces"
+      - "🎯 Application: {{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+      - "🏷️  Namespace: {{ lions_primefaces_namespace }}"
+      - "📈 Monitoring activé: {{ lions_monitoring_enabled | lower }}"
+      - "⏱️  Intervalle de scrapping: {{ primefaces_monitoring_config.scrape_interval }}"
+  when: primefaces_deployment_config.debug_mode | default(false) | bool
+  tags:
+    - primefaces
+    - monitoring
+    - debug
+
+# =========================================================================
+# VÉRIFICATION DES PRÉREQUIS DE MONITORING
+# =========================================================================
+
+- name: "PrimeFaces Monitoring | Vérification de Prometheus Operator"
+  kubernetes.core.k8s_info:
     api_version: apiextensions.k8s.io/v1
     kind: CustomResourceDefinition
     name: servicemonitors.monitoring.coreos.com
-  register: prometheus_operator_check
-  ignore_errors: yes
+  register: primefaces_prometheus_operator_check
+  failed_when: false
 
-- name: Création du ServiceMonitor pour Prometheus
-  k8s:
+- name: "PrimeFaces Monitoring | Vérification de l'état de Prometheus Operator"
+  set_fact:
+    primefaces_monitoring_components: "{{ primefaces_monitoring_components | combine({'prometheus_operator': primefaces_prometheus_operator_check.resources | default([]) | length > 0}) }}"
+
+- name: "PrimeFaces Monitoring | Vérification de Grafana Operator"
+  kubernetes.core.k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: grafanadashboards.integreatly.org
+  register: primefaces_grafana_operator_check
+  failed_when: false
+
+- name: "PrimeFaces Monitoring | Vérification du namespace monitoring"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: "{{ primefaces_monitoring_config.namespace }}"
+  register: primefaces_monitoring_namespace_check
+  failed_when: false
+
+- name: "PrimeFaces Monitoring | Création du namespace monitoring si nécessaire"
+  kubernetes.core.k8s:
+    name: "{{ primefaces_monitoring_config.namespace }}"
+    api_version: v1
+    kind: Namespace
     state: present
-    src: "{{ temp_dir.path }}/servicemonitor.yml"
-  register: servicemonitor_result
+    definition:
+      metadata:
+        labels:
+          name: "{{ primefaces_monitoring_config.namespace }}"
+          lions.dev/monitoring: "true"
+          lions.dev/component: "observability"
+  when: primefaces_monitoring_namespace_check.resources | default([]) | length == 0
+  register: primefaces_monitoring_namespace_creation
+  failed_when: false
+
+# =========================================================================
+# CONFIGURATION DU SERVICEMONITOR PROMETHEUS
+# =========================================================================
+
+- name: "PrimeFaces Monitoring | Génération du ServiceMonitor"
+  template:
+    src: servicemonitor.yml.j2
+    dest: "{{ primefaces_temp_dir }}/servicemonitor.yml"
+    mode: '0644'
   when: 
-    - prometheus_operator_check is succeeded
-    - prometheus_operator_check.resources | length > 0
-    - primefaces_prometheus_scrape | bool
+    - lions_monitoring_enabled | bool
+    - primefaces_monitoring_components.prometheus_operator
+  register: primefaces_servicemonitor_template
 
-- name: Avertissement si Prometheus Operator n'est pas installé
-  debug:
-    msg: "AVERTISSEMENT: Prometheus Operator n'est pas installé. Le monitoring automatique ne sera pas configuré."
-  when: prometheus_operator_check is failed or prometheus_operator_check.resources | length == 0
+- name: "PrimeFaces Monitoring | Application du ServiceMonitor"
+  kubernetes.core.k8s:
+    state: present
+    src: "{{ primefaces_temp_dir }}/servicemonitor.yml"
+    wait: true
+    wait_timeout: "{{ lions_timeout_default }}"
+  when:
+    - lions_monitoring_enabled | bool
+    - primefaces_monitoring_components.prometheus_operator
+    - primefaces_servicemonitor_template is succeeded
+  register: primefaces_servicemonitor_result
+  failed_when: false
 
-- name: Configuration des règles d'alerte pour l'application
-  k8s:
+- name: "PrimeFaces Monitoring | Vérification du ServiceMonitor"
+  set_fact:
+    primefaces_monitoring_components: "{{ primefaces_monitoring_components | combine({'servicemonitor': primefaces_servicemonitor_result is succeeded}) }}"
+    primefaces_monitoring_errors: "{{ primefaces_monitoring_errors + ['ServiceMonitor: ' + (primefaces_servicemonitor_result.msg | default('Unknown error'))] if primefaces_servicemonitor_result is failed else primefaces_monitoring_errors }}"
+
+# =========================================================================
+# CONFIGURATION DES RÈGLES D'ALERTING PROMETHEUS
+# =========================================================================
+
+- name: "PrimeFaces Monitoring | Configuration des règles d'alerte PrometheusRule"
+  kubernetes.core.k8s:
     state: present
     definition:
       apiVersion: monitoring.coreos.com/v1
       kind: PrometheusRule
       metadata:
-        name: "{{ app_name }}-alerts"
-        namespace: "{{ app_namespace }}"
+        name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-alerts"
+        namespace: "{{ lions_primefaces_namespace }}"
         labels:
-          app: "{{ app_name }}"
-          prometheus: k8s
+          app.kubernetes.io/name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+          app.kubernetes.io/instance: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-{{ lions_environment }}"
+          lions.dev/environment: "{{ lions_environment }}"
+          lions.dev/technology: "primefaces"
+          lions.dev/component: "alerting"
+          prometheus: kube-prometheus
           role: alert-rules
+        annotations:
+          description: "Règles d'alerte Prometheus pour l'application PrimeFaces {{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+          lions.dev/alert-version: "5.0.0"
       spec:
         groups:
-          - name: "{{ app_name }}.rules"
+          - name: "primefaces.{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}.rules"
+            interval: "{{ primefaces_monitoring_config.evaluation_interval }}"
             rules:
-              - alert: InstanceDown
-                expr: up{job="{{ app_name }}"} == 0
-                for: 5m
+              # Alerte critique - Service indisponible
+              - alert: PrimeFacesServiceDown
+                expr: >
+                  up{job="{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}", 
+                     namespace="{{ lions_primefaces_namespace }}"} == 0
+                for: 2m
                 labels:
                   severity: critical
+                  service: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+                  environment: "{{ lions_environment }}"
+                  technology: "primefaces"
                 annotations:
-                  summary: "Instance {{ app_name }} down"
-                  description: "{{ app_name }} instance has been down for more than 5 minutes."
-              - alert: HighMemoryUsage
-                expr: container_memory_usage_bytes{pod=~"{{ app_name }}.*"} / container_spec_memory_limit_bytes{pod=~"{{ app_name }}.*"} > 0.85
-                for: 10m
-                labels:
-                  severity: warning
-                annotations:
-                  summary: "High memory usage for {{ app_name }}"
-                  description: "{{ app_name }} is using more than 85% of its memory limit for more than 10 minutes."
-              - alert: HighCPUUsage
-                expr: container_cpu_usage_seconds_total{pod=~"{{ app_name }}.*"} / container_spec_cpu_quota{pod=~"{{ app_name }}.*"} > 0.85
-                for: 10m
-                labels:
-                  severity: warning
-                annotations:
-                  summary: "High CPU usage for {{ app_name }}"
-                  description: "{{ app_name }} is using more than 85% of its CPU limit for more than 10 minutes."
-              - alert: HighResponseTime
-                expr: http_server_requests_seconds_max{service="{{ app_name }}"} > 2
-                for: 5m
-                labels:
-                  severity: warning
-                annotations:
-                  summary: "High response time for {{ app_name }}"
-                  description: "{{ app_name }} has high response time (>2s) for more than 5 minutes."
-              - alert: HighErrorRate
-                expr: sum(rate(http_server_requests_seconds_count{service="{{ app_name }}", status=~"5.."}[5m])) / sum(rate(http_server_requests_seconds_count{service="{{ app_name }}"}[5m])) > 0.05
-                for: 5m
-                labels:
-                  severity: warning
-                annotations:
-                  summary: "High error rate for {{ app_name }}"
-                  description: "{{ app_name }} has a high error rate (>5%) for more than 5 minutes."
-  when: 
-    - prometheus_operator_check is succeeded
-    - prometheus_operator_check.resources | length > 0
-    - primefaces_prometheus_scrape | bool
+                  summary: "Service PrimeFaces {{ lions_primefaces_app_name | default(lions_primefaces_service_name) }} indisponible"
+                  description: "Le service PrimeFaces {{ lions_primefaces_app_name | default(lions_primefaces_service_name) }} est indisponible depuis plus de 2 minutes dans {{ lions_environment }}."
+                  runbook_url: "https://docs.lions.dev/runbooks/primefaces/service-down"
+                  dashboard_url: "https://grafana.{{ lions_dns_full_domain }}/d/primefaces-{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
 
-- name: Configuration de Grafana Dashboard
-  k8s:
+              # Alerte warning - Utilisation mémoire élevée
+              - alert: PrimeFacesHighMemoryUsage
+                expr: >
+                  (container_memory_working_set_bytes{pod=~"{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}.*", 
+                                                       namespace="{{ lions_primefaces_namespace }}"} / 
+                   container_spec_memory_limit_bytes{pod=~"{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}.*", 
+                                                      namespace="{{ lions_primefaces_namespace }}"}) * 100 > {{ lions_primefaces_memory_alert_threshold | default('85') }}
+                for: 5m
+                labels:
+                  severity: warning
+                  service: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+                  environment: "{{ lions_environment }}"
+                  technology: "primefaces"
+                annotations:
+                  summary: "Utilisation mémoire élevée pour {{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+                  description: "L'application PrimeFaces {{ lions_primefaces_app_name | default(lions_primefaces_service_name) }} utilise plus de {{ lions_primefaces_memory_alert_threshold | default('85') }}% de sa limite mémoire depuis 5 minutes."
+                  runbook_url: "https://docs.lions.dev/runbooks/primefaces/high-memory"
+
+              # Alerte warning - Utilisation CPU élevée
+              - alert: PrimeFacesHighCPUUsage
+                expr: >
+                  (rate(container_cpu_usage_seconds_total{pod=~"{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}.*", 
+                                                          namespace="{{ lions_primefaces_namespace }}"}[5m]) * 100) > {{ lions_primefaces_cpu_alert_threshold | default('80') }}
+                for: 10m
+                labels:
+                  severity: warning
+                  service: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+                  environment: "{{ lions_environment }}"
+                  technology: "primefaces"
+                annotations:
+                  summary: "Utilisation CPU élevée pour {{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+                  description: "L'application PrimeFaces {{ lions_primefaces_app_name | default(lions_primefaces_service_name) }} utilise plus de {{ lions_primefaces_cpu_alert_threshold | default('80') }}% de CPU depuis 10 minutes."
+                  runbook_url: "https://docs.lions.dev/runbooks/primefaces/high-cpu"
+
+              # Alerte warning - Temps de réponse élevé
+              - alert: PrimeFacesHighResponseTime
+                expr: >
+                  histogram_quantile(0.95, 
+                    rate(http_server_requests_seconds_bucket{job="{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}", 
+                                                             namespace="{{ lions_primefaces_namespace }}"}[5m])
+                  ) > {{ lions_primefaces_response_time_threshold | default('2') }}
+                for: 5m
+                labels:
+                  severity: warning
+                  service: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+                  environment: "{{ lions_environment }}"
+                  technology: "primefaces"
+                annotations:
+                  summary: "Temps de réponse élevé pour {{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+                  description: "Le 95e percentile du temps de réponse de {{ lions_primefaces_app_name | default(lions_primefaces_service_name) }} est supérieur à {{ lions_primefaces_response_time_threshold | default('2') }}s depuis 5 minutes."
+                  runbook_url: "https://docs.lions.dev/runbooks/primefaces/high-response-time"
+
+              # Alerte warning - Taux d'erreur élevé
+              - alert: PrimeFacesHighErrorRate
+                expr: >
+                  (sum(rate(http_server_requests_seconds_count{job="{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}", 
+                                                               namespace="{{ lions_primefaces_namespace }}", 
+                                                               status=~"5.."}[5m])) /
+                   sum(rate(http_server_requests_seconds_count{job="{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}", 
+                                                               namespace="{{ lions_primefaces_namespace }}"}[5m]))) * 100 > {{ lions_primefaces_error_rate_threshold | default('5') }}
+                for: 5m
+                labels:
+                  severity: warning
+                  service: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+                  environment: "{{ lions_environment }}"
+                  technology: "primefaces"
+                annotations:
+                  summary: "Taux d'erreur élevé pour {{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+                  description: "Le taux d'erreur 5xx de {{ lions_primefaces_app_name | default(lions_primefaces_service_name) }} est supérieur à {{ lions_primefaces_error_rate_threshold | default('5') }}% depuis 5 minutes."
+                  runbook_url: "https://docs.lions.dev/runbooks/primefaces/high-error-rate"
+
+              # Alerte info - Redémarrage de pods
+              - alert: PrimeFacesPodRestarted
+                expr: >
+                  increase(kube_pod_container_status_restarts_total{pod=~"{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}.*", 
+                                                                    namespace="{{ lions_primefaces_namespace }}"}[10m]) > 0
+                for: 0m
+                labels:
+                  severity: info
+                  service: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+                  environment: "{{ lions_environment }}"
+                  technology: "primefaces"
+                annotations:
+                  summary: "Pod PrimeFaces redémarré"
+                  description: "Un pod de l'application {{ lions_primefaces_app_name | default(lions_primefaces_service_name) }} a redémarré dans les 10 dernières minutes."
+
+              # Alerte critique - Base de données inaccessible (si PostgreSQL activé)
+              {% if lions_postgres_enabled | bool %}
+              - alert: PrimeFacesDatabaseConnectionFailure
+                expr: >
+                  hikaricp_connections_active{job="{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}", 
+                                              namespace="{{ lions_primefaces_namespace }}"} == 0
+                for: 1m
+                labels:
+                  severity: critical
+                  service: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+                  environment: "{{ lions_environment }}"
+                  technology: "primefaces"
+                  component: "database"
+                annotations:
+                  summary: "Échec de connexion à la base de données pour {{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+                  description: "L'application PrimeFaces {{ lions_primefaces_app_name | default(lions_primefaces_service_name) }} n'a aucune connexion active à la base de données."
+                  runbook_url: "https://docs.lions.dev/runbooks/primefaces/database-connection"
+              {% endif %}
+    wait: true
+    wait_timeout: "{{ lions_timeout_default }}"
+  when:
+    - lions_monitoring_enabled | bool
+    - primefaces_monitoring_components.prometheus_operator
+  register: primefaces_prometheusrule_result
+  failed_when: false
+
+- name: "PrimeFaces Monitoring | Vérification des règles Prometheus"
+  set_fact:
+    primefaces_monitoring_components: "{{ primefaces_monitoring_components | combine({'prometheusrule': primefaces_prometheusrule_result is succeeded}) }}"
+    primefaces_monitoring_errors: "{{ primefaces_monitoring_errors + ['PrometheusRule: ' + (primefaces_prometheusrule_result.msg | default('Unknown error'))] if primefaces_prometheusrule_result is failed else primefaces_monitoring_errors }}"
+
+# =========================================================================
+# CONFIGURATION DU DASHBOARD GRAFANA
+# =========================================================================
+
+- name: "PrimeFaces Monitoring | Configuration du Dashboard Grafana"
+  kubernetes.core.k8s:
     state: present
     definition:
       apiVersion: v1
       kind: ConfigMap
       metadata:
-        name: "{{ app_name }}-dashboard"
-        namespace: monitoring
+        name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-dashboard"
+        namespace: "{{ primefaces_monitoring_config.namespace }}"
         labels:
+          app.kubernetes.io/name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+          app.kubernetes.io/instance: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-{{ lions_environment }}"
+          lions.dev/environment: "{{ lions_environment }}"
+          lions.dev/technology: "primefaces"
+          lions.dev/component: "dashboard"
           grafana_dashboard: "1"
+        annotations:
+          description: "Dashboard Grafana pour l'application PrimeFaces {{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+          lions.dev/dashboard-version: "5.0.0"
       data:
-        "{{ app_name }}-dashboard.json": |
+        "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-dashboard.json": |
           {
             "annotations": {
               "list": [
@@ -117,221 +330,552 @@
                 }
               ]
             },
+            "description": "Dashboard LIONS Infrastructure 5.0 pour l'application PrimeFaces {{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}",
             "editable": true,
             "gnetId": null,
-            "graphTooltip": 0,
+            "graphTooltip": 1,
             "id": null,
-            "links": [],
+            "links": [
+              {
+                "icon": "external link",
+                "tags": [],
+                "targetBlank": true,
+                "title": "Documentation LIONS",
+                "tooltip": "Documentation officielle LIONS Infrastructure",
+                "type": "link",
+                "url": "https://docs.lions.dev/infrastructure/primefaces"
+              },
+              {
+                "icon": "external link",
+                "tags": [],
+                "targetBlank": true,
+                "title": "Application",
+                "tooltip": "Accès direct à l'application",
+                "type": "link",
+                "url": "https://{{ lions_primefaces_hostname }}.{{ lions_dns_full_domain }}"
+              }
+            ],
             "panels": [
               {
-                "aliasColors": {},
-                "bars": false,
-                "dashLength": 10,
-                "dashes": false,
                 "datasource": "Prometheus",
-                "fill": 1,
-                "fillGradient": 0,
+                "fieldConfig": {
+                  "defaults": {
+                    "color": {
+                      "mode": "palette-classic"
+                    },
+                    "custom": {
+                      "axisLabel": "",
+                      "axisPlacement": "auto",
+                      "barAlignment": 0,
+                      "drawStyle": "line",
+                      "fillOpacity": 10,
+                      "gradientMode": "none",
+                      "hideFrom": {
+                        "legend": false,
+                        "tooltip": false,
+                        "vis": false
+                      },
+                      "lineInterpolation": "linear",
+                      "lineWidth": 1,
+                      "pointSize": 5,
+                      "scaleDistribution": {
+                        "type": "linear"
+                      },
+                      "showPoints": "never",
+                      "spanNulls": false,
+                      "stacking": {
+                        "group": "A",
+                        "mode": "none"
+                      },
+                      "thresholdsStyle": {
+                        "mode": "off"
+                      }
+                    },
+                    "mappings": [],
+                    "thresholds": {
+                      "mode": "absolute",
+                      "steps": [
+                        {
+                          "color": "green",
+                          "value": null
+                        },
+                        {
+                          "color": "red",
+                          "value": 80
+                        }
+                      ]
+                    },
+                    "unit": "bytes"
+                  },
+                  "overrides": []
+                },
                 "gridPos": {
                   "h": 8,
                   "w": 12,
                   "x": 0,
                   "y": 0
                 },
-                "hiddenSeries": false,
                 "id": 2,
-                "legend": {
-                  "avg": false,
-                  "current": false,
-                  "max": false,
-                  "min": false,
-                  "show": true,
-                  "total": false,
-                  "values": false
-                },
-                "lines": true,
-                "linewidth": 1,
-                "nullPointMode": "null",
                 "options": {
-                  "dataLinks": []
+                  "legend": {
+                    "calcs": [
+                      "last",
+                      "max"
+                    ],
+                    "displayMode": "table",
+                    "placement": "bottom"
+                  },
+                  "tooltip": {
+                    "mode": "single"
+                  }
                 },
-                "percentage": false,
-                "pointradius": 2,
-                "points": false,
-                "renderer": "flot",
-                "seriesOverrides": [],
-                "spaceLength": 10,
-                "stack": false,
-                "steppedLine": false,
                 "targets": [
                   {
-                    "expr": "container_memory_usage_bytes{pod=~\"{{ app_name }}.*\"}",
+                    "expr": "container_memory_working_set_bytes{pod=~\"{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}.*\", namespace=\"{{ lions_primefaces_namespace }}\"}",
+                    "interval": "",
+                    "legendFormat": "Memory Usage - {{ '{{' }}pod{{ '}}' }}",
                     "refId": "A"
-                  }
-                ],
-                "thresholds": [],
-                "timeFrom": null,
-                "timeRegions": [],
-                "timeShift": null,
-                "title": "Memory Usage",
-                "tooltip": {
-                  "shared": true,
-                  "sort": 0,
-                  "value_type": "individual"
-                },
-                "type": "graph",
-                "xaxis": {
-                  "buckets": null,
-                  "mode": "time",
-                  "name": null,
-                  "show": true,
-                  "values": []
-                },
-                "yaxes": [
-                  {
-                    "format": "bytes",
-                    "label": null,
-                    "logBase": 1,
-                    "max": null,
-                    "min": null,
-                    "show": true
                   },
                   {
-                    "format": "short",
-                    "label": null,
-                    "logBase": 1,
-                    "max": null,
-                    "min": null,
-                    "show": true
+                    "expr": "container_spec_memory_limit_bytes{pod=~\"{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}.*\", namespace=\"{{ lions_primefaces_namespace }}\"}",
+                    "interval": "",
+                    "legendFormat": "Memory Limit - {{ '{{' }}pod{{ '}}' }}",
+                    "refId": "B"
                   }
                 ],
-                "yaxis": {
-                  "align": false,
-                  "alignLevel": null
-                }
+                "title": "Utilisation Mémoire",
+                "type": "timeseries"
               },
               {
-                "aliasColors": {},
-                "bars": false,
-                "dashLength": 10,
-                "dashes": false,
                 "datasource": "Prometheus",
-                "fill": 1,
-                "fillGradient": 0,
+                "fieldConfig": {
+                  "defaults": {
+                    "color": {
+                      "mode": "palette-classic"
+                    },
+                    "custom": {
+                      "axisLabel": "",
+                      "axisPlacement": "auto",
+                      "barAlignment": 0,
+                      "drawStyle": "line",
+                      "fillOpacity": 10,
+                      "gradientMode": "none",
+                      "hideFrom": {
+                        "legend": false,
+                        "tooltip": false,
+                        "vis": false
+                      },
+                      "lineInterpolation": "linear",
+                      "lineWidth": 1,
+                      "pointSize": 5,
+                      "scaleDistribution": {
+                        "type": "linear"
+                      },
+                      "showPoints": "never",
+                      "spanNulls": false,
+                      "stacking": {
+                        "group": "A",
+                        "mode": "none"
+                      },
+                      "thresholdsStyle": {
+                        "mode": "off"
+                      }
+                    },
+                    "mappings": [],
+                    "thresholds": {
+                      "mode": "absolute",
+                      "steps": [
+                        {
+                          "color": "green",
+                          "value": null
+                        },
+                        {
+                          "color": "red",
+                          "value": 80
+                        }
+                      ]
+                    },
+                    "unit": "percent"
+                  },
+                  "overrides": []
+                },
                 "gridPos": {
                   "h": 8,
                   "w": 12,
                   "x": 12,
                   "y": 0
                 },
-                "hiddenSeries": false,
                 "id": 3,
-                "legend": {
-                  "avg": false,
-                  "current": false,
-                  "max": false,
-                  "min": false,
-                  "show": true,
-                  "total": false,
-                  "values": false
-                },
-                "lines": true,
-                "linewidth": 1,
-                "nullPointMode": "null",
                 "options": {
-                  "dataLinks": []
+                  "legend": {
+                    "calcs": [
+                      "last",
+                      "max"
+                    ],
+                    "displayMode": "table",
+                    "placement": "bottom"
+                  },
+                  "tooltip": {
+                    "mode": "single"
+                  }
                 },
-                "percentage": false,
-                "pointradius": 2,
-                "points": false,
-                "renderer": "flot",
-                "seriesOverrides": [],
-                "spaceLength": 10,
-                "stack": false,
-                "steppedLine": false,
                 "targets": [
                   {
-                    "expr": "rate(container_cpu_usage_seconds_total{pod=~\"{{ app_name }}.*\"}[5m])",
+                    "expr": "rate(container_cpu_usage_seconds_total{pod=~\"{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}.*\", namespace=\"{{ lions_primefaces_namespace }}\"}[5m]) * 100",
+                    "interval": "",
+                    "legendFormat": "CPU Usage - {{ '{{' }}pod{{ '}}' }}",
                     "refId": "A"
                   }
                 ],
-                "thresholds": [],
-                "timeFrom": null,
-                "timeRegions": [],
-                "timeShift": null,
-                "title": "CPU Usage",
-                "tooltip": {
-                  "shared": true,
-                  "sort": 0,
-                  "value_type": "individual"
-                },
-                "type": "graph",
-                "xaxis": {
-                  "buckets": null,
-                  "mode": "time",
-                  "name": null,
-                  "show": true,
-                  "values": []
-                },
-                "yaxes": [
-                  {
-                    "format": "short",
-                    "label": null,
-                    "logBase": 1,
-                    "max": null,
-                    "min": null,
-                    "show": true
+                "title": "Utilisation CPU",
+                "type": "timeseries"
+              },
+              {
+                "datasource": "Prometheus",
+                "fieldConfig": {
+                  "defaults": {
+                    "color": {
+                      "mode": "palette-classic"
+                    },
+                    "custom": {
+                      "axisLabel": "",
+                      "axisPlacement": "auto",
+                      "barAlignment": 0,
+                      "drawStyle": "line",
+                      "fillOpacity": 10,
+                      "gradientMode": "none",
+                      "hideFrom": {
+                        "legend": false,
+                        "tooltip": false,
+                        "vis": false
+                      },
+                      "lineInterpolation": "linear",
+                      "lineWidth": 1,
+                      "pointSize": 5,
+                      "scaleDistribution": {
+                        "type": "linear"
+                      },
+                      "showPoints": "never",
+                      "spanNulls": false,
+                      "stacking": {
+                        "group": "A",
+                        "mode": "none"
+                      },
+                      "thresholdsStyle": {
+                        "mode": "off"
+                      }
+                    },
+                    "mappings": [],
+                    "thresholds": {
+                      "mode": "absolute",
+                      "steps": [
+                        {
+                          "color": "green",
+                          "value": null
+                        },
+                        {
+                          "color": "red",
+                          "value": 80
+                        }
+                      ]
+                    },
+                    "unit": "reqps"
                   },
+                  "overrides": []
+                },
+                "gridPos": {
+                  "h": 8,
+                  "w": 12,
+                  "x": 0,
+                  "y": 8
+                },
+                "id": 4,
+                "options": {
+                  "legend": {
+                    "calcs": [
+                      "last",
+                      "max"
+                    ],
+                    "displayMode": "table",
+                    "placement": "bottom"
+                  },
+                  "tooltip": {
+                    "mode": "single"
+                  }
+                },
+                "targets": [
                   {
-                    "format": "short",
-                    "label": null,
-                    "logBase": 1,
-                    "max": null,
-                    "min": null,
-                    "show": true
+                    "expr": "sum(rate(http_server_requests_seconds_count{job=\"{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}\", namespace=\"{{ lions_primefaces_namespace }}\"}[5m])) by (status)",
+                    "interval": "",
+                    "legendFormat": "Requêtes/sec - Status {{ '{{' }}status{{ '}}' }}",
+                    "refId": "A"
                   }
                 ],
-                "yaxis": {
-                  "align": false,
-                  "alignLevel": null
-                }
+                "title": "Taux de Requêtes HTTP",
+                "type": "timeseries"
+              },
+              {
+                "datasource": "Prometheus",
+                "fieldConfig": {
+                  "defaults": {
+                    "color": {
+                      "mode": "palette-classic"
+                    },
+                    "custom": {
+                      "axisLabel": "",
+                      "axisPlacement": "auto",
+                      "barAlignment": 0,
+                      "drawStyle": "line",
+                      "fillOpacity": 10,
+                      "gradientMode": "none",
+                      "hideFrom": {
+                        "legend": false,
+                        "tooltip": false,
+                        "vis": false
+                      },
+                      "lineInterpolation": "linear",
+                      "lineWidth": 1,
+                      "pointSize": 5,
+                      "scaleDistribution": {
+                        "type": "linear"
+                      },
+                      "showPoints": "never",
+                      "spanNulls": false,
+                      "stacking": {
+                        "group": "A",
+                        "mode": "none"
+                      },
+                      "thresholdsStyle": {
+                        "mode": "off"
+                      }
+                    },
+                    "mappings": [],
+                    "thresholds": {
+                      "mode": "absolute",
+                      "steps": [
+                        {
+                          "color": "green",
+                          "value": null
+                        },
+                        {
+                          "color": "red",
+                          "value": 80
+                        }
+                      ]
+                    },
+                    "unit": "s"
+                  },
+                  "overrides": []
+                },
+                "gridPos": {
+                  "h": 8,
+                  "w": 12,
+                  "x": 12,
+                  "y": 8
+                },
+                "id": 5,
+                "options": {
+                  "legend": {
+                    "calcs": [
+                      "last",
+                      "max"
+                    ],
+                    "displayMode": "table",
+                    "placement": "bottom"
+                  },
+                  "tooltip": {
+                    "mode": "single"
+                  }
+                },
+                "targets": [
+                  {
+                    "expr": "histogram_quantile(0.50, sum(rate(http_server_requests_seconds_bucket{job=\"{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}\", namespace=\"{{ lions_primefaces_namespace }}\"}[5m])) by (le))",
+                    "interval": "",
+                    "legendFormat": "P50",
+                    "refId": "A"
+                  },
+                  {
+                    "expr": "histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket{job=\"{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}\", namespace=\"{{ lions_primefaces_namespace }}\"}[5m])) by (le))",
+                    "interval": "",
+                    "legendFormat": "P95",
+                    "refId": "B"
+                  },
+                  {
+                    "expr": "histogram_quantile(0.99, sum(rate(http_server_requests_seconds_bucket{job=\"{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}\", namespace=\"{{ lions_primefaces_namespace }}\"}[5m])) by (le))",
+                    "interval": "",
+                    "legendFormat": "P99",
+                    "refId": "C"
+                  }
+                ],
+                "title": "Temps de Réponse HTTP (Percentiles)",
+                "type": "timeseries"
               }
             ],
-            "schemaVersion": 22,
+            "refresh": "30s",
+            "schemaVersion": 30,
             "style": "dark",
-            "tags": [],
+            "tags": [
+              "lions",
+              "primefaces",
+              "{{ lions_environment }}",
+              "infrastructure"
+            ],
             "templating": {
               "list": []
             },
             "time": {
-              "from": "now-6h",
+              "from": "now-1h",
               "to": "now"
             },
             "timepicker": {},
             "timezone": "",
-            "title": "{{ app_name }} Dashboard",
-            "uid": "{{ app_name }}-dashboard",
+            "title": "LIONS PrimeFaces - {{ lions_primefaces_app_name | default(lions_primefaces_service_name) | title }} ({{ lions_environment | title }})",
+            "uid": "lions-primefaces-{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-{{ lions_environment }}",
             "version": 1
           }
-  when: 
-    - prometheus_operator_check is succeeded
-    - prometheus_operator_check.resources | length > 0
-    - primefaces_prometheus_scrape | bool
-  ignore_errors: yes
+    wait: true
+    wait_timeout: "{{ lions_timeout_default }}"
+  when:
+    - lions_monitoring_enabled | bool
+    - lions_grafana_enabled | default(true) | bool
+  register: primefaces_grafana_dashboard_result
+  failed_when: false
 
-- name: Configuration du monitoring spécifique à PrimeFaces
-  debug:
-    msg: "Configuration du monitoring spécifique à PrimeFaces"
+- name: "PrimeFaces Monitoring | Vérification du Dashboard Grafana"
+  set_fact:
+    primefaces_monitoring_components: "{{ primefaces_monitoring_components | combine({'grafana_dashboard': primefaces_grafana_dashboard_result is succeeded}) }}"
+    primefaces_monitoring_errors: "{{ primefaces_monitoring_errors + ['GrafanaDashboard: ' + (primefaces_grafana_dashboard_result.msg | default('Unknown error'))] if primefaces_grafana_dashboard_result is failed else primefaces_monitoring_errors }}"
 
-- name: Vérification de l'existence de JMX Exporter
-  k8s_info:
+# =========================================================================
+# CONFIGURATION MONITORING JMX (OPTIONNEL)
+# =========================================================================
+
+- name: "PrimeFaces Monitoring | Vérification de l'activation JMX"
+  kubernetes.core.k8s_info:
     api_version: apps/v1
     kind: Deployment
-    namespace: monitoring
+    namespace: "{{ primefaces_monitoring_config.namespace }}"
     name: jmx-exporter
-  register: jmx_exporter_check
-  ignore_errors: yes
+  register: primefaces_jmx_exporter_check
+  when: lions_primefaces_jmx_enabled | default(false) | bool
+  failed_when: false
 
-- name: Avertissement si JMX Exporter n'est pas installé
+- name: "PrimeFaces Monitoring | Configuration JMX Exporter"
+  set_fact:
+    primefaces_monitoring_components: "{{ primefaces_monitoring_components | combine({'jmx_exporter': primefaces_jmx_exporter_check.resources | default([]) | length > 0}) }}"
+  when: lions_primefaces_jmx_enabled | default(false) | bool
+
+# =========================================================================
+# VALIDATION DU MONITORING
+# =========================================================================
+
+- name: "PrimeFaces Monitoring | Test de collecte des métriques"
+  uri:
+    url: "http://{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}.{{ lions_primefaces_namespace }}.svc.cluster.local:{{ lions_primefaces_port }}/actuator/prometheus"
+    method: GET
+    status_code: [200, 404]
+    timeout: "{{ lions_timeout_default }}"
+  register: primefaces_metrics_test
+  retries: 3
+  delay: 5
+  until: primefaces_metrics_test.status == 200
+  when:
+    - lions_monitoring_enabled | bool
+    - primefaces_monitoring_components.servicemonitor
+  failed_when: false
+
+- name: "PrimeFaces Monitoring | Validation des métriques personnalisées"
+  set_fact:
+    primefaces_monitoring_components: "{{ primefaces_monitoring_components | combine({'custom_metrics': primefaces_metrics_test.status == 200}) }}"
+  when: lions_monitoring_enabled | bool
+
+# =========================================================================
+# RAPPORT DE MONITORING
+# =========================================================================
+
+- name: "PrimeFaces Monitoring | Collecte des métriques de monitoring"
+  set_fact:
+    primefaces_monitoring_metrics:
+      duration: "{{ (ansible_date_time.epoch | int) - (primefaces_monitoring_start_time | int) }}"
+      components_configured: "{{ primefaces_monitoring_components.values() | select('equalto', true) | list | length }}"
+      total_components: "{{ primefaces_monitoring_components | length }}"
+      success_rate: "{{ ((primefaces_monitoring_components.values() | select('equalto', true) | list | length) / (primefaces_monitoring_components | length) * 100) | round(2) }}"
+      errors_count: "{{ primefaces_monitoring_errors | length }}"
+      prometheus_operator: "{{ 'OK' if primefaces_monitoring_components.prometheus_operator else 'MISSING' }}"
+      servicemonitor: "{{ 'OK' if primefaces_monitoring_components.servicemonitor else 'FAILED' }}"
+      alerts: "{{ 'OK' if primefaces_monitoring_components.prometheusrule else 'FAILED' }}"
+      dashboard: "{{ 'OK' if primefaces_monitoring_components.grafana_dashboard else 'FAILED' }}"
+      metrics_endpoint: "{{ 'OK' if primefaces_monitoring_components.custom_metrics else 'FAILED' }}"
+
+- name: "PrimeFaces Monitoring | Rapport de configuration monitoring"
   debug:
-    msg: "AVERTISSEMENT: JMX Exporter n'est pas installé. Le monitoring JMX pour PrimeFaces ne sera pas disponible."
-  when: jmx_exporter_check is failed or jmx_exporter_check.resources | length == 0
+    msg:
+      - "📊 RAPPORT DE CONFIGURATION MONITORING PRIMEFACES"
+      - "=================================================="
+      - "⏱️  Durée: {{ primefaces_monitoring_metrics.duration }}s"
+      - "📦 Composants configurés: {{ primefaces_monitoring_metrics.components_configured }}/{{ primefaces_monitoring_metrics.total_components }}"
+      - "✅ Taux de succès: {{ primefaces_monitoring_metrics.success_rate }}%"
+      - "🔧 Prometheus Operator: {{ primefaces_monitoring_metrics.prometheus_operator }}"
+      - "📊 ServiceMonitor: {{ primefaces_monitoring_metrics.servicemonitor }}"
+      - "🚨 Règles d'alerte: {{ primefaces_monitoring_metrics.alerts }}"
+      - "📈 Dashboard Grafana: {{ primefaces_monitoring_metrics.dashboard }}"
+      - "🔍 Endpoint métriques: {{ primefaces_monitoring_metrics.metrics_endpoint }}"
+      - "❌ Erreurs: {{ primefaces_monitoring_metrics.errors_count }}"
+      - "{% if primefaces_monitoring_errors | length > 0 %}🚨 Détails des erreurs: {{ primefaces_monitoring_errors | join(', ') }}{% endif %}"
+  tags:
+    - primefaces
+    - monitoring
+    - report
+
+# =========================================================================
+# GESTION DES AVERTISSEMENTS
+# =========================================================================
+
+- name: "PrimeFaces Monitoring | Avertissement - Prometheus Operator manquant"
+  debug:
+    msg:
+      - "⚠️  AVERTISSEMENT: Prometheus Operator n'est pas installé"
+      - "📋 Le monitoring automatique ne sera pas configuré"
+      - "🔧 Installez Prometheus Operator pour activer le monitoring complet"
+      - "📖 Documentation: https://docs.lions.dev/infrastructure/monitoring/prometheus"
+  when: not primefaces_monitoring_components.prometheus_operator
+
+- name: "PrimeFaces Monitoring | Avertissement - Composants monitoring partiellement configurés"
+  debug:
+    msg:
+      - "⚠️  Avertissement: Monitoring PrimeFaces partiellement configuré"
+      - "📋 Certains composants de monitoring ne sont pas disponibles"
+      - "🔧 Composants manquants: {{ primefaces_monitoring_errors | join(', ') }}"
+  when: 
+    - lions_monitoring_enabled | bool
+    - primefaces_monitoring_errors | length > 0
+    - primefaces_monitoring_metrics.success_rate >= 50
+
+- name: "PrimeFaces Monitoring | Succès de la configuration monitoring"
+  debug:
+    msg:
+      - "🎉 Configuration monitoring PrimeFaces terminée avec succès!"
+      - "📊 Dashboard Grafana: https://grafana.{{ lions_dns_full_domain }}/d/lions-primefaces-{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-{{ lions_environment }}"
+      - "🚨 Alerting Prometheus: Configuré avec {{ (primefaces_prometheusrule_result.result.spec.groups[0].rules | length) if primefaces_prometheusrule_result.result is defined else 'N/A' }} règles"
+      - "🔍 Métriques: http://{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}.{{ lions_primefaces_namespace }}.svc.cluster.local:{{ lions_primefaces_port }}/actuator/prometheus"
+  when: 
+    - lions_monitoring_enabled | bool
+    - primefaces_monitoring_metrics.success_rate == 100
+    - primefaces_monitoring_errors | length == 0
+
+# =========================================================================
+# NETTOYAGE POST-MONITORING
+# =========================================================================
+
+- name: "PrimeFaces Monitoring | Nettoyage des fichiers temporaires"
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ primefaces_temp_dir }}/servicemonitor.yml"
+  when: not primefaces_deployment_config.debug_mode | default(false) | bool
+  ignore_errors: yes
+  tags:
+    - primefaces
+    - monitoring
+    - cleanup

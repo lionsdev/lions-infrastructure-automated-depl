@@ -1,31 +1,226 @@
----
-# Titre: Template de service Kubernetes pour PrimeFaces
-# Description: Définit le service Kubernetes pour une application PrimeFaces
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - PRIMEFACES SERVICE TEMPLATE
+# =========================================================================
+# Description: Template Kubernetes avancé pour le service PrimeFaces
+# Composant: PrimeFaces Application Service
+# Version: 5.0.0
+# Maintainer: DevOps LIONS Team
+# Documentation: https://docs.lions.dev/infrastructure/primefaces/service
+# =========================================================================
 
 apiVersion: v1
 kind: Service
 metadata:
-  name: "{{ app_name }}"
-  namespace: "{{ app_namespace }}"
+  name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+  namespace: "{{ lions_primefaces_namespace }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "primefaces"
+    # Labels Kubernetes standards
+    app.kubernetes.io/name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+    app.kubernetes.io/instance: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-{{ lions_environment }}"
+    app.kubernetes.io/version: "{{ lions_primefaces_app_version | default('latest') }}"
+    app.kubernetes.io/component: "web-service"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "lions-infrastructure-ansible"
+    
+    # Labels LIONS spécifiques
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/technology: "primefaces"
+    lions.dev/tier: "frontend"
+    lions.dev/service-type: "{{ lions_primefaces_service_type | default('ClusterIP') }}"
+    lions.dev/data-classification: "{{ lions_primefaces_data_classification | default('internal') }}"
+    lions.dev/business-unit: "{{ lions_business_unit | default('infrastructure') }}"
+    lions.dev/cost-center: "{{ lions_cost_center | default('devops') }}"
+    lions.dev/monitoring-enabled: "{{ lions_monitoring_enabled | lower }}"
+    
+    # Labels pour l'observabilité
+    app: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+    version: "{{ lions_primefaces_app_version | default('latest') }}"
+    environment: "{{ lions_environment }}"
+    
   annotations:
-    description: "Service pour l'application {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
-    prometheus.io/scrape: "{{ primefaces_prometheus_scrape | string | lower }}"
-    prometheus.io/path: "{{ primefaces_prometheus_path }}"
-    prometheus.io/port: "{{ primefaces_prometheus_port | string }}"
+    # Annotations standards
+    description: "Service enterprise LIONS 5.0 pour l'application PrimeFaces {{ lions_primefaces_app_name | default(lions_primefaces_service_name) }} ({{ lions_primefaces_app_version | default('latest') }}) en environnement {{ lions_environment }}"
+    
+    # Annotations LIONS de gestion
+    lions.dev/created-by: "lions-infrastructure-ansible"
+    lions.dev/last-updated: "{{ ansible_date_time.iso8601 }}"
+    lions.dev/service-purpose: "{{ lions_primefaces_service_purpose | default('Application web frontend pour les applications PrimeFaces') }}"
+    lions.dev/support-contact: "{{ lions_support_contact | default('devops@lions.dev') }}"
+    lions.dev/documentation-url: "https://docs.lions.dev/infrastructure/primefaces/service"
+    lions.dev/maintenance-window: "{{ lions_primefaces_maintenance_window | default('02:00-04:00 UTC') }}"
+    
+    # Configuration Prometheus/monitoring
+    {% if lions_monitoring_enabled | bool %}
+    prometheus.io/scrape: "true"
+    prometheus.io/path: "{{ lions_primefaces_metrics_path | default('/actuator/prometheus') }}"
+    prometheus.io/port: "{{ lions_primefaces_port }}"
+    prometheus.io/scheme: "{{ lions_primefaces_metrics_scheme | default('http') }}"
+    prometheus.io/interval: "{{ lions_primefaces_scrape_interval | default('30s') }}"
+    {% endif %}
+    
+    # Configuration de load balancing
+    {% if lions_primefaces_session_affinity_enabled | default(false) | bool %}
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "{{ lions_primefaces_tolerate_unready_endpoints | default('false') }}"
+    {% endif %}
+    
+    # Configuration Istio (si activé)
+    {% if lions_istio_enabled | default(false) | bool %}
+    networking.istio.io/exportTo: "{{ lions_primefaces_istio_export_to | default('*') }}"
+    {% endif %}
+    
+    # Configuration AWS Load Balancer (si sur AWS)
+    {% if lions_cloud_provider == 'aws' and lions_primefaces_service_type == 'LoadBalancer' %}
+    service.beta.kubernetes.io/aws-load-balancer-type: "{{ lions_primefaces_aws_lb_type | default('nlb') }}"
+    service.beta.kubernetes.io/aws-load-balancer-backend-protocol: "{{ lions_primefaces_aws_lb_backend_protocol | default('http') }}"
+    service.beta.kubernetes.io/aws-load-balancer-ssl-cert: "{{ lions_primefaces_aws_ssl_cert | default('') }}"
+    service.beta.kubernetes.io/aws-load-balancer-ssl-ports: "{{ lions_primefaces_aws_ssl_ports | default('https') }}"
+    {% endif %}
+    
+    # Configuration Azure Load Balancer (si sur Azure)
+    {% if lions_cloud_provider == 'azure' and lions_primefaces_service_type == 'LoadBalancer' %}
+    service.beta.kubernetes.io/azure-load-balancer-internal: "{{ lions_primefaces_azure_internal_lb | default('false') }}"
+    {% endif %}
+    
+    # Configuration GCP Load Balancer (si sur GCP)
+    {% if lions_cloud_provider == 'gcp' and lions_primefaces_service_type == 'LoadBalancer' %}
+    cloud.google.com/load-balancer-type: "{{ lions_primefaces_gcp_lb_type | default('External') }}"
+    {% endif %}
+    
+    # Configuration de sécurité réseau
+    {% if lions_network_policies_enabled | default(false) | bool %}
+    network-policy.kubernetes.io/service: "{{ lions_primefaces_network_service_policy | default('restricted') }}"
+    {% endif %}
+    
+    # Configuration de logging
+    {% if lions_logging_enabled | default(true) | bool %}
+    fluentd.alpha.kubernetes.io/include: "{{ lions_primefaces_logging_include | default('true') }}"
+    {% endif %}
+
 spec:
-  type: ClusterIP
+  # Type de service configuré
+  type: {{ lions_primefaces_service_type | default('ClusterIP') }}
+  
+  # Configuration du sélecteur de pods compatible
+  selector:
+    app.kubernetes.io/name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+    app.kubernetes.io/instance: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-{{ lions_environment }}"
+  
+  # Configuration des ports
   ports:
+    # Port principal HTTP
     - name: http
-      port: 80
+      port: {{ lions_primefaces_service_port | default('80') }}
       targetPort: http
       protocol: TCP
-  selector:
-    app: "{{ app_name }}"
+      {% if lions_primefaces_service_type == 'NodePort' %}
+      nodePort: {{ lions_primefaces_nodeport | default('') }}
+      {% endif %}
+    
+    # Port HTTPS (si activé)
+    {% if lions_primefaces_https_enabled | default(false) | bool %}
+    - name: https
+      port: {{ lions_primefaces_https_service_port | default('443') }}
+      targetPort: https
+      protocol: TCP
+      {% if lions_primefaces_service_type == 'NodePort' %}
+      nodePort: {{ lions_primefaces_https_nodeport | default('') }}
+      {% endif %}
+    {% endif %}
+    
+    # Port metrics (si monitoring activé et port séparé)
+    {% if lions_monitoring_enabled | bool and lions_primefaces_metrics_port != lions_primefaces_port %}
+    - name: metrics
+      port: {{ lions_primefaces_metrics_service_port | default(lions_primefaces_metrics_port) }}
+      targetPort: metrics
+      protocol: TCP
+    {% endif %}
+    
+    # Port management (si activé)
+    {% if lions_primefaces_management_port | default('') %}
+    - name: management
+      port: {{ lions_primefaces_management_service_port | default(lions_primefaces_management_port) }}
+      targetPort: management
+      protocol: TCP
+    {% endif %}
+    
+    # Ports personnalisés supplémentaires
+    {% if lions_primefaces_extra_ports | default([]) | length > 0 %}
+    {% for port in lions_primefaces_extra_ports %}
+    - name: "{{ port.name }}"
+      port: {{ port.port }}
+      targetPort: "{{ port.targetPort | default(port.name) }}"
+      protocol: "{{ port.protocol | default('TCP') }}"
+      {% if lions_primefaces_service_type == 'NodePort' and port.nodePort | default('') %}
+      nodePort: {{ port.nodePort }}
+      {% endif %}
+    {% endfor %}
+    {% endif %}
+  
+  # Configuration de l'affinité de session
+  {% if lions_primefaces_session_affinity_enabled | default(false) | bool %}
+  sessionAffinity: {{ lions_primefaces_session_affinity | default('ClientIP') }}
+  {% if lions_primefaces_session_affinity == 'ClientIP' %}
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: {{ lions_primefaces_session_timeout | default('10800') }}
+  {% endif %}
+  {% else %}
+  sessionAffinity: None
+  {% endif %}
+  
+  # Configuration pour LoadBalancer
+  {% if lions_primefaces_service_type == 'LoadBalancer' %}
+  {% if lions_primefaces_load_balancer_ip | default('') %}
+  loadBalancerIP: "{{ lions_primefaces_load_balancer_ip }}"
+  {% endif %}
+  {% if lions_primefaces_load_balancer_source_ranges | default([]) | length > 0 %}
+  loadBalancerSourceRanges:
+    {% for range in lions_primefaces_load_balancer_source_ranges %}
+    - "{{ range }}"
+    {% endfor %}
+  {% endif %}
+  {% endif %}
+  
+  # Configuration pour ExternalName
+  {% if lions_primefaces_service_type == 'ExternalName' %}
+  externalName: "{{ lions_primefaces_external_name }}"
+  {% endif %}
+  
+  # Configuration avancée pour le cluster
+  {% if lions_primefaces_cluster_ip | default('') %}
+  clusterIP: "{{ lions_primefaces_cluster_ip }}"
+  {% elif lions_primefaces_service_type == 'ClusterIP' and lions_primefaces_headless_service | default(false) | bool %}
+  clusterIP: None
+  {% endif %}
+  
+  # Configuration des IPs externes
+  {% if lions_primefaces_external_ips | default([]) | length > 0 %}
+  externalIPs:
+    {% for ip in lions_primefaces_external_ips %}
+    - "{{ ip }}"
+    {% endfor %}
+  {% endif %}
+  
+  # Configuration du trafic externe
+  {% if lions_primefaces_service_type in ['LoadBalancer', 'NodePort'] %}
+  externalTrafficPolicy: {{ lions_primefaces_external_traffic_policy | default('Cluster') }}
+  {% endif %}
+  
+  # Configuration de la politique d'allocation de ports
+  {% if lions_primefaces_service_type == 'NodePort' %}
+  allocateLoadBalancerNodePorts: {{ lions_primefaces_allocate_lb_node_ports | default('true') }}
+  {% endif %}
+  
+  # Configuration de la classe de LoadBalancer
+  {% if lions_primefaces_service_type == 'LoadBalancer' and lions_primefaces_load_balancer_class | default('') %}
+  loadBalancerClass: "{{ lions_primefaces_load_balancer_class }}"
+  {% endif %}
+  
+  # Configuration de la politique interne du trafic
+  {% if lions_primefaces_internal_traffic_policy | default('') %}
+  internalTrafficPolicy: "{{ lions_primefaces_internal_traffic_policy }}"
+  {% endif %}
+
+{% if lions_primefaces_service_type == 'LoadBalancer' and lions_primefaces_health_check_node_port | default('') %}
+  healthCheckNodePort: {{ lions_primefaces_health_check_node_port }}
+{% endif %}

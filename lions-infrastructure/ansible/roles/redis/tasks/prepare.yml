@@ -1,92 +1,370 @@
 ---
-# Titre: Préparation des ressources pour Redis
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - REDIS PREPARATION TASKS
+# =========================================================================
 # Description: Prépare les ressources nécessaires pour déployer Redis
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-08
-# Version: 1.0.0
+# Auteur: Équipe LIONS Infrastructure DevOps
+# Date: 2025-05-27
+# Version: 5.0.0
+# Documentation: https://docs.lions.dev/infrastructure/services/redis
+# =========================================================================
 
-- name: Création du répertoire temporaire pour les templates
-  tempfile:
-    state: directory
-    suffix: redis-deploy
-  register: temp_dir
-  changed_when: false
+# =========================================================================
+# VALIDATION DE LA CONFIGURATION
+# =========================================================================
+- name: "🔍 Validation de la configuration Redis"
+  block:
+    - name: "Vérification des variables requises"
+      assert:
+        that:
+          - lions_redis_enabled is defined
+          - lions_redis_namespace is defined
+          - lions_redis_service_name is defined
+          - lions_redis_version is defined
+          - lions_redis_storage_size is defined
+        fail_msg: "❌ Variables Redis manquantes. Vérifiez votre configuration."
+        success_msg: "✅ Variables Redis validées avec succès"
 
-- name: Génération des fichiers de configuration Kubernetes
-  template:
-    src: "{{ item.src }}"
-    dest: "{{ temp_dir.path }}/{{ item.dest }}"
-  loop:
-    - { src: "statefulset.yml.j2", dest: "statefulset.yml" }
-    - { src: "service.yml.j2", dest: "service.yml" }
-    - { src: "configmap.yml.j2", dest: "configmap.yml" }
-    - { src: "serviceaccount.yml.j2", dest: "serviceaccount.yml" }
-    - { src: "servicemonitor.yml.j2", dest: "servicemonitor.yml" }
-    - { src: "persistentvolumeclaim.yml.j2", dest: "persistentvolumeclaim.yml" }
-  register: templates_generated
+    - name: "Validation de la version Redis"
+      assert:
+        that:
+          - lions_redis_version is match('^[0-9]+\.[0-9]+(\.[0-9]+)?$')
+        fail_msg: "❌ Format de version Redis invalide: {{ lions_redis_version }}"
+        success_msg: "✅ Version Redis {{ lions_redis_version }} validée"
 
-- name: Vérification des fichiers générés
-  stat:
-    path: "{{ temp_dir.path }}/{{ item }}"
-  loop:
-    - "statefulset.yml"
-    - "service.yml"
-    - "configmap.yml"
-    - "serviceaccount.yml"
-    - "servicemonitor.yml"
-    - "persistentvolumeclaim.yml"
-  register: files_check
-  failed_when: not item.stat.exists
+    - name: "Validation de la taille de stockage"
+      assert:
+        that:
+          - lions_redis_storage_size is match('^[0-9]+[KMG]i$')
+        fail_msg: "❌ Format de taille de stockage invalide: {{ lions_redis_storage_size }}"
+        success_msg: "✅ Taille de stockage {{ lions_redis_storage_size }} validée"
 
-- name: Création du compte de service
-  k8s:
-    state: present
-    src: "{{ temp_dir.path }}/serviceaccount.yml"
-  register: serviceaccount_result
+  tags:
+    - validation
+    - redis
 
-- name: Création du ConfigMap pour la configuration de Redis
-  k8s:
-    state: present
-    src: "{{ temp_dir.path }}/configmap.yml"
-  register: configmap_result
+# =========================================================================
+# PRÉPARATION DE L'ENVIRONNEMENT
+# =========================================================================
+- name: "🏗️ Préparation de l'environnement Redis"
+  block:
+    - name: "Vérification de l'existence du namespace Redis"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Namespace
+        name: "{{ lions_redis_namespace }}"
+      register: redis_namespace_info
+      failed_when: false
 
-- name: Vérification de l'existence du secret pour Redis
-  k8s_info:
-    api_version: v1
-    kind: Secret
-    namespace: "{{ app_namespace }}"
-    name: "{{ redis_password_secret }}"
-  register: redis_secret_info
-  ignore_errors: yes
-  when: redis_password_enabled | default(true) | bool
+    - name: "Création du namespace Redis si nécessaire"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ lions_redis_namespace }}"
+            labels:
+              app.kubernetes.io/name: redis
+              app.kubernetes.io/component: database
+              app.kubernetes.io/part-of: lions-infrastructure
+              app.kubernetes.io/managed-by: ansible
+              environment: "{{ lions_environment }}"
+              lions.dev/service-type: database
+            annotations:
+              description: "Namespace pour les services de base de données Redis"
+              lions.dev/managed-by: "lions-infrastructure-5.0"
+              lions.dev/created-date: "{{ ansible_date_time.iso8601 }}"
+      when: redis_namespace_info.resources | length == 0
+      register: namespace_creation
 
-- name: Avertissement si le secret Redis n'existe pas
-  debug:
-    msg: "AVERTISSEMENT: Le secret pour Redis n'existe pas. Utilisez kubectl pour créer le secret {{ redis_password_secret }}."
-  when: redis_password_enabled | default(true) | bool and (redis_secret_info is failed or redis_secret_info.resources | length == 0)
+    - name: "Création du répertoire temporaire pour les templates"
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: ".redis-deploy"
+        prefix: "lions-"
+      register: redis_temp_dir
+      changed_when: false
 
-- name: Création d'un secret temporaire pour Redis si nécessaire
-  k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Secret
-      metadata:
-        name: "{{ redis_password_secret }}"
-        namespace: "{{ app_namespace }}"
-        labels:
-          app: "{{ app_name }}"
-          environment: "{{ app_environment }}"
-        annotations:
-          description: "Secret temporaire pour Redis. À remplacer par un secret sécurisé."
-      type: Opaque
-      stringData:
-        password: "changeme"
-  register: temp_redis_secret_result
-  when: redis_password_enabled | default(true) | bool and (redis_secret_info is failed or redis_secret_info.resources | length == 0)
-  ignore_errors: yes
+    - name: "Attribution des permissions sécurisées au répertoire temporaire"
+      ansible.builtin.file:
+        path: "{{ redis_temp_dir.path }}"
+        mode: '0700'
+        owner: "{{ ansible_user | default('root') }}"
+      changed_when: false
 
-- name: Avertissement pour le mot de passe temporaire
-  debug:
-    msg: "AVERTISSEMENT: Un mot de passe temporaire a été créé pour Redis. Veuillez le changer dès que possible."
-  when: temp_redis_secret_result is succeeded
+  rescue:
+    - name: "❌ Échec de la préparation de l'environnement"
+      ansible.builtin.fail:
+        msg: "Échec lors de la préparation de l'environnement Redis: {{ ansible_failed_result.msg | default('Erreur inconnue') }}"
+
+  tags:
+    - preparation
+    - environment
+    - redis
+
+# =========================================================================
+# GÉNÉRATION DES TEMPLATES KUBERNETES
+# =========================================================================
+- name: "📝 Génération des templates Kubernetes Redis"
+  block:
+    - name: "Génération des fichiers de configuration Kubernetes"
+      ansible.builtin.template:
+        src: "{{ item.src }}"
+        dest: "{{ redis_temp_dir.path }}/{{ item.dest }}"
+        mode: '0600'
+        backup: false
+      loop:
+        - { src: "statefulset.yml.j2", dest: "statefulset.yml" }
+        - { src: "service.yml.j2", dest: "service.yml" }
+        - { src: "configmap.yml.j2", dest: "configmap.yml" }
+        - { src: "serviceaccount.yml.j2", dest: "serviceaccount.yml" }
+        - { src: "persistentvolumeclaim.yml.j2", dest: "persistentvolumeclaim.yml" }
+        - { src: "servicemonitor.yml.j2", dest: "servicemonitor.yml" }
+      register: redis_templates_generated
+
+    - name: "Validation de la génération des templates"
+      ansible.builtin.stat:
+        path: "{{ redis_temp_dir.path }}/{{ item }}"
+      loop:
+        - "statefulset.yml"
+        - "service.yml"
+        - "configmap.yml"
+        - "serviceaccount.yml"
+        - "persistentvolumeclaim.yml"
+        - "servicemonitor.yml"
+      register: redis_files_validation
+      failed_when: not item.stat.exists
+
+    - name: "✅ Confirmation de la génération des templates"
+      ansible.builtin.debug:
+        msg: "Tous les templates Kubernetes Redis ont été générés avec succès"
+      when: redis_files_validation is succeeded
+
+  rescue:
+    - name: "❌ Échec de la génération des templates"
+      ansible.builtin.fail:
+        msg: "Échec lors de la génération des templates Redis: {{ ansible_failed_result.msg | default('Erreur inconnue') }}"
+
+  tags:
+    - templates
+    - kubernetes
+    - redis
+
+# =========================================================================
+# GESTION DES SECRETS REDIS
+# =========================================================================
+- name: "🔐 Gestion des secrets Redis"
+  block:
+    - name: "Vérification de l'existence du secret Redis"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Secret
+        namespace: "{{ lions_redis_namespace }}"
+        name: "{{ lions_redis_service_name }}-auth"
+      register: redis_secret_info
+      failed_when: false
+
+    - name: "Génération d'un mot de passe sécurisé pour Redis"
+      ansible.builtin.set_fact:
+        redis_generated_password: "{{ lookup('password', '/dev/null chars=ascii_letters,digits length=32') }}"
+      when:
+        - redis_secret_info.resources | length == 0
+        - lions_environment in ['development', 'staging']
+      no_log: true
+
+    - name: "Création du secret Redis pour les environnements de développement"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: "{{ lions_redis_service_name }}-auth"
+            namespace: "{{ lions_redis_namespace }}"
+            labels:
+              app.kubernetes.io/name: redis
+              app.kubernetes.io/component: auth
+              app.kubernetes.io/part-of: lions-infrastructure
+              app.kubernetes.io/managed-by: ansible
+              environment: "{{ lions_environment }}"
+              lions.dev/secret-type: auth
+            annotations:
+              description: "Secret d'authentification pour Redis"
+              lions.dev/managed-by: "lions-infrastructure-5.0"
+              lions.dev/created-date: "{{ ansible_date_time.iso8601 }}"
+              lions.dev/rotation-required: "true"
+          type: Opaque
+          stringData:
+            password: "{{ redis_generated_password }}"
+            username: "default"
+      when:
+        - redis_secret_info.resources | length == 0
+        - lions_environment in ['development', 'staging']
+        - redis_generated_password is defined
+      register: redis_secret_creation
+      no_log: true
+
+    - name: "⚠️ Avertissement pour l'environnement de production"
+      ansible.builtin.debug:
+        msg: |
+          ⚠️  ATTENTION - ENVIRONNEMENT DE PRODUCTION ⚠️
+          Le secret Redis doit être créé manuellement avec HashiCorp Vault ou votre gestionnaire de secrets.
+          Nom du secret requis: {{ lions_redis_service_name }}-auth
+          Namespace: {{ lions_redis_namespace }}
+          Clés requises: password, username
+      when:
+        - redis_secret_info.resources | length == 0
+        - lions_environment == 'production'
+
+    - name: "Échec en production si le secret n'existe pas"
+      ansible.builtin.fail:
+        msg: |
+          ❌ SECRET REDIS MANQUANT EN PRODUCTION
+          Le secret '{{ lions_redis_service_name }}-auth' doit exister dans le namespace '{{ lions_redis_namespace }}'.
+          Veuillez créer ce secret via HashiCorp Vault ou votre gestionnaire de secrets.
+      when:
+        - redis_secret_info.resources | length == 0
+        - lions_environment == 'production'
+
+    - name: "✅ Confirmation de la disponibilité du secret"
+      ansible.builtin.debug:
+        msg: "Secret Redis disponible: {{ lions_redis_service_name }}-auth"
+      when: redis_secret_info.resources | length > 0 or redis_secret_creation is succeeded
+
+  rescue:
+    - name: "❌ Échec de la gestion des secrets"
+      ansible.builtin.fail:
+        msg: "Échec lors de la gestion des secrets Redis: {{ ansible_failed_result.msg | default('Erreur inconnue') }}"
+
+  tags:
+    - secrets
+    - security
+    - redis
+
+# =========================================================================
+# CRÉATION DES RESSOURCES FONDAMENTALES
+# =========================================================================
+- name: "🏗️ Création des ressources fondamentales Redis"
+  block:
+    - name: "Création du ServiceAccount Redis"
+      kubernetes.core.k8s:
+        state: present
+        src: "{{ redis_temp_dir.path }}/serviceaccount.yml"
+        wait: true
+        wait_condition:
+          type: "Ready"
+          status: "True"
+        wait_timeout: 60
+      register: redis_serviceaccount_result
+
+    - name: "Création du ConfigMap Redis"
+      kubernetes.core.k8s:
+        state: present
+        src: "{{ redis_temp_dir.path }}/configmap.yml"
+        wait: true
+        wait_timeout: 60
+      register: redis_configmap_result
+
+    - name: "Validation de la création du ConfigMap"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: ConfigMap
+        namespace: "{{ lions_redis_namespace }}"
+        name: "{{ lions_redis_service_name }}-config"
+      register: redis_configmap_validation
+      failed_when: redis_configmap_validation.resources | length == 0
+
+    - name: "✅ Confirmation de la création des ressources fondamentales"
+      ansible.builtin.debug:
+        msg: |
+          Ressources fondamentales Redis créées avec succès:
+          - ServiceAccount: {{ lions_redis_service_name }}
+          - ConfigMap: {{ lions_redis_service_name }}-config
+          - Namespace: {{ lions_redis_namespace }}
+
+  rescue:
+    - name: "❌ Échec de la création des ressources fondamentales"
+      ansible.builtin.fail:
+        msg: "Échec lors de la création des ressources fondamentales Redis: {{ ansible_failed_result.msg | default('Erreur inconnue') }}"
+
+  tags:
+    - resources
+    - kubernetes
+    - redis
+
+# =========================================================================
+# VÉRIFICATIONS FINALES ET NETTOYAGE
+# =========================================================================
+- name: "🧹 Vérifications finales et nettoyage"
+  block:
+    - name: "Vérification de l'état du cluster Kubernetes"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Node
+      register: cluster_nodes
+      failed_when: cluster_nodes.resources | length == 0
+
+    - name: "Validation de la connectivité au namespace Redis"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Namespace
+        name: "{{ lions_redis_namespace }}"
+      register: final_namespace_check
+      failed_when: final_namespace_check.resources | length == 0
+
+    - name: "Stockage des informations de déploiement"
+      ansible.builtin.set_fact:
+        redis_preparation_info:
+          namespace: "{{ lions_redis_namespace }}"
+          service_name: "{{ lions_redis_service_name }}"
+          version: "{{ lions_redis_version }}"
+          storage_size: "{{ lions_redis_storage_size }}"
+          secret_name: "{{ lions_redis_service_name }}-auth"
+          temp_directory: "{{ redis_temp_dir.path }}"
+          preparation_time: "{{ ansible_date_time.iso8601 }}"
+
+    - name: "✅ Préparation Redis terminée avec succès"
+      ansible.builtin.debug:
+        msg: |
+          🎉 PRÉPARATION REDIS TERMINÉE AVEC SUCCÈS
+          
+          📊 Informations de déploiement:
+          - Environnement: {{ lions_environment }}
+          - Namespace: {{ lions_redis_namespace }}
+          - Service: {{ lions_redis_service_name }}
+          - Version: {{ lions_redis_version }}
+          - Stockage: {{ lions_redis_storage_size }}
+          
+          🔧 Prêt pour le déploiement de Redis
+
+  rescue:
+    - name: "❌ Échec des vérifications finales"
+      ansible.builtin.debug:
+        msg: "Avertissement: Certaines vérifications finales ont échoué, mais la préparation peut continuer"
+
+  always:
+    - name: "Nettoyage du répertoire temporaire (optionnel)"
+      ansible.builtin.file:
+        path: "{{ redis_temp_dir.path }}"
+        state: absent
+      when:
+        - redis_temp_dir is defined
+        - lions_debug_mode | default(false) | bool == false
+      changed_when: false
+
+  tags:
+    - validation
+    - cleanup
+    - redis
+
+# =========================================================================
+# RAPPORT DE PRÉPARATION
+# =========================================================================
+- name: "📋 Génération du rapport de préparation Redis"
+  ansible.builtin.debug:
+    var: redis_preparation_info
+  when: redis_preparation_info is defined
+  tags:
+    - report
+    - redis

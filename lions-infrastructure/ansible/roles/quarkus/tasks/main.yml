@@ -1,25 +1,1072 @@
 ---
-# Titre: Tâches pour le déploiement d'applications Quarkus
-# Description: Déploie une application Quarkus sur Kubernetes
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-16
-# Version: 1.1.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - RÔLE QUARKUS REFACTORISÉ
+# =========================================================================
+# Description: Orchestrateur principal pour le déploiement d'applications Quarkus
+# Version: 5.0.0
+# Maintainer: DevOps Team <devops@lions.dev>
+# Documentation: https://docs.lions.dev/infrastructure/applications/quarkus
+# Standards: DevOps 5.0, GitOps, Cloud Native, Security First
+# =========================================================================
 
-- name: Inclusion des variables Traefik
+# =========================================================================
+# CHARGEMENT DES VARIABLES ET VALIDATION INITIALE
+# =========================================================================
+- name: "Quarkus | Chargement des variables d'environnement standardisées"
+  set_fact:
+    # Alignement avec les nouvelles variables d'environnement .env
+    quarkus_config:
+      enabled: "{{ LIONS_QUARKUS_ENABLED | default(lions_quarkus_enabled) | default(false) | bool }}"
+      version: "{{ LIONS_QUARKUS_VERSION | default(lions_quarkus_version) | default('3.6.0') }}"
+      namespace: "{{ LIONS_QUARKUS_NAMESPACE | default(lions_quarkus_namespace) | default('applications') }}"
+      service_name: "{{ LIONS_QUARKUS_SERVICE_NAME | default(lions_quarkus_service_name) | default('quarkus-app') }}"
+      port: "{{ LIONS_QUARKUS_PORT | default(lions_quarkus_port) | default(8080) | int }}"
+      image_repository: "{{ LIONS_QUARKUS_IMAGE_REPOSITORY | default(lions_quarkus_image_repository) | default('quay.io/quarkus/quarkus') }}"
+      backup_enabled: "{{ LIONS_QUARKUS_BACKUP_ENABLED | default(lions_quarkus_backup_enabled) | default(true) | bool }}"
+
+    # Configuration des ressources avec fallback intelligent
+    quarkus_resources:
+      profile: "{{ LIONS_QUARKUS_RESOURCE_PROFILE | default(lions_quarkus_resource_profile) | default('medium') }}"
+      cpu_request: "{{ LIONS_RESOURCES_MEDIUM_CPU_REQUEST | default(lions_resources_medium_cpu_request) | default('200m') }}"
+      cpu_limit: "{{ LIONS_RESOURCES_MEDIUM_CPU_LIMIT | default(lions_resources_medium_cpu_limit) | default('1000m') }}"
+      memory_request: "{{ LIONS_RESOURCES_MEDIUM_MEMORY_REQUEST | default(lions_resources_medium_memory_request) | default('512Mi') }}"
+      memory_limit: "{{ LIONS_RESOURCES_MEDIUM_MEMORY_LIMIT | default(lions_resources_medium_memory_limit) | default('2Gi') }}"
+      storage_size: "{{ LIONS_STORAGE_PV_SIZE_MEDIUM | default(lions_storage_pv_size_medium) | default('20Gi') }}"
+
+    # Configuration environnementale
+    quarkus_environment:
+      name: "{{ LIONS_ENVIRONMENT | default(lions_environment) | default('development') }}"
+      domain: "{{ LIONS_DNS_FULL_DOMAIN | default(lions_dns_full_domain) | default('lions.local') }}"
+      debug_mode: "{{ LIONS_DEBUG_MODE | default(lions_debug_mode) | default(false) | bool }}"
+      dry_run: "{{ LIONS_DRY_RUN | default(lions_dry_run) | default(false) | bool }}"
+
+    # Configuration sécurité
+    quarkus_security:
+      tls_enabled: "{{ LIONS_SECURITY_TLS_ENABLED | default(lions_security_tls_enabled) | default(true) | bool }}"
+      network_policies: "{{ LIONS_SECURITY_NETWORK_POLICIES | default(lions_security_network_policies) | default(true) | bool }}"
+      pod_security_standards: "{{ LIONS_SECURITY_POD_SECURITY_STANDARDS | default(lions_security_pod_security_standards) | default('restricted') }}"
+      rbac_enabled: "{{ LIONS_SECURITY_RBAC_ENABLED | default(lions_security_rbac_enabled) | default(true) | bool }}"
+  tags:
+    - quarkus
+    - variables
+    - always
+
+- name: "Quarkus | Validation préalable de l'activation du service"
+  fail:
+    msg: |
+      ❌ Le service Quarkus n'est pas activé dans la configuration.
+      
+      Pour activer Quarkus, définissez:
+      - LIONS_QUARKUS_ENABLED=true dans le fichier .env
+      - Ou lions_quarkus_enabled: true dans les variables Ansible
+      
+      Configuration actuelle: {{ quarkus_config.enabled }}
+  when: not quarkus_config.enabled | bool
+  tags:
+    - quarkus
+    - validation
+    - always
+
+# =========================================================================
+# MÉTADONNÉES ET TÉLÉMÉTRIE DE DÉPLOIEMENT
+# =========================================================================
+- name: "Quarkus | Initialisation des métadonnées de déploiement enrichies"
+  set_fact:
+    quarkus_deployment_metadata:
+      # Métadonnées de base
+      role_name: "quarkus"
+      role_version: "5.0.0"
+      deployment_id: "{{ ansible_date_time.epoch }}"
+      deployment_uuid: "{{ ansible_date_time.epoch + '-' + ansible_hostname + '-' + (99999 | random) }}"
+
+      # Contexte environnemental
+      environment: "{{ quarkus_environment.name }}"
+      namespace: "{{ quarkus_config.namespace }}"
+      cluster_info:
+        name: "{{ ansible_hostname }}"
+        node_count: "{{ groups['all'] | length if groups['all'] is defined else 1 }}"
+        architecture: "{{ ansible_architecture | default('unknown') }}"
+
+      # Horodatage et traçabilité
+      started_at: "{{ ansible_date_time.iso8601 }}"
+      started_by: "{{ ansible_user_id | default('system') }}"
+      initiated_from: "{{ ansible_hostname }}"
+      ansible_version: "{{ ansible_version.full }}"
+
+      # Configuration de déploiement
+      config_hash: "{{ (quarkus_config | to_json) | hash('sha256') }}"
+      feature_flags:
+        monitoring_enabled: "{{ LIONS_MONITORING_ENABLED | default(lions_monitoring_enabled) | default(true) | bool }}"
+        backup_enabled: "{{ quarkus_config.backup_enabled }}"
+        vault_integration: "{{ LIONS_VAULT_ENABLED | default(lions_vault_enabled) | default(true) | bool }}"
+        autoscaling_enabled: "{{ LIONS_AUTOSCALING_ENABLED | default(lions_autoscaling_enabled) | default(true) | bool }}"
+
+    # Configuration de gestion d'erreurs avancée
+    quarkus_deployment_config:
+      dry_run: "{{ quarkus_environment.dry_run }}"
+      debug_mode: "{{ quarkus_environment.debug_mode }}"
+      skip_validation: "{{ quarkus_skip_validation | default(false) | bool }}"
+      force_recreate: "{{ quarkus_force_recreate | default(false) | bool }}"
+      max_retries: "{{ LIONS_QUARKUS_MAX_RETRIES | default(quarkus_max_retries) | default(3) | int }}"
+      retry_delay: "{{ LIONS_QUARKUS_RETRY_DELAY | default(quarkus_retry_delay) | default(10) | int }}"
+      timeout_deployment: "{{ LIONS_TIMEOUT_DEPLOYMENT | default(lions_timeout_deployment) | default(1800) | int }}"
+      rollback_on_failure: "{{ LIONS_QUARKUS_ROLLBACK_ON_FAILURE | default(quarkus_rollback_on_failure) | default(true) | bool }}"
+  tags:
+    - quarkus
+    - metadata
+    - always
+
+- name: "Quarkus | Inclusion des variables Traefik optimisées"
   include_vars:
     file: traefik.yml
+  when: LIONS_K8S_TRAEFIK_ENABLED | default(lions_k8s_traefik_enabled) | default(true) | bool
+  tags:
+    - quarkus
+    - traefik
+    - ingress
 
-- name: Vérification des prérequis pour Quarkus
-  include_tasks: prerequisites.yml
+- name: "Quarkus | Affichage du tableau de bord de déploiement"
+  debug:
+    msg:
+      - "╔════════════════════════════════════════════════════════════════╗"
+      - "║                🚀 DÉPLOIEMENT QUARKUS 5.0                     ║"
+      - "╠════════════════════════════════════════════════════════════════╣"
+      - "║ 📊 Environnement      │ {{ (quarkus_deployment_metadata.environment + '                    ')[:19] }} ║"
+      - "║ 🏷️  Namespace          │ {{ (quarkus_deployment_metadata.namespace + '                    ')[:19] }} ║"
+      - "║ ☕ Version Quarkus     │ {{ (quarkus_config.version + '                    ')[:19] }} ║"
+      - "║ 🆔 ID de déploiement  │ {{ (quarkus_deployment_metadata.deployment_uuid[:19] + '...') if quarkus_deployment_metadata.deployment_uuid | length > 19 else (quarkus_deployment_metadata.deployment_uuid + '                    ')[:19] }} ║"
+      - "║ ⏰ Démarré le         │ {{ (quarkus_deployment_metadata.started_at + '                    ')[:19] }} ║"
+      - "║ 👤 Initié par         │ {{ (quarkus_deployment_metadata.started_by + '                    ')[:19] }} ║"
+      - "║ 🔧 Mode debug         │ {{ ('Activé' if quarkus_deployment_config.debug_mode else 'Désactivé') + '                    ' }}                    ║"[:20]
+      - "║ 🧪 Dry run            │ {{ ('Activé' if quarkus_deployment_config.dry_run else 'Désactivé') + '                    ' }}                    ║"[:20]
+      - "║ 📈 Monitoring         │ {{ ('Activé' if quarkus_deployment_metadata.feature_flags.monitoring_enabled else 'Désactivé') + '                    ' }}                    ║"[:20]
+      - "║ 🔐 Intégration Vault  │ {{ ('Activé' if quarkus_deployment_metadata.feature_flags.vault_integration else 'Désactivé') + '                    ' }}                    ║"[:20]
+      - "╚════════════════════════════════════════════════════════════════╝"
+  when: quarkus_deployment_config.debug_mode | bool
+  tags:
+    - quarkus
+    - debug
+    - dashboard
 
-- name: Préparation des ressources Kubernetes
-  include_tasks: prepare.yml
+# =========================================================================
+# GESTION AVANCÉE DES ERREURS ET OBSERVABILITÉ
+# =========================================================================
+- name: "Quarkus | Configuration de la télémétrie et gestion d'erreurs"
+  set_fact:
+    quarkus_error_handling:
+      max_retries: "{{ quarkus_deployment_config.max_retries }}"
+      retry_delay: "{{ quarkus_deployment_config.retry_delay }}"
+      rollback_on_failure: "{{ quarkus_deployment_config.rollback_on_failure }}"
+      error_log_file: "/tmp/quarkus-deployment-{{ quarkus_deployment_metadata.deployment_id }}.log"
+      metrics_file: "/tmp/quarkus-metrics-{{ quarkus_deployment_metadata.deployment_id }}.json"
+      trace_id: "{{ quarkus_deployment_metadata.deployment_uuid }}"
 
-- name: Déploiement de l'application Quarkus
-  include_tasks: deploy.yml
+    # Métriques de performance
+    quarkus_performance_metrics:
+      deployment_start_time: "{{ ansible_date_time.epoch | int }}"
+      phase_timings: {}
+      resource_usage: {}
 
-- name: Configuration du monitoring pour Quarkus
-  include_tasks: monitoring.yml
+    # Configuration d'observabilité
+    quarkus_observability:
+      metrics_enabled: "{{ quarkus_deployment_metadata.feature_flags.monitoring_enabled }}"
+      tracing_enabled: "{{ LIONS_QUARKUS_TRACING_ENABLED | default(lions_quarkus_tracing_enabled) | default(true) | bool }}"
+      logging_level: "{{ LIONS_LOG_LEVEL | default(lions_log_level) | default('INFO') }}"
+      alerts_enabled: "{{ LIONS_QUARKUS_ALERTS_ENABLED | default(lions_quarkus_alerts_enabled) | default(true) | bool }}"
+  tags:
+    - quarkus
+    - error-handling
+    - observability
+    - always
 
-- name: Validation post-déploiement
-  include_tasks: validate.yml
+# =========================================================================
+# INTÉGRATION VAULT POUR LA GESTION DES SECRETS
+# =========================================================================
+- name: "Quarkus | Configuration de l'intégration Vault"
+  block:
+    - name: "Quarkus | Récupération des secrets depuis Vault"
+      community.hashi_vault.vault_kv2_get:
+        url: "{{ LIONS_VAULT_ADDR | default(lions_vault_addr) }}"
+        path: "quarkus/{{ quarkus_environment.name }}"
+        mount_point: "secrets"
+      register: quarkus_vault_secrets
+      no_log: true
+      when: not quarkus_deployment_config.dry_run | bool
+
+    - name: "Quarkus | Configuration des secrets Quarkus"
+      set_fact:
+        quarkus_secrets:
+          database_password: "{{ quarkus_vault_secrets.secret.database_password | default('') }}"
+          jwt_secret: "{{ quarkus_vault_secrets.secret.jwt_secret | default('') }}"
+          admin_password: "{{ quarkus_vault_secrets.secret.admin_password | default('') }}"
+          registry_credentials: "{{ quarkus_vault_secrets.secret.registry_credentials | default('') }}"
+      no_log: true
+      when:
+        - not quarkus_deployment_config.dry_run | bool
+        - quarkus_vault_secrets is defined
+        - quarkus_vault_secrets.secret is defined
+
+  rescue:
+    - name: "Quarkus | Gestion d'erreur Vault - Utilisation des secrets par défaut"
+      debug:
+        msg: "⚠️  Impossible de récupérer les secrets depuis Vault, utilisation des valeurs par défaut"
+
+    - name: "Quarkus | Configuration des secrets par défaut"
+      set_fact:
+        quarkus_secrets:
+          database_password: "{{ lookup('password', '/tmp/quarkus-db-password chars=ascii_letters,digits length=32') }}"
+          jwt_secret: "{{ lookup('password', '/tmp/quarkus-jwt-secret chars=ascii_letters,digits length=64') }}"
+          admin_password: "{{ lookup('password', '/tmp/quarkus-admin-password chars=ascii_letters,digits length=16') }}"
+          registry_credentials: ""
+      no_log: true
+
+  when: quarkus_deployment_metadata.feature_flags.vault_integration | bool
+  tags:
+    - quarkus
+    - vault
+    - secrets
+
+# =========================================================================
+# VÉRIFICATIONS PRÉALABLES RENFORCÉES
+# =========================================================================
+- name: "Quarkus | Vérifications préalables critiques avec métriques"
+  block:
+    - name: "Quarkus | Démarrage du chronomètre - Vérifications préalables"
+      set_fact:
+        phase_start_time: "{{ ansible_date_time.epoch | int }}"
+
+    - name: "Quarkus | Vérification de l'accessibilité du cluster Kubernetes"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Namespace
+        name: "{{ quarkus_config.namespace }}"
+      register: quarkus_namespace_check
+      retries: "{{ quarkus_error_handling.max_retries }}"
+      delay: "{{ quarkus_error_handling.retry_delay }}"
+      failed_when: false
+
+    - name: "Quarkus | Vérification des variables d'environnement critiques"
+      assert:
+        that:
+          - quarkus_config.enabled | bool
+          - quarkus_config.version is defined
+          - quarkus_config.version | length > 0
+          - quarkus_config.namespace is defined
+          - quarkus_config.namespace | length > 0
+          - quarkus_config.service_name is defined
+          - quarkus_config.port is defined
+          - quarkus_config.port | int > 0
+        fail_msg: |
+          ❌ Variables d'environnement Quarkus manquantes ou incorrectes:
+          - Enabled: {{ quarkus_config.enabled }}
+          - Version: {{ quarkus_config.version | default('NON DÉFINI') }}
+          - Namespace: {{ quarkus_config.namespace | default('NON DÉFINI') }}
+          - Service: {{ quarkus_config.service_name | default('NON DÉFINI') }}
+          - Port: {{ quarkus_config.port | default('NON DÉFINI') }}
+        success_msg: "✅ Variables d'environnement Quarkus validées avec succès"
+
+    - name: "Quarkus | Vérification des dépendances de services"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Service
+        namespace: "{{ item.namespace }}"
+        name: "{{ item.service }}"
+      loop:
+        - { namespace: "{{ LIONS_POSTGRES_NAMESPACE | default('database') }}", service: "{{ LIONS_POSTGRES_SERVICE_NAME | default('postgresql') }}" }
+        - { namespace: "{{ LIONS_REDIS_NAMESPACE | default('database') }}", service: "{{ LIONS_REDIS_SERVICE_NAME | default('redis') }}" }
+      register: quarkus_dependencies_check
+      when: item.namespace is defined and item.service is defined
+      failed_when: false
+
+    - name: "Quarkus | Enregistrement des métriques - Vérifications préalables"
+      set_fact:
+        quarkus_performance_metrics: "{{ quarkus_performance_metrics | combine({
+          'phase_timings': quarkus_performance_metrics.phase_timings | combine({
+            'preflight_checks': (ansible_date_time.epoch | int) - phase_start_time
+          })
+        }) }}"
+
+  rescue:
+    - name: "Quarkus | Gestion d'erreur critique - Vérifications préalables"
+      fail:
+        msg: |
+          💥 ÉCHEC CRITIQUE DES VÉRIFICATIONS PRÉALABLES QUARKUS
+          
+          🔍 Erreur détectée: {{ ansible_failed_result.msg | default('Erreur inconnue') }}
+          🆔 Trace ID: {{ quarkus_error_handling.trace_id }}
+          ⏰ Heure: {{ ansible_date_time.iso8601 }}
+          
+          📚 Consultez la documentation de dépannage:
+          https://docs.lions.dev/infrastructure/troubleshooting/quarkus#preflight-checks
+
+  tags:
+    - quarkus
+    - preflight
+    - validation
+    - metrics
+
+# =========================================================================
+# PHASE 1: PRÉREQUIS ET DÉPENDANCES AVANCÉES
+# =========================================================================
+- name: "Quarkus | Phase 1 - Vérification des prérequis avec télémétrie"
+  block:
+    - name: "Quarkus | Démarrage Phase 1 - Métriques"
+      set_fact:
+        phase_start_time: "{{ ansible_date_time.epoch | int }}"
+        current_phase: "prerequisites"
+
+    - name: "Quarkus | Inclusion des tâches de prérequis enrichies"
+      include_tasks: prerequisites.yml
+      vars:
+        current_phase: "prerequisites"
+        phase_description: "Vérification des prérequis système et Kubernetes"
+        deployment_metadata: "{{ quarkus_deployment_metadata }}"
+        deployment_config: "{{ quarkus_deployment_config }}"
+        quarkus_configuration: "{{ quarkus_config }}"
+        security_configuration: "{{ quarkus_security }}"
+        observability_config: "{{ quarkus_observability }}"
+
+    - name: "Quarkus | Finalisation Phase 1 - Métriques"
+      set_fact:
+        quarkus_performance_metrics: "{{ quarkus_performance_metrics | combine({
+          'phase_timings': quarkus_performance_metrics.phase_timings | combine({
+            'prerequisites': (ansible_date_time.epoch | int) - phase_start_time
+          })
+        }) }}"
+
+  rescue:
+    - name: "Quarkus | Échec Phase 1 - Gestion avancée des erreurs"
+      set_fact:
+        quarkus_deployment_failed: true
+        quarkus_failure_phase: "prerequisites"
+        quarkus_failure_reason: "{{ ansible_failed_result.msg | default('Échec des prérequis système') }}"
+        quarkus_failure_details:
+          phase: "prerequisites"
+          timestamp: "{{ ansible_date_time.iso8601 }}"
+          trace_id: "{{ quarkus_error_handling.trace_id }}"
+          context: "{{ ansible_failed_result | default({}) }}"
+
+    - name: "Quarkus | Journalisation structurée - Échec Phase 1"
+      copy:
+        content: |
+          {
+            "timestamp": "{{ ansible_date_time.iso8601 }}",
+            "level": "ERROR",
+            "service": "quarkus",
+            "phase": "prerequisites",
+            "deployment_id": "{{ quarkus_deployment_metadata.deployment_id }}",
+            "trace_id": "{{ quarkus_error_handling.trace_id }}",
+            "error": "{{ quarkus_failure_reason }}",
+            "context": {{ ansible_failed_result | default({}) | to_json }},
+            "environment": "{{ quarkus_environment.name }}",
+            "namespace": "{{ quarkus_config.namespace }}"
+          }
+        dest: "{{ quarkus_error_handling.error_log_file }}"
+      delegate_to: localhost
+
+    - name: "Quarkus | Notification d'échec - Phase 1"
+      uri:
+        url: "{{ LIONS_NOTIFICATION_WEBHOOK_URL | default('') }}"
+        method: POST
+        body_format: json
+        body:
+          service: "quarkus"
+          status: "FAILED"
+          phase: "prerequisites"
+          environment: "{{ quarkus_environment.name }}"
+          error: "{{ quarkus_failure_reason }}"
+          trace_id: "{{ quarkus_error_handling.trace_id }}"
+      when:
+        - LIONS_NOTIFICATION_WEBHOOK_URL is defined
+        - LIONS_NOTIFICATION_WEBHOOK_URL | length > 0
+      ignore_errors: yes
+
+    - name: "Quarkus | Arrêt critique - Phase 1"
+      fail:
+        msg: |
+          💥 DÉPLOIEMENT QUARKUS INTERROMPU EN PHASE 1 (PRÉREQUIS)
+          
+          🔍 Raison: {{ quarkus_failure_reason }}
+          🆔 Trace: {{ quarkus_error_handling.trace_id }}
+          📊 Environnement: {{ quarkus_environment.name }}
+          
+          🛠️  Actions recommandées:
+          1. Vérifiez la connectivité au cluster Kubernetes
+          2. Validez les permissions RBAC
+          3. Contrôlez les variables d'environnement
+          
+          📚 Documentation: https://docs.lions.dev/infrastructure/troubleshooting/quarkus
+
+  tags:
+    - quarkus
+    - prerequisites
+    - phase-1
+
+# =========================================================================
+# PHASE 2: PRÉPARATION DES RESSOURCES KUBERNETES
+# =========================================================================
+- name: "Quarkus | Phase 2 - Préparation des ressources avec validation"
+  block:
+    - name: "Quarkus | Démarrage Phase 2 - Métriques"
+      set_fact:
+        phase_start_time: "{{ ansible_date_time.epoch | int }}"
+
+    - name: "Quarkus | Inclusion des tâches de préparation optimisées"
+      include_tasks: prepare.yml
+      vars:
+        current_phase: "preparation"
+        phase_description: "Création et validation des ressources Kubernetes"
+        deployment_metadata: "{{ quarkus_deployment_metadata }}"
+        deployment_config: "{{ quarkus_deployment_config }}"
+        quarkus_configuration: "{{ quarkus_config }}"
+        resource_configuration: "{{ quarkus_resources }}"
+        security_configuration: "{{ quarkus_security }}"
+        secrets_configuration: "{{ quarkus_secrets | default({}) }}"
+
+    - name: "Quarkus | Finalisation Phase 2 - Métriques"
+      set_fact:
+        quarkus_performance_metrics: "{{ quarkus_performance_metrics | combine({
+          'phase_timings': quarkus_performance_metrics.phase_timings | combine({
+            'preparation': (ansible_date_time.epoch | int) - phase_start_time
+          })
+        }) }}"
+
+  rescue:
+    - name: "Quarkus | Échec Phase 2 - Gestion d'erreur avec rollback"
+      set_fact:
+        quarkus_deployment_failed: true
+        quarkus_failure_phase: "preparation"
+        quarkus_failure_reason: "{{ ansible_failed_result.msg | default('Échec de la préparation des ressources') }}"
+
+    - name: "Quarkus | Journalisation - Échec Phase 2"
+      lineinfile:
+        path: "{{ quarkus_error_handling.error_log_file }}"
+        line: |
+          {
+            "timestamp": "{{ ansible_date_time.iso8601 }}",
+            "level": "ERROR",
+            "phase": "preparation",
+            "error": "{{ quarkus_failure_reason }}",
+            "trace_id": "{{ quarkus_error_handling.trace_id }}"
+          }
+        create: yes
+
+    - name: "Quarkus | Rollback automatique - Phase 2"
+      include_tasks: cleanup.yml
+      vars:
+        cleanup_scope: "preparation"
+        deployment_metadata: "{{ quarkus_deployment_metadata }}"
+        cleanup_reason: "Échec de la phase de préparation"
+      when: quarkus_error_handling.rollback_on_failure | bool
+
+    - name: "Quarkus | Arrêt contrôlé - Phase 2"
+      fail:
+        msg: "💥 Déploiement Quarkus interrompu en Phase 2 (Préparation): {{ quarkus_failure_reason }}"
+
+  when: quarkus_deployment_failed is not defined
+  tags:
+    - quarkus
+    - preparation
+    - phase-2
+
+# =========================================================================
+# PHASE 3: DÉPLOIEMENT PRINCIPAL AVEC AUTO-SCALING
+# =========================================================================
+- name: "Quarkus | Phase 3 - Déploiement principal avec optimisations"
+  block:
+    - name: "Quarkus | Démarrage Phase 3 - Métriques"
+      set_fact:
+        phase_start_time: "{{ ansible_date_time.epoch | int }}"
+
+    - name: "Quarkus | Inclusion des tâches de déploiement avancées"
+      include_tasks: deploy.yml
+      vars:
+        current_phase: "deployment"
+        phase_description: "Déploiement des composants Quarkus avec auto-scaling"
+        deployment_metadata: "{{ quarkus_deployment_metadata }}"
+        deployment_config: "{{ quarkus_deployment_config }}"
+        quarkus_configuration: "{{ quarkus_config }}"
+        resource_configuration: "{{ quarkus_resources }}"
+        security_configuration: "{{ quarkus_security }}"
+        secrets_configuration: "{{ quarkus_secrets | default({}) }}"
+        environment_configuration: "{{ quarkus_environment }}"
+        autoscaling_enabled: "{{ quarkus_deployment_metadata.feature_flags.autoscaling_enabled }}"
+
+    - name: "Quarkus | Finalisation Phase 3 - Métriques"
+      set_fact:
+        quarkus_performance_metrics: "{{ quarkus_performance_metrics | combine({
+          'phase_timings': quarkus_performance_metrics.phase_timings | combine({
+            'deployment': (ansible_date_time.epoch | int) - phase_start_time
+          })
+        }) }}"
+
+  rescue:
+    - name: "Quarkus | Échec Phase 3 - Gestion critique avec rollback complet"
+      set_fact:
+        quarkus_deployment_failed: true
+        quarkus_failure_phase: "deployment"
+        quarkus_failure_reason: "{{ ansible_failed_result.msg | default('Échec du déploiement principal') }}"
+
+    - name: "Quarkus | Journalisation critique - Échec Phase 3"
+      copy:
+        content: |
+          {
+            "timestamp": "{{ ansible_date_time.iso8601 }}",
+            "level": "CRITICAL",
+            "service": "quarkus",
+            "phase": "deployment",
+            "deployment_id": "{{ quarkus_deployment_metadata.deployment_id }}",
+            "trace_id": "{{ quarkus_error_handling.trace_id }}",
+            "error": "{{ quarkus_failure_reason }}",
+            "context": {{ ansible_failed_result | default({}) | to_json }},
+            "environment": "{{ quarkus_environment.name }}",
+            "namespace": "{{ quarkus_config.namespace }}",
+            "rollback_initiated": {{ quarkus_error_handling.rollback_on_failure }}
+          }
+        dest: "{{ quarkus_error_handling.error_log_file }}"
+      delegate_to: localhost
+
+    - name: "Quarkus | Rollback complet automatique - Phase 3"
+      include_tasks: rollback.yml
+      vars:
+        rollback_reason: "Échec du déploiement principal Quarkus"
+        deployment_metadata: "{{ quarkus_deployment_metadata }}"
+        rollback_scope: "complete"
+      when: quarkus_error_handling.rollback_on_failure | bool
+
+    - name: "Quarkus | Arrêt critique - Phase 3"
+      fail:
+        msg: |
+          💥 DÉPLOIEMENT QUARKUS CRITIQUE - ÉCHEC EN PHASE 3 (DÉPLOIEMENT)
+          
+          🔍 Raison: {{ quarkus_failure_reason }}
+          🆔 Trace: {{ quarkus_error_handling.trace_id }}
+          🔄 Rollback: {{ 'Effectué' if quarkus_error_handling.rollback_on_failure else 'Ignoré' }}
+
+  when: quarkus_deployment_failed is not defined
+  tags:
+    - quarkus
+    - deployment
+    - phase-3
+
+# =========================================================================
+# PHASE 4: CONFIGURATION DU MONITORING ET ALERTES
+# =========================================================================
+- name: "Quarkus | Phase 4 - Configuration du monitoring et observabilité"
+  block:
+    - name: "Quarkus | Démarrage Phase 4 - Métriques"
+      set_fact:
+        phase_start_time: "{{ ansible_date_time.epoch | int }}"
+
+    - name: "Quarkus | Inclusion des tâches de monitoring enrichies"
+      include_tasks: monitoring.yml
+      vars:
+        current_phase: "monitoring"
+        phase_description: "Configuration des métriques, alertes et tableaux de bord Quarkus"
+        deployment_metadata: "{{ quarkus_deployment_metadata }}"
+        observability_config: "{{ quarkus_observability }}"
+        monitoring_enabled: "{{ quarkus_deployment_metadata.feature_flags.monitoring_enabled }}"
+        quarkus_configuration: "{{ quarkus_config }}"
+        environment_configuration: "{{ quarkus_environment }}"
+
+    - name: "Quarkus | Finalisation Phase 4 - Métriques"
+      set_fact:
+        quarkus_performance_metrics: "{{ quarkus_performance_metrics | combine({
+          'phase_timings': quarkus_performance_metrics.phase_timings | combine({
+            'monitoring': (ansible_date_time.epoch | int) - phase_start_time
+          })
+        }) }}"
+
+  rescue:
+    - name: "Quarkus | Avertissement Phase 4 - Monitoring dégradé"
+      debug:
+        msg:
+          - "⚠️  AVERTISSEMENT: Échec partiel de la configuration du monitoring Quarkus"
+          - "ℹ️  Le déploiement principal a réussi, mais l'observabilité peut être limitée"
+          - "🔍 Erreur détaillée: {{ ansible_failed_result.msg | default('Erreur de monitoring inconnue') }}"
+          - "🆔 Trace ID: {{ quarkus_error_handling.trace_id }}"
+          - "🔧 Impact: Métriques et alertes peuvent être indisponibles"
+
+    - name: "Quarkus | Journalisation - Avertissement Phase 4"
+      lineinfile:
+        path: "{{ quarkus_error_handling.error_log_file }}"
+        line: |
+          {
+            "timestamp": "{{ ansible_date_time.iso8601 }}",
+            "level": "WARNING",
+            "phase": "monitoring",
+            "error": "{{ ansible_failed_result.msg | default('Erreur de monitoring') }}",
+            "trace_id": "{{ quarkus_error_handling.trace_id }}",
+            "impact": "Observabilité dégradée"
+          }
+        create: yes
+
+    - name: "Quarkus | Marquage du monitoring comme défaillant"
+      set_fact:
+        quarkus_monitoring_failed: true
+        quarkus_monitoring_error: "{{ ansible_failed_result.msg | default('Erreur de monitoring inconnue') }}"
+
+  when:
+    - quarkus_deployment_failed is not defined
+    - quarkus_deployment_metadata.feature_flags.monitoring_enabled | bool
+  tags:
+    - quarkus
+    - monitoring
+    - observability
+    - phase-4
+
+# =========================================================================
+# PHASE 5: VALIDATION POST-DÉPLOIEMENT AVANCÉE
+# =========================================================================
+- name: "Quarkus | Phase 5 - Validation post-déploiement complète"
+  block:
+    - name: "Quarkus | Démarrage Phase 5 - Métriques"
+      set_fact:
+        phase_start_time: "{{ ansible_date_time.epoch | int }}"
+
+    - name: "Quarkus | Inclusion des tâches de validation approfondies"
+      include_tasks: validate.yml
+      vars:
+        current_phase: "validation"
+        phase_description: "Validation complète de l'état et des fonctionnalités Quarkus"
+        deployment_metadata: "{{ quarkus_deployment_metadata }}"
+        deployment_config: "{{ quarkus_deployment_config }}"
+        quarkus_configuration: "{{ quarkus_config }}"
+        environment_configuration: "{{ quarkus_environment }}"
+        validation_timeout: "{{ LIONS_TIMEOUT_DEFAULT | default(300) | int }}"
+        health_check_enabled: true
+        performance_test_enabled: "{{ quarkus_environment.name != 'production' }}"
+
+    - name: "Quarkus | Finalisation Phase 5 - Métriques"
+      set_fact:
+        quarkus_performance_metrics: "{{ quarkus_performance_metrics | combine({
+          'phase_timings': quarkus_performance_metrics.phase_timings | combine({
+            'validation': (ansible_date_time.epoch | int) - phase_start_time
+          })
+        }) }}"
+
+  rescue:
+    - name: "Quarkus | Échec Phase 5 - Validation critique"
+      set_fact:
+        quarkus_deployment_failed: true
+        quarkus_failure_phase: "validation"
+        quarkus_failure_reason: "{{ ansible_failed_result.msg | default('Échec de la validation post-déploiement') }}"
+
+    - name: "Quarkus | Journalisation - Échec Phase 5"
+      copy:
+        content: |
+          {
+            "timestamp": "{{ ansible_date_time.iso8601 }}",
+            "level": "ERROR",
+            "service": "quarkus",
+            "phase": "validation",
+            "deployment_id": "{{ quarkus_deployment_metadata.deployment_id }}",
+            "trace_id": "{{ quarkus_error_handling.trace_id }}",
+            "error": "{{ quarkus_failure_reason }}",
+            "context": {{ ansible_failed_result | default({}) | to_json }},
+            "recommendation": "Quarkus peut être partiellement fonctionnel malgré l'échec de validation"
+          }
+        dest: "{{ quarkus_error_handling.error_log_file }}"
+      delegate_to: localhost
+
+    - name: "Quarkus | Évaluation de l'impact - Validation échouée"
+      debug:
+        msg:
+          - "⚠️  VALIDATION ÉCHOUÉE - IMPACT À ÉVALUER"
+          - "🔍 Raison: {{ quarkus_failure_reason }}"
+          - "💡 Quarkus peut être partiellement fonctionnel"
+          - "🛠️  Intervention manuelle recommandée"
+
+    - name: "Quarkus | Arrêt avec avertissement - Phase 5"
+      fail:
+        msg: |
+          ⚠️  DÉPLOIEMENT QUARKUS TERMINÉ AVEC ERREURS DE VALIDATION
+          
+          🔍 Raison: {{ quarkus_failure_reason }}
+          🆔 Trace: {{ quarkus_error_handling.trace_id }}
+          
+          💡 Actions recommandées:
+          1. Vérifiez les logs de l'application Quarkus
+          2. Testez manuellement les endpoints critiques
+          3. Consultez les métriques de santé
+          
+          📚 Guide de validation: https://docs.lions.dev/infrastructure/validation/quarkus
+
+  when:
+    - quarkus_deployment_failed is not defined
+    - not quarkus_deployment_config.skip_validation | bool
+  tags:
+    - quarkus
+    - validation
+    - health-check
+    - phase-5
+
+# =========================================================================
+# PHASE 6: CONFIGURATION DE LA SAUVEGARDE ET RÉCUPÉRATION
+# =========================================================================
+- name: "Quarkus | Phase 6 - Configuration de la sauvegarde et récupération"
+  block:
+    - name: "Quarkus | Démarrage Phase 6 - Métriques"
+      set_fact:
+        phase_start_time: "{{ ansible_date_time.epoch | int }}"
+
+    - name: "Quarkus | Inclusion des tâches de sauvegarde avancées"
+      include_tasks: backup.yml
+      vars:
+        current_phase: "backup"
+        phase_description: "Configuration des stratégies de sauvegarde et récupération Quarkus"
+        deployment_metadata: "{{ quarkus_deployment_metadata }}"
+        backup_config:
+          enabled: "{{ quarkus_config.backup_enabled }}"
+          retention_days: "{{ LIONS_BACKUP_RETENTION_DAYS | default(30) | int }}"
+          schedule: "{{ LIONS_BACKUP_SCHEDULE | default('0 2 * * *') }}"
+          encryption: "{{ LIONS_BACKUP_ENCRYPTION | default(true) | bool }}"
+          external_storage: "{{ LIONS_BACKUP_EXTERNAL_ENABLED | default(false) | bool }}"
+        quarkus_configuration: "{{ quarkus_config }}"
+        environment_configuration: "{{ quarkus_environment }}"
+
+    - name: "Quarkus | Finalisation Phase 6 - Métriques"
+      set_fact:
+        quarkus_performance_metrics: "{{ quarkus_performance_metrics | combine({
+          'phase_timings': quarkus_performance_metrics.phase_timings | combine({
+            'backup': (ansible_date_time.epoch | int) - phase_start_time
+          })
+        }) }}"
+
+  rescue:
+    - name: "Quarkus | Avertissement Phase 6 - Sauvegarde compromise"
+      debug:
+        msg:
+          - "⚠️  AVERTISSEMENT: Échec de la configuration de sauvegarde Quarkus"
+          - "ℹ️  Quarkus fonctionne mais les sauvegardes automatiques sont désactivées"
+          - "🔍 Erreur: {{ ansible_failed_result.msg | default('Erreur de sauvegarde inconnue') }}"
+          - "🛡️  Impact: Risque de perte de données en cas de problème"
+          - "🔧 Action requise: Configuration manuelle de la sauvegarde"
+
+    - name: "Quarkus | Journalisation - Avertissement Phase 6"
+      lineinfile:
+        path: "{{ quarkus_error_handling.error_log_file }}"
+        line: |
+          {
+            "timestamp": "{{ ansible_date_time.iso8601 }}",
+            "level": "WARNING",
+            "phase": "backup",
+            "error": "{{ ansible_failed_result.msg | default('Erreur de sauvegarde') }}",
+            "trace_id": "{{ quarkus_error_handling.trace_id }}",
+            "impact": "Sauvegardes automatiques désactivées",
+            "risk_level": "MEDIUM"
+          }
+        create: yes
+
+    - name: "Quarkus | Marquage de la sauvegarde comme défaillante"
+      set_fact:
+        quarkus_backup_failed: true
+        quarkus_backup_error: "{{ ansible_failed_result.msg | default('Erreur de sauvegarde inconnue') }}"
+
+  when:
+    - quarkus_deployment_failed is not defined
+    - LIONS_BACKUP_ENABLED | default(true) | bool
+    - quarkus_config.backup_enabled | bool
+  tags:
+    - quarkus
+    - backup
+    - disaster-recovery
+    - phase-6
+
+# =========================================================================
+# FINALISATION ET RAPPORT DE DÉPLOIEMENT ENRICHI
+# =========================================================================
+- name: "Quarkus | Calcul des métriques finales de déploiement"
+  set_fact:
+    quarkus_deployment_duration: "{{ (ansible_date_time.epoch | int) - (quarkus_deployment_metadata.deployment_id | int) }}"
+    quarkus_total_phases: 6
+    quarkus_successful_phases: "{{ (6 - ([quarkus_deployment_failed, quarkus_monitoring_failed, quarkus_backup_failed] | select('defined') | list | length)) }}"
+
+- name: "Quarkus | Génération du rapport de déploiement enrichi"
+  set_fact:
+    quarkus_deployment_report:
+      # Statut général
+      status: "{{ 'FAILED' if quarkus_deployment_failed | default(false) else 'SUCCESS' }}"
+      overall_health: |
+        {% if quarkus_deployment_failed | default(false) %}CRITICAL
+        {% elif quarkus_monitoring_failed | default(false) or quarkus_backup_failed | default(false) %}DEGRADED
+        {% else %}HEALTHY{% endif %}
+
+      # Métadonnées de déploiement
+      deployment_metadata:
+        id: "{{ quarkus_deployment_metadata.deployment_id }}"
+        uuid: "{{ quarkus_deployment_metadata.deployment_uuid }}"
+        environment: "{{ quarkus_deployment_metadata.environment }}"
+        namespace: "{{ quarkus_deployment_metadata.namespace }}"
+        initiated_by: "{{ quarkus_deployment_metadata.started_by }}"
+        initiated_from: "{{ quarkus_deployment_metadata.initiated_from }}"
+
+      # Temporalité
+      timing:
+        started_at: "{{ quarkus_deployment_metadata.started_at }}"
+        completed_at: "{{ ansible_date_time.iso8601 }}"
+        duration_seconds: "{{ quarkus_deployment_duration }}"
+        duration_human: "{{ (quarkus_deployment_duration // 60) }}m {{ (quarkus_deployment_duration % 60) }}s"
+
+      # Performance par phase
+      phase_performance: "{{ quarkus_performance_metrics.phase_timings | default({}) }}"
+
+      # Statut des composants
+      component_status:
+        core_deployment: "{{ 'FAILED' if quarkus_deployment_failed | default(false) else 'SUCCESS' }}"
+        monitoring: "{{ 'FAILED' if quarkus_monitoring_failed | default(false) else 'SUCCESS' }}"
+        backup: "{{ 'FAILED' if quarkus_backup_failed | default(false) else 'SUCCESS' }}"
+
+      # Configuration Quarkus déployée
+      quarkus_config:
+        version: "{{ quarkus_config.version }}"
+        service_name: "{{ quarkus_config.service_name }}"
+        port: "{{ quarkus_config.port }}"
+        endpoint: "{{ quarkus_config.service_name }}.{{ quarkus_config.namespace }}.svc.cluster.local:{{ quarkus_config.port }}"
+        external_url: "https://{{ quarkus_config.service_name }}.{{ quarkus_environment.domain }}"
+
+      # Détails d'échec (si applicable)
+      failure_details:
+        failed_phase: "{{ quarkus_failure_phase | default('N/A') }}"
+        failure_reason: "{{ quarkus_failure_reason | default('N/A') }}"
+        trace_id: "{{ quarkus_error_handling.trace_id | default('N/A') }}"
+        monitoring_error: "{{ quarkus_monitoring_error | default('N/A') }}"
+        backup_error: "{{ quarkus_backup_error | default('N/A') }}"
+
+      # Fonctionnalités activées
+      features:
+        vault_integration: "{{ quarkus_deployment_metadata.feature_flags.vault_integration }}"
+        monitoring: "{{ quarkus_deployment_metadata.feature_flags.monitoring_enabled }}"
+        backup: "{{ quarkus_deployment_metadata.feature_flags.backup_enabled }}"
+        autoscaling: "{{ quarkus_deployment_metadata.feature_flags.autoscaling_enabled }}"
+
+      # Recommandations post-déploiement
+      recommendations: |
+        {% if quarkus_deployment_report.status == 'SUCCESS' %}
+        ✅ Déploiement réussi ! Actions recommandées :
+        - Surveillez les métriques dans Grafana
+        - Vérifiez les logs d'application
+        - Testez les endpoints critiques
+        {% else %}
+        ❌ Déploiement échoué. Actions immédiates :
+        - Consultez les logs d'erreur détaillés
+        - Vérifiez la connectivité réseau
+        - Validez les permissions RBAC
+        {% endif %}
+        
+        {% if quarkus_monitoring_failed | default(false) %}
+        ⚠️ Monitoring dégradé - Configurez manuellement Prometheus/Grafana
+        {% endif %}
+        
+        {% if quarkus_backup_failed | default(false) %}
+        ⚠️ Sauvegarde compromise - Planifiez une configuration de backup manuelle
+        {% endif %}
+  tags:
+    - quarkus
+    - report
+    - metrics
+    - always
+
+- name: "Quarkus | Affichage du tableau de bord final"
+  debug:
+    msg:
+      - "╔══════════════════════════════════════════════════════════════════════════╗"
+      - "║                         📊 RAPPORT FINAL QUARKUS 5.0                    ║"
+      - "╠══════════════════════════════════════════════════════════════════════════╣"
+      - "║ 📈 Statut Global       │ {{ (quarkus_deployment_report.status + ' (' + quarkus_deployment_report.overall_health + ')                              ')[:35] }} ║"
+      - "║ 🌍 Environnement       │ {{ (quarkus_deployment_report.deployment_metadata.environment + '                              ')[:35] }} ║"
+      - "║ 🏷️  Namespace           │ {{ (quarkus_deployment_report.deployment_metadata.namespace + '                              ')[:35] }} ║"
+      - "║ ⏰ Durée totale        │ {{ (quarkus_deployment_report.timing.duration_human + '                              ')[:35] }} ║"
+      - "║ ☕ Version Quarkus      │ {{ (quarkus_deployment_report.quarkus_config.version + '                              ')[:35] }} ║"
+      - "║ 🔗 Endpoint interne    │ {{ (quarkus_deployment_report.quarkus_config.endpoint[:35] + '...') if quarkus_deployment_report.quarkus_config.endpoint | length > 35 else (quarkus_deployment_report.quarkus_config.endpoint + '                              ')[:35] }} ║"
+      - "║ 🌐 URL externe         │ {{ (quarkus_deployment_report.quarkus_config.external_url[:35] + '...') if quarkus_deployment_report.quarkus_config.external_url | length > 35 else (quarkus_deployment_report.quarkus_config.external_url + '                              ')[:35] }} ║"
+      - "║                                                                          ║"
+      - "║ 📊 STATUT DES COMPOSANTS                                                ║"
+      - "║ • Déploiement principal │ {{ (quarkus_deployment_report.component_status.core_deployment + '                              ')[:35] }} ║"
+      - "║ • Monitoring            │ {{ (quarkus_deployment_report.component_status.monitoring + '                              ')[:35] }} ║"
+      - "║ • Sauvegarde            │ {{ (quarkus_deployment_report.component_status.backup + '                              ')[:35] }} ║"
+      - "║                                                                          ║"
+      - "║ 🚀 FONCTIONNALITÉS                                                      ║"
+      - "║ • Intégration Vault     │ {{ ('✅ Activée' if quarkus_deployment_report.features.vault_integration else '❌ Désactivée') + '                              ' }}                              ║"[:39]
+      - "║ • Auto-scaling          │ {{ ('✅ Activé' if quarkus_deployment_report.features.autoscaling else '❌ Désactivé') + '                              ' }}                              ║"[:39]
+      - "║                                                                          ║"
+      - "╠══════════════════════════════════════════════════════════════════════════╣"
+      - "║ {{ quarkus_deployment_report.recommendations.split('\n')[0][:70] + '                                      ' }}                                      ║"[:75]
+      - "╚══════════════════════════════════════════════════════════════════════════╝"
+  tags:
+    - quarkus
+    - report
+    - dashboard
+    - always
+
+- name: "Quarkus | Sauvegarde du rapport de déploiement détaillé"
+  copy:
+    content: "{{ quarkus_deployment_report | to_nice_json }}"
+    dest: "/tmp/quarkus-deployment-report-{{ quarkus_deployment_metadata.deployment_id }}.json"
+    mode: '0644'
+  delegate_to: localhost
+  tags:
+    - quarkus
+    - report
+    - persistence
+
+- name: "Quarkus | Sauvegarde des métriques de performance"
+  copy:
+    content: "{{ quarkus_performance_metrics | to_nice_json }}"
+    dest: "{{ quarkus_error_handling.metrics_file }}"
+    mode: '0644'
+  delegate_to: localhost
+  tags:
+    - quarkus
+    - metrics
+    - performance
+
+# =========================================================================
+# INTÉGRATION AVEC LES SYSTÈMES EXTERNES
+# =========================================================================
+- name: "Quarkus | Notification des systèmes externes"
+  block:
+    - name: "Quarkus | Notification Webhook de fin de déploiement"
+      uri:
+        url: "{{ LIONS_NOTIFICATION_WEBHOOK_URL }}"
+        method: POST
+        body_format: json
+        body:
+          service: "quarkus"
+          status: "{{ quarkus_deployment_report.status }}"
+          environment: "{{ quarkus_deployment_report.deployment_metadata.environment }}"
+          namespace: "{{ quarkus_deployment_report.deployment_metadata.namespace }}"
+          duration: "{{ quarkus_deployment_report.timing.duration_seconds }}"
+          endpoint: "{{ quarkus_deployment_report.quarkus_config.external_url }}"
+          deployment_id: "{{ quarkus_deployment_report.deployment_metadata.uuid }}"
+          trace_id: "{{ quarkus_error_handling.trace_id }}"
+        headers:
+          Content-Type: "application/json"
+          X-Lions-Service: "infrastructure"
+          X-Lions-Version: "5.0.0"
+      register: webhook_notification
+      ignore_errors: yes
+
+    - name: "Quarkus | Mise à jour du registre de services"
+      uri:
+        url: "{{ LIONS_SERVICE_REGISTRY_URL }}/api/v1/services"
+        method: POST
+        body_format: json
+        body:
+          name: "{{ quarkus_deployment_report.quarkus_config.service_name }}"
+          version: "{{ quarkus_deployment_report.quarkus_config.version }}"
+          environment: "{{ quarkus_deployment_report.deployment_metadata.environment }}"
+          namespace: "{{ quarkus_deployment_report.deployment_metadata.namespace }}"
+          endpoint: "{{ quarkus_deployment_report.quarkus_config.endpoint }}"
+          external_url: "{{ quarkus_deployment_report.quarkus_config.external_url }}"
+          status: "{{ quarkus_deployment_report.status }}"
+          health: "{{ quarkus_deployment_report.overall_health }}"
+          deployed_at: "{{ quarkus_deployment_report.timing.completed_at }}"
+          tags:
+            - "quarkus"
+            - "java"
+            - "microservice"
+            - "{{ quarkus_deployment_report.deployment_metadata.environment }}"
+      when: LIONS_SERVICE_REGISTRY_URL is defined
+      ignore_errors: yes
+
+  when:
+    - LIONS_NOTIFICATION_WEBHOOK_URL is defined or LIONS_SERVICE_REGISTRY_URL is defined
+    - not quarkus_deployment_config.dry_run | bool
+  tags:
+    - quarkus
+    - integration
+    - notification
+
+# =========================================================================
+# NETTOYAGE ET FINALISATION OPTIMISÉS
+# =========================================================================
+- name: "Quarkus | Nettoyage intelligent des ressources temporaires"
+  block:
+    - name: "Quarkus | Suppression des fichiers temporaires de déploiement réussi"
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ quarkus_error_handling.error_log_file }}"
+        - "/tmp/quarkus-db-password"
+        - "/tmp/quarkus-jwt-secret"
+        - "/tmp/quarkus-admin-password"
+      when:
+        - quarkus_deployment_report.status == "SUCCESS"
+        - not quarkus_deployment_config.debug_mode | bool
+
+    - name: "Quarkus | Conservation des artefacts en cas d'échec ou mode debug"
+      debug:
+        msg:
+          - "🔍 Mode debug activé ou déploiement échoué - Conservation des artefacts"
+          - "📁 Fichiers conservés:"
+          - "   • Logs d'erreur: {{ quarkus_error_handling.error_log_file }}"
+          - "   • Métriques: {{ quarkus_error_handling.metrics_file }}"
+          - "   • Rapport: /tmp/quarkus-deployment-report-{{ quarkus_deployment_metadata.deployment_id }}.json"
+      when:
+        - quarkus_deployment_report.status == "FAILED" or quarkus_deployment_config.debug_mode | bool
+
+  ignore_errors: yes
+  tags:
+    - quarkus
+    - cleanup
+    - maintenance
+
+- name: "Quarkus | Message de finalisation enrichi"
+  debug:
+    msg: |
+      {% if quarkus_deployment_report.status == 'SUCCESS' %}
+      🎉 DÉPLOIEMENT QUARKUS TERMINÉ AVEC SUCCÈS !
+
+      🔗 Informations de connexion:
+      • Endpoint interne: {{ quarkus_deployment_report.quarkus_config.endpoint }}
+      • URL externe: {{ quarkus_deployment_report.quarkus_config.external_url }}
+      • Port de service: {{ quarkus_deployment_report.quarkus_config.port }}
+
+      📊 Métriques de déploiement:
+      • Durée totale: {{ quarkus_deployment_report.timing.duration_human }}
+      • Santé globale: {{ quarkus_deployment_report.overall_health }}
+
+      📚 Ressources disponibles:
+      • Documentation: https://docs.lions.dev/infrastructure/applications/quarkus
+      • Monitoring: https://grafana.{{ quarkus_environment.domain }}/d/quarkus
+      • Logs: https://grafana.{{ quarkus_environment.domain }}/explore
+
+      🔧 Prochaines étapes recommandées:
+      1. Vérifiez les métriques de santé
+      2. Exécutez les tests d'intégration
+      3. Configurez les alertes personnalisées
+      {% else %}
+      💥 DÉPLOIEMENT QUARKUS ÉCHOUÉ !
+
+      🔍 Détails de l'échec:
+      • Phase d'échec: {{ quarkus_deployment_report.failure_details.failed_phase }}
+      • Raison: {{ quarkus_deployment_report.failure_details.failure_reason }}
+      • ID de trace: {{ quarkus_deployment_report.failure_details.trace_id }}
+
+      📁 Fichiers de diagnostic disponibles:
+      • Logs d'erreur: {{ quarkus_error_handling.error_log_file }}
+      • Rapport JSON: /tmp/quarkus-deployment-report-{{ quarkus_deployment_metadata.deployment_id }}.json
+      • Métriques: {{ quarkus_error_handling.metrics_file }}
+
+      🛠️  Actions de récupération:
+      1. Consultez les logs détaillés ci-dessus
+      2. Vérifiez la connectivité au cluster Kubernetes
+      3. Validez les variables d'environnement
+      4. Consultez le guide de dépannage: https://docs.lions.dev/infrastructure/troubleshooting/quarkus
+
+      📞 Support disponible:
+      • Documentation: https://docs.lions.dev
+      • Issues GitHub: https://github.com/lions-infrastructure/issues
+      • Contact DevOps: devops@lions.dev
+      {% endif %}
+
+      ═══════════════════════════════════════════════════════════════════
+      🦁 LIONS Infrastructure 5.0 - Déploiement Quarkus terminé
+      Trace ID: {{ quarkus_error_handling.trace_id }}
+      ═══════════════════════════════════════════════════════════════════
+  tags:
+    - quarkus
+    - summary
+    - always

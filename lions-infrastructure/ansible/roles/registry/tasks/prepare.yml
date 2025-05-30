@@ -1,102 +1,420 @@
 ---
-# Titre: Préparation des ressources pour la registry de conteneurs
-# Description: Prépare les ressources nécessaires pour déployer la registry
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-10
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - REGISTRY CONTAINER PREPARATION
+# =========================================================================
+# Description: Préparation sécurisée et robuste des ressources pour la registry de conteneurs
+# Version: 5.0.0
+# Maintainer: DevOps Team LIONS
+# Date: 2025-05-28
+# Documentation: https://docs.lions.dev/infrastructure/registry/preparation
+#
+# Sécurité: Ce playbook NE CRÉE JAMAIS de secrets avec des credentials par défaut
+# Prérequis: Les secrets doivent être créés via Vault ou kubectl avant l'exécution
+# =========================================================================
 
-- name: Création d'un répertoire temporaire pour les templates
+# =========================================================================
+# VALIDATION DES PRÉREQUIS CRITIQUES
+# =========================================================================
+- name: "🔍 Validation - Vérification des variables d'environnement LIONS requises"
+  assert:
+    that:
+      - lions_registry_enabled is defined
+      - lions_registry_namespace is defined
+      - lions_registry_service_name is defined
+      - lions_registry_version is defined
+      - lions_dns_full_domain is defined
+      - lions_storage_class_default is defined
+    fail_msg: "❌ Variables d'environnement LIONS manquantes. Vérifiez le fichier .env"
+    success_msg: "✅ Variables d'environnement LIONS validées"
+  tags:
+    - validation
+    - registry
+    - preparation
+
+- name: "🔍 Validation - Vérification de l'activation du registre"
+  assert:
+    that:
+      - lions_registry_enabled | bool
+    fail_msg: "❌ Le registre n'est pas activé (LIONS_REGISTRY_ENABLED=false)"
+    success_msg: "✅ Le registre est activé pour le déploiement"
+  tags:
+    - validation
+    - registry
+
+- name: "🔍 Validation - Vérification de la connectivité Kubernetes"
+  k8s_info:
+    api_version: v1
+    kind: Namespace
+  register: k8s_connectivity_check
+  failed_when: false
+  tags:
+    - validation
+    - kubernetes
+
+- name: "❌ Échec - Connectivité Kubernetes indisponible"
+  fail:
+    msg: |
+      Impossible de se connecter au cluster Kubernetes.
+      Vérifiez que kubectl est configuré et que le cluster est accessible.
+  when: k8s_connectivity_check is failed
+  tags:
+    - validation
+    - kubernetes
+
+# =========================================================================
+# PRÉPARATION DE L'ENVIRONNEMENT
+# =========================================================================
+- name: "📁 Environnement - Création du répertoire temporaire sécurisé"
   tempfile:
     state: directory
-    suffix: registry-deploy
-  register: temp_dir
+    suffix: "registry-{{ ansible_date_time.epoch }}"
+  register: lions_registry_temp_dir
   changed_when: false
+  tags:
+    - environment
+    - security
 
-- name: Génération des templates Kubernetes
-  template:
-    src: "{{ item }}.yml.j2"
-    dest: "{{ temp_dir.path }}/{{ item }}.yml"
-  loop:
-    - configmap
-    - deployment
-    - service
-    - ingress
-    - serviceaccount
-    - servicemonitor
-    - persistentvolumeclaim
-    - role
-    - rolebinding
+- name: "🔒 Sécurité - Configuration des permissions du répertoire temporaire"
+  file:
+    path: "{{ lions_registry_temp_dir.path }}"
+    mode: '0750'
+    owner: "{{ ansible_user_id }}"
   changed_when: false
+  tags:
+    - environment
+    - security
 
-- name: Création du ConfigMap pour la configuration de la registry
-  k8s:
-    state: present
-    src: "{{ temp_dir.path }}/configmap.yml"
-  register: configmap_result
-
-- name: Vérification de l'existence du secret pour l'authentification de la registry
+# =========================================================================
+# VÉRIFICATION DES SECRETS ET SÉCURITÉ
+# =========================================================================
+- name: "🔐 Sécurité - Vérification de l'existence du secret d'authentification"
   k8s_info:
     api_version: v1
     kind: Secret
-    namespace: "{{ app_namespace | default('registry') }}"
-    name: "{{ registry_auth_secret | default('registry-auth') }}"
-  register: auth_secret_info
+    namespace: "{{ lions_registry_namespace }}"
+    name: "{{ lions_registry_service_name }}-auth"
+  register: lions_registry_auth_secret_check
   failed_when: false
+  tags:
+    - security
+    - validation
 
-- name: Avertissement si le secret pour l'authentification n'existe pas
+- name: "❌ Échec critique - Secret d'authentification manquant"
+  fail:
+    msg: |
+      ERREUR CRITIQUE DE SÉCURITÉ:
+      Le secret d'authentification '{{ lions_registry_service_name }}-auth' 
+      n'existe pas dans le namespace '{{ lions_registry_namespace }}'.
+      
+      Pour créer le secret d'authentification:
+      
+      1. Via kubectl:
+      kubectl create secret generic {{ lions_registry_service_name }}-auth \
+        --namespace={{ lions_registry_namespace }} \
+        --from-literal=REGISTRY_HTTP_SECRET="$(openssl rand -hex 32)" \
+        --from-literal=REGISTRY_AUTH_HTPASSWD_REALM="LIONS Registry" \
+        --from-file=htpasswd=/path/to/htpasswd/file
+      
+      2. Via Vault (recommandé):
+      vault kv put secret/registry/auth \
+        http_secret="$(openssl rand -hex 32)" \
+        htpasswd_realm="LIONS Registry" \
+        htpasswd_content="@/path/to/htpasswd/file"
+      
+      3. Générer un fichier htpasswd:
+      htpasswd -Bc /tmp/htpasswd admin
+      
+      Le déploiement s'arrête ici pour des raisons de sécurité.
+  when:
+    - lions_registry_auth_secret_check is failed or
+      lions_registry_auth_secret_check.resources | length == 0
+  tags:
+    - security
+    - validation
+
+- name: "🔐 Sécurité - Vérification du secret TLS"
+  k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: "{{ lions_registry_namespace }}"
+    name: "{{ lions_registry_service_name }}-tls"
+  register: lions_registry_tls_secret_check
+  failed_when: false
+  when: lions_security_tls_enabled | bool
+  tags:
+    - security
+    - tls
+
+- name: "⚠️  Avertissement - Secret TLS manquant"
   debug:
-    msg: "AVERTISSEMENT: Le secret pour l'authentification de la registry n'existe pas. Utilisez kubectl pour créer un secret sécurisé."
-  when: auth_secret_info is failed or auth_secret_info.resources | length == 0
+    msg: |
+      AVERTISSEMENT: Le secret TLS '{{ lions_registry_service_name }}-tls' n'existe pas.
+      Le registre utilisera HTTP au lieu de HTTPS.
+      
+      Pour activer HTTPS, créez le secret TLS:
+      kubectl create secret tls {{ lions_registry_service_name }}-tls \
+        --namespace={{ lions_registry_namespace }} \
+        --cert=/path/to/registry.crt \
+        --key=/path/to/registry.key
+  when:
+    - lions_security_tls_enabled | bool
+    - lions_registry_tls_secret_check is failed or
+      lions_registry_tls_secret_check.resources | length == 0
+  tags:
+    - security
+    - tls
 
-- name: Création d'un secret temporaire pour l'authentification si nécessaire
+# =========================================================================
+# GÉNÉRATION DES TEMPLATES KUBERNETES
+# =========================================================================
+- name: "📋 Templates - Génération des manifests Kubernetes"
+  template:
+    src: "{{ item }}.yml.j2"
+    dest: "{{ lions_registry_temp_dir.path }}/{{ item }}.yml"
+    mode: '0640'
+  loop:
+    - namespace
+    - configmap
+    - serviceaccount
+    - role
+    - rolebinding
+    - persistentvolumeclaim
+    - service
+    - deployment
+    - ingress
+    - servicemonitor
+    - networkpolicy
+  register: lions_registry_templates_result
+  changed_when: false
+  tags:
+    - templates
+    - kubernetes
+
+- name: "🔍 Validation - Vérification de la syntaxe des templates"
   k8s:
     state: present
-    definition:
-      apiVersion: v1
-      kind: Secret
-      metadata:
-        name: "{{ registry_auth_secret | default('registry-auth') }}"
-        namespace: "{{ app_namespace | default('registry') }}"
-        labels:
-          app: "{{ app_name | default('registry') }}"
-          technology: "registry"
-        annotations:
-          description: "Secret temporaire pour l'authentification de la registry. À remplacer par un secret sécurisé."
-      type: Opaque
-      stringData:
-        REGISTRY_HTTP_SECRET: "{{ registry_http_secret | default('changeme') }}"
-        REGISTRY_AUTH_HTPASSWD_PATH: "/auth/htpasswd"
-        REGISTRY_AUTH_HTPASSWD_REALM: "Registry Realm"
-        htpasswd: "admin:$2y$05$qjCzG8NhUFcZB.ClzEP1TeSZT.7zHYZOUBIvoxU.MmXkbZkXjcQEG"  # admin:admin
-  when: auth_secret_info is failed or auth_secret_info.resources | length == 0
-  register: secret_created
+    src: "{{ lions_registry_temp_dir.path }}/{{ item }}.yml"
+    dry_run: true
+    validate:
+      fail_on_error: true
+      strict: true
+  loop:
+    - namespace
+    - configmap
+    - serviceaccount
+    - role
+    - rolebinding
+    - persistentvolumeclaim
+    - service
+    - deployment
+    - ingress
+    - servicemonitor
+    - networkpolicy
+  register: lions_registry_validation_result
+  changed_when: false
+  tags:
+    - validation
+    - templates
 
-- name: Avertissement sur les identifiants temporaires
+# =========================================================================
+# CRÉATION DES RESSOURCES KUBERNETES
+# =========================================================================
+- name: "🏗️  Infrastructure - Création/Vérification du namespace"
+  k8s:
+    state: present
+    src: "{{ lions_registry_temp_dir.path }}/namespace.yml"
+    wait: true
+    wait_timeout: "{{ lions_timeout_default | default(300) }}"
+  register: lions_registry_namespace_result
+  tags:
+    - infrastructure
+    - namespace
+
+- name: "⚙️  Configuration - Création du ConfigMap"
+  k8s:
+    state: present
+    src: "{{ lions_registry_temp_dir.path }}/configmap.yml"
+    wait: true
+    wait_condition:
+      type: "Ready"
+      status: "True"
+    wait_timeout: "{{ lions_timeout_default | default(300) }}"
+  register: lions_registry_configmap_result
+  tags:
+    - configuration
+    - configmap
+
+- name: "👤 RBAC - Création du ServiceAccount"
+  k8s:
+    state: present
+    src: "{{ lions_registry_temp_dir.path }}/serviceaccount.yml"
+    wait: true
+    wait_timeout: "{{ lions_timeout_default | default(300) }}"
+  register: lions_registry_serviceaccount_result
+  tags:
+    - rbac
+    - serviceaccount
+
+- name: "🔑 RBAC - Création du Role"
+  k8s:
+    state: present
+    src: "{{ lions_registry_temp_dir.path }}/role.yml"
+    wait: true
+    wait_timeout: "{{ lions_timeout_default | default(300) }}"
+  register: lions_registry_role_result
+  tags:
+    - rbac
+    - role
+
+- name: "🔗 RBAC - Création du RoleBinding"
+  k8s:
+    state: present
+    src: "{{ lions_registry_temp_dir.path }}/rolebinding.yml"
+    wait: true
+    wait_timeout: "{{ lions_timeout_default | default(300) }}"
+  register: lions_registry_rolebinding_result
+  tags:
+    - rbac
+    - rolebinding
+
+- name: "💾 Stockage - Création du PersistentVolumeClaim"
+  k8s:
+    state: present
+    src: "{{ lions_registry_temp_dir.path }}/persistentvolumeclaim.yml"
+    wait: true
+    wait_condition:
+      type: "Bound"
+      status: "True"
+    wait_timeout: "{{ lions_timeout_default | default(300) }}"
+  register: lions_registry_pvc_result
+  when: lions_registry_storage_size is defined and lions_registry_storage_size != ""
+  tags:
+    - storage
+    - persistence
+
+- name: "🌐 Réseau - Création du Service"
+  k8s:
+    state: present
+    src: "{{ lions_registry_temp_dir.path }}/service.yml"
+    wait: true
+    wait_condition:
+      type: "Ready"
+      status: "True"
+    wait_timeout: "{{ lions_timeout_default | default(300) }}"
+  register: lions_registry_service_result
+  tags:
+    - networking
+    - service
+
+- name: "🔒 Sécurité - Création des NetworkPolicies"
+  k8s:
+    state: present
+    src: "{{ lions_registry_temp_dir.path }}/networkpolicy.yml"
+    wait: true
+    wait_timeout: "{{ lions_timeout_default | default(300) }}"
+  register: lions_registry_networkpolicy_result
+  when: lions_security_network_policies | bool
+  tags:
+    - security
+    - networking
+
+# =========================================================================
+# VÉRIFICATION DE L'ÉTAT DES RESSOURCES
+# =========================================================================
+- name: "🔍 Vérification - État des ressources créées"
+  k8s_info:
+    api_version: "{{ item.api_version }}"
+    kind: "{{ item.kind }}"
+    namespace: "{{ lions_registry_namespace }}"
+    name: "{{ item.name }}"
+  loop:
+    - api_version: v1
+      kind: Namespace
+      name: "{{ lions_registry_namespace }}"
+    - api_version: v1
+      kind: ConfigMap
+      name: "{{ lions_registry_service_name }}-config"
+    - api_version: v1
+      kind: ServiceAccount
+      name: "{{ lions_registry_service_name }}"
+    - api_version: v1
+      kind: Service
+      name: "{{ lions_registry_service_name }}"
+  register: lions_registry_resources_status
+  tags:
+    - verification
+    - status
+
+- name: "📊 Résultats - Affichage du statut des ressources"
   debug:
-    msg: "AVERTISSEMENT: Des identifiants temporaires ont été créés pour la registry. Veuillez les changer dès que possible. Utilisateur: admin, Mot de passe: admin"
-  when: secret_created.changed
+    msg: |
+      📋 RÉSUMÉ DE LA PRÉPARATION DU REGISTRE:
+      
+      🏗️  Namespace: {{ lions_registry_namespace }} - {{ 'CRÉÉ' if lions_registry_namespace_result.changed else 'EXISTANT' }}
+      ⚙️  ConfigMap: {{ 'CRÉÉ' if lions_registry_configmap_result.changed else 'EXISTANT' }}
+      👤 ServiceAccount: {{ 'CRÉÉ' if lions_registry_serviceaccount_result.changed else 'EXISTANT' }}
+      🔑 Role: {{ 'CRÉÉ' if lions_registry_role_result.changed else 'EXISTANT' }}
+      🔗 RoleBinding: {{ 'CRÉÉ' if lions_registry_rolebinding_result.changed else 'EXISTANT' }}
+      🌐 Service: {{ 'CRÉÉ' if lions_registry_service_result.changed else 'EXISTANT' }}
+      💾 PVC: {{ 'CRÉÉ' if lions_registry_pvc_result.changed else 'EXISTANT' if lions_registry_storage_size is defined else 'NON REQUIS' }}
+      🔒 NetworkPolicy: {{ 'CRÉÉE' if lions_registry_networkpolicy_result.changed else 'EXISTANTE' if lions_security_network_policies | bool else 'DÉSACTIVÉE' }}
+      
+      ✅ Préparation terminée avec succès!
+      🚀 Prêt pour le déploiement de l'application.
+  tags:
+    - results
+    - summary
 
-- name: Création du ServiceAccount pour la registry
-  k8s:
-    state: present
-    src: "{{ temp_dir.path }}/serviceaccount.yml"
-  register: serviceaccount_result
+# =========================================================================
+# NETTOYAGE SÉCURISÉ
+# =========================================================================
+- name: "🧹 Nettoyage - Suppression du répertoire temporaire"
+  file:
+    path: "{{ lions_registry_temp_dir.path }}"
+    state: absent
+  changed_when: false
+  tags:
+    - cleanup
+    - security
 
-- name: Création du PersistentVolumeClaim pour la registry
-  k8s:
-    state: present
-    src: "{{ temp_dir.path }}/persistentvolumeclaim.yml"
-  register: pvc_result
-  when: registry_persistent_storage | default(true) | bool
+# =========================================================================
+# COLLECTE DES MÉTRIQUES DE DÉPLOIEMENT
+# =========================================================================
+- name: "📊 Métriques - Enregistrement des informations de déploiement"
+  set_fact:
+    lions_registry_preparation_metrics:
+      completion_time: "{{ ansible_date_time.iso8601 }}"
+      namespace: "{{ lions_registry_namespace }}"
+      service_name: "{{ lions_registry_service_name }}"
+      version: "{{ lions_registry_version }}"
+      tls_enabled: "{{ lions_security_tls_enabled | bool }}"
+      persistent_storage: "{{ lions_registry_storage_size is defined and lions_registry_storage_size != '' }}"
+      network_policies: "{{ lions_security_network_policies | bool }}"
+      resources_created:
+        namespace: "{{ lions_registry_namespace_result.changed }}"
+        configmap: "{{ lions_registry_configmap_result.changed }}"
+        serviceaccount: "{{ lions_registry_serviceaccount_result.changed }}"
+        role: "{{ lions_registry_role_result.changed }}"
+        rolebinding: "{{ lions_registry_rolebinding_result.changed }}"
+        service: "{{ lions_registry_service_result.changed }}"
+        pvc: "{{ lions_registry_pvc_result.changed if lions_registry_storage_size is defined else false }}"
+        networkpolicy: "{{ lions_registry_networkpolicy_result.changed if lions_security_network_policies | bool else false }}"
+  tags:
+    - metrics
+    - reporting
 
-- name: Création du Role pour la registry
-  k8s:
-    state: present
-    src: "{{ temp_dir.path }}/role.yml"
-  register: role_result
-
-- name: Création du RoleBinding pour la registry
-  k8s:
-    state: present
-    src: "{{ temp_dir.path }}/rolebinding.yml"
-  register: rolebinding_result
+# =========================================================================
+# VALIDATION FINALE
+# =========================================================================
+- name: "✅ Validation finale - Vérification de la préparation"
+  assert:
+    that:
+      - lions_registry_namespace_result is succeeded
+      - lions_registry_configmap_result is succeeded
+      - lions_registry_serviceaccount_result is succeeded
+      - lions_registry_service_result is succeeded
+    fail_msg: "❌ La préparation du registre a échoué. Vérifiez les logs ci-dessus."
+    success_msg: "✅ Préparation du registre terminée avec succès!"
+  tags:
+    - validation
+    - final

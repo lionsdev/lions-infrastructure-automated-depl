@@ -1,31 +1,167 @@
 ---
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - SERVICE KUBERNETES OLLAMA
+# =========================================================================
 # Titre: Template de service Kubernetes pour Ollama
-# Description: Définit le service Kubernetes pour Ollama
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-14
-# Version: 1.0.0
+# Description: Service Kubernetes pour l'infrastructure d'IA Ollama
+# Maintainer: DevOps Team LIONS
+# Date: {{ ansible_date_time.iso8601 }}
+# Version: 5.0.0
+# Documentation: https://docs.lions.dev/infrastructure/services/ollama
+# =========================================================================
 
 apiVersion: v1
 kind: Service
 metadata:
-  name: "{{ app_name }}"
-  namespace: "{{ app_namespace }}"
+  name: "{{ lions_ollama_service_name | default(lookup('env', 'LIONS_OLLAMA_SERVICE_NAME') | default('ollama', true)) }}"
+  namespace: "{{ lions_ollama_namespace | default(lookup('env', 'LIONS_OLLAMA_NAMESPACE') | default('ai', true)) }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "ollama"
+    # Labels standards LIONS
+    app.kubernetes.io/name: "{{ lions_ollama_service_name | default(lookup('env', 'LIONS_OLLAMA_SERVICE_NAME') | default('ollama', true)) }}"
+    app.kubernetes.io/instance: "{{ lions_ollama_service_name | default(lookup('env', 'LIONS_OLLAMA_SERVICE_NAME') | default('ollama', true)) }}-{{ lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT') | default('development', true)) }}"
+    app.kubernetes.io/version: "{{ lions_ollama_version | default(lookup('env', 'LIONS_OLLAMA_VERSION') | default('0.1.26', true)) }}"
+    app.kubernetes.io/component: "ai-inference"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+
+    # Labels LIONS spécifiques
+    lions.dev/environment: "{{ lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT') | default('development', true)) }}"
+    lions.dev/tier: "ai"
+    lions.dev/technology: "ollama"
+    lions.dev/service-type: "inference"
+    lions.dev/data-classification: "{{ lions_ollama_data_classification | default('internal', true) }}"
+    lions.dev/backup-required: "{{ lions_ollama_backup_required | default('true', true) }}"
+
+    # Labels pour le monitoring
+    monitoring.lions.dev/enabled: "{{ lions_monitoring_enabled | default(lookup('env', 'LIONS_MONITORING_ENABLED') | default('true', true)) | string | lower }}"
+    monitoring.lions.dev/service-monitor: "{{ lions_ollama_monitoring_enabled | default('true', true) | string | lower }}"
+
+    # Labels pour la sécurité
+    security.lions.dev/network-policy: "{{ lions_security_network_policies | default(lookup('env', 'LIONS_SECURITY_NETWORK_POLICIES') | default('true', true)) | string | lower }}"
+    security.lions.dev/pod-security-standard: "{{ lions_security_pod_security_standards | default(lookup('env', 'LIONS_SECURITY_POD_SECURITY_STANDARDS') | default('restricted', true)) }}"
+
   annotations:
-    description: "Service pour Ollama {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
-    prometheus.io/scrape: "{{ ollama_prometheus_scrape | string | lower }}"
-    prometheus.io/path: "{{ ollama_prometheus_path }}"
-    prometheus.io/port: "{{ ollama_prometheus_port | string }}"
+    # Annotations de description
+    description: "Service Kubernetes pour Ollama ({{ lions_ollama_version | default(lookup('env', 'LIONS_OLLAMA_VERSION') | default('0.1.26', true)) }}) - Environnement {{ lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT') | default('development', true)) }}"
+    lions.dev/documentation: "https://docs.lions.dev/infrastructure/services/ollama"
+    lions.dev/support-contact: "{{ lions_support_contact | default('devops@lions.dev', true) }}"
+    lions.dev/created-by: "ansible-{{ ansible_user_id }}@{{ ansible_hostname }}"
+    lions.dev/deployment-timestamp: "{{ ansible_date_time.iso8601 }}"
+
+    # Annotations pour le monitoring Prometheus
+    prometheus.io/scrape: "{{ lions_ollama_prometheus_scrape | default('true', true) | string | lower }}"
+    prometheus.io/path: "{{ lions_ollama_prometheus_path | default('/metrics', true) }}"
+    prometheus.io/port: "{{ lions_ollama_prometheus_port | default('11434', true) | string }}"
+    prometheus.io/scheme: "{{ lions_ollama_prometheus_scheme | default('http', true) }}"
+
+    # Annotations pour les SLI/SLO
+    sli.lions.dev/availability-target: "{{ lions_ollama_sli_availability | default('99.5', true) }}"
+    sli.lions.dev/latency-p95-target: "{{ lions_ollama_sli_latency_p95 | default('2000ms', true) }}"
+    sli.lions.dev/error-rate-target: "{{ lions_ollama_sli_error_rate | default('1', true) }}"
+
+    # Annotations pour la gestion des coûts
+    cost.lions.dev/business-unit: "{{ lions_cost_business_unit | default('ai-ml', true) }}"
+    cost.lions.dev/cost-center: "{{ lions_cost_center | default('infrastructure', true) }}"
+    cost.lions.dev/project: "{{ lions_cost_project | default('lions-ai', true) }}"
+
+    # Annotations pour la conformité
+    compliance.lions.dev/data-retention: "{{ lions_ollama_data_retention | default('90d', true) }}"
+    compliance.lions.dev/backup-schedule: "{{ lions_backup_schedule | default(lookup('env', 'LIONS_BACKUP_SCHEDULE') | default('0 2 * * *', true)) }}"
+
+{% if lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT') | default('development', true)) == 'production' %}
+    # Annotations spécifiques à la production
+    service.kubernetes.io/load-balancer-class: "{{ lions_loadbalancer_class | default('nginx', true) }}"
+    service.kubernetes.io/topology-aware-hints: "auto"
+{% endif %}
+
+spec:
+  type: "{{ lions_ollama_service_type | default('ClusterIP', true) }}"
+{% if lions_ollama_service_type | default('ClusterIP', true) == 'LoadBalancer' and lions_ollama_external_ip is defined %}
+  loadBalancerIP: "{{ lions_ollama_external_ip }}"
+{% endif %}
+{% if lions_ollama_service_type | default('ClusterIP', true) == 'ClusterIP' and lions_ollama_cluster_ip is defined %}
+  clusterIP: "{{ lions_ollama_cluster_ip }}"
+{% endif %}
+
+  # Configuration des sessions pour la persistance des connexions AI
+{% if lions_ollama_session_affinity_enabled | default('true', true) | bool %}
+  sessionAffinity: "ClientIP"
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: {{ lions_ollama_session_timeout | default('10800', true) | int }}  # 3 heures
+{% endif %}
+
+  # Configuration des ports
+  ports:
+    - name: "http"
+      port: {{ lions_ollama_service_port | default(lookup('env', 'LIONS_OLLAMA_PORT') | default('11434', true)) | int }}
+      targetPort: "http"
+      protocol: "TCP"
+{% if lions_ollama_service_type | default('ClusterIP', true) == 'NodePort' %}
+      nodePort: {{ lions_ollama_nodeport | default('31434', true) | int }}
+{% endif %}
+
+{% if lions_ollama_metrics_enabled | default('true', true) | bool %}
+    - name: "metrics"
+      port: {{ lions_ollama_metrics_port | default('9090', true) | int }}
+      targetPort: "metrics"
+      protocol: "TCP"
+{% endif %}
+
+{% if lions_ollama_admin_enabled | default('false', true) | bool %}
+    - name: "admin"
+      port: {{ lions_ollama_admin_port | default('8080', true) | int }}
+      targetPort: "admin"
+      protocol: "TCP"
+{% endif %}
+
+  # Sélecteur pour les pods
+  selector:
+    app.kubernetes.io/name: "{{ lions_ollama_service_name | default(lookup('env', 'LIONS_OLLAMA_SERVICE_NAME') | default('ollama', true)) }}"
+    app.kubernetes.io/instance: "{{ lions_ollama_service_name | default(lookup('env', 'LIONS_OLLAMA_SERVICE_NAME') | default('ollama', true)) }}-{{ lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT') | default('development', true)) }}"
+
+{% if lions_ollama_external_traffic_policy is defined and lions_ollama_service_type | default('ClusterIP', true) in ['LoadBalancer', 'NodePort'] %}
+  # Politique de trafic externe pour optimiser les performances
+  externalTrafficPolicy: "{{ lions_ollama_external_traffic_policy }}"  # Local ou Cluster
+{% endif %}
+
+{% if lions_ollama_internal_traffic_policy is defined %}
+  # Politique de trafic interne (Kubernetes 1.22+)
+  internalTrafficPolicy: "{{ lions_ollama_internal_traffic_policy }}"  # Local ou Cluster
+{% endif %}
+
+{% if lions_ollama_ip_families is defined %}
+  # Support IPv4/IPv6
+  ipFamilies: {{ lions_ollama_ip_families | to_json }}
+  ipFamilyPolicy: "{{ lions_ollama_ip_family_policy | default('SingleStack', true) }}"
+{% endif %}
+
+---
+{% if lions_ollama_headless_service_enabled | default('false', true) | bool %}
+# Service headless pour la découverte directe des pods (utile pour les clients AI avancés)
+apiVersion: v1
+kind: Service
+metadata:
+  name: "{{ lions_ollama_service_name | default(lookup('env', 'LIONS_OLLAMA_SERVICE_NAME') | default('ollama', true)) }}-headless"
+  namespace: "{{ lions_ollama_namespace | default(lookup('env', 'LIONS_OLLAMA_NAMESPACE') | default('ai', true)) }}"
+  labels:
+    app.kubernetes.io/name: "{{ lions_ollama_service_name | default(lookup('env', 'LIONS_OLLAMA_SERVICE_NAME') | default('ollama', true)) }}"
+    app.kubernetes.io/instance: "{{ lions_ollama_service_name | default(lookup('env', 'LIONS_OLLAMA_SERVICE_NAME') | default('ollama', true)) }}-{{ lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT') | default('development', true)) }}"
+    app.kubernetes.io/component: "ai-inference-headless"
+    lions.dev/service-type: "headless"
+  annotations:
+    description: "Service headless pour la découverte directe des pods Ollama"
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
 spec:
   type: ClusterIP
+  clusterIP: None  # Service headless
+  publishNotReadyAddresses: true
   ports:
-    - name: http
-      port: 80
-      targetPort: http
-      protocol: TCP
+    - name: "http"
+      port: {{ lions_ollama_service_port | default(lookup('env', 'LIONS_OLLAMA_PORT') | default('11434', true)) | int }}
+      targetPort: "http"
+      protocol: "TCP"
   selector:
-    app: "{{ app_name }}"
+    app.kubernetes.io/name: "{{ lions_ollama_service_name | default(lookup('env', 'LIONS_OLLAMA_SERVICE_NAME') | default('ollama', true)) }}"
+    app.kubernetes.io/instance: "{{ lions_ollama_service_name | default(lookup('env', 'LIONS_OLLAMA_SERVICE_NAME') | default('ollama', true)) }}-{{ lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT') | default('development', true)) }}"
+{% endif %}

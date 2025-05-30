@@ -1,20 +1,313 @@
+---
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - PostgreSQL ServiceMonitor
+# =========================================================================
+# Description: Configuration du monitoring Prometheus pour PostgreSQL
+# Version: 5.0.0
+# Maintainer: DevOps Team
+# Documentation: https://docs.lions.dev/monitoring/postgres
+# =========================================================================
+
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: {{ app_name }}
-  namespace: {{ app_namespace }}
+  name: {{ lions_postgres_service_name | default('postgresql') }}-monitor
+  namespace: {{ lions_postgres_namespace | default('database') }}
   labels:
-    app: {{ app_name }}
-    environment: {{ app_environment }}
-    release: prometheus
+    # Labels standards LIONS
+    app.kubernetes.io/name: {{ lions_postgres_service_name | default('postgresql') }}
+    app.kubernetes.io/instance: {{ lions_postgres_service_name | default('postgresql') }}-{{ lions_environment | default('development') }}
+    app.kubernetes.io/version: "{{ lions_postgres_version | default('15.4') }}"
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: lions-infrastructure
+    app.kubernetes.io/managed-by: ansible
+
+    # Labels de monitoring
+    monitoring.lions.dev/enabled: "true"
+    monitoring.lions.dev/type: database
+    monitoring.lions.dev/tier: "{{ lions_postgres_monitoring_tier | default('standard') }}"
+
+    # Labels d'environnement
+    environment: {{ lions_environment | default('development') }}
+    deployment.lions.dev/mode: {{ lions_deployment_mode | default('single') }}
+
+    # Labels Prometheus
+    release: prometheus-operator
+    prometheus: kube-prometheus
+
+    # Labels métiers
+{% if lions_postgres_business_unit is defined %}
+    business-unit: {{ lions_postgres_business_unit }}
+{% endif %}
+{% if lions_postgres_cost_center is defined %}
+    cost-center: {{ lions_postgres_cost_center }}
+{% endif %}
+
+  annotations:
+    # Annotations de documentation
+    documentation.lions.dev/runbook: "https://docs.lions.dev/runbooks/postgres"
+    documentation.lions.dev/dashboard: "https://grafana.{{ lions_dns_full_domain }}/d/postgres-overview"
+
+    # Annotations de configuration
+    monitoring.lions.dev/scrape-interval: "{{ lions_postgres_monitoring_interval | default('30s') }}"
+    monitoring.lions.dev/scrape-timeout: "{{ lions_postgres_monitoring_timeout | default('10s') }}"
+    monitoring.lions.dev/alert-severity: "{{ lions_postgres_alert_severity | default('warning') }}"
+
+    # Annotations de maintenance
+    maintenance.lions.dev/backup-schedule: "{{ lions_postgres_backup_schedule | default('0 2 * * *') }}"
+    maintenance.lions.dev/retention-policy: "{{ lions_backup_retention_days | default('30') }}d"
+
+    # Annotations de sécurité
+    security.lions.dev/network-policy: "{{ 'enabled' if lions_security_network_policies | default(true) else 'disabled' }}"
+    security.lions.dev/rbac: "{{ 'enabled' if lions_security_rbac_enabled | default(true) else 'disabled' }}"
+
 spec:
+  # Sélection des services à monitorer
   selector:
     matchLabels:
-      app: {{ app_name }}
+      app.kubernetes.io/name: {{ lions_postgres_service_name | default('postgresql') }}
+      app.kubernetes.io/component: database
+      monitoring.lions.dev/enabled: "true"
+
+  # Configuration des endpoints de monitoring
   endpoints:
-    - port: metrics
-      interval: 15s
-      path: {{ postgres_prometheus_path }}
+    # Endpoint principal pour les métriques PostgreSQL
+    - port: {{ lions_postgres_metrics_port_name | default('metrics') }}
+      interval: {{ lions_postgres_monitoring_interval | default('30s') }}
+      scrapeTimeout: {{ lions_postgres_monitoring_timeout | default('10s') }}
+      path: {{ lions_postgres_metrics_path | default('/metrics') }}
+      scheme: {{ lions_postgres_metrics_scheme | default('http') }}
+
+      # Configuration TLS si activée
+{% if lions_security_tls_enabled | default(true) %}
+      tlsConfig:
+        serverName: {{ lions_postgres_service_name | default('postgresql') }}.{{ lions_postgres_namespace | default('database') }}.svc.{{ lions_k8s_dns_domain | default('cluster.local') }}
+        insecureSkipVerify: {{ lions_postgres_metrics_tls_skip_verify | default('false') }}
+{% if lions_postgres_metrics_ca_secret is defined %}
+        ca:
+          secret:
+            name: {{ lions_postgres_metrics_ca_secret }}
+            key: ca.crt
+{% endif %}
+{% if lions_postgres_metrics_cert_secret is defined %}
+        cert:
+          secret:
+            name: {{ lions_postgres_metrics_cert_secret }}
+            key: tls.crt
+        keySecret:
+          name: {{ lions_postgres_metrics_cert_secret }}
+          key: tls.key
+{% endif %}
+{% endif %}
+
+      # Paramètres de scraping additionnels
+      params:
+        # Collecte des métriques étendues si activée
+{% if lions_postgres_metrics_extended | default(false) %}
+        collect[]:
+          - pg_stat_database
+          - pg_stat_user_tables
+          - pg_stat_user_indexes
+          - pg_locks
+          - pg_stat_replication
+{% endif %}
+
+      # Configuration des métriques
+      metricRelabelings:
+        # Ajout du label d'environnement à toutes les métriques
+        - sourceLabels: []
+          targetLabel: environment
+          replacement: {{ lions_environment | default('development') }}
+
+        # Ajout du label de cluster
+        - sourceLabels: []
+          targetLabel: cluster
+          replacement: {{ lions_k8s_cluster_name | default('lions-k8s') }}
+
+        # Normalisation des noms de métriques
+        - sourceLabels: [__name__]
+          regex: 'pg_(.+)'
+          targetLabel: __name__
+          replacement: 'postgresql_${1}'
+
+        # Ajout des labels de service
+        - sourceLabels: []
+          targetLabel: service_name
+          replacement: {{ lions_postgres_service_name | default('postgresql') }}
+
+        - sourceLabels: []
+          targetLabel: service_namespace
+          replacement: {{ lions_postgres_namespace | default('database') }}
+{% if lions_postgres_metrics_custom_labels is defined %}
+{% for label_name, label_value in lions_postgres_metrics_custom_labels.items() %}
+
+        # Label personnalisé: {{ label_name }}
+        - sourceLabels: []
+          targetLabel: {{ label_name }}
+          replacement: {{ label_value }}
+{% endfor %}
+{% endif %}
+
+      # Configuration des relabels pour le scraping
+      relabelings:
+        # Conservation du label de job original
+        - sourceLabels: [__meta_kubernetes_service_name]
+          targetLabel: job
+          replacement: ${1}
+
+        # Ajout des informations de namespace
+        - sourceLabels: [__meta_kubernetes_namespace]
+          targetLabel: namespace
+          replacement: ${1}
+
+        # Ajout des informations de pod
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: pod
+          replacement: ${1}
+
+        # Ajout des informations de nœud
+        - sourceLabels: [__meta_kubernetes_pod_node_name]
+          targetLabel: node
+          replacement: ${1}
+
+{% if lions_postgres_exporter_enabled | default(true) %}
+    # Endpoint pour postgres_exporter (si déployé séparément)
+    - port: {{ lions_postgres_exporter_port_name | default('exporter') }}
+      interval: {{ lions_postgres_exporter_interval | default('30s') }}
+      scrapeTimeout: {{ lions_postgres_exporter_timeout | default('10s') }}
+      path: {{ lions_postgres_exporter_path | default('/metrics') }}
+      scheme: http
+
+      # Configuration spécifique à l'exporter
+      params:
+        # Activation de queries personnalisées si configurées
+{% if lions_postgres_exporter_custom_queries | default(false) %}
+        extend.query-path: ["/etc/postgres-exporter/queries.yaml"]
+{% endif %}
+
+      # Labels spécifiques pour l'exporter
+      metricRelabelings:
+        - sourceLabels: []
+          targetLabel: exporter
+          replacement: postgres_exporter
+
+        - sourceLabels: []
+          targetLabel: exporter_version
+          replacement: {{ lions_postgres_exporter_version | default('0.12.0') }}
+{% endif %}
+
+  # Sélection des namespaces
   namespaceSelector:
     matchNames:
-      - {{ app_namespace }}
+      - {{ lions_postgres_namespace | default('database') }}
+{% if lions_postgres_monitoring_cross_namespace | default(false) %}
+      - {{ lions_monitoring_namespace | default('monitoring') }}
+{% endif %}
+
+      # Configuration des targets
+  targetLimit: {{ lions_postgres_monitoring_target_limit | default('100') }}
+  sampleLimit: {{ lions_postgres_monitoring_sample_limit | default('1000') }}
+
+  # Configuration des labels de job
+  jobLabel: app.kubernetes.io/name
+
+  # Configuration du scraping conditionnel
+{% if lions_postgres_monitoring_conditional | default(false) %}
+  podTargetLabels:
+    - monitoring.lions.dev/enabled
+    - environment
+    - app.kubernetes.io/version
+{% endif %}
+
+---
+# =========================================================================
+# Configuration PrometheusRule pour PostgreSQL (optionnelle)
+# =========================================================================
+{% if lions_postgres_monitoring_rules_enabled | default(true) %}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ lions_postgres_service_name | default('postgresql') }}-rules
+  namespace: {{ lions_postgres_namespace | default('database') }}
+  labels:
+    app.kubernetes.io/name: {{ lions_postgres_service_name | default('postgresql') }}
+    app.kubernetes.io/component: database
+    prometheus: kube-prometheus
+    role: alert-rules
+    environment: {{ lions_environment | default('development') }}
+
+spec:
+  groups:
+    - name: postgresql.rules
+      interval: {{ lions_postgres_rules_evaluation_interval | default('30s') }}
+      rules:
+        # Règle d'agrégation pour les connexions actives
+        - record: postgresql:active_connections:rate5m
+          expr: |
+            rate(postgresql_stat_database_numbackends[5m])
+          labels:
+            service: {{ lions_postgres_service_name | default('postgresql') }}
+            environment: {{ lions_environment | default('development') }}
+
+        # Règle d'agrégation pour les requêtes par seconde
+        - record: postgresql:queries_per_second:rate5m
+          expr: |
+            sum(rate(postgresql_stat_database_xact_commit[5m]) + rate(postgresql_stat_database_xact_rollback[5m])) by (instance, database)
+          labels:
+            service: {{ lions_postgres_service_name | default('postgresql') }}
+            environment: {{ lions_environment | default('development') }}
+
+        # Règle d'agrégation pour l'utilisation du cache
+        - record: postgresql:cache_hit_ratio
+          expr: |
+            (sum(postgresql_stat_database_blks_hit) by (instance, database) /
+             (sum(postgresql_stat_database_blks_hit) by (instance, database) +
+              sum(postgresql_stat_database_blks_read) by (instance, database))) * 100
+          labels:
+            service: {{ lions_postgres_service_name | default('postgresql') }}
+            environment: {{ lions_environment | default('development') }}
+
+    - name: postgresql.alerts
+      interval: {{ lions_postgres_alerts_evaluation_interval | default('30s') }}
+      rules:
+        # Alerte: PostgreSQL down
+        - alert: PostgreSQLDown
+          expr: up{job=~".*postgresql.*"} == 0
+          for: {{ lions_postgres_alert_down_duration | default('1m') }}
+          labels:
+            severity: critical
+            service: {{ lions_postgres_service_name | default('postgresql') }}
+            environment: {{ lions_environment | default('development') }}
+            runbook: https://docs.lions.dev/runbooks/postgres#postgresql-down
+          annotations:
+            summary: "PostgreSQL instance is down"
+            description: "PostgreSQL instance {{ '{{ $labels.instance }}' }} has been down for more than 1 minute."
+
+        # Alerte: Connexions élevées
+        - alert: PostgreSQLTooManyConnections
+          expr: |
+            sum by (instance) (postgresql_stat_database_numbackends) >
+            (postgresql_settings_max_connections * {{ lions_postgres_alert_connections_threshold | default('0.8') }})
+          for: {{ lions_postgres_alert_connections_duration | default('5m') }}
+          labels:
+            severity: warning
+            service: {{ lions_postgres_service_name | default('postgresql') }}
+            environment: {{ lions_environment | default('development') }}
+            runbook: https://docs.lions.dev/runbooks/postgres#too-many-connections
+          annotations:
+            summary: "PostgreSQL has too many connections"
+            description: "PostgreSQL instance {{ '{{ $labels.instance }}' }} has {{ '{{ $value }}' }} connections, which is above the threshold."
+
+        # Alerte: Taux de cache faible
+        - alert: PostgreSQLLowCacheHitRatio
+          expr: postgresql:cache_hit_ratio < {{ lions_postgres_alert_cache_threshold | default('95') }}
+          for: {{ lions_postgres_alert_cache_duration | default('10m') }}
+          labels:
+            severity: warning
+            service: {{ lions_postgres_service_name | default('postgresql') }}
+            environment: {{ lions_environment | default('development') }}
+            runbook: https://docs.lions.dev/runbooks/postgres#low-cache-hit-ratio
+          annotations:
+            summary: "PostgreSQL cache hit ratio is low"
+            description: "PostgreSQL cache hit ratio is {{ '{{ $value }}' }}% for database {{ '{{ $labels.database }}' }} on instance {{ '{{ $labels.instance }}' }}."
+{% endif %}

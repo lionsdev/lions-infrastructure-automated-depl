@@ -1,81 +1,387 @@
 ---
-# Titre: Variables pour le déploiement de pgAdmin
-# Description: Variables spécifiques à pgAdmin
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-10
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - CONFIGURATION PGADMIN
+# =========================================================================
+# Description: Variables pour le déploiement de pgAdmin dans l'infrastructure LIONS
+# Composant: pgAdmin - Interface Web d'administration PostgreSQL
+# Version: 5.0.0
+# Date: 2025-05-30
+# Maintainer: DevOps Team LIONS
+# Documentation: https://docs.lions.dev/infrastructure/services/pgadmin
+# =========================================================================
 
-# Configuration par défaut pour pgAdmin
-pgadmin_version: "7.8"
-pgadmin_default_port: 80
-pgadmin_health_path: "/"
-pgadmin_metrics_path: "/metrics"
-pgadmin_admin_email: "admin@lions.dev"
-pgadmin_admin_password_secret: "pgadmin-admin-password"
-pgadmin_database_service: "postgres"
-pgadmin_database_port: 5432
-pgadmin_database_user: "postgres"
-pgadmin_database_password_secret: "postgres-admin-password"
-pgadmin_log_level: 10  # INFO
+# =========================================================================
+# MÉTADONNÉES DU RÔLE
+# =========================================================================
+pgadmin_role_version: "5.0.0"
+pgadmin_role_description: "Déploiement et gestion de pgAdmin pour l'administration PostgreSQL"
+pgadmin_role_maintainer: "devops@lions.dev"
+pgadmin_role_tags:
+  - database
+  - administration
+  - web-interface
+  - postgresql
 
-# Configuration des sondes de disponibilité
-pgadmin_readiness_probe:
-  httpGet:
-    path: /
-    port: 80
-  initialDelaySeconds: 30
-  timeoutSeconds: 5
-  periodSeconds: 10
-  successThreshold: 1
-  failureThreshold: 3
+# =========================================================================
+# CONFIGURATION DE BASE PGADMIN
+# =========================================================================
+# Version et image
+pgadmin_version: "{{ lookup('env', 'LIONS_PGADMIN_VERSION') | default('7.8', true) }}"
+pgadmin_image_registry: "{{ lookup('env', 'LIONS_REGISTRY_URL') | default('docker.io', true) }}"
+pgladmin_image_repository: "dpage/pgadmin4"
+pgadmin_image_tag: "{{ pgadmin_version }}"
+pgadmin_image_pull_policy: "{{ lookup('env', 'LIONS_IMAGE_PULL_POLICY') | default('IfNotPresent', true) }}"
 
-pgadmin_liveness_probe:
-  httpGet:
-    path: /
-    port: 80
-  initialDelaySeconds: 60
-  timeoutSeconds: 5
-  periodSeconds: 10
-  successThreshold: 1
-  failureThreshold: 3
+# Configuration du service
+pgadmin_service_name: "{{ lookup('env', 'LIONS_PGADMIN_SERVICE_NAME') | default('pgadmin', true) }}"
+pgadmin_namespace: "{{ lookup('env', 'LIONS_PGADMIN_NAMESPACE') | default('database', true) }}"
+pgadmin_port: "{{ lookup('env', 'LIONS_PGLADMIN_PORT') | default('80', true) | int }}"
+pgadmin_target_port: 80
 
-# Configuration du monitoring
-pgadmin_prometheus_port: 80
-pgadmin_prometheus_path: "/metrics"
-pgadmin_prometheus_scrape: true
-pgadmin_init_delay: 30
+# Configuration réseau
+pgadmin_service_type: "ClusterIP"
+pgadmin_external_access: "{{ lookup('env', 'LIONS_PGADMIN_EXTERNAL_ACCESS') | default('true', true) | bool }}"
+pgadmin_ingress_enabled: "{{ pgladmin_external_access }}"
+pgadmin_domain: "{{ lookup('env', 'LIONS_DNS_FULL_DOMAIN') | default('lions.local', true) }}"
+pgadmin_subdomain: "pgadmin"
+pgadmin_fqdn: "{{ pgadmin_subdomain }}.{{ pgadmin_domain }}"
 
-# Configuration des ressources
-pgadmin_resources:
-  development:
-    requests:
-      cpu: "100m"
-      memory: "256Mi"
-    limits:
-      cpu: "500m"
-      memory: "512Mi"
-  staging:
-    requests:
-      cpu: "200m"
-      memory: "512Mi"
-    limits:
-      cpu: "1000m"
-      memory: "1Gi"
-  production:
-    requests:
-      cpu: "500m"
-      memory: "1Gi"
-    limits:
-      cpu: "2000m"
-      memory: "2Gi"
+# =========================================================================
+# CONFIGURATION SÉCURITÉ
+# =========================================================================
+# Configuration d'authentification
+pgadmin_admin_email: "{{ lookup('env', 'LIONS_PGLADMIN_ADMIN_EMAIL') | default('admin@lions.dev', true) }}"
+pgadmin_admin_password_secret: "pgadmin-admin-credentials"
+pgadmin_admin_password_key: "password"
 
-# Configuration de la haute disponibilité
-pgadmin_replicas:
+# Configuration TLS
+pgladmin_tls_enabled: "{{ lookup('env', 'LIONS_SECURITY_TLS_ENABLED') | default('true', true) | bool }}"
+pgadmin_tls_secret_name: "pgadmin-tls"
+pgadmin_cert_manager_enabled: "{{ lookup('env', 'LIONS_CERT_MANAGER_ENABLED') | default('true', true) | bool }}"
+pgadmin_cert_issuer: "{{ lookup('env', 'LIONS_CERT_ISSUER') | default('letsencrypt-prod', true) }}"
+
+# Configuration des politiques de sécurité
+pgadmin_security_context:
+  runAsNonRoot: true
+  runAsUser: 5050
+  runAsGroup: 5050
+  fsGroup: 5050
+  seccompProfile:
+    type: RuntimeDefault
+  supplementalGroups: []
+
+pgadmin_container_security_context:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  runAsNonRoot: true
+  runAsUser: 5050
+  runAsGroup: 5050
+  capabilities:
+    drop:
+      - ALL
+    add: []
+
+# =========================================================================
+# CONFIGURATION DATABASE CONNECTIONS
+# =========================================================================
+# Configuration PostgreSQL par défaut
+pgadmin_default_database:
+  service_name: "{{ lookup('env', 'LIONS_POSTGRES_SERVICE_NAME') | default('postgresql', true) }}"
+  namespace: "{{ lookup('env', 'LIONS_POSTGRES_NAMESPACE') | default('database', true) }}"
+  port: "{{ lookup('env', 'LIONS_POSTGRES_PORT') | default('5432', true) | int }}"
+  database: "{{ lookup('env', 'LIONS_POSTGRES_DATABASE') | default('lions_db', true) }}"
+  username: "postgres"
+  password_secret: "postgres-admin-credentials"
+  password_key: "password"
+
+# Configuration des serveurs additionnels (sera injecté via ConfigMap)
+pgadmin_servers_config: |
+  {
+    "Servers": {
+      "1": {
+        "Name": "LIONS PostgreSQL - {{ ansible_environment | default('development') }}",
+        "Group": "LIONS Infrastructure",
+        "Host": "{{ pgladmin_default_database.service_name }}.{{ pgladmin_default_database.namespace }}.svc.cluster.local",
+        "Port": {{ pgadmin_default_database.port }},
+        "MaintenanceDB": "{{ pgladmin_default_database.database }}",
+        "Username": "{{ pgladmin_default_database.username }}",
+        "SSLMode": "prefer",
+        "Comment": "Serveur PostgreSQL principal LIONS"
+      }
+    }
+  }
+
+# =========================================================================
+# CONFIGURATION APPLICATIVE
+# =========================================================================
+# Configuration de l'application pgAdmin
+pgladmin_config:
+  # Configuration générale
+  DEFAULT_SERVER: "0.0.0.0"
+  DEFAULT_SERVER_PORT: "80"
+
+  # Configuration de logging
+  CONSOLE_LOG_LEVEL: "{{ lookup('env', 'LIONS_LOG_LEVEL') | default('INFO', true) | upper }}"
+  FILE_LOG_LEVEL: "{{ lookup('env', 'LIONS_LOG_LEVEL') | default('INFO', true) | upper }}"
+
+  # Configuration de sécurité
+  ENHANCED_COOKIE_PROTECTION: "True"
+  WTF_CSRF_ENABLED: "True"
+  WTF_CSRF_TIME_LIMIT: "3600"
+  SESSION_COOKIE_SECURE: "{{ 'True' if pgladmin_tls_enabled else 'False' }}"
+  SESSION_COOKIE_HTTPONLY: "True"
+  SESSION_COOKIE_SAMESITE: "Lax"
+
+  # Configuration de session
+  SESSION_EXPIRATION_TIME: "8"  # heures
+
+  # Configuration de l'interface
+  SHOW_GRAVATAR_IMAGE: "False"
+  SUPPORT_SSH_TUNNEL: "False"
+
+  # Configuration des limites
+  MAX_LOGIN_ATTEMPTS: "3"
+  LOGIN_BANNER: "Interface d'administration PostgreSQL LIONS Infrastructure"
+
+# =========================================================================
+# CONFIGURATION DU STOCKAGE
+# =========================================================================
+pgladmin_storage:
+  enabled: "{{ lookup('env', 'LIONS_PGLADMIN_PERSISTENT_STORAGE') | default('true', true) | bool }}"
+  size: "{{ lookup('env', 'LIONS_PGLADMIN_STORAGE_SIZE') | default('2Gi', true) }}"
+  storage_class: "{{ lookup('env', 'LIONS_STORAGE_CLASS_DEFAULT') | default('local-path', true) }}"
+  access_mode: "ReadWriteOnce"
+  mount_path: "/var/lib/pgladmin"
+  reclaim_policy: "{{ lookup('env', 'LIONS_STORAGE_RECLAIM_POLICY') | default('Retain', true) }}"
+
+# =========================================================================
+# CONFIGURATION DES RESSOURCES
+# =========================================================================
+# Ressources par environnement
+pgladmin_resources_small:
+  requests:
+    cpu: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_CPU_REQUEST') | default('100m', true) }}"
+    memory: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_MEMORY_REQUEST') | default('256Mi', true) }}"
+  limits:
+    cpu: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_CPU_LIMIT') | default('500m', true) }}"
+    memory: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_MEMORY_LIMIT') | default('512Mi', true) }}"
+
+pgladmin_resources_medium:
+  requests:
+    cpu: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_CPU_REQUEST') | default('200m', true) }}"
+    memory: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_MEMORY_REQUEST') | default('512Mi', true) }}"
+  limits:
+    cpu: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_CPU_LIMIT') | default('1000m', true) }}"
+    memory: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_MEMORY_LIMIT') | default('1Gi', true) }}"
+
+pgladmin_resources_large:
+  requests:
+    cpu: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_CPU_REQUEST') | default('500m', true) }}"
+    memory: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_MEMORY_REQUEST') | default('1Gi', true) }}"
+  limits:
+    cpu: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_CPU_LIMIT') | default('2000m', true) }}"
+    memory: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_MEMORY_LIMIT') | default('2Gi', true) }}"
+
+# Sélection automatique des ressources
+pgladmin_resources: "{{ vars['pgladmin_resources_' + (lookup('env', 'LIONS_PGLADMIN_RESOURCE_PROFILE') | default('small', true))] }}"
+
+# =========================================================================
+# CONFIGURATION DE HAUTE DISPONIBILITÉ
+# =========================================================================
+# Configuration des répliques
+pgladmin_replicas_config:
   development: 1
-  staging: 2
-  production: 3
+  staging: 1
+  production: 2
 
-# Configuration du stockage
-pgadmin_persistent_storage: true
-pgadmin_storage_size: "5Gi"
-pgadmin_storage_class: "local-path"
+pgladmin_replicas: "{{ pgladmin_replicas_config[lookup('env', 'LIONS_ENVIRONMENT') | default('development', true)] | default(1, true) | int }}"
+
+# Configuration de l'autoscaling
+pgladmin_autoscaling:
+  enabled: "{{ lookup('env', 'LIONS_AUTOSCALING_ENABLED') | default('false', true) | bool }}"
+  min_replicas: "{{ pgladmin_replicas }}"
+  max_replicas: "{{ lookup('env', 'LIONS_AUTOSCALING_MAX_REPLICAS') | default('5', true) | int }}"
+  target_cpu_utilization: "{{ lookup('env', 'LIONS_AUTOSCALING_CPU_TARGET') | default('70', true) | int }}"
+  target_memory_utilization: "{{ lookup('env', 'LIONS_AUTOSCALING_MEMORY_TARGET') | default('80', true) | int }}"
+
+# =========================================================================
+# CONFIGURATION DES SONDES DE SANTÉ
+# =========================================================================
+pgladmin_health_checks:
+  readiness_probe:
+    http_get:
+      path: "/"
+      port: "{{ pgladmin_port }}"
+      scheme: "{{ 'HTTPS' if pgladmin_tls_enabled else 'HTTP' }}"
+    initial_delay_seconds: 30
+    timeout_seconds: 5
+    period_seconds: 10
+    success_threshold: 1
+    failure_threshold: 3
+
+  liveness_probe:
+    http_get:
+      path: "/"
+      port: "{{ pgladmin_port }}"
+      scheme: "{{ 'HTTPS' if pgladmin_tls_enabled else 'HTTP' }}"
+    initial_delay_seconds: 60
+    timeout_seconds: 10
+    period_seconds: 20
+    success_threshold: 1
+    failure_threshold: 3
+
+  startup_probe:
+    http_get:
+      path: "/"
+      port: "{{ pgladmin_port }}"
+      scheme: "{{ 'HTTPS' if pgladmin_tls_enabled else 'HTTP' }}"
+    initial_delay_seconds: 10
+    timeout_seconds: 5
+    period_seconds: 5
+    success_threshold: 1
+    failure_threshold: 30
+
+# =========================================================================
+# CONFIGURATION DU MONITORING
+# =========================================================================
+pgladmin_monitoring:
+  enabled: "{{ lookup('env', 'LIONS_MONITORING_ENABLED') | default('true', true) | bool }}"
+  prometheus_scrape: "{{ pgladmin_monitoring.enabled }}"
+  service_monitor_enabled: "{{ pgladmin_monitoring.enabled }}"
+
+  # Configuration des métriques (pgAdmin n'a pas de métriques Prometheus natives)
+  metrics:
+    enabled: false
+    port: 9187
+    path: "/metrics"
+    exporter_image: "prometheuscommunity/pgadmin-exporter:latest"
+
+  # Configuration des logs
+  logging:
+    level: "{{ lookup('env', 'LIONS_LOG_LEVEL') | default('INFO', true) | upper }}"
+    format: "{{ lookup('env', 'LIONS_LOG_FORMAT') | default('json', true) }}"
+    retention_days: "{{ lookup('env', 'LIONS_LOG_RETENTION_DAYS') | default('7', true) | int }}"
+
+# =========================================================================
+# CONFIGURATION DU BACKUP
+# =========================================================================
+pgladmin_backup:
+  enabled: "{{ lookup('env', 'LIONS_BACKUP_ENABLED') | default('true', true) | bool }}"
+  schedule: "{{ lookup('env', 'LIONS_BACKUP_SCHEDULE') | default('0 3 * * *', true) }}"  # 3AM daily
+  retention_days: "{{ lookup('env', 'LIONS_BACKUP_RETENTION_DAYS') | default('30', true) | int }}"
+  storage_class: "{{ lookup('env', 'LIONS_BACKUP_STORAGE_CLASS') | default(pgladmin_storage.storage_class, true) }}"
+
+# =========================================================================
+# CONFIGURATION DES ANNOTATIONS ET LABELS
+# =========================================================================
+pgladmin_common_labels:
+  app.kubernetes.io/name: "pgladmin"
+  app.kubernetes.io/instance: "{{ pgladmin_service_name }}"
+  app.kubernetes.io/version: "{{ pgladmin_version }}"
+  app.kubernetes.io/component: "database-admin"
+  app.kubernetes.io/part-of: "lions-infrastructure"
+  app.kubernetes.io/managed-by: "ansible"
+  lions.dev/service-type: "database-management"
+  lions.dev/environment: "{{ lookup('env', 'LIONS_ENVIRONMENT') | default('development', true) }}"
+
+pgladmin_common_annotations:
+  lions.dev/deployed-by: "lions-infrastructure-5.0"
+  lions.dev/deployment-date: "{{ ansible_date_time.iso8601 }}"
+  lions.dev/version: "{{ pgladmin_role_version }}"
+  lions.dev/documentation: "https://docs.lions.dev/infrastructure/services/pgladmin"
+
+# =========================================================================
+# CONFIGURATION DES POLITIQUES RÉSEAU
+# =========================================================================
+pgladmin_network_policies:
+  enabled: "{{ lookup('env', 'LIONS_SECURITY_NETWORK_POLICIES') | default('true', true) | bool }}"
+
+  # Règles d'entrée
+  ingress_rules:
+    - from_namespaces:
+        - "{{ lookup('env', 'LIONS_MONITORING_NAMESPACE') | default('monitoring', true) }}"  # Prometheus
+      ports:
+        - port: "{{ pgladmin_port }}"
+          protocol: "TCP"
+    - from_pods:
+        selector:
+          lions.dev/network-access: "database-admin"
+      ports:
+        - port: "{{ pgladmin_port }}"
+          protocol: "TCP"
+
+  # Règles de sortie
+  egress_rules:
+    - to_namespaces:
+        - "{{ pgladmin_default_database.namespace }}"  # PostgreSQL
+      ports:
+        - port: "{{ pgladmin_default_database.port }}"
+          protocol: "TCP"
+    - to_pods: {}  # DNS
+      ports:
+        - port: 53
+          protocol: "UDP"
+        - port: 53
+          protocol: "TCP"
+
+# =========================================================================
+# CONFIGURATION SPÉCIFIQUE PAR ENVIRONNEMENT
+# =========================================================================
+# Override automatique selon l'environnement
+pgladmin_environment_overrides:
+  development:
+    log_level: "DEBUG"
+    tls_staging: true
+    replicas: 1
+    resources_profile: "small"
+
+  staging:
+    log_level: "INFO"
+    tls_staging: true
+    replicas: 1
+    resources_profile: "medium"
+
+  production:
+    log_level: "WARN"
+    tls_staging: false
+    replicas: 2
+    resources_profile: "large"
+    backup_enabled: true
+
+# Application des overrides
+pgladmin_current_environment: "{{ lookup('env', 'LIONS_ENVIRONMENT') | default('development', true) }}"
+pgladmin_env_config: "{{ pgladmin_environment_overrides[pgladmin_current_environment] | default({}, true) }}"
+
+# =========================================================================
+# VARIABLES COMPUTED (calculées automatiquement)
+# =========================================================================
+pgladmin_effective_config:
+  version: "{{ pgladmin_version }}"
+  namespace: "{{ pgladmin_namespace }}"
+  replicas: "{{ pgladmin_env_config.replicas | default(pgladmin_replicas, true) }}"
+  resources_profile: "{{ pgladmin_env_config.resources_profile | default('small', true) }}"
+  fqdn: "{{ pgladmin_fqdn }}"
+  tls_enabled: "{{ pgladmin_tls_enabled }}"
+  monitoring_enabled: "{{ pgladmin_monitoring.enabled }}"
+  backup_enabled: "{{ pgladmin_backup.enabled }}"
+
+# =========================================================================
+# VALIDATION DES VARIABLES
+# =========================================================================
+pgladmin_required_variables:
+  - pgladmin_admin_email
+  - pgladmin_namespace
+  - pgladmin_domain
+
+pgladmin_validation_rules:
+  - name: "admin_email_format"
+    condition: "{{ pgladmin_admin_email | regex_search('^[\\w\\.-]+@[\\w\\.-]+\\.[a-zA-Z]{2,}$') }}"
+    message: "pgladmin_admin_email doit être une adresse email valide"
+
+  - name: "namespace_format"
+    condition: "{{ pgladmin_namespace | regex_search('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$') }}"
+    message: "pgladmin_namespace doit respecter les conventions Kubernetes"
+
+  - name: "domain_format"
+    condition: "{{ pgladmin_domain | regex_search('^[a-zA-Z0-9][a-zA-Z0-9-\\.]*[a-zA-Z0-9]$') }}"
+    message: "pgladmin_domain doit être un nom de domaine valide"

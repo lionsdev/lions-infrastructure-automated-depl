@@ -1,80 +1,523 @@
----
-# Titre: Vérification des prérequis pour PrimeFaces
-# Description: Vérifie que tous les prérequis sont satisfaits pour déployer une application PrimeFaces
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - PRIMEFACES PREREQUISITES TASKS
+# =========================================================================
+# Description: Tâches Ansible pour la vérification des prérequis PrimeFaces
+# Composant: PrimeFaces Application Prerequisites
+# Version: 5.0.0
+# Maintainer: DevOps LIONS Team
+# Documentation: https://docs.lions.dev/infrastructure/primefaces/prerequisites
+# =========================================================================
 
-- name: Vérification de l'existence du namespace
-  k8s_info:
+---
+# =========================================================================
+# PHASE DES PRÉREQUIS - INITIALISATION
+# =========================================================================
+
+- name: "PrimeFaces Prerequisites | {{ current_phase | default('prerequisites') | title }} - Initialisation"
+  set_fact:
+    primefaces_prerequisites_start_time: "{{ ansible_date_time.epoch }}"
+    primefaces_prerequisites_checks:
+      kubernetes_access: false
+      namespace_permissions: false
+      container_registry: false
+      ingress_controller: false
+      storage_classes: false
+      monitoring_stack: false
+      network_policies: false
+      pod_security: false
+      rbac_permissions: false
+      dns_resolution: false
+      external_services: false
+      image_pull_secrets: false
+    primefaces_prerequisites_errors: []
+    primefaces_prerequisites_warnings: []
+  tags:
+    - primefaces
+    - prerequisites
+    - init
+
+- name: "PrimeFaces Prerequisites | Affichage des informations de vérification"
+  debug:
+    msg:
+      - "✅ Vérification des prérequis PrimeFaces"
+      - "📋 Application: {{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+      - "🏷️  Namespace: {{ lions_primefaces_namespace }}"
+      - "🌍 Environnement: {{ lions_environment }}"
+      - "🔍 Niveau de validation: {{ lions_validation_level | default('standard') }}"
+  when: primefaces_deployment_config.debug_mode | default(false) | bool
+  tags:
+    - primefaces
+    - prerequisites
+    - debug
+
+# =========================================================================
+# VÉRIFICATION DE L'ACCÈS KUBERNETES
+# =========================================================================
+
+- name: "PrimeFaces Prerequisites | Test de l'accès à l'API Kubernetes"
+  kubernetes.core.k8s_info:
     api_version: v1
     kind: Namespace
-    name: "{{ app_namespace }}"
-  register: namespace_info
-  failed_when: namespace_info.resources | length == 0
+    name: default
+  register: primefaces_k8s_access_test
+  failed_when: false
 
-- name: Vérification des droits d'accès au namespace
-  k8s:
+- name: "PrimeFaces Prerequisites | Validation de l'accès Kubernetes"
+  set_fact:
+    primefaces_prerequisites_checks: "{{ primefaces_prerequisites_checks | combine({'kubernetes_access': primefaces_k8s_access_test is succeeded}) }}"
+    primefaces_prerequisites_errors: "{{ primefaces_prerequisites_errors + ['KubernetesAccess: ' + (primefaces_k8s_access_test.msg | default('Unable to access Kubernetes API'))] if primefaces_k8s_access_test is failed else primefaces_prerequisites_errors }}"
+
+# =========================================================================
+# VÉRIFICATION DU NAMESPACE ET PERMISSIONS
+# =========================================================================
+
+- name: "PrimeFaces Prerequisites | Vérification de l'existence du namespace"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: "{{ lions_primefaces_namespace }}"
+  register: primefaces_namespace_check
+  failed_when: false
+
+- name: "PrimeFaces Prerequisites | Test des permissions dans le namespace"
+  kubernetes.core.k8s:
     state: present
     definition:
       apiVersion: v1
       kind: ConfigMap
       metadata:
-        name: "access-check"
-        namespace: "{{ app_namespace }}"
+        name: "lions-primefaces-access-test-{{ ansible_date_time.epoch }}"
+        namespace: "{{ lions_primefaces_namespace }}"
+        labels:
+          lions.dev/test: "access-check"
+          lions.dev/temporary: "true"
+        annotations:
+          description: "Test temporaire des permissions LIONS"
       data:
-        check: "true"
-  register: access_check
-  ignore_errors: yes
+        test: "access-validation"
+        timestamp: "{{ ansible_date_time.iso8601 }}"
+  register: primefaces_namespace_permissions_test
+  failed_when: false
+  when: primefaces_namespace_check.resources | default([]) | length > 0
 
-- name: Suppression du ConfigMap de vérification
-  k8s:
+- name: "PrimeFaces Prerequisites | Nettoyage du test de permissions"
+  kubernetes.core.k8s:
     state: absent
     api_version: v1
     kind: ConfigMap
-    name: "access-check"
-    namespace: "{{ app_namespace }}"
-  when: access_check is succeeded
+    name: "lions-primefaces-access-test-{{ ansible_date_time.epoch }}"
+    namespace: "{{ lions_primefaces_namespace }}"
+  when: 
+    - primefaces_namespace_permissions_test is defined
+    - primefaces_namespace_permissions_test is succeeded
+  ignore_errors: yes
 
-- name: Échec si les droits d'accès sont insuffisants
+- name: "PrimeFaces Prerequisites | Validation des permissions namespace"
+  set_fact:
+    primefaces_prerequisites_checks: "{{ primefaces_prerequisites_checks | combine({'namespace_permissions': (primefaces_namespace_check.resources | default([]) | length > 0) and (primefaces_namespace_permissions_test is succeeded)}) }}"
+    primefaces_prerequisites_errors: "{{ primefaces_prerequisites_errors + ['NamespacePermissions: ' + (primefaces_namespace_permissions_test.msg | default('Insufficient permissions in namespace'))] if (primefaces_namespace_permissions_test is failed or primefaces_namespace_check.resources | default([]) | length == 0) else primefaces_prerequisites_errors }}"
+
+# =========================================================================
+# VÉRIFICATION DU REGISTRE DE CONTENEURS
+# =========================================================================
+
+- name: "PrimeFaces Prerequisites | Vérification du registre de conteneurs"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Service
+    namespace: "{{ lions_registry_namespace | default('registry') }}"
+    name: "{{ lions_registry_service_name | default('registry') }}"
+  register: primefaces_registry_check
+  when: lions_registry_enabled | default(true) | bool
+  failed_when: false
+
+- name: "PrimeFaces Prerequisites | Test de connectivité du registre"
+  uri:
+    url: "http://{{ lions_registry_service_name | default('registry') }}.{{ lions_registry_namespace | default('registry') }}.svc.cluster.local:{{ lions_registry_port | default('5000') }}/v2/"
+    method: GET
+    timeout: 10
+    status_code: [200, 401]
+  register: primefaces_registry_connectivity
+  when: 
+    - lions_registry_enabled | default(true) | bool
+    - primefaces_registry_check.resources | default([]) | length > 0
+  failed_when: false
+
+- name: "PrimeFaces Prerequisites | Validation du registre de conteneurs"
+  set_fact:
+    primefaces_prerequisites_checks: "{{ primefaces_prerequisites_checks | combine({'container_registry': (primefaces_registry_check.resources | default([]) | length > 0) and (primefaces_registry_connectivity.status in [200, 401]) or not (lions_registry_enabled | default(true) | bool)}) }}"
+    primefaces_prerequisites_errors: "{{ primefaces_prerequisites_errors + ['ContainerRegistry: Registry service not accessible'] if (lions_registry_enabled | default(true) | bool and (primefaces_registry_check.resources | default([]) | length == 0 or primefaces_registry_connectivity.status not in [200, 401])) else primefaces_prerequisites_errors }}"
+
+# =========================================================================
+# VÉRIFICATION DU CONTRÔLEUR INGRESS
+# =========================================================================
+
+- name: "PrimeFaces Prerequisites | Vérification du contrôleur Ingress Nginx"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Service
+    namespace: "{{ lions_ingress_namespace | default('ingress-nginx') }}"
+    name: "{{ lions_ingress_service_name | default('ingress-nginx-controller') }}"
+  register: primefaces_nginx_ingress_check
+  when: 
+    - lions_ingress_enabled | bool
+    - lions_ingress_controller == 'nginx'
+  failed_when: false
+
+- name: "PrimeFaces Prerequisites | Vérification du contrôleur Ingress Traefik"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Service
+    namespace: "{{ lions_traefik_namespace | default('traefik-system') }}"
+    name: "{{ lions_traefik_service_name | default('traefik') }}"
+  register: primefaces_traefik_ingress_check
+  when: 
+    - lions_ingress_enabled | bool
+    - lions_ingress_controller == 'traefik'
+  failed_when: false
+
+- name: "PrimeFaces Prerequisites | Validation du contrôleur Ingress"
+  set_fact:
+    primefaces_ingress_available: >-
+      {{ (lions_ingress_controller == 'nginx' and primefaces_nginx_ingress_check.resources | default([]) | length > 0) or
+         (lions_ingress_controller == 'traefik' and primefaces_traefik_ingress_check.resources | default([]) | length > 0) or
+         not (lions_ingress_enabled | bool) }}
+
+- name: "PrimeFaces Prerequisites | Mise à jour du statut Ingress"
+  set_fact:
+    primefaces_prerequisites_checks: "{{ primefaces_prerequisites_checks | combine({'ingress_controller': primefaces_ingress_available}) }}"
+    primefaces_prerequisites_warnings: "{{ primefaces_prerequisites_warnings + ['IngressController: No ingress controller found for ' + lions_ingress_controller] if not primefaces_ingress_available and lions_ingress_enabled | bool else primefaces_prerequisites_warnings }}"
+
+# =========================================================================
+# VÉRIFICATION DES CLASSES DE STOCKAGE
+# =========================================================================
+
+- name: "PrimeFaces Prerequisites | Vérification des classes de stockage"
+  kubernetes.core.k8s_info:
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+  register: primefaces_storage_classes_check
+  failed_when: false
+
+- name: "PrimeFaces Prerequisites | Vérification de la classe de stockage par défaut"
+  set_fact:
+    primefaces_default_storage_class: "{{ primefaces_storage_classes_check.resources | selectattr('metadata.annotations.storageclass.kubernetes.io/is-default-class', 'defined') | list | first | default({}) }}"
+  when: primefaces_storage_classes_check.resources | default([]) | length > 0
+
+- name: "PrimeFaces Prerequisites | Validation des classes de stockage"
+  set_fact:
+    primefaces_prerequisites_checks: "{{ primefaces_prerequisites_checks | combine({'storage_classes': (primefaces_storage_classes_check.resources | default([]) | length > 0) or not (lions_primefaces_storage_enabled | default(false) | bool)}) }}"
+    primefaces_prerequisites_warnings: "{{ primefaces_prerequisites_warnings + ['StorageClasses: No storage classes available'] if (lions_primefaces_storage_enabled | default(false) | bool and primefaces_storage_classes_check.resources | default([]) | length == 0) else primefaces_prerequisites_warnings }}"
+
+# =========================================================================
+# VÉRIFICATION DE LA STACK DE MONITORING
+# =========================================================================
+
+- name: "PrimeFaces Prerequisites | Vérification de Prometheus Operator"
+  kubernetes.core.k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: servicemonitors.monitoring.coreos.com
+  register: primefaces_prometheus_operator_check
+  when: lions_monitoring_enabled | bool
+  failed_when: false
+
+- name: "PrimeFaces Prerequisites | Vérification de Grafana"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Service
+    namespace: "{{ lions_monitoring_namespace | default('monitoring') }}"
+    name: "{{ lions_grafana_service_name | default('grafana') }}"
+  register: primefaces_grafana_check
+  when: lions_monitoring_enabled | bool
+  failed_when: false
+
+- name: "PrimeFaces Prerequisites | Validation de la stack de monitoring"
+  set_fact:
+    primefaces_monitoring_stack_ready: >-
+      {{ (primefaces_prometheus_operator_check.resources | default([]) | length > 0) and
+         (primefaces_grafana_check.resources | default([]) | length > 0) or
+         not (lions_monitoring_enabled | bool) }}
+
+- name: "PrimeFaces Prerequisites | Mise à jour du statut monitoring"
+  set_fact:
+    primefaces_prerequisites_checks: "{{ primefaces_prerequisites_checks | combine({'monitoring_stack': primefaces_monitoring_stack_ready}) }}"
+    primefaces_prerequisites_warnings: "{{ primefaces_prerequisites_warnings + ['MonitoringStack: Monitoring components not fully available'] if not primefaces_monitoring_stack_ready and lions_monitoring_enabled | bool else primefaces_prerequisites_warnings }}"
+
+# =========================================================================
+# VÉRIFICATION DES POLITIQUES DE SÉCURITÉ POD
+# =========================================================================
+
+- name: "PrimeFaces Prerequisites | Vérification du support Pod Security"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: "{{ lions_primefaces_namespace }}"
+    field_selectors:
+      - metadata.labels['pod-security.kubernetes.io/enforce']
+  register: primefaces_pod_security_check
+  when: lions_pod_security_enabled | default(true) | bool
+  failed_when: false
+
+- name: "PrimeFaces Prerequisites | Validation de Pod Security"
+  set_fact:
+    primefaces_prerequisites_checks: "{{ primefaces_prerequisites_checks | combine({'pod_security': (primefaces_pod_security_check.resources | default([]) | length > 0) or not (lions_pod_security_enabled | default(true) | bool)}) }}"
+    primefaces_prerequisites_warnings: "{{ primefaces_prerequisites_warnings + ['PodSecurity: Pod Security Standards not configured'] if (lions_pod_security_enabled | default(true) | bool and primefaces_pod_security_check.resources | default([]) | length == 0) else primefaces_prerequisites_warnings }}"
+
+# =========================================================================
+# VÉRIFICATION DES PERMISSIONS RBAC
+# =========================================================================
+
+- name: "PrimeFaces Prerequisites | Test des permissions RBAC"
+  kubernetes.core.k8s_info:
+    api_version: rbac.authorization.k8s.io/v1
+    kind: ClusterRole
+    name: "{{ lions_rbac_cluster_role | default('cluster-admin') }}"
+  register: primefaces_rbac_permissions_check
+  when: lions_rbac_enabled | default(true) | bool
+  failed_when: false
+
+- name: "PrimeFaces Prerequisites | Validation des permissions RBAC"
+  set_fact:
+    primefaces_prerequisites_checks: "{{ primefaces_prerequisites_checks | combine({'rbac_permissions': (primefaces_rbac_permissions_check.resources | default([]) | length > 0) or not (lions_rbac_enabled | default(true) | bool)}) }}"
+    primefaces_prerequisites_warnings: "{{ primefaces_prerequisites_warnings + ['RBACPermissions: RBAC permissions may be insufficient'] if (lions_rbac_enabled | default(true) | bool and primefaces_rbac_permissions_check.resources | default([]) | length == 0) else primefaces_prerequisites_warnings }}"
+
+# =========================================================================
+# VÉRIFICATION DE LA RÉSOLUTION DNS
+# =========================================================================
+
+- name: "PrimeFaces Prerequisites | Test de résolution DNS interne"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: "lions-dns-test-{{ ansible_date_time.epoch }}"
+        namespace: "{{ lions_primefaces_namespace }}"
+        labels:
+          lions.dev/test: "dns-check"
+          lions.dev/temporary: "true"
+      spec:
+        restartPolicy: Never
+        containers:
+        - name: dns-test
+          image: busybox:1.35
+          command: ['nslookup', 'kubernetes.default.svc.cluster.local']
+        tolerations:
+        - operator: Exists
+  register: primefaces_dns_test_pod
+  failed_when: false
+
+- name: "PrimeFaces Prerequisites | Attente du test DNS"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: "{{ lions_primefaces_namespace }}"
+    name: "lions-dns-test-{{ ansible_date_time.epoch }}"
+    wait: true
+    wait_condition:
+      type: PodReadyCondition
+      status: "False"
+      reason: PodCompleted
+    wait_timeout: 30
+  register: primefaces_dns_test_result
+  when: primefaces_dns_test_pod is succeeded
+  failed_when: false
+
+- name: "PrimeFaces Prerequisites | Nettoyage du pod de test DNS"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: v1
+    kind: Pod
+    name: "lions-dns-test-{{ ansible_date_time.epoch }}"
+    namespace: "{{ lions_primefaces_namespace }}"
+  when: primefaces_dns_test_pod is succeeded
+  ignore_errors: yes
+
+- name: "PrimeFaces Prerequisites | Validation de la résolution DNS"
+  set_fact:
+    primefaces_prerequisites_checks: "{{ primefaces_prerequisites_checks | combine({'dns_resolution': primefaces_dns_test_result is succeeded}) }}"
+    primefaces_prerequisites_warnings: "{{ primefaces_prerequisites_warnings + ['DNSResolution: DNS resolution may not be working properly'] if primefaces_dns_test_result is failed else primefaces_prerequisites_warnings }}"
+
+# =========================================================================
+# VÉRIFICATION DES SERVICES EXTERNES
+# =========================================================================
+
+- name: "PrimeFaces Prerequisites | Vérification du service PostgreSQL"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Service
+    namespace: "{{ lions_postgres_namespace }}"
+    name: "{{ lions_postgres_service_name }}"
+  register: primefaces_postgres_service_check
+  when: lions_postgres_enabled | bool
+  failed_when: false
+
+- name: "PrimeFaces Prerequisites | Vérification du service Redis"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Service
+    namespace: "{{ lions_redis_namespace }}"
+    name: "{{ lions_redis_service_name }}"
+  register: primefaces_redis_service_check
+  when: lions_redis_enabled | bool
+  failed_when: false
+
+- name: "PrimeFaces Prerequisites | Vérification du service Keycloak"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Service
+    namespace: "{{ lions_keycloak_namespace }}"
+    name: "{{ lions_keycloak_service_name }}"
+  register: primefaces_keycloak_service_check
+  when: lions_keycloak_enabled | bool
+  failed_when: false
+
+- name: "PrimeFaces Prerequisites | Validation des services externes"
+  set_fact:
+    primefaces_external_services_ready: >-
+      {{ (not (lions_postgres_enabled | bool) or primefaces_postgres_service_check.resources | default([]) | length > 0) and
+         (not (lions_redis_enabled | bool) or primefaces_redis_service_check.resources | default([]) | length > 0) and
+         (not (lions_keycloak_enabled | bool) or primefaces_keycloak_service_check.resources | default([]) | length > 0) }}
+
+- name: "PrimeFaces Prerequisites | Mise à jour du statut des services externes"
+  set_fact:
+    primefaces_prerequisites_checks: "{{ primefaces_prerequisites_checks | combine({'external_services': primefaces_external_services_ready}) }}"
+    primefaces_prerequisites_errors: "{{ primefaces_prerequisites_errors + ['ExternalServices: Required external services are not available'] if not primefaces_external_services_ready else primefaces_prerequisites_errors }}"
+
+# =========================================================================
+# VÉRIFICATION DES SECRETS POUR PULL D'IMAGES
+# =========================================================================
+
+- name: "PrimeFaces Prerequisites | Vérification des secrets de pull d'images"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: "{{ lions_primefaces_namespace }}"
+    name: "{{ lions_image_pull_secret_name | default('regcred') }}"
+  register: primefaces_image_pull_secret_check
+  when: lions_image_pull_secret_required | default(false) | bool
+  failed_when: false
+
+- name: "PrimeFaces Prerequisites | Validation des secrets de pull d'images"
+  set_fact:
+    primefaces_prerequisites_checks: "{{ primefaces_prerequisites_checks | combine({'image_pull_secrets': (primefaces_image_pull_secret_check.resources | default([]) | length > 0) or not (lions_image_pull_secret_required | default(false) | bool)}) }}"
+    primefaces_prerequisites_warnings: "{{ primefaces_prerequisites_warnings + ['ImagePullSecrets: Image pull secrets not configured'] if (lions_image_pull_secret_required | default(false) | bool and primefaces_image_pull_secret_check.resources | default([]) | length == 0) else primefaces_prerequisites_warnings }}"
+
+# =========================================================================
+# VALIDATION GLOBALE DES PRÉREQUIS
+# =========================================================================
+
+- name: "PrimeFaces Prerequisites | Collecte des métriques de prérequis"
+  set_fact:
+    primefaces_prerequisites_metrics:
+      duration: "{{ (ansible_date_time.epoch | int) - (primefaces_prerequisites_start_time | int) }}"
+      checks_passed: "{{ primefaces_prerequisites_checks.values() | select('equalto', true) | list | length }}"
+      total_checks: "{{ primefaces_prerequisites_checks | length }}"
+      success_rate: "{{ ((primefaces_prerequisites_checks.values() | select('equalto', true) | list | length) / (primefaces_prerequisites_checks | length) * 100) | round(2) }}"
+      errors_count: "{{ primefaces_prerequisites_errors | length }}"
+      warnings_count: "{{ primefaces_prerequisites_warnings | length }}"
+      critical_checks_passed: >-
+        {{ primefaces_prerequisites_checks.kubernetes_access and
+           primefaces_prerequisites_checks.namespace_permissions and
+           primefaces_prerequisites_checks.external_services }}
+
+- name: "PrimeFaces Prerequisites | Rapport des prérequis"
+  debug:
+    msg:
+      - "📊 RAPPORT DE VÉRIFICATION DES PRÉREQUIS PRIMEFACES"
+      - "=================================================="
+      - "⏱️  Durée: {{ primefaces_prerequisites_metrics.duration }}s"
+      - "✅ Vérifications passées: {{ primefaces_prerequisites_metrics.checks_passed }}/{{ primefaces_prerequisites_metrics.total_checks }}"
+      - "📊 Taux de succès: {{ primefaces_prerequisites_metrics.success_rate }}%"
+      - "❌ Erreurs critiques: {{ primefaces_prerequisites_metrics.errors_count }}"
+      - "⚠️  Avertissements: {{ primefaces_prerequisites_metrics.warnings_count }}"
+      - ""
+      - "📋 Détail des vérifications:"
+      - "🔑 Accès Kubernetes: {{ '✅' if primefaces_prerequisites_checks.kubernetes_access else '❌' }}"
+      - "🏷️  Permissions namespace: {{ '✅' if primefaces_prerequisites_checks.namespace_permissions else '❌' }}"
+      - "📦 Registre conteneurs: {{ '✅' if primefaces_prerequisites_checks.container_registry else '⚠️' }}"
+      - "🌐 Contrôleur Ingress: {{ '✅' if primefaces_prerequisites_checks.ingress_controller else '⚠️' }}"
+      - "💾 Classes de stockage: {{ '✅' if primefaces_prerequisites_checks.storage_classes else '⚠️' }}"
+      - "📊 Stack de monitoring: {{ '✅' if primefaces_prerequisites_checks.monitoring_stack else '⚠️' }}"
+      - "🔒 Sécurité des pods: {{ '✅' if primefaces_prerequisites_checks.pod_security else '⚠️' }}"
+      - "🎭 Permissions RBAC: {{ '✅' if primefaces_prerequisites_checks.rbac_permissions else '⚠️' }}"
+      - "🌍 Résolution DNS: {{ '✅' if primefaces_prerequisites_checks.dns_resolution else '⚠️' }}"
+      - "🔗 Services externes: {{ '✅' if primefaces_prerequisites_checks.external_services else '❌' }}"
+      - "🔐 Secrets d'images: {{ '✅' if primefaces_prerequisites_checks.image_pull_secrets else '⚠️' }}"
+  tags:
+    - primefaces
+    - prerequisites
+    - report
+
+# =========================================================================
+# GESTION DES ÉCHECS CRITIQUES
+# =========================================================================
+
+- name: "PrimeFaces Prerequisites | Échec critique des prérequis"
   fail:
-    msg: "Droits d'accès insuffisants pour déployer dans le namespace {{ app_namespace }}"
-  when: access_check is failed
+    msg: |
+      ❌ Échec critique des prérequis PrimeFaces!
+      
+      🚨 Erreurs critiques détectées:
+      {% for error in primefaces_prerequisites_errors %}
+      - {{ error }}
+      {% endfor %}
+      
+      📋 Vérifications échouées:
+      {% for check, status in primefaces_prerequisites_checks.items() %}
+      {% if not status %}
+      - {{ check }}: FAILED
+      {% endif %}
+      {% endfor %}
+      
+      🔧 Actions requises:
+      1. Vérifiez l'accès au cluster Kubernetes
+      2. Configurez les permissions nécessaires
+      3. Assurez-vous que les services externes sont disponibles
+      4. Consultez la documentation: https://docs.lions.dev/infrastructure/primefaces/prerequisites
+  when: >
+    not primefaces_prerequisites_metrics.critical_checks_passed or
+    primefaces_prerequisites_metrics.errors_count > 0
 
-- name: Vérification de l'existence du registre Docker
-  k8s_info:
-    api_version: v1
-    kind: Service
-    name: registry
-    namespace: registry
-  register: registry_info
-  failed_when: registry_info.resources | length == 0
-
-- name: Vérification de l'existence de l'ingress controller
-  k8s_info:
-    api_version: v1
-    kind: Service
-    name: ingress-nginx-controller
-    namespace: ingress-nginx
-  register: ingress_info
-  ignore_errors: yes
-
-- name: Avertissement si l'ingress controller n'est pas trouvé
+- name: "PrimeFaces Prerequisites | Avertissements non bloquants"
   debug:
-    msg: "AVERTISSEMENT: L'ingress controller n'a pas été trouvé. L'application ne sera pas accessible via une URL."
-  when: ingress_info is failed or ingress_info.resources | length == 0
+    msg:
+      - "⚠️  Avertissements détectés (non bloquants):"
+      - "{{ primefaces_prerequisites_warnings | join('\n- ') if primefaces_prerequisites_warnings | length > 0 else 'Aucun avertissement' }}"
+      - ""
+      - "📋 Ces composants optionnels peuvent limiter certaines fonctionnalités"
+      - "🔧 Consultez la documentation pour les optimisations: https://docs.lions.dev/infrastructure/primefaces/optimization"
+  when: 
+    - primefaces_prerequisites_metrics.critical_checks_passed
+    - primefaces_prerequisites_metrics.warnings_count > 0
 
-- name: Vérification des prérequis spécifiques à PrimeFaces
+- name: "PrimeFaces Prerequisites | Succès des prérequis"
   debug:
-    msg: "Vérification des prérequis spécifiques à PrimeFaces"
+    msg:
+      - "🎉 Tous les prérequis PrimeFaces sont satisfaits!"
+      - "✅ Prêt pour le déploiement"
+      - "📊 Taux de succès: {{ primefaces_prerequisites_metrics.success_rate }}%"
+      - "🚀 Vous pouvez procéder au déploiement en toute sécurité"
+  when: 
+    - primefaces_prerequisites_metrics.critical_checks_passed
+    - primefaces_prerequisites_metrics.errors_count == 0
+    - primefaces_prerequisites_metrics.success_rate == 100
 
-- name: Vérification de la présence de Java
-  shell: "kubectl exec -n {{ app_namespace }} -l app=tools -- java -version"
-  register: java_check
-  ignore_errors: yes
-  changed_when: false
+# =========================================================================
+# EXPOSITION DES VARIABLES POUR LES PHASES SUIVANTES
+# =========================================================================
 
-- name: Avertissement si Java n'est pas disponible
-  debug:
-    msg: "AVERTISSEMENT: Java n'est pas disponible dans le cluster. Certaines fonctionnalités de PrimeFaces pourraient ne pas fonctionner correctement."
-  when: java_check is failed
+- name: "PrimeFaces Prerequisites | Exposition des variables de prérequis"
+  set_fact:
+    primefaces_prerequisites_validated: "{{ primefaces_prerequisites_metrics.critical_checks_passed }}"
+    primefaces_prerequisites_success_rate: "{{ primefaces_prerequisites_metrics.success_rate }}"
+    primefaces_monitoring_available: "{{ primefaces_prerequisites_checks.monitoring_stack }}"
+    primefaces_ingress_available: "{{ primefaces_prerequisites_checks.ingress_controller }}"
+    primefaces_storage_available: "{{ primefaces_prerequisites_checks.storage_classes }}"
+    primefaces_external_services_ready: "{{ primefaces_prerequisites_checks.external_services }}"
+  tags:
+    - primefaces
+    - prerequisites
+    - variables

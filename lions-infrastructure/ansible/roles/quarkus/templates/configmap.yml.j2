@@ -1,37 +1,293 @@
----
-# Titre: Template de ConfigMap Kubernetes pour Quarkus
-# Description: Définit la ConfigMap Kubernetes pour une application Quarkus
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+  # LIONS INFRASTRUCTURE 5.0 - QUARKUS CONFIGMAP TEMPLATE
+  # =========================================================================
+  # Description: Template Jinja2 pour la ConfigMap Kubernetes des applications Quarkus
+  # Composant: Quarkus Application Configuration
+  # Version: 5.0.0
+  # Maintainer: DevOps LIONS Team
+  # Documentation: https://docs.lions.dev/infrastructure/quarkus/configuration
+  # =========================================================================
 
+---
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: "{{ app_name }}-config"
-  namespace: "{{ app_namespace }}"
+  name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-config"
+  namespace: "{{ lions_quarkus_namespace }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "quarkus"
+    # Labels standards LIONS
+    app.kubernetes.io/name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
+    app.kubernetes.io/instance: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-{{ lions_environment }}"
+    app.kubernetes.io/version: "{{ lions_quarkus_app_version | default('latest') }}"
+    app.kubernetes.io/component: "backend"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+
+    # Labels spécifiques à l'application
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/technology: "quarkus"
+    lions.dev/tier: "application"
+    lions.dev/monitoring: "{{ lions_monitoring_enabled | lower }}"
+
+    # Labels pour le déploiement
+    deployment.lions.dev/strategy: "{{ lions_quarkus_deployment_strategy | default('RollingUpdate') }}"
+    deployment.lions.dev/config-version: "{{ lions_config_version }}"
+
   annotations:
-    description: "ConfigMap pour l'application {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    # Annotations de documentation
+    description: "ConfigMap pour l'application Quarkus {{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
+    lions.dev/documentation: "https://docs.lions.dev/infrastructure/quarkus"
+    lions.dev/config-checksum: "{{ ansible_date_time.epoch }}"
+
+    # Annotations pour la configuration
+    config.lions.dev/last-updated: "{{ ansible_date_time.iso8601 }}"
+    config.lions.dev/environment: "{{ lions_environment }}"
+    config.lions.dev/managed-by: "lions-infrastructure-ansible"
+
 data:
-  # Variables d'environnement pour l'application
-  QUARKUS_PROFILE: "{{ app_environment }}"
-  QUARKUS_HTTP_PORT: "{{ quarkus_default_port }}"
-  QUARKUS_APPLICATION_NAME: "{{ app_name }}"
-  QUARKUS_APPLICATION_VERSION: "{{ app_version }}"
+  # =========================================================================
+  # CONFIGURATION QUARKUS - APPLICATION DE BASE
+  # =========================================================================
 
-  # Variables spécifiques à l'environnement
-  QUARKUS_LOG_LEVEL: "{% if app_environment == 'production' %}WARN{% elif app_environment == 'staging' %}INFO{% else %}DEBUG{% endif %}"
-  QUARKUS_SWAGGER_UI_ENABLED: "{% if app_environment == 'production' %}false{% else %}true{% endif %}"
+  # Configuration du profil Quarkus
+  QUARKUS_PROFILE: "{{ lions_environment }}"
 
-  # Variables pour le monitoring
+  # Configuration de l'application
+  QUARKUS_APPLICATION_NAME: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
+  QUARKUS_APPLICATION_VERSION: "{{ lions_quarkus_app_version | default('1.0.0') }}"
+  QUARKUS_APPLICATION_DESCRIPTION: "{{ lions_quarkus_app_description | default('LIONS Quarkus Application') }}"
+
+  # Configuration du serveur HTTP
+  QUARKUS_HTTP_HOST: "0.0.0.0"
+  QUARKUS_HTTP_PORT: "{{ lions_quarkus_port }}"
+  QUARKUS_HTTP_ROOT_PATH: "{{ lions_quarkus_context_path | default('/') }}"
+
+  # Configuration HTTPS (si activé)
+{% if lions_security_tls_enabled | bool %}
+  QUARKUS_HTTP_SSL_PORT: "{{ lions_quarkus_ssl_port | default('8443') }}"
+  QUARKUS_HTTP_INSECURE_REQUESTS: "{{ lions_quarkus_redirect_to_https | default('redirect') | lower }}"
+{% endif %}
+
+  # =========================================================================
+  # CONFIGURATION LOGGING
+  # =========================================================================
+
+  # Niveau de log selon l'environnement
+  QUARKUS_LOG_LEVEL: "{{ lions_log_level }}"
+  QUARKUS_LOG_CONSOLE_ENABLE: "true"
+  QUARKUS_LOG_CONSOLE_FORMAT: "{% if lions_log_format == 'json' %}%d{yyyy-MM-dd HH:mm:ss} %-5p [%c{2.}] (%t) %X{traceId} %X{spanId} %s%e%n{% else %}%d{HH:mm:ss} %-5p [%c{2.}] (%t) %s%e%n{% endif %}"
+  QUARKUS_LOG_CONSOLE_JSON: "{{ (lions_log_format == 'json') | lower }}"
+
+  # Configuration des loggers spécifiques
+  QUARKUS_LOG_CATEGORY_"io.quarkus"_LEVEL: "{{ 'DEBUG' if lions_environment == 'development' else 'INFO' }}"
+  QUARKUS_LOG_CATEGORY_"org.hibernate"_LEVEL: "{{ 'DEBUG' if lions_environment == 'development' else 'WARN' }}"
+  QUARKUS_LOG_CATEGORY_"liquibase"_LEVEL: "{{ 'DEBUG' if lions_environment == 'development' else 'INFO' }}"
+
+  # Configuration des logs d'audit (si activé)
+{% if lions_audit_enabled | bool %}
+  QUARKUS_LOG_CATEGORY_"lions.audit"_LEVEL: "{{ lions_audit_log_level }}"
+  LIONS_AUDIT_ENABLED: "true"
+  LIONS_AUDIT_LOG_REQUESTS: "{{ lions_quarkus_audit_requests | default('true') }}"
+{% endif %}
+
+  # =========================================================================
+  # CONFIGURATION BASE DE DONNÉES
+  # =========================================================================
+
+{% if lions_postgres_enabled | bool %}
+  # Configuration PostgreSQL
+  QUARKUS_DATASOURCE_DB_KIND: "postgresql"
+  QUARKUS_DATASOURCE_JDBC_URL: "jdbc:postgresql://{{ lions_postgres_service_name }}.{{ lions_postgres_namespace }}.svc.cluster.local:{{ lions_postgres_port }}/{{ lions_postgres_database }}"
+  QUARKUS_DATASOURCE_USERNAME: "{{ lions_quarkus_db_username | default('quarkus_user') }}"
+  # Le mot de passe sera injecté via un Secret
+
+  # Configuration du pool de connexions
+  QUARKUS_DATASOURCE_JDBC_INITIAL_SIZE: "{{ lions_quarkus_db_pool_initial | default('5') }}"
+  QUARKUS_DATASOURCE_JDBC_MIN_SIZE: "{{ lions_quarkus_db_pool_min | default('5') }}"
+  QUARKUS_DATASOURCE_JDBC_MAX_SIZE: "{{ lions_quarkus_db_pool_max | default('20') }}"
+
+  # Configuration Hibernate
+  QUARKUS_HIBERNATE_ORM_DATABASE_GENERATION: "{{ 'drop-and-create' if lions_environment == 'development' else 'validate' }}"
+  QUARKUS_HIBERNATE_ORM_SQL_LOAD_SCRIPT: "{{ lions_quarkus_db_init_script | default('import.sql') if lions_environment == 'development' else 'no-file' }}"
+  QUARKUS_HIBERNATE_ORM_LOG_SQL: "{{ (lions_environment == 'development') | lower }}"
+  QUARKUS_HIBERNATE_ORM_LOG_BIND_PARAMETERS: "{{ (lions_environment == 'development') | lower }}"
+{% endif %}
+
+{% if lions_redis_enabled | bool %}
+  # Configuration Redis
+  QUARKUS_REDIS_HOSTS: "redis://{{ lions_redis_service_name }}.{{ lions_redis_namespace }}.svc.cluster.local:{{ lions_redis_port }}"
+  QUARKUS_REDIS_CLIENT_TYPE: "{{ lions_quarkus_redis_client_type | default('standalone') }}"
+  QUARKUS_REDIS_TIMEOUT: "{{ lions_quarkus_redis_timeout | default('10s') }}"
+{% endif %}
+
+  # =========================================================================
+  # CONFIGURATION SÉCURITÉ
+  # =========================================================================
+
+{% if lions_keycloak_enabled | bool %}
+  # Configuration Keycloak/OIDC
+  QUARKUS_OIDC_AUTH_SERVER_URL: "https://{{ lions_keycloak_service_name }}.{{ lions_dns_full_domain }}/realms/{{ lions_keycloak_realm }}"
+  QUARKUS_OIDC_CLIENT_ID: "{{ lions_quarkus_oidc_client_id | default(lions_quarkus_app_name | default(lions_quarkus_service_name)) }}"
+  QUARKUS_OIDC_APPLICATION_TYPE: "{{ lions_quarkus_oidc_app_type | default('service') }}"
+  QUARKUS_OIDC_ROLES_ROLE_CLAIM_PATH: "realm_access/roles"
+
+  # Configuration JWT
+  QUARKUS_SMALLRYE_JWT_SIGN_KEY_LOCATION: "{{ lions_quarkus_jwt_public_key_path | default('/app/config/jwt-public-key.pem') }}"
+  MP_JWT_VERIFY_PUBLICKEY_LOCATION: "{{ lions_quarkus_jwt_public_key_path | default('/app/config/jwt-public-key.pem') }}"
+  MP_JWT_VERIFY_ISSUER: "https://{{ lions_keycloak_service_name }}.{{ lions_dns_full_domain }}/realms/{{ lions_keycloak_realm }}"
+{% endif %}
+
+  # Configuration CORS
+  QUARKUS_HTTP_CORS: "{{ lions_quarkus_cors_enabled | default('true') }}"
+{% if lions_quarkus_cors_enabled | default(true) | bool %}
+  QUARKUS_HTTP_CORS_ORIGINS: "{{ lions_quarkus_cors_origins | default('*') }}"
+  QUARKUS_HTTP_CORS_METHODS: "{{ lions_quarkus_cors_methods | default('GET,POST,PUT,DELETE,OPTIONS') }}"
+  QUARKUS_HTTP_CORS_HEADERS: "{{ lions_quarkus_cors_headers | default('*') }}"
+{% endif %}
+
+  # =========================================================================
+  # CONFIGURATION MONITORING ET OBSERVABILITÉ
+  # =========================================================================
+
+{% if lions_monitoring_enabled | bool %}
+  # Configuration Prometheus/Micrometer
   QUARKUS_MICROMETER_EXPORT_PROMETHEUS_ENABLED: "true"
-  QUARKUS_MICROMETER_EXPORT_PROMETHEUS_PATH: "{{ quarkus_prometheus_path }}"
+  QUARKUS_MICROMETER_EXPORT_PROMETHEUS_PATH: "/metrics"
+  QUARKUS_MICROMETER_BINDER_JVM: "true"
+  QUARKUS_MICROMETER_BINDER_SYSTEM: "true"
+  QUARKUS_MICROMETER_BINDER_HTTP_SERVER: "true"
 
-  # Variables pour la santé
+  # Configuration des métriques personnalisées
+  LIONS_METRICS_ENABLED: "true"
+  LIONS_METRICS_DATABASE_ENABLED: "{{ lions_postgres_enabled | lower }}"
+  LIONS_METRICS_CACHE_ENABLED: "{{ lions_redis_enabled | lower }}"
+  LIONS_METRICS_CUSTOM_LABELS: "environment={{ lions_environment }},application={{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
+{% endif %}
+
+  # Configuration Health Checks
   QUARKUS_HEALTH_EXTENSIONS_ENABLED: "true"
-  QUARKUS_HEALTH_OPENAPI_INCLUDED: "true"
+  QUARKUS_HEALTH_OPENAPI_INCLUDED: "{{ (lions_environment != 'production') | lower }}"
+  QUARKUS_HEALTH_UI_ENABLED: "{{ (lions_environment != 'production') | lower }}"
+
+  # Configuration Tracing (si activé)
+{% if lions_quarkus_tracing_enabled | default(false) | bool %}
+  QUARKUS_JAEGER_ENABLED: "true"
+  QUARKUS_JAEGER_SERVICE_NAME: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
+  QUARKUS_JAEGER_SAMPLER_TYPE: "{{ lions_quarkus_tracing_sampler_type | default('const') }}"
+  QUARKUS_JAEGER_SAMPLER_PARAM: "{{ lions_quarkus_tracing_sampler_param | default('1') }}"
+{% endif %}
+
+  # =========================================================================
+  # CONFIGURATION DÉVELOPPEMENT
+  # =========================================================================
+
+{% if lions_environment == 'development' %}
+  # Configuration spécifique au développement
+  QUARKUS_DEV_SERVICES_ENABLED: "false"  # Désactivé car on utilise nos propres services
+  QUARKUS_LIVE_RELOAD_ENABLED: "false"   # Désactivé en conteneur
+
+  # Configuration Swagger/OpenAPI
+  QUARKUS_SWAGGER_UI_ENABLE: "true"
+  QUARKUS_SWAGGER_UI_PATH: "/swagger-ui"
+  QUARKUS_SWAGGER_UI_ALWAYS_INCLUDE: "true"
+  QUARKUS_OPENAPI_PATH: "/openapi"
+
+  # Configuration GraphQL (si activé)
+{% if lions_quarkus_graphql_enabled | default(false) | bool %}
+  QUARKUS_SMALLRYE_GRAPHQL_UI_ENABLE: "true"
+  QUARKUS_SMALLRYE_GRAPHQL_UI_PATH: "/graphql-ui"
+{% endif %}
+
+{% else %}
+  # Configuration pour staging/production
+  QUARKUS_SWAGGER_UI_ENABLE: "false"
+  QUARKUS_OPENAPI_PATH: ""
+{% if lions_quarkus_graphql_enabled | default(false) | bool %}
+  QUARKUS_SMALLRYE_GRAPHQL_UI_ENABLE: "false"
+{% endif %}
+{% endif %}
+
+  # =========================================================================
+  # CONFIGURATION PERFORMANCE
+  # =========================================================================
+
+  # Configuration des threads
+  QUARKUS_THREAD_POOL_CORE_THREADS: "{{ lions_quarkus_thread_pool_core | default('1') }}"
+  QUARKUS_THREAD_POOL_MAX_THREADS: "{{ lions_quarkus_thread_pool_max | default('8') }}"
+  QUARKUS_THREAD_POOL_QUEUE_SIZE: "{{ lions_quarkus_thread_pool_queue | default('1000') }}"
+
+  # Configuration de la JVM
+  JAVA_OPTS: "{{ lions_quarkus_java_opts | default('-Xmx512m -Xms256m') }}"
+  JAVA_ENABLE_DEBUG: "{{ (lions_environment == 'development') | lower }}"
+
+  # Configuration du cache (si activé)
+{% if lions_quarkus_cache_enabled | default(false) | bool %}
+  QUARKUS_CACHE_CAFFEINE_"default"_INITIAL_CAPACITY: "{{ lions_quarkus_cache_initial_capacity | default('100') }}"
+  QUARKUS_CACHE_CAFFEINE_"default"_MAXIMUM_SIZE: "{{ lions_quarkus_cache_maximum_size | default('1000') }}"
+  QUARKUS_CACHE_CAFFEINE_"default"_EXPIRE_AFTER_WRITE: "{{ lions_quarkus_cache_expire_after_write | default('10M') }}"
+{% endif %}
+
+  # =========================================================================
+  # CONFIGURATION INTÉGRATIONS EXTERNES
+  # =========================================================================
+
+  # Configuration des clients REST
+  QUARKUS_REST_CLIENT_LOGGING_SCOPE: "{{ 'request-response' if lions_environment == 'development' else 'none' }}"
+  QUARKUS_REST_CLIENT_LOGGING_BODY_LIMIT: "{{ lions_quarkus_rest_client_body_limit | default('1024') }}"
+
+  # Configuration des timeouts
+  QUARKUS_HTTP_READ_TIMEOUT: "{{ lions_timeout_default }}s"
+  QUARKUS_HTTP_WRITE_TIMEOUT: "{{ lions_timeout_default }}s"
+
+  # Configuration spécifique à l'application
+{% if lions_quarkus_custom_config is defined %}
+{% for key, value in lions_quarkus_custom_config.items() %}
+  {{ key }}: "{{ value }}"
+{% endfor %}
+{% endif %}
+
+  # =========================================================================
+  # VARIABLES D'ENVIRONNEMENT LIONS SPÉCIFIQUES
+  # =========================================================================
+
+  # Informations sur l'infrastructure LIONS
+  LIONS_INFRASTRUCTURE_VERSION: "{{ lions_config_version }}"
+  LIONS_ENVIRONMENT: "{{ lions_environment }}"
+  LIONS_DEPLOYMENT_MODE: "{{ lions_deployment_mode }}"
+  LIONS_DNS_DOMAIN: "{{ lions_dns_full_domain }}"
+
+  # Configuration des services LIONS
+  LIONS_POSTGRES_ENABLED: "{{ lions_postgres_enabled | lower }}"
+  LIONS_REDIS_ENABLED: "{{ lions_redis_enabled | lower }}"
+  LIONS_KEYCLOAK_ENABLED: "{{ lions_keycloak_enabled | lower }}"
+  LIONS_MONITORING_ENABLED: "{{ lions_monitoring_enabled | lower }}"
+  LIONS_VAULT_ENABLED: "{{ lions_vault_enabled | lower }}"
+
+  # URLs des services internes
+{% if lions_vault_enabled | bool %}
+  LIONS_VAULT_URL: "{{ lions_vault_addr }}"
+{% endif %}
+{% if lions_keycloak_enabled | bool %}
+  LIONS_KEYCLOAK_URL: "https://{{ lions_keycloak_service_name }}.{{ lions_dns_full_domain }}"
+{% endif %}
+{% if lions_gitea_enabled | bool %}
+  LIONS_GITEA_URL: "https://{{ lions_gitea_service_name }}.{{ lions_dns_full_domain }}"
+{% endif %}
+{% if lions_registry_enabled | bool %}
+  LIONS_REGISTRY_URL: "https://{{ lions_registry_service_name }}.{{ lions_dns_full_domain }}"
+{% endif %}
+
+  # =========================================================================
+  # CONFIGURATION DE DÉBOGAGE
+  # =========================================================================
+
+{% if lions_debug_mode | bool %}
+  # Variables de débogage
+  LIONS_DEBUG_MODE: "true"
+  QUARKUS_LOG_CONSOLE_DARKEN: "1"
+
+  # Informations sur la configuration
+  LIONS_CONFIG_LOADED_AT: "{{ ansible_date_time.iso8601 }}"
+  LIONS_CONFIG_SOURCE: "ansible-template"
+  LIONS_CONFIG_TEMPLATE_VERSION: "5.0.0"
+{% endif %}

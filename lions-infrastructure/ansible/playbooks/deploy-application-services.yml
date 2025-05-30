@@ -1,406 +1,532 @@
 ---
-# Titre: Playbook de Déploiement des Services d'Application
-# Description: Déploie les services d'application (Afterwork, API, Associations, BTP, Immobilier, etc.)
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-16
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - DÉPLOIEMENT DES SERVICES D'APPLICATION
+# =========================================================================
+# Description: Playbook pour le déploiement des services applicatifs métier
+# Auteur: Équipe DevOps LIONS Infrastructure
+# Version: 5.0.0
+# Date: 2025-05-26
+# Documentation: https://docs.lions.dev/infrastructure/playbooks/deploy-applications
+# =========================================================================
 
-- name: Déploiement des Services d'Application
-  hosts: vps
-  become: yes
-  gather_facts: yes
+- name: "LIONS Infrastructure 5.0 - Déploiement des Services d'Application"
+  hosts: "{{ lions_target_hosts | default('lions_cluster') }}"
+  become: true
+  gather_facts: true
+  serial: "{{ lions_deployment_serial | default('100%') }}"
+  max_fail_percentage: "{{ lions_max_fail_percentage | default(0) }}"
+
+  # =========================================================================
+  # VARIABLES GLOBALES DU PLAYBOOK
+  # =========================================================================
   vars:
-    deploy_environment: "{{ target_env | default('development') }}"
-    roles_path: "{{ playbook_dir }}/../roles"
-    base_domain: "lions.dev"
-    api_domain: "api.lions.dev"
+    # Métadonnées du déploiement
+    playbook_version: "5.0.0"
+    playbook_name: "deploy-application-services"
+    deployment_timestamp: "{{ ansible_date_time.iso8601 }}"
 
+    # Configuration de l'environnement cible
+    target_environment: "{{ lions_environment | default('development') }}"
+    deployment_mode: "{{ lions_deployment_mode | default('standard') }}"
+
+    # Configuration des domaines (depuis les variables d'environnement)
+    base_domain: "{{ lions_dns_domain_base }}"
+    full_domain: "{{ lions_dns_full_domain }}"
+    api_subdomain: "api.{{ full_domain }}"
+
+    # Configuration des namespaces
+    application_namespace_prefix: "{{ lions_applications_namespace_prefix | default('apps') }}"
+
+    # Configuration des ressources par défaut
+    default_resources:
+      small:
+        requests:
+          cpu: "{{ lions_resources_small_cpu_request }}"
+          memory: "{{ lions_resources_small_memory_request }}"
+        limits:
+          cpu: "{{ lions_resources_small_cpu_limit }}"
+          memory: "{{ lions_resources_small_memory_limit }}"
+      medium:
+        requests:
+          cpu: "{{ lions_resources_medium_cpu_request }}"
+          memory: "{{ lions_resources_medium_memory_request }}"
+        limits:
+          cpu: "{{ lions_resources_medium_cpu_limit }}"
+          memory: "{{ lions_resources_medium_memory_limit }}"
+      large:
+        requests:
+          cpu: "{{ lions_resources_large_cpu_request }}"
+          memory: "{{ lions_resources_large_memory_request }}"
+        limits:
+          cpu: "{{ lions_resources_large_cpu_limit }}"
+          memory: "{{ lions_resources_large_memory_limit }}"
+
+    # Configuration TLS
+    tls_enabled: "{{ lions_security_tls_enabled }}"
+    tls_issuer: "{{ 'letsencrypt-staging' if lions_security_tls_staging else 'letsencrypt-prod' }}"
+
+    # Liste des applications métier à déployer
+    lions_applications:
+      # APIs Backend
+      - name: "site-principal-api"
+        type: "quarkus"
+        namespace: "{{ application_namespace_prefix }}-backend"
+        domain: "{{ full_domain }}"
+        port: 8080
+        path: "/"
+        resources: "medium"
+        replicas: "{{ lions_site_principal_replicas | default(2) }}"
+        enabled: "{{ lions_site_principal_enabled | default(true) }}"
+
+      - name: "api-principale"
+        type: "quarkus"
+        namespace: "{{ application_namespace_prefix }}-backend"
+        domain: "{{ api_subdomain }}"
+        port: 8081
+        path: "/portail"
+        resources: "medium"
+        replicas: "{{ lions_api_principale_replicas | default(2) }}"
+        enabled: "{{ lions_api_principale_enabled | default(true) }}"
+
+      - name: "associations-api"
+        type: "quarkus"
+        namespace: "{{ application_namespace_prefix }}-backend"
+        domain: "{{ api_subdomain }}"
+        port: 8082
+        path: "/associations"
+        resources: "small"
+        replicas: "{{ lions_associations_api_replicas | default(1) }}"
+        enabled: "{{ lions_associations_api_enabled | default(true) }}"
+
+      - name: "afterwork-api"
+        type: "quarkus"
+        namespace: "{{ application_namespace_prefix }}-backend"
+        domain: "{{ api_subdomain }}"
+        port: 8083
+        path: "/afterwork"
+        resources: "small"
+        replicas: "{{ lions_afterwork_api_replicas | default(1) }}"
+        enabled: "{{ lions_afterwork_api_enabled | default(true) }}"
+
+      - name: "bacy-event-api"
+        type: "quarkus"
+        namespace: "{{ application_namespace_prefix }}-backend"
+        domain: "{{ api_subdomain }}"
+        port: 8084
+        path: "/bacy-event"
+        resources: "small"
+        replicas: "{{ lions_bacy_event_api_replicas | default(1) }}"
+        enabled: "{{ lions_bacy_event_api_enabled | default(true) }}"
+
+      - name: "btp-api"
+        type: "quarkus"
+        namespace: "{{ application_namespace_prefix }}-backend"
+        domain: "{{ api_subdomain }}"
+        port: 8087
+        path: "/btp"
+        resources: "small"
+        replicas: "{{ lions_btp_api_replicas | default(1) }}"
+        enabled: "{{ lions_btp_api_enabled | default(true) }}"
+
+      - name: "immobilier-api"
+        type: "quarkus"
+        namespace: "{{ application_namespace_prefix }}-backend"
+        domain: "{{ api_subdomain }}"
+        port: 8088
+        path: "/immobilier"
+        resources: "small"
+        replicas: "{{ lions_immobilier_api_replicas | default(1) }}"
+        enabled: "{{ lions_immobilier_api_enabled | default(true) }}"
+
+      - name: "mail-api"
+        type: "quarkus"
+        namespace: "{{ application_namespace_prefix }}-backend"
+        domain: "{{ api_subdomain }}"
+        port: 8026
+        path: "/mail"
+        resources: "small"
+        replicas: "{{ lions_mail_api_replicas | default(1) }}"
+        enabled: "{{ lions_mail_api_enabled | default(true) }}"
+
+      # Applications Frontend
+      - name: "afterwork-app"
+        type: "quarkus"
+        namespace: "{{ application_namespace_prefix }}-frontend"
+        domain: "afterwork.{{ full_domain }}"
+        port: 8091
+        path: "/"
+        resources: "medium"
+        replicas: "{{ lions_afterwork_app_replicas | default(2) }}"
+        enabled: "{{ lions_afterwork_app_enabled | default(true) }}"
+
+      - name: "associations-app"
+        type: "quarkus"
+        namespace: "{{ application_namespace_prefix }}-frontend"
+        domain: "associations.{{ full_domain }}"
+        port: 8090
+        path: "/"
+        resources: "medium"
+        replicas: "{{ lions_associations_app_replicas | default(2) }}"
+        enabled: "{{ lions_associations_app_enabled | default(true) }}"
+
+      - name: "btp-app"
+        type: "quarkus"
+        namespace: "{{ application_namespace_prefix }}-frontend"
+        domain: "btp.{{ full_domain }}"
+        port: 8086
+        path: "/"
+        resources: "medium"
+        replicas: "{{ lions_btp_app_replicas | default(2) }}"
+        enabled: "{{ lions_btp_app_enabled | default(true) }}"
+
+      - name: "immobilier-app"
+        type: "quarkus"
+        namespace: "{{ application_namespace_prefix }}-frontend"
+        domain: "immobilier.{{ full_domain }}"
+        port: 8089
+        path: "/"
+        resources: "medium"
+        replicas: "{{ lions_immobilier_app_replicas | default(2) }}"
+        enabled: "{{ lions_immobilier_app_enabled | default(true) }}"
+
+      # Services Utilitaires
+      - name: "mail-service"
+        type: "quarkus"
+        namespace: "{{ application_namespace_prefix }}-services"
+        domain: "mail.{{ full_domain }}"
+        port: 8025
+        path: "/"
+        resources: "small"
+        replicas: "{{ lions_mail_service_replicas | default(1) }}"
+        enabled: "{{ lions_mail_service_enabled | default(true) }}"
+
+  # =========================================================================
+  # TÂCHES DE PRÉ-VÉRIFICATION
+  # =========================================================================
   pre_tasks:
-    - name: Installation des dépendances Python requises
+    - name: "🔍 Validation de la configuration d'environnement"
+      block:
+        - name: "Vérification des variables d'environnement critiques"
+          assert:
+            that:
+              - lions_environment is defined
+              - lions_dns_domain_base is defined
+              - lions_dns_full_domain is defined
+              - target_environment in ['development', 'staging', 'production']
+            fail_msg: "Variables d'environnement critiques manquantes ou invalides"
+            success_msg: "✅ Variables d'environnement validées"
+
+        - name: "Vérification de la connectivité Kubernetes"
+          k8s_info:
+            api_version: v1
+            kind: Node
+          register: k8s_nodes
+          failed_when: k8s_nodes.resources | length == 0
+
+        - name: "Affichage des informations de déploiement"
+          debug:
+            msg:
+              - "🚀 Démarrage du déploiement des services d'application"
+              - "📊 Environnement: {{ target_environment }}"
+              - "🌐 Domaine de base: {{ base_domain }}"
+              - "🌐 Domaine complet: {{ full_domain }}"
+              - "🔧 Mode de déploiement: {{ deployment_mode }}"
+              - "📅 Horodatage: {{ deployment_timestamp }}"
+              - "🎯 Nœuds Kubernetes: {{ k8s_nodes.resources | length }}"
+
+      tags: ['validation', 'pre-checks']
+
+    - name: "📦 Installation des dépendances Python requises"
       pip:
         name:
-          - kubernetes
-          - PyYAML
-          - jsonpatch
+          - kubernetes>=24.2.0
+          - PyYAML>=6.0
+          - jsonpatch>=1.32
+          - jmespath>=1.0.1
         state: present
-      become: yes
+        extra_args: "--upgrade"
+      become: true
+      tags: ['dependencies']
 
+    - name: "🔧 Vérification des outils requis"
+      command: "{{ item.command }}"
+      register: tool_check
+      failed_when: tool_check.rc != 0
+      loop:
+        - { name: "kubectl", command: "kubectl version --client" }
+        - { name: "helm", command: "helm version" }
+      loop_control:
+        label: "{{ item.name }}"
+      tags: ['tools-check']
+
+  # =========================================================================
+  # TÂCHES PRINCIPALES DE DÉPLOIEMENT
+  # =========================================================================
   tasks:
-    - name: Affichage des informations de déploiement
+    - name: "🏗️ Création des namespaces pour les applications"
+      include_tasks: "../tasks/create-namespace.yml"
+      vars:
+        namespace_name: "{{ item }}"
+        namespace_labels:
+          app.kubernetes.io/managed-by: "lions-infrastructure"
+          lions.dev/environment: "{{ target_environment }}"
+          lions.dev/component: "applications"
+      loop:
+        - "{{ application_namespace_prefix }}-backend"
+        - "{{ application_namespace_prefix }}-frontend"
+        - "{{ application_namespace_prefix }}-services"
+      tags: ['namespaces']
+
+    - name: "🚀 Déploiement des applications métier"
+      include_tasks: "../tasks/deploy-application.yml"
+      vars:
+        app_config: "{{ item }}"
+        app_environment: "{{ target_environment }}"
+        app_resources: "{{ default_resources[item.resources] }}"
+        app_tls_enabled: "{{ tls_enabled }}"
+        app_tls_issuer: "{{ tls_issuer }}"
+      loop: "{{ lions_applications }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: item.enabled | default(true)
+      tags: ['applications', 'deploy']
+
+    - name: "🔧 Configuration des services d'infrastructure exposés"
+      include_tasks: "../tasks/configure-infrastructure-ingress.yml"
+      vars:
+        service_config:
+          - name: "kubernetes-dashboard"
+            namespace: "kubernetes-dashboard"
+            domain: "k8s.{{ full_domain }}"
+            service_name: "kubernetes-dashboard"
+            service_port: 443
+            path: "/"
+            enabled: "{{ lions_k8s_dashboard_enabled | default(true) }}"
+
+          - name: "gitea"
+            namespace: "{{ lions_gitea_namespace }}"
+            domain: "git.{{ full_domain }}"
+            service_name: "{{ lions_gitea_service_name }}"
+            service_port: "{{ lions_gitea_port }}"
+            path: "/"
+            enabled: "{{ lions_gitea_enabled }}"
+
+          - name: "pgadmin"
+            namespace: "{{ lions_postgres_namespace }}"
+            domain: "pgadmin.{{ full_domain }}"
+            service_name: "pgadmin"
+            service_port: 80
+            path: "/"
+            enabled: "{{ lions_pgadmin_enabled | default(false) }}"
+
+          - name: "keycloak"
+            namespace: "{{ lions_keycloak_namespace }}"
+            domain: "auth.{{ full_domain }}"
+            service_name: "{{ lions_keycloak_service_name }}"
+            service_port: "{{ lions_keycloak_port }}"
+            path: "/"
+            enabled: "{{ lions_keycloak_enabled }}"
+
+          - name: "prometheus"
+            namespace: "{{ lions_monitoring_namespace }}"
+            domain: "prometheus.{{ full_domain }}"
+            service_name: "prometheus-kube-prometheus-prometheus"
+            service_port: 9090
+            path: "/"
+            enabled: "{{ lions_prometheus_enabled and lions_monitoring_enabled }}"
+
+          - name: "grafana"
+            namespace: "{{ lions_monitoring_namespace }}"
+            domain: "grafana.{{ full_domain }}"
+            service_name: "prometheus-grafana"
+            service_port: 80
+            path: "/"
+            enabled: "{{ lions_grafana_enabled and lions_monitoring_enabled }}"
+
+          - name: "vault"
+            namespace: "{{ lions_vault_namespace }}"
+            domain: "vault.{{ full_domain }}"
+            service_name: "{{ lions_vault_service_name }}"
+            service_port: "{{ lions_vault_port }}"
+            path: "/"
+            enabled: "{{ lions_vault_enabled }}"
+      tags: ['infrastructure', 'ingress']
+
+    - name: "🔍 Vérification du statut des déploiements"
+      include_tasks: "../tasks/verify-deployment.yml"
+      vars:
+        app_name: "{{ item.name }}"
+        app_namespace: "{{ item.namespace }}"
+        expected_replicas: "{{ item.replicas }}"
+      loop: "{{ lions_applications }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: item.enabled | default(true)
+      tags: ['verification', 'health-check']
+
+    - name: "📊 Configuration du monitoring des applications"
+      include_tasks: "../tasks/configure-application-monitoring.yml"
+      vars:
+        monitoring_config:
+          namespace: "{{ lions_monitoring_namespace }}"
+          scrape_interval: "{{ lions_monitoring_scrape_interval | default('30s') }}"
+          applications: "{{ lions_applications | selectattr('enabled', 'equalto', true) | list }}"
+      when: lions_monitoring_enabled | default(true)
+      tags: ['monitoring']
+
+  # =========================================================================
+  # TÂCHES DE POST-DÉPLOIEMENT
+  # =========================================================================
+  post_tasks:
+    - name: "📋 Génération du rapport de déploiement"
+      block:
+        - name: "Collecte des informations de déploiement"
+          set_fact:
+            deployment_summary:
+              timestamp: "{{ deployment_timestamp }}"
+              environment: "{{ target_environment }}"
+              total_applications: "{{ lions_applications | length }}"
+              enabled_applications: "{{ lions_applications | selectattr('enabled', 'equalto', true) | list | length }}"
+              base_domain: "{{ base_domain }}"
+              full_domain: "{{ full_domain }}"
+              tls_enabled: "{{ tls_enabled }}"
+              monitoring_enabled: "{{ lions_monitoring_enabled | default(true) }}"
+
+        - name: "Affichage du résumé de déploiement"
+          debug:
+            msg:
+              - "🎉 Déploiement des services d'application terminé avec succès"
+              - "📊 Résumé du déploiement:"
+              - "  - Environnement: {{ deployment_summary.environment }}"
+              - "  - Applications totales: {{ deployment_summary.total_applications }}"
+              - "  - Applications activées: {{ deployment_summary.enabled_applications }}"
+              - "  - Domaine principal: {{ deployment_summary.full_domain }}"
+              - "  - TLS activé: {{ deployment_summary.tls_enabled }}"
+              - "  - Monitoring activé: {{ deployment_summary.monitoring_enabled }}"
+              - "  - Horodatage: {{ deployment_summary.timestamp }}"
+
+        - name: "Sauvegarde du rapport de déploiement"
+          copy:
+            content: |
+              # Rapport de Déploiement des Services d'Application
+              ## Lions Infrastructure 5.0
+              
+              **Date de déploiement:** {{ deployment_summary.timestamp }}
+              **Environnement:** {{ deployment_summary.environment }}
+              **Domaine principal:** {{ deployment_summary.full_domain }}
+              
+              ### Résumé
+              - Applications totales configurées: {{ deployment_summary.total_applications }}
+              - Applications déployées: {{ deployment_summary.enabled_applications }}
+              - TLS/SSL activé: {{ deployment_summary.tls_enabled }}
+              - Monitoring activé: {{ deployment_summary.monitoring_enabled }}
+              
+              ### Applications déployées
+              {% for app in lions_applications %}
+              {% if app.enabled | default(true) %}
+              - **{{ app.name }}**
+                - Type: {{ app.type }}
+                - Namespace: {{ app.namespace }}
+                - Domaine: {{ app.domain }}
+                - Port: {{ app.port }}
+                - Répliques: {{ app.replicas }}
+                - Ressources: {{ app.resources }}
+              {% endif %}
+              {% endfor %}
+              
+              ### URLs d'accès
+              {% for app in lions_applications %}
+              {% if app.enabled | default(true) %}
+              - {{ app.name }}: https://{{ app.domain }}{{ app.path | default('') }}
+              {% endif %}
+              {% endfor %}
+              
+              ---
+              Généré automatiquement par Lions Infrastructure 5.0
+            dest: "/tmp/lions-deployment-report-{{ ansible_date_time.epoch }}.md"
+          delegate_to: localhost
+          run_once: true
+
+      rescue:
+        - name: "❌ Erreur lors de la génération du rapport"
+          debug:
+            msg: "Impossible de générer le rapport de déploiement complet"
+
+      tags: ['reporting']
+
+    - name: "🔔 Notification de fin de déploiement"
+      uri:
+        url: "{{ lions_webhook_notification_url }}"
+        method: POST
+        headers:
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          environment: "{{ target_environment }}"
+          status: "success"
+          message: "Déploiement des services d'application terminé avec succès"
+          timestamp: "{{ deployment_timestamp }}"
+          applications_deployed: "{{ lions_applications | selectattr('enabled', 'equalto', true) | list | length }}"
+        status_code: [200, 201, 204]
+      when: lions_webhook_notification_url is defined
+      ignore_errors: true
+      tags: ['notification']
+
+  # =========================================================================
+  # GESTION DES ERREURS GLOBALES
+  # =========================================================================
+  rescue:
+    - name: "❌ Échec du déploiement des services d'application"
       debug:
-        msg: 
-          - "Environnement: {{ deploy_environment }}"
-          - "Services à déployer: Afterwork, API, Associations, BTP, Immobilier, etc."
+        msg:
+          - "❌ Le déploiement a échoué"
+          - "🔍 Vérifiez les logs ci-dessus pour plus de détails"
+          - "🔄 Vous pouvez relancer le déploiement après correction des erreurs"
 
-    # Site principal
-    - name: Déploiement du site principal
-      include_role:
-        name: "{{ roles_path }}/quarkus"
-      vars:
-        app_name: site-principal
-        app_namespace: "site-principal-{{ deploy_environment }}"
-        app_environment: "{{ deploy_environment }}"
-        app_domain: "{{ base_domain }}"
-        app_version: "latest"
-        app_replicas: 1
-        app_port: 8080
+    - name: "🔔 Notification d'échec de déploiement"
+      uri:
+        url: "{{ lions_webhook_notification_url }}"
+        method: POST
+        headers:
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          environment: "{{ target_environment }}"
+          status: "failure"
+          message: "Échec du déploiement des services d'application"
+          timestamp: "{{ deployment_timestamp }}"
+          error: "{{ ansible_failed_result.msg | default('Erreur inconnue') }}"
+        status_code: [200, 201, 204]
+      when: lions_webhook_notification_url is defined
+      ignore_errors: true
 
-    # API principale
-    - name: Déploiement de l'API principale
-      include_role:
-        name: "{{ roles_path }}/quarkus"
-      vars:
-        app_name: api-principale
-        app_namespace: "api-principale-{{ deploy_environment }}"
-        app_environment: "{{ deploy_environment }}"
-        app_domain: "{{ api_domain }}"
-        app_version: "latest"
-        app_replicas: 1
-        app_port: 8081
-        app_path: "/portail"
+    - name: "🚨 Arrêt du playbook après échec"
+      fail:
+        msg: "Déploiement interrompu suite à une erreur critique"
 
-    # Associations API
-    - name: Déploiement de l'API Associations
-      include_role:
-        name: "{{ roles_path }}/quarkus"
-      vars:
-        app_name: associations-api
-        app_namespace: "associations-api-{{ deploy_environment }}"
-        app_environment: "{{ deploy_environment }}"
-        app_domain: "{{ api_domain }}"
-        app_version: "latest"
-        app_replicas: 1
-        app_port: 8082
-        app_path: "/associations"
-
-    # Afterwork API
-    - name: Déploiement de l'API Afterwork
-      include_role:
-        name: "{{ roles_path }}/quarkus"
-      vars:
-        app_name: afterwork-api
-        app_namespace: "afterwork-api-{{ deploy_environment }}"
-        app_environment: "{{ deploy_environment }}"
-        app_domain: "{{ api_domain }}"
-        app_version: "latest"
-        app_replicas: 1
-        app_port: 8083
-        app_path: "/afterwork"
-
-    # Bacy Event API
-    - name: Déploiement de l'API Bacy Event
-      include_role:
-        name: "{{ roles_path }}/quarkus"
-      vars:
-        app_name: bacy-event-api
-        app_namespace: "bacy-event-api-{{ deploy_environment }}"
-        app_environment: "{{ deploy_environment }}"
-        app_domain: "{{ api_domain }}"
-        app_version: "latest"
-        app_replicas: 1
-        app_port: 8084
-        app_path: "/bacy-event"
-
-    # BTP API
-    - name: Déploiement de l'API BTP
-      include_role:
-        name: "{{ roles_path }}/quarkus"
-      vars:
-        app_name: btp-api
-        app_namespace: "btp-api-{{ deploy_environment }}"
-        app_environment: "{{ deploy_environment }}"
-        app_domain: "{{ api_domain }}"
-        app_version: "latest"
-        app_replicas: 1
-        app_port: 8087
-        app_path: "/btp"
-
-    # Immobilier API
-    - name: Déploiement de l'API Immobilier
-      include_role:
-        name: "{{ roles_path }}/quarkus"
-      vars:
-        app_name: immobilier-api
-        app_namespace: "immobilier-api-{{ deploy_environment }}"
-        app_environment: "{{ deploy_environment }}"
-        app_domain: "{{ api_domain }}"
-        app_version: "latest"
-        app_replicas: 1
-        app_port: 8088
-        app_path: "/immobilier"
-
-    # Mail API
-    - name: Déploiement de l'API Mail
-      include_role:
-        name: "{{ roles_path }}/quarkus"
-      vars:
-        app_name: mail-api
-        app_namespace: "mail-api-{{ deploy_environment }}"
-        app_environment: "{{ deploy_environment }}"
-        app_domain: "{{ api_domain }}"
-        app_version: "latest"
-        app_replicas: 1
-        app_port: 8026
-        app_path: "/mail"
-
-    # Afterwork Application
-    - name: Déploiement de l'application Afterwork
-      include_role:
-        name: "{{ roles_path }}/quarkus"
-      vars:
-        app_name: afterwork-app
-        app_namespace: "afterwork-app-{{ deploy_environment }}"
-        app_environment: "{{ deploy_environment }}"
-        app_domain: "afterwork.{{ base_domain }}"
-        app_version: "latest"
-        app_replicas: 1
-        app_port: 8091
-
-    # Associations Application
-    - name: Déploiement de l'application Associations
-      include_role:
-        name: "{{ roles_path }}/quarkus"
-      vars:
-        app_name: associations-app
-        app_namespace: "associations-app-{{ deploy_environment }}"
-        app_environment: "{{ deploy_environment }}"
-        app_domain: "associations.{{ base_domain }}"
-        app_version: "latest"
-        app_replicas: 1
-        app_port: 8090
-
-    # BTP Application
-    - name: Déploiement de l'application BTP
-      include_role:
-        name: "{{ roles_path }}/quarkus"
-      vars:
-        app_name: btp-app
-        app_namespace: "btp-app-{{ deploy_environment }}"
-        app_environment: "{{ deploy_environment }}"
-        app_domain: "btp.{{ base_domain }}"
-        app_version: "latest"
-        app_replicas: 1
-        app_port: 8086
-
-    # Immobilier Application
-    - name: Déploiement de l'application Immobilier
-      include_role:
-        name: "{{ roles_path }}/quarkus"
-      vars:
-        app_name: immobilier-app
-        app_namespace: "immobilier-app-{{ deploy_environment }}"
-        app_environment: "{{ deploy_environment }}"
-        app_domain: "immobilier.{{ base_domain }}"
-        app_version: "latest"
-        app_replicas: 1
-        app_port: 8089
-
-    # Mail Service
-    - name: Déploiement du service Mail
-      include_role:
-        name: "{{ roles_path }}/quarkus"
-      vars:
-        app_name: mail-service
-        app_namespace: "mail-service-{{ deploy_environment }}"
-        app_environment: "{{ deploy_environment }}"
-        app_domain: "mail.{{ base_domain }}"
-        app_version: "latest"
-        app_replicas: 1
-        app_port: 8025
-
-    # Kubernetes Dashboard
-    - name: Configuration de l'Ingress pour le Kubernetes Dashboard
-      k8s:
-        state: present
-        definition:
-          apiVersion: networking.k8s.io/v1
-          kind: Ingress
-          metadata:
-            name: kubernetes-dashboard
-            namespace: kubernetes-dashboard
-            annotations:
-              cert-manager.io/cluster-issuer: "letsencrypt-prod"
-              traefik.ingress.kubernetes.io/router.entrypoints: "websecure"
-              traefik.ingress.kubernetes.io/router.tls: "true"
-              traefik.ingress.kubernetes.io/router.middlewares: "kubernetes-dashboard-strip-prefix@kubernetescrd"
-          spec:
-            ingressClassName: traefik
-            tls:
-              - hosts:
-                  - "k8s.{{ base_domain }}"
-                secretName: kubernetes-dashboard-tls
-            rules:
-              - host: "k8s.{{ base_domain }}"
-                http:
-                  paths:
-                    - path: /
-                      pathType: Prefix
-                      backend:
-                        service:
-                          name: kubernetes-dashboard
-                          port:
-                            number: 443
-
-    # Git (Gitea)
-    - name: Configuration de l'Ingress pour Gitea
-      k8s:
-        state: present
-        definition:
-          apiVersion: networking.k8s.io/v1
-          kind: Ingress
-          metadata:
-            name: gitea
-            namespace: "gitea-{{ deploy_environment }}"
-            annotations:
-              cert-manager.io/cluster-issuer: "letsencrypt-prod"
-              traefik.ingress.kubernetes.io/router.entrypoints: "websecure"
-              traefik.ingress.kubernetes.io/router.tls: "true"
-          spec:
-            ingressClassName: traefik
-            tls:
-              - hosts:
-                  - "git.{{ base_domain }}"
-                secretName: gitea-tls
-            rules:
-              - host: "git.{{ base_domain }}"
-                http:
-                  paths:
-                    - path: /
-                      pathType: Prefix
-                      backend:
-                        service:
-                          name: gitea
-                          port:
-                            number: 3001
-
-    # pgAdmin
-    - name: Configuration de l'Ingress pour pgAdmin
-      k8s:
-        state: present
-        definition:
-          apiVersion: networking.k8s.io/v1
-          kind: Ingress
-          metadata:
-            name: pgadmin
-            namespace: "pgadmin-{{ deploy_environment }}"
-            annotations:
-              cert-manager.io/cluster-issuer: "letsencrypt-prod"
-              traefik.ingress.kubernetes.io/router.entrypoints: "websecure"
-              traefik.ingress.kubernetes.io/router.tls: "true"
-          spec:
-            ingressClassName: traefik
-            tls:
-              - hosts:
-                  - "pgadmin.{{ base_domain }}"
-                secretName: pgadmin-tls
-            rules:
-              - host: "pgadmin.{{ base_domain }}"
-                http:
-                  paths:
-                    - path: /
-                      pathType: Prefix
-                      backend:
-                        service:
-                          name: pgadmin
-                          port:
-                            number: 5050
-
-    # Keycloak
-    - name: Configuration de l'Ingress pour Keycloak
-      k8s:
-        state: present
-        definition:
-          apiVersion: networking.k8s.io/v1
-          kind: Ingress
-          metadata:
-            name: keycloak
-            namespace: "keycloak-{{ deploy_environment }}"
-            annotations:
-              cert-manager.io/cluster-issuer: "letsencrypt-prod"
-              traefik.ingress.kubernetes.io/router.entrypoints: "websecure"
-              traefik.ingress.kubernetes.io/router.tls: "true"
-          spec:
-            ingressClassName: traefik
-            tls:
-              - hosts:
-                  - "keycloak.{{ base_domain }}"
-                secretName: keycloak-tls
-            rules:
-              - host: "keycloak.{{ base_domain }}"
-                http:
-                  paths:
-                    - path: /
-                      pathType: Prefix
-                      backend:
-                        service:
-                          name: keycloak
-                          port:
-                            number: 8085
-
-    # Prometheus
-    - name: Configuration de l'Ingress pour Prometheus
-      k8s:
-        state: present
-        definition:
-          apiVersion: networking.k8s.io/v1
-          kind: Ingress
-          metadata:
-            name: prometheus
-            namespace: monitoring
-            annotations:
-              cert-manager.io/cluster-issuer: "letsencrypt-prod"
-              traefik.ingress.kubernetes.io/router.entrypoints: "websecure"
-              traefik.ingress.kubernetes.io/router.tls: "true"
-          spec:
-            ingressClassName: traefik
-            tls:
-              - hosts:
-                  - "prometheus.{{ base_domain }}"
-                secretName: prometheus-tls
-            rules:
-              - host: "prometheus.{{ base_domain }}"
-                http:
-                  paths:
-                    - path: /
-                      pathType: Prefix
-                      backend:
-                        service:
-                          name: prometheus-kube-prometheus-prometheus
-                          port:
-                            number: 9090
-
-    # Grafana
-    - name: Configuration de l'Ingress pour Grafana
-      k8s:
-        state: present
-        definition:
-          apiVersion: networking.k8s.io/v1
-          kind: Ingress
-          metadata:
-            name: grafana
-            namespace: monitoring
-            annotations:
-              cert-manager.io/cluster-issuer: "letsencrypt-prod"
-              traefik.ingress.kubernetes.io/router.entrypoints: "websecure"
-              traefik.ingress.kubernetes.io/router.tls: "true"
-          spec:
-            ingressClassName: traefik
-            tls:
-              - hosts:
-                  - "grafana.{{ base_domain }}"
-                secretName: grafana-tls
-            rules:
-              - host: "grafana.{{ base_domain }}"
-                http:
-                  paths:
-                    - path: /
-                      pathType: Prefix
-                      backend:
-                        service:
-                          name: prometheus-grafana
-                          port:
-                            number: 80
-
-    - name: Vérification du déploiement des services
-      debug:
-        msg: "Tous les services d'application ont été déployés avec succès"
+# =========================================================================
+# INFORMATIONS ADDITIONNELLES
+# =========================================================================
+# Ce playbook peut être exécuté avec les options suivantes:
+#
+# Déploiement standard:
+# ansible-playbook deploy-application-services.yml -e target_environment=development
+#
+# Déploiement avec options avancées:
+# ansible-playbook deploy-application-services.yml \
+#   -e target_environment=production \
+#   -e lions_deployment_mode=ha \
+#   -e lions_max_fail_percentage=10
+#
+# Déploiement d'applications spécifiques:
+# ansible-playbook deploy-application-services.yml \
+#   -e target_environment=staging \
+#   -e lions_site_principal_enabled=true \
+#   -e lions_afterwork_app_enabled=false
+#
+# Mode dry-run (vérification sans déploiement):
+# ansible-playbook deploy-application-services.yml \
+#   -e target_environment=development \
+#   -e lions_dry_run=true \
+#   --check
+# =========================================================================

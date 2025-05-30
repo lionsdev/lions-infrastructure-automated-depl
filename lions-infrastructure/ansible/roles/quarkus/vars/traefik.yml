@@ -1,19 +1,288 @@
----
-# Titre: Variables pour le déploiement d'applications Quarkus avec Traefik
-# Description: Variables spécifiques aux applications Quarkus pour l'ingress Traefik
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-16
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - QUARKUS TRAEFIK VARIABLES
+# =========================================================================
+# Description: Variables Ansible spécifiques à Traefik pour les applications Quarkus
+# Composant: Quarkus Traefik Configuration Variables
+# Version: 5.0.0
+# Maintainer: DevOps LIONS Team
+# Documentation: https://docs.lions.dev/infrastructure/quarkus/traefik-variables
+# =========================================================================
 
-# Configuration de l'ingress Traefik
-quarkus_ingress_annotations:
-  cert-manager.io/cluster-issuer: "letsencrypt-prod"
-  traefik.ingress.kubernetes.io/router.entrypoints: "websecure"
-  traefik.ingress.kubernetes.io/router.tls: "true"
-  traefik.ingress.kubernetes.io/ssl-redirect: "true"
-  traefik.ingress.kubernetes.io/ssl-permanent-redirect: "true"
-  traefik.ingress.kubernetes.io/request-timeout: "300"
-  traefik.ingress.kubernetes.io/compress: "true"
-  traefik.ingress.kubernetes.io/headers-customrequestheaders: "X-Forwarded-Proto:https||X-Forwarded-Port:443"
-  traefik.ingress.kubernetes.io/headers-customresponseheaders: "X-Content-Type-Options:nosniff||X-Frame-Options:SAMEORIGIN||X-XSS-Protection:1; mode=block"
-  traefik.ingress.kubernetes.io/proxy-body-size: "10m"
+---
+# =========================================================================
+# CONFIGURATION TRAEFIK POUR QUARKUS
+# =========================================================================
+
+# Activation des middlewares Traefik par défaut
+lions_quarkus_traefik_middleware_enabled: "{{ lions_quarkus_custom_traefik_middleware_enabled | default('true') }}"
+
+# Configuration des priorités de routage
+lions_quarkus_traefik_priority: "{{ lions_quarkus_custom_traefik_priority | default('100') }}"
+
+# Configuration du load balancer Traefik
+lions_quarkus_traefik_load_balancer: "{{ lions_quarkus_custom_traefik_load_balancer | default('wrr') }}"
+
+# Configuration des sessions persistantes
+lions_quarkus_traefik_sticky_sessions: "{{ lions_quarkus_custom_traefik_sticky_sessions | default('false') }}"
+lions_quarkus_session_cookie_name: "{{ lions_quarkus_custom_session_cookie_name | default('JSESSIONID') }}"
+
+# =========================================================================
+# CONFIGURATION MIDDLEWARE HEADERS DE SÉCURITÉ
+# =========================================================================
+
+# Headers de réponse personnalisés pour la sécurité
+lions_quarkus_x_frame_options: "{{ lions_quarkus_custom_x_frame_options | default('SAMEORIGIN') }}"
+lions_quarkus_referrer_policy: "{{ lions_quarkus_custom_referrer_policy | default('strict-origin-when-cross-origin') }}"
+lions_quarkus_permissions_policy: "{{ lions_quarkus_custom_permissions_policy | default('geolocation=(), microphone=(), camera=()') }}"
+
+# Configuration HSTS (HTTP Strict Transport Security)
+lions_quarkus_hsts_max_age: "{{ lions_quarkus_custom_hsts_max_age | default('31536000') }}"
+
+# Content Security Policy (optionnel)
+# lions_quarkus_csp_header: "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'"
+
+# Headers à supprimer pour la sécurité
+lions_quarkus_custom_headers_to_remove:
+  - "Server"
+  - "X-Powered-By"
+  - "X-AspNet-Version"
+  - "X-AspNetMvc-Version"
+
+# =========================================================================
+# CONFIGURATION MIDDLEWARE RATE LIMITING
+# =========================================================================
+
+# Configuration avancée du rate limiting
+lions_quarkus_rate_limit_source_criterion: "{{ lions_quarkus_custom_rate_limit_source_criterion | default('') }}"
+
+# =========================================================================
+# CONFIGURATION MIDDLEWARE AUTHENTIFICATION
+# =========================================================================
+
+# Type d'authentification ('forward', 'basic', ou 'oauth')
+lions_quarkus_auth_type: "{{ lions_quarkus_custom_auth_type | default('forward') }}"
+
+# Configuration Forward Auth
+lions_quarkus_auth_forward_url: "{{ lions_quarkus_custom_auth_forward_url | default('') }}"
+lions_quarkus_auth_trust_forward: "{{ lions_quarkus_custom_auth_trust_forward | default('true') }}"
+lions_quarkus_auth_forward_headers:
+  - "X-Forwarded-User"
+  - "X-Forwarded-Groups"
+  - "X-Forwarded-Name"
+  - "X-Forwarded-Email"
+
+# Configuration Basic Auth
+lions_quarkus_auth_secret_name: "{{ lions_quarkus_custom_auth_secret_name | default(lions_quarkus_app_name | default(lions_quarkus_service_name) + '-auth') }}"
+
+# =========================================================================
+# CONFIGURATION MIDDLEWARE STRIP PREFIX
+# =========================================================================
+
+# Activation du strip prefix
+lions_quarkus_strip_prefix_enabled: "{{ lions_quarkus_custom_strip_prefix_enabled | default('false') }}"
+
+# Préfixes à supprimer
+lions_quarkus_strip_prefixes: "{{ lions_quarkus_custom_strip_prefixes | default([lions_quarkus_context_path | default('/api')]) }}"
+
+# Force slash après suppression du préfixe
+lions_quarkus_strip_force_slash: "{{ lions_quarkus_custom_strip_force_slash | default('true') }}"
+
+# =========================================================================
+# CONFIGURATION MIDDLEWARE REDIRECT SCHEME
+# =========================================================================
+
+# Activation de la redirection HTTP -> HTTPS
+lions_quarkus_redirect_scheme_enabled: "{{ lions_quarkus_custom_redirect_scheme_enabled | default(lions_security_tls_enabled | bool) }}"
+
+# Type de redirection (permanent ou temporaire)
+lions_quarkus_redirect_permanent: "{{ lions_quarkus_custom_redirect_permanent | default('true') }}"
+
+# =========================================================================
+# CONFIGURATION MIDDLEWARE CIRCUIT BREAKER
+# =========================================================================
+
+# Activation du circuit breaker
+lions_quarkus_circuit_breaker_enabled: "{{ lions_quarkus_custom_circuit_breaker_enabled | default('false') }}"
+
+# Expression du circuit breaker
+lions_quarkus_circuit_breaker_expression: "{{ lions_quarkus_custom_circuit_breaker_expression | default('NetworkErrorRatio() > 0.30') }}"
+
+# Périodes de vérification et de récupération
+lions_quarkus_circuit_breaker_check_period: "{{ lions_quarkus_custom_circuit_breaker_check_period | default('10s') }}"
+lions_quarkus_circuit_breaker_fallback_duration: "{{ lions_quarkus_custom_circuit_breaker_fallback_duration | default('10s') }}"
+lions_quarkus_circuit_breaker_recovery_duration: "{{ lions_quarkus_custom_circuit_breaker_recovery_duration | default('30s') }}"
+
+# =========================================================================
+# CONFIGURATION MIDDLEWARE COMPRESSION
+# =========================================================================
+
+# Activation de la compression
+lions_quarkus_compression_enabled: "{{ lions_quarkus_custom_compression_enabled | default('true') }}"
+
+# Types MIME à compresser
+lions_quarkus_compression_mime_types:
+  - "text/html"
+  - "text/css"
+  - "text/javascript"
+  - "application/javascript"
+  - "application/json"
+  - "application/xml"
+  - "text/xml"
+  - "image/svg+xml"
+
+# Niveau de compression (1-9, 6 par défaut)
+lions_quarkus_compression_level: "{{ lions_quarkus_custom_compression_level | default('6') }}"
+
+# =========================================================================
+# CONFIGURATION MIDDLEWARE RETRY
+# =========================================================================
+
+# Activation des tentatives de retry
+lions_quarkus_retry_enabled: "{{ lions_quarkus_custom_retry_enabled | default('false') }}"
+
+# Nombre de tentatives
+lions_quarkus_retry_attempts: "{{ lions_quarkus_custom_retry_attempts | default('3') }}"
+
+# Délai initial entre les tentatives
+lions_quarkus_retry_initial_interval: "{{ lions_quarkus_custom_retry_initial_interval | default('100ms') }}"
+
+# =========================================================================
+# CONFIGURATION TLS AVANCÉE
+# =========================================================================
+
+# Options TLS personnalisées
+# lions_quarkus_tls_options: "default"
+
+# Configuration des protocoles TLS
+lions_quarkus_tls_min_version: "{{ lions_quarkus_custom_tls_min_version | default('VersionTLS12') }}"
+lions_quarkus_tls_max_version: "{{ lions_quarkus_custom_tls_max_version | default('VersionTLS13') }}"
+
+# Suites de chiffrement
+lions_quarkus_tls_cipher_suites:
+  - "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"
+  - "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305"
+  - "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
+  - "TLS_RSA_WITH_AES_256_GCM_SHA384"
+  - "TLS_RSA_WITH_AES_128_GCM_SHA256"
+
+# Configuration ALPN
+lions_quarkus_tls_alpn_protocols:
+  - "h2"
+  - "http/1.1"
+
+# =========================================================================
+# CONFIGURATION ANNOTATIONS TRAEFIK SPÉCIFIQUES
+# =========================================================================
+
+# Annotations Traefik de base pour Quarkus
+lions_quarkus_traefik_base_annotations:
+  # Configuration des entrypoints
+  traefik.ingress.kubernetes.io/router.entrypoints: "{{ 'websecure' if lions_security_tls_enabled | bool else 'web' }}"
+  
+  # Configuration TLS
+  traefik.ingress.kubernetes.io/router.tls: "{{ lions_security_tls_enabled | lower }}"
+  traefik.ingress.kubernetes.io/router.tls.certresolver: "{{ lions_cert_resolver | default('letsencrypt') }}"
+  
+  # Configuration de la priorité
+  traefik.ingress.kubernetes.io/router.priority: "{{ lions_quarkus_traefik_priority }}"
+  
+  # Configuration du load balancer
+  traefik.ingress.kubernetes.io/service.loadbalancer.method: "{{ lions_quarkus_traefik_load_balancer }}"
+
+# Annotations Traefik pour les timeouts
+lions_quarkus_traefik_timeout_annotations:
+  traefik.ingress.kubernetes.io/router.timeout: "{{ lions_timeout_default }}s"
+  traefik.ingress.kubernetes.io/service.responseforwarding.flushinterval: "100ms"
+
+# Annotations Traefik pour la compression
+lions_quarkus_traefik_compression_annotations:
+  traefik.ingress.kubernetes.io/compress: "{{ lions_quarkus_compression_enabled | lower }}"
+
+# Annotations Traefik pour les sessions persistantes
+lions_quarkus_traefik_sticky_annotations:
+  traefik.ingress.kubernetes.io/service.loadbalancer.sticky: "{{ lions_quarkus_traefik_sticky_sessions | lower }}"
+  traefik.ingress.kubernetes.io/service.loadbalancer.sticky.cookie.name: "{{ lions_quarkus_session_cookie_name }}"
+  traefik.ingress.kubernetes.io/service.loadbalancer.sticky.cookie.secure: "{{ lions_security_tls_enabled | lower }}"
+  traefik.ingress.kubernetes.io/service.loadbalancer.sticky.cookie.httponly: "true"
+  traefik.ingress.kubernetes.io/service.loadbalancer.sticky.cookie.samesite: "{{ 'strict' if lions_security_tls_enabled | bool else 'lax' }}"
+
+# =========================================================================
+# CONFIGURATION DES MIDDLEWARES PAR ENVIRONNEMENT
+# =========================================================================
+
+# Middlewares actifs selon l'environnement
+lions_quarkus_traefik_middlewares_by_env:
+  development:
+    - "headers"
+    - "compress"
+  staging:
+    - "headers"
+    - "compress"
+    - "ratelimit"
+  production:
+    - "headers"
+    - "compress"
+    - "ratelimit"
+    - "circuit-breaker"
+
+# Application des middlewares selon l'environnement
+lions_quarkus_active_middlewares: "{{ lions_quarkus_traefik_middlewares_by_env[lions_environment] | default(['headers']) }}"
+
+# =========================================================================
+# CONFIGURATION AVANCÉE DES SERVICES TRAEFIK
+# =========================================================================
+
+# Configuration du health check Traefik
+lions_quarkus_traefik_health_check:
+  enabled: "{{ lions_quarkus_custom_traefik_health_check_enabled | default('false') }}"
+  path: "{{ lions_quarkus_health_liveness_path }}"
+  port: "{{ lions_quarkus_port }}"
+  scheme: "{{ 'https' if lions_security_tls_enabled | bool else 'http' }}"
+  interval: "{{ lions_quarkus_custom_traefik_health_check_interval | default('30s') }}"
+  timeout: "{{ lions_quarkus_custom_traefik_health_check_timeout | default('10s') }}"
+
+# Configuration du poids pour le load balancing
+lions_quarkus_traefik_service_weight: "{{ lions_quarkus_custom_traefik_service_weight | default('100') }}"
+
+# Configuration de la stratégie de load balancing
+lions_quarkus_traefik_load_balancer_strategies:
+  wrr: "Weighted Round Robin"
+  drr: "Dynamic Round Robin"
+  lc: "Least Connections"
+  ip_hash: "IP Hash"
+
+# =========================================================================
+# CONFIGURATION DES MIDDLEWARES PERSONNALISÉS
+# =========================================================================
+
+# Exemple de middlewares personnalisés (à adapter selon les besoins)
+# lions_quarkus_custom_traefik_middlewares:
+#   - name: "custom-auth"
+#     spec:
+#       forwardAuth:
+#         address: "http://auth-service.auth.svc.cluster.local"
+#         trustForwardHeader: true
+#   - name: "custom-rate-limit"
+#     spec:
+#       rateLimit:
+#         average: 200
+#         burst: 100
+#         period: "1m"
+
+# =========================================================================
+# CONFIGURATION DES ANNOTATIONS PERSONNALISÉES
+# =========================================================================
+
+# Annotations Traefik personnalisées (à adapter selon les besoins)
+# lions_quarkus_custom_traefik_annotations:
+#   traefik.ingress.kubernetes.io/custom-annotation: "custom-value"
+
+# =========================================================================
+# CLASSE D'INGRESS TRAEFIK
+# =========================================================================
+
+# Classe d'ingress Traefik spécifique
+lions_traefik_ingress_class: "{{ lions_custom_traefik_ingress_class | default('traefik') }}"
+
+# Nom de l'instance Traefik (si multiple)
+lions_traefik_instance_name: "{{ lions_custom_traefik_instance_name | default('default') }}"

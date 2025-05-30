@@ -1,423 +1,446 @@
 ---
-# Titre: Configuration du monitoring pour PrimeReact
-# Description: Configure le monitoring pour une application PrimeReact
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - MONITORING PRIMEREACT
+# =========================================================================
+# Description: Configuration avancée du monitoring pour les applications PrimeReact
+# Version: 5.0.0
+# Maintainer: DevOps Team LIONS
+# Documentation: https://docs.lions.dev/monitoring/primereact
+# =========================================================================
 
-- name: Vérification de l'existence de Prometheus Operator
-  k8s_info:
+# =========================================================================
+# VALIDATION DES PRÉREQUIS DE MONITORING
+# =========================================================================
+- name: "Validation - Vérification de l'activation du monitoring"
+  ansible.builtin.assert:
+    that:
+      - lions_monitoring_enabled | default(false) | bool
+    fail_msg: "Le monitoring doit être activé via LIONS_MONITORING_ENABLED=true"
+    success_msg: "Monitoring activé - Poursuite de la configuration"
+  tags:
+    - validation
+    - monitoring
+
+- name: "Validation - Vérification des variables de monitoring PrimeReact"
+  ansible.builtin.assert:
+    that:
+      - primereact_monitoring is defined
+      - primereact_monitoring.enabled | default(false) | bool
+      - lions_prometheus_enabled | default(false) | bool
+    fail_msg: "Variables de monitoring PrimeReact manquantes ou invalides"
+    success_msg: "Variables de monitoring validées"
+  tags:
+    - validation
+    - monitoring
+
+# =========================================================================
+# DÉTECTION DES COMPOSANTS DE MONITORING
+# =========================================================================
+- name: "Détection - Vérification de Prometheus Operator"
+  kubernetes.core.k8s_info:
     api_version: apiextensions.k8s.io/v1
     kind: CustomResourceDefinition
     name: servicemonitors.monitoring.coreos.com
-  register: prometheus_operator_check
-  ignore_errors: yes
+  register: prometheus_operator_detection
+  failed_when: false
+  tags:
+    - detection
+    - prometheus
 
-- name: Création du ServiceMonitor pour Prometheus
-  k8s:
+- name: "Détection - Vérification de Prometheus"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ lions_monitoring_namespace }}"
+    name: prometheus-server
+  register: prometheus_detection
+  failed_when: false
+  tags:
+    - detection
+    - prometheus
+
+- name: "Détection - Vérification de Grafana"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ lions_monitoring_namespace }}"
+    name: grafana
+  register: grafana_detection
+  failed_when: false
+  tags:
+    - detection
+    - grafana
+
+- name: "Détection - État des composants de monitoring"
+  ansible.builtin.set_fact:
+    monitoring_components:
+      prometheus_operator_available: "{{ prometheus_operator_detection.resources | length > 0 }}"
+      prometheus_available: "{{ prometheus_detection.resources | length > 0 }}"
+      grafana_available: "{{ grafana_detection.resources | length > 0 }}"
+  tags:
+    - detection
+
+- name: "Détection - Rapport des composants disponibles"
+  ansible.builtin.debug:
+    msg:
+      - "=== État des Composants de Monitoring ==="
+      - "Prometheus Operator: {{ 'Disponible' if monitoring_components.prometheus_operator_available else 'Indisponible' }}"
+      - "Prometheus: {{ 'Disponible' if monitoring_components.prometheus_available else 'Indisponible' }}"
+      - "Grafana: {{ 'Disponible' if monitoring_components.grafana_available else 'Indisponible' }}"
+  tags:
+    - detection
+
+# =========================================================================
+# CONFIGURATION DU SERVICEMONITOR PROMETHEUS
+# =========================================================================
+- name: "Prometheus - Création du ServiceMonitor PrimeReact"
+  kubernetes.core.k8s:
     state: present
-    src: "{{ temp_dir.path }}/servicemonitor.yml"
-  register: servicemonitor_result
-  when: 
-    - prometheus_operator_check is succeeded
-    - prometheus_operator_check.resources | length > 0
-    - primereact_prometheus_scrape | bool
+    definition:
+      apiVersion: monitoring.coreos.com/v1
+      kind: ServiceMonitor
+      metadata:
+        name: "{{ primereact_service_name }}-monitor"
+        namespace: "{{ primereact_namespace }}"
+        labels:
+          app.kubernetes.io/name: "{{ primereact_service_name }}"
+          app.kubernetes.io/component: "monitoring"
+          app.kubernetes.io/part-of: "lions-infrastructure"
+          app.kubernetes.io/managed-by: "ansible"
+          lions.dev/environment: "{{ lions_environment }}"
+          lions.dev/monitoring: "true"
+          prometheus: "{{ lions_prometheus_instance | default('k8s') }}"
+        annotations:
+          lions.dev/description: "ServiceMonitor for PrimeReact application"
+          lions.dev/version: "{{ primereact_version | default('latest') }}"
+      spec:
+        selector:
+          matchLabels:
+            app.kubernetes.io/name: "{{ primereact_service_name }}"
+        endpoints:
+          - port: "{{ primereact_monitoring.metrics_port | default('metrics') }}"
+            path: "{{ primereact_monitoring.metrics_path | default('/metrics') }}"
+            interval: "{{ primereact_monitoring.scrape_interval | default('30s') }}"
+            scrapeTimeout: "{{ primereact_monitoring.scrape_timeout | default('10s') }}"
+            honorLabels: true
+            metricRelabelings:
+              - sourceLabels: [__name__]
+                regex: "{{ primereact_monitoring.metrics_filter | default('.*') }}"
+                action: keep
+        namespaceSelector:
+          matchNames:
+            - "{{ primereact_namespace }}"
+  register: servicemonitor_creation
+  when:
+    - monitoring_components.prometheus_operator_available
+    - primereact_monitoring.prometheus_scrape | default(true) | bool
+  tags:
+    - prometheus
+    - servicemonitor
 
-- name: Avertissement si Prometheus Operator n'est pas installé
-  debug:
-    msg: "AVERTISSEMENT: Prometheus Operator n'est pas installé. Le monitoring automatique ne sera pas configuré."
-  when: prometheus_operator_check is failed or prometheus_operator_check.resources | length == 0
+- name: "Prometheus - Validation de la création du ServiceMonitor"
+  ansible.builtin.debug:
+    msg: "ServiceMonitor créé avec succès pour {{ primereact_service_name }}"
+  when:
+    - servicemonitor_creation is succeeded
+    - servicemonitor_creation.changed
+  tags:
+    - prometheus
+    - validation
 
-- name: Configuration des règles d'alerte pour l'application
-  k8s:
+# =========================================================================
+# CONFIGURATION DES RÈGLES D'ALERTE PROMETHEUS
+# =========================================================================
+- name: "Alertes - Création des règles d'alerte PrimeReact"
+  kubernetes.core.k8s:
     state: present
     definition:
       apiVersion: monitoring.coreos.com/v1
       kind: PrometheusRule
       metadata:
-        name: "{{ app_name }}-alerts"
-        namespace: "{{ app_namespace }}"
+        name: "{{ primereact_service_name }}-alerts"
+        namespace: "{{ primereact_namespace }}"
         labels:
-          app: "{{ app_name }}"
-          prometheus: k8s
+          app.kubernetes.io/name: "{{ primereact_service_name }}"
+          app.kubernetes.io/component: "alerting"
+          app.kubernetes.io/part-of: "lions-infrastructure"
+          lions.dev/environment: "{{ lions_environment }}"
+          prometheus: "{{ lions_prometheus_instance | default('k8s') }}"
           role: alert-rules
       spec:
         groups:
-          - name: "{{ app_name }}.rules"
+          - name: "{{ primereact_service_name }}.availability"
+            interval: "{{ primereact_monitoring.alert_evaluation_interval | default('30s') }}"
             rules:
-              - alert: InstanceDown
-                expr: up{job="{{ app_name }}"} == 0
-                for: 5m
+              - alert: PrimeReactInstanceDown
+                expr: 'up{job="{{ primereact_service_name }}", namespace="{{ primereact_namespace }}"} == 0'
+                for: "{{ primereact_monitoring.alert_instance_down_duration | default('2m') }}"
                 labels:
                   severity: critical
+                  service: "{{ primereact_service_name }}"
+                  namespace: "{{ primereact_namespace }}"
+                  environment: "{{ lions_environment }}"
                 annotations:
-                  summary: "Instance {{ app_name }} down"
-                  description: "{{ app_name }} instance has been down for more than 5 minutes."
-              - alert: HighMemoryUsage
-                expr: container_memory_usage_bytes{pod=~"{{ app_name }}.*"} / container_spec_memory_limit_bytes{pod=~"{{ app_name }}.*"} > 0.85
-                for: 10m
-                labels:
-                  severity: warning
-                annotations:
-                  summary: "High memory usage for {{ app_name }}"
-                  description: "{{ app_name }} is using more than 85% of its memory limit for more than 10 minutes."
-              - alert: HighCPUUsage
-                expr: container_cpu_usage_seconds_total{pod=~"{{ app_name }}.*"} / container_spec_cpu_quota{pod=~"{{ app_name }}.*"} > 0.85
-                for: 10m
-                labels:
-                  severity: warning
-                annotations:
-                  summary: "High CPU usage for {{ app_name }}"
-                  description: "{{ app_name }} is using more than 85% of its CPU limit for more than 10 minutes."
-              - alert: APIHighLatency
-                expr: http_request_duration_seconds{service="{{ app_name }}", handler="/api/*"} > 1
-                for: 5m
-                labels:
-                  severity: warning
-                annotations:
-                  summary: "High API latency for {{ app_name }}"
-                  description: "{{ app_name }} API has high latency (>1s) for more than 5 minutes."
-              - alert: HighErrorRate
-                expr: sum(rate(http_requests_total{service="{{ app_name }}", status=~"5.."}[5m])) / sum(rate(http_requests_total{service="{{ app_name }}"}[5m])) > 0.05
-                for: 5m
-                labels:
-                  severity: warning
-                annotations:
-                  summary: "High error rate for {{ app_name }}"
-                  description: "{{ app_name }} has a high error rate (>5%) for more than 5 minutes."
-  when: 
-    - prometheus_operator_check is succeeded
-    - prometheus_operator_check.resources | length > 0
-    - primereact_prometheus_scrape | bool
+                  summary: "PrimeReact instance {{ '{{ $labels.instance }}' }} is down"
+                  description: "PrimeReact instance {{ '{{ $labels.instance }}' }} has been down for more than {{ primereact_monitoring.alert_instance_down_duration | default('2m') }}."
+                  runbook_url: "{{ lions_runbook_base_url | default('') }}/primereact-instance-down"
 
-- name: Configuration de Grafana Dashboard
-  k8s:
+              - alert: PrimeReactHighRestartRate
+                expr: 'rate(kube_pod_container_status_restarts_total{container="{{ primereact_service_name }}", namespace="{{ primereact_namespace }}"}[15m]) > {{ primereact_monitoring.restart_rate_threshold | default(0.1) }}'
+                for: "{{ primereact_monitoring.alert_restart_duration | default('5m') }}"
+                labels:
+                  severity: warning
+                  service: "{{ primereact_service_name }}"
+                  namespace: "{{ primereact_namespace }}"
+                  environment: "{{ lions_environment }}"
+                annotations:
+                  summary: "High restart rate for PrimeReact pods"
+                  description: "PrimeReact pods in namespace {{ primereact_namespace }} are restarting frequently ({{ '{{ $value }}' }} restarts/min)."
+
+          - name: "{{ primereact_service_name }}.performance"
+            interval: "{{ primereact_monitoring.alert_evaluation_interval | default('30s') }}"
+            rules:
+              - alert: PrimeReactHighMemoryUsage
+                expr: 'container_memory_working_set_bytes{container="{{ primereact_service_name }}", namespace="{{ primereact_namespace }}"} / container_spec_memory_limit_bytes{container="{{ primereact_service_name }}", namespace="{{ primereact_namespace }}"} > {{ primereact_monitoring.memory_threshold | default(0.85) }}'
+                for: "{{ primereact_monitoring.alert_memory_duration | default('5m') }}"
+                labels:
+                  severity: warning
+                  service: "{{ primereact_service_name }}"
+                  namespace: "{{ primereact_namespace }}"
+                  environment: "{{ lions_environment }}"
+                annotations:
+                  summary: "High memory usage for PrimeReact"
+                  description: "PrimeReact container {{ '{{ $labels.container }}' }} is using {{ '{{ printf \"%.2f\" $value }}' }}% of its memory limit."
+                  runbook_url: "{{ lions_runbook_base_url | default('') }}/primereact-high-memory"
+
+              - alert: PrimeReactHighCPUUsage
+                expr: 'rate(container_cpu_usage_seconds_total{container="{{ primereact_service_name }}", namespace="{{ primereact_namespace }}"}[5m]) / (container_spec_cpu_quota{container="{{ primereact_service_name }}", namespace="{{ primereact_namespace }}"} / container_spec_cpu_period{container="{{ primereact_service_name }}", namespace="{{ primereact_namespace }}"}) > {{ primereact_monitoring.cpu_threshold | default(0.85) }}'
+                for: "{{ primereact_monitoring.alert_cpu_duration | default('5m') }}"
+                labels:
+                  severity: warning
+                  service: "{{ primereact_service_name }}"
+                  namespace: "{{ primereact_namespace }}"
+                  environment: "{{ lions_environment }}"
+                annotations:
+                  summary: "High CPU usage for PrimeReact"
+                  description: "PrimeReact container {{ '{{ $labels.container }}' }} is using {{ '{{ printf \"%.2f\" $value }}' }}% of its CPU limit."
+                  runbook_url: "{{ lions_runbook_base_url | default('') }}/primereact-high-cpu"
+
+          - name: "{{ primereact_service_name }}.application"
+            interval: "{{ primereact_monitoring.alert_evaluation_interval | default('30s') }}"
+            rules:
+              - alert: PrimeReactHighErrorRate
+                expr: 'sum(rate(http_requests_total{service="{{ primereact_service_name }}", status=~"5.."}[5m])) / sum(rate(http_requests_total{service="{{ primereact_service_name }}"}[5m])) > {{ primereact_monitoring.error_rate_threshold | default(0.05) }}'
+                for: "{{ primereact_monitoring.alert_error_duration | default('3m') }}"
+                labels:
+                  severity: warning
+                  service: "{{ primereact_service_name }}"
+                  namespace: "{{ primereact_namespace }}"
+                  environment: "{{ lions_environment }}"
+                annotations:
+                  summary: "High error rate for PrimeReact"
+                  description: "PrimeReact application has a high error rate ({{ '{{ printf \"%.2f\" $value }}' }}%) for more than {{ primereact_monitoring.alert_error_duration | default('3m') }}."
+                  runbook_url: "{{ lions_runbook_base_url | default('') }}/primereact-high-error-rate"
+
+              - alert: PrimeReactHighLatency
+                expr: 'histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{service="{{ primereact_service_name }}"}[5m])) by (le)) > {{ primereact_monitoring.latency_threshold | default(2) }}'
+                for: "{{ primereact_monitoring.alert_latency_duration | default('5m') }}"
+                labels:
+                  severity: warning
+                  service: "{{ primereact_service_name }}"
+                  namespace: "{{ primereact_namespace }}"
+                  environment: "{{ lions_environment }}"
+                annotations:
+                  summary: "High latency for PrimeReact"
+                  description: "PrimeReact 95th percentile latency is {{ '{{ printf \"%.2f\" $value }}' }}s, which is above the threshold."
+                  runbook_url: "{{ lions_runbook_base_url | default('') }}/primereact-high-latency"
+  register: alertrules_creation
+  when:
+    - monitoring_components.prometheus_operator_available
+    - primereact_monitoring.alerts_enabled | default(true) | bool
+  tags:
+    - prometheus
+    - alerting
+
+# =========================================================================
+# CONFIGURATION DU DASHBOARD GRAFANA
+# =========================================================================
+- name: "Grafana - Préparation des données du dashboard"
+  ansible.builtin.set_fact:
+    grafana_dashboard_json: "{{ lookup('template', 'grafana-dashboard.json.j2') | from_json }}"
+  when:
+    - monitoring_components.grafana_available
+    - primereact_monitoring.dashboard_enabled | default(true) | bool
+  tags:
+    - grafana
+    - dashboard
+
+- name: "Grafana - Création du ConfigMap pour le dashboard PrimeReact"
+  kubernetes.core.k8s:
     state: present
     definition:
       apiVersion: v1
       kind: ConfigMap
       metadata:
-        name: "{{ app_name }}-dashboard"
-        namespace: monitoring
+        name: "{{ primereact_service_name }}-dashboard"
+        namespace: "{{ lions_monitoring_namespace }}"
         labels:
+          app.kubernetes.io/name: "{{ primereact_service_name }}"
+          app.kubernetes.io/component: "dashboard"
+          app.kubernetes.io/part-of: "lions-infrastructure"
+          lions.dev/environment: "{{ lions_environment }}"
           grafana_dashboard: "1"
+          grafana_folder: "{{ primereact_monitoring.grafana_folder | default('LIONS Applications') }}"
+        annotations:
+          grafana.dashboard.version: "{{ primereact_monitoring.dashboard_version | default('1.0.0') }}"
+          lions.dev/description: "Grafana dashboard for PrimeReact application monitoring"
       data:
-        "{{ app_name }}-dashboard.json": |
-          {
-            "annotations": {
-              "list": [
-                {
-                  "builtIn": 1,
-                  "datasource": "-- Grafana --",
-                  "enable": true,
-                  "hide": true,
-                  "iconColor": "rgba(0, 211, 255, 1)",
-                  "name": "Annotations & Alerts",
-                  "type": "dashboard"
-                }
-              ]
-            },
-            "editable": true,
-            "gnetId": null,
-            "graphTooltip": 0,
-            "id": null,
-            "links": [],
-            "panels": [
-              {
-                "aliasColors": {},
-                "bars": false,
-                "dashLength": 10,
-                "dashes": false,
-                "datasource": "Prometheus",
-                "fill": 1,
-                "fillGradient": 0,
-                "gridPos": {
-                  "h": 8,
-                  "w": 12,
-                  "x": 0,
-                  "y": 0
-                },
-                "hiddenSeries": false,
-                "id": 2,
-                "legend": {
-                  "avg": false,
-                  "current": false,
-                  "max": false,
-                  "min": false,
-                  "show": true,
-                  "total": false,
-                  "values": false
-                },
-                "lines": true,
-                "linewidth": 1,
-                "nullPointMode": "null",
-                "options": {
-                  "dataLinks": []
-                },
-                "percentage": false,
-                "pointradius": 2,
-                "points": false,
-                "renderer": "flot",
-                "seriesOverrides": [],
-                "spaceLength": 10,
-                "stack": false,
-                "steppedLine": false,
-                "targets": [
-                  {
-                    "expr": "container_memory_usage_bytes{pod=~\"{{ app_name }}.*\"}",
-                    "refId": "A"
-                  }
-                ],
-                "thresholds": [],
-                "timeFrom": null,
-                "timeRegions": [],
-                "timeShift": null,
-                "title": "Memory Usage",
-                "tooltip": {
-                  "shared": true,
-                  "sort": 0,
-                  "value_type": "individual"
-                },
-                "type": "graph",
-                "xaxis": {
-                  "buckets": null,
-                  "mode": "time",
-                  "name": null,
-                  "show": true,
-                  "values": []
-                },
-                "yaxes": [
-                  {
-                    "format": "bytes",
-                    "label": null,
-                    "logBase": 1,
-                    "max": null,
-                    "min": null,
-                    "show": true
-                  },
-                  {
-                    "format": "short",
-                    "label": null,
-                    "logBase": 1,
-                    "max": null,
-                    "min": null,
-                    "show": true
-                  }
-                ],
-                "yaxis": {
-                  "align": false,
-                  "alignLevel": null
-                }
-              },
-              {
-                "aliasColors": {},
-                "bars": false,
-                "dashLength": 10,
-                "dashes": false,
-                "datasource": "Prometheus",
-                "fill": 1,
-                "fillGradient": 0,
-                "gridPos": {
-                  "h": 8,
-                  "w": 12,
-                  "x": 12,
-                  "y": 0
-                },
-                "hiddenSeries": false,
-                "id": 3,
-                "legend": {
-                  "avg": false,
-                  "current": false,
-                  "max": false,
-                  "min": false,
-                  "show": true,
-                  "total": false,
-                  "values": false
-                },
-                "lines": true,
-                "linewidth": 1,
-                "nullPointMode": "null",
-                "options": {
-                  "dataLinks": []
-                },
-                "percentage": false,
-                "pointradius": 2,
-                "points": false,
-                "renderer": "flot",
-                "seriesOverrides": [],
-                "spaceLength": 10,
-                "stack": false,
-                "steppedLine": false,
-                "targets": [
-                  {
-                    "expr": "rate(container_cpu_usage_seconds_total{pod=~\"{{ app_name }}.*\"}[5m])",
-                    "refId": "A"
-                  }
-                ],
-                "thresholds": [],
-                "timeFrom": null,
-                "timeRegions": [],
-                "timeShift": null,
-                "title": "CPU Usage",
-                "tooltip": {
-                  "shared": true,
-                  "sort": 0,
-                  "value_type": "individual"
-                },
-                "type": "graph",
-                "xaxis": {
-                  "buckets": null,
-                  "mode": "time",
-                  "name": null,
-                  "show": true,
-                  "values": []
-                },
-                "yaxes": [
-                  {
-                    "format": "short",
-                    "label": null,
-                    "logBase": 1,
-                    "max": null,
-                    "min": null,
-                    "show": true
-                  },
-                  {
-                    "format": "short",
-                    "label": null,
-                    "logBase": 1,
-                    "max": null,
-                    "min": null,
-                    "show": true
-                  }
-                ],
-                "yaxis": {
-                  "align": false,
-                  "alignLevel": null
-                }
-              },
-              {
-                "aliasColors": {},
-                "bars": false,
-                "dashLength": 10,
-                "dashes": false,
-                "datasource": "Prometheus",
-                "fill": 1,
-                "fillGradient": 0,
-                "gridPos": {
-                  "h": 8,
-                  "w": 12,
-                  "x": 0,
-                  "y": 8
-                },
-                "hiddenSeries": false,
-                "id": 4,
-                "legend": {
-                  "avg": false,
-                  "current": false,
-                  "max": false,
-                  "min": false,
-                  "show": true,
-                  "total": false,
-                  "values": false
-                },
-                "lines": true,
-                "linewidth": 1,
-                "nullPointMode": "null",
-                "options": {
-                  "dataLinks": []
-                },
-                "percentage": false,
-                "pointradius": 2,
-                "points": false,
-                "renderer": "flot",
-                "seriesOverrides": [],
-                "spaceLength": 10,
-                "stack": false,
-                "steppedLine": false,
-                "targets": [
-                  {
-                    "expr": "rate(http_requests_total{service=\"{{ app_name }}\"}[5m])",
-                    "refId": "A"
-                  }
-                ],
-                "thresholds": [],
-                "timeFrom": null,
-                "timeRegions": [],
-                "timeShift": null,
-                "title": "Request Rate",
-                "tooltip": {
-                  "shared": true,
-                  "sort": 0,
-                  "value_type": "individual"
-                },
-                "type": "graph",
-                "xaxis": {
-                  "buckets": null,
-                  "mode": "time",
-                  "name": null,
-                  "show": true,
-                  "values": []
-                },
-                "yaxes": [
-                  {
-                    "format": "short",
-                    "label": null,
-                    "logBase": 1,
-                    "max": null,
-                    "min": null,
-                    "show": true
-                  },
-                  {
-                    "format": "short",
-                    "label": null,
-                    "logBase": 1,
-                    "max": null,
-                    "min": null,
-                    "show": true
-                  }
-                ],
-                "yaxis": {
-                  "align": false,
-                  "alignLevel": null
-                }
-              }
-            ],
-            "schemaVersion": 22,
-            "style": "dark",
-            "tags": [],
-            "templating": {
-              "list": []
-            },
-            "time": {
-              "from": "now-6h",
-              "to": "now"
-            },
-            "timepicker": {},
-            "timezone": "",
-            "title": "{{ app_name }} Dashboard",
-            "uid": "{{ app_name }}-dashboard",
-            "version": 1
-          }
-  when: 
-    - prometheus_operator_check is succeeded
-    - prometheus_operator_check.resources | length > 0
-    - primereact_prometheus_scrape | bool
-  ignore_errors: yes
+        "{{ primereact_service_name }}-dashboard.json": "{{ grafana_dashboard_json | to_nice_json }}"
+  register: dashboard_creation
+  when:
+    - monitoring_components.grafana_available
+    - primereact_monitoring.dashboard_enabled | default(true) | bool
+    - grafana_dashboard_json is defined
+  tags:
+    - grafana
+    - dashboard
 
-- name: Configuration du monitoring spécifique à PrimeReact
-  debug:
-    msg: "Configuration du monitoring spécifique à PrimeReact"
+# =========================================================================
+# CONFIGURATION DES LOGS AVEC LOKI
+# =========================================================================
+- name: "Loki - Configuration de la collecte de logs PrimeReact"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ primereact_service_name }}-log-config"
+        namespace: "{{ primereact_namespace }}"
+        labels:
+          app.kubernetes.io/name: "{{ primereact_service_name }}"
+          app.kubernetes.io/component: "logging"
+          app.kubernetes.io/part-of: "lions-infrastructure"
+          lions.dev/environment: "{{ lions_environment }}"
+      data:
+        promtail-config.yml: |
+          server:
+            http_listen_port: 9080
+            grpc_listen_port: 0
+          
+          positions:
+            filename: /tmp/positions.yaml
+          
+          clients:
+            - url: http://loki.{{ lions_monitoring_namespace }}.svc.cluster.local:3100/loki/api/v1/push
+          
+          scrape_configs:
+            - job_name: {{ primereact_service_name }}
+              static_configs:
+                - targets:
+                    - localhost
+                  labels:
+                    job: {{ primereact_service_name }}
+                    environment: {{ lions_environment }}
+                    namespace: {{ primereact_namespace }}
+                    __path__: /var/log/primereact/*.log
+              pipeline_stages:
+                - match:
+                    selector: '{job="{{ primereact_service_name }}"}'
+                    stages:
+                      - json:
+                          expressions:
+                            level: level
+                            timestamp: timestamp
+                            message: message
+                      - labels:
+                          level:
+                      - timestamp:
+                          format: RFC3339
+                          source: timestamp
+  when:
+    - lions_loki_enabled | default(false) | bool
+    - primereact_monitoring.logging_enabled | default(true) | bool
+  tags:
+    - loki
+    - logging
 
-- name: Vérification de l'existence de Grafana
-  k8s_info:
-    api_version: apps/v1
-    kind: Deployment
-    namespace: monitoring
-    name: grafana
-  register: grafana_check
-  ignore_errors: yes
+# =========================================================================
+# NOTIFICATIONS ET WEBHOOKS
+# =========================================================================
+- name: "Notifications - Configuration des webhooks de monitoring"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ primereact_service_name }}-monitoring-webhooks"
+        namespace: "{{ primereact_namespace }}"
+        labels:
+          app.kubernetes.io/name: "{{ primereact_service_name }}"
+          app.kubernetes.io/component: "monitoring"
+          lions.dev/environment: "{{ lions_environment }}"
+      type: Opaque
+      data:
+        slack_webhook: "{{ primereact_monitoring.slack_webhook | default('') | b64encode }}"
+        teams_webhook: "{{ primereact_monitoring.teams_webhook | default('') | b64encode }}"
+        email_config: "{{ primereact_monitoring.email_config | default('{}') | to_json | b64encode }}"
+  when:
+    - primereact_monitoring.notifications_enabled | default(false) | bool
+  no_log: true
+  tags:
+    - notifications
+    - webhooks
 
-- name: Avertissement si Grafana n'est pas installé
-  debug:
-    msg: "AVERTISSEMENT: Grafana n'est pas installé. Les tableaux de bord pour PrimeReact ne seront pas disponibles."
-  when: grafana_check is failed or grafana_check.resources | length == 0
+# =========================================================================
+# VÉRIFICATIONS ET TESTS POST-DÉPLOIEMENT
+# =========================================================================
+- name: "Validation - Test de la collecte de métriques"
+  ansible.builtin.uri:
+    url: "http://{{ primereact_service_name }}.{{ primereact_namespace }}.svc.cluster.local:{{ primereact_monitoring.metrics_port | default('9090') }}{{ primereact_monitoring.metrics_path | default('/metrics') }}"
+    method: GET
+    timeout: 10
+  register: metrics_test
+  failed_when: false
+  when:
+    - primereact_monitoring.validate_metrics | default(true) | bool
+  tags:
+    - validation
+    - metrics
+
+- name: "Validation - Rapport de la configuration du monitoring"
+  ansible.builtin.debug:
+    msg:
+      - "=== Configuration Monitoring PrimeReact Terminée ==="
+      - "Service: {{ primereact_service_name }}"
+      - "Namespace: {{ primereact_namespace }}"
+      - "Environment: {{ lions_environment }}"
+      - "ServiceMonitor: {{ 'Créé' if servicemonitor_creation is succeeded else 'Ignoré' }}"
+      - "Règles d'alerte: {{ 'Créées' if alertrules_creation is succeeded else 'Ignorées' }}"
+      - "Dashboard Grafana: {{ 'Créé' if dashboard_creation is succeeded else 'Ignoré' }}"
+      - "Collecte de métriques: {{ 'Fonctionnelle' if metrics_test.status == 200 else 'À vérifier' }}"
+      - "Prometheus Operator: {{ 'Disponible' if monitoring_components.prometheus_operator_available else 'Indisponible' }}"
+      - "Grafana: {{ 'Disponible' if monitoring_components.grafana_available else 'Indisponible' }}"
+  tags:
+    - validation
+    - report
+
+# =========================================================================
+# GESTION DES AVERTISSEMENTS
+# =========================================================================
+- name: "Avertissements - Composants manquants"
+  ansible.builtin.debug:
+    msg:
+      - "⚠️  AVERTISSEMENTS DE CONFIGURATION:"
+      - "{{ '   - Prometheus Operator non détecté. ServiceMonitor et AlertRules non créés.' if not monitoring_components.prometheus_operator_available else '' }}"
+      - "{{ '   - Grafana non détecté. Dashboard non disponible.' if not monitoring_components.grafana_available else '' }}"
+      - "{{ '   - Prometheus non détecté. Collecte de métriques indisponible.' if not monitoring_components.prometheus_available else '' }}"
+      - "   Consultez la documentation de déploiement du monitoring: {{ lions_docs_base_url | default('https://docs.lions.dev') }}/monitoring/"
+  when:
+    - not monitoring_components.prometheus_operator_available or
+      not monitoring_components.grafana_available or
+      not monitoring_components.prometheus_available
+  tags:
+    - warnings
+    - validation

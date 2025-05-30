@@ -1,101 +1,360 @@
 ---
-# Titre: Template de NetworkPolicy Kubernetes pour PrimeReact
-# Description: Définit la NetworkPolicy Kubernetes pour une application PrimeReact
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - NETWORKPOLICY TEMPLATE PRIMEREACT
+# =========================================================================
+# Description: Template Jinja2 pour NetworkPolicy Kubernetes - Application PrimeReact
+# Version: 5.0.0
+# Maintainer: LIONS DevOps Team <devops@lions.dev>
+# Documentation: https://docs.lions.dev/infrastructure/security/network-policies
+# Standards: Kubernetes NetworkPolicy v1, LIONS Security Framework 5.0
+# =========================================================================
 
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: "{{ app_name }}-network-policy"
-  namespace: "{{ app_namespace }}"
+  name: "{{ lions_primereact_service_name | default('primereact') }}-netpol"
+  namespace: "{{ lions_primereact_namespace | default(lookup('env', 'LIONS_PRIMEREACT_NAMESPACE') | default('applications')) }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "primereact"
+    # Labels standards LIONS 5.0
+    app.kubernetes.io/name: "{{ lions_primereact_service_name | default('primereact') }}"
+    app.kubernetes.io/instance: "{{ lions_primereact_service_name | default('primereact') }}-{{ lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT') | default('development')) }}"
+    app.kubernetes.io/version: "{{ lions_primereact_version | default('latest') }}"
+    app.kubernetes.io/component: "frontend"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+    # Labels métier
+    lions.dev/environment: "{{ lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT') | default('development')) }}"
+    lions.dev/technology: "primereact"
+    lions.dev/tier: "frontend"
+    lions.dev/security-zone: "dmz"
+    lions.dev/data-classification: "{{ lions_primereact_data_classification | default('internal') }}"
+    # Labels de gouvernance
+    lions.dev/team: "{{ lions_primereact_team | default('frontend-team') }}"
+    lions.dev/cost-center: "{{ lions_cost_center | default('infrastructure') }}"
+    lions.dev/project: "{{ lions_project_name | default('lions-platform') }}"
   annotations:
-    description: "NetworkPolicy pour l'application {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    # Annotations de documentation
+    description: "NetworkPolicy pour application PrimeReact {{ lions_primereact_service_name | default('primereact') }}"
+    lions.dev/created-by: "ansible-automation"
+    lions.dev/template-version: "5.0.0"
+    lions.dev/last-updated: "{{ ansible_date_time.iso8601 }}"
+    # Annotations de sécurité
+    lions.dev/security-reviewed: "{{ lions_security_review_date | default('pending') }}"
+    lions.dev/compliance-framework: "{{ lions_compliance_framework | default('lions-security-baseline') }}"
+    # Annotations de monitoring
+    lions.dev/monitoring-enabled: "{{ lions_monitoring_enabled | default('true') }}"
+    lions.dev/alerting-enabled: "{{ lions_alerting_enabled | default('true') }}"
+
 spec:
+  # =========================================================================
+  # SÉLECTION DES PODS
+  # =========================================================================
   podSelector:
     matchLabels:
-      app: "{{ app_name }}"
+      app.kubernetes.io/name: "{{ lions_primereact_service_name | default('primereact') }}"
+      app.kubernetes.io/instance: "{{ lions_primereact_service_name | default('primereact') }}-{{ lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT') | default('development')) }}"
+
+  # =========================================================================
+  # TYPES DE POLITIQUES
+  # =========================================================================
   policyTypes:
     - Ingress
     - Egress
+
+  # =========================================================================
+  # RÈGLES D'ENTRÉE (INGRESS)
+  # =========================================================================
   ingress:
-    # Autoriser le trafic entrant depuis l'ingress-controller
+    # -------------------------------------------------------------------------
+    # Trafic depuis Ingress Controller (Traefik)
+    # -------------------------------------------------------------------------
     - from:
         - namespaceSelector:
             matchLabels:
-              name: ingress-nginx
-          podSelector:
+              name: "{{ lions_ingress_namespace | default('kube-system') }}"
+        - podSelector:
             matchLabels:
-              app.kubernetes.io/name: ingress-nginx
+              app.kubernetes.io/name: "{{ lions_ingress_controller | default('traefik') }}"
       ports:
         - protocol: TCP
-          port: {{ primereact_default_port }}
-    
-    # Autoriser le trafic entrant depuis le même namespace
+          port: {{ lions_primereact_port | default(lookup('env', 'LIONS_PRIMEREACT_PORT') | default(3000)) }}
+          {% if lions_primereact_health_check_port is defined and lions_primereact_health_check_port != lions_primereact_port %}
+        - protocol: TCP
+          port: {{ lions_primereact_health_check_port }}
+          {% endif %}
+
+    {% if lions_ingress_controller == 'nginx' %}
+    # Support pour Nginx Ingress Controller
     - from:
         - namespaceSelector:
             matchLabels:
-              name: "{{ app_namespace }}"
+              name: "{{ lions_ingress_namespace | default('ingress-nginx') }}"
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "ingress-nginx"
       ports:
         - protocol: TCP
-          port: {{ primereact_default_port }}
-    
-    # Autoriser le trafic entrant depuis Prometheus pour le scraping des métriques
+          port: {{ lions_primereact_port | default(3000) }}
+    {% endif %}
+
+    # -------------------------------------------------------------------------
+    # Trafic interne au namespace
+    # -------------------------------------------------------------------------
+    {% if lions_security_network_policies_intra_namespace | default(true) | bool %}
     - from:
         - namespaceSelector:
             matchLabels:
-              name: monitoring
-          podSelector:
-            matchLabels:
-              app: prometheus
+              name: "{{ lions_primereact_namespace | default('applications') }}"
+        - podSelector: {}
       ports:
         - protocol: TCP
-          port: {{ primereact_default_port }}
-  
+          port: {{ lions_primereact_port | default(3000) }}
+    {% endif %}
+
+    # -------------------------------------------------------------------------
+    # Trafic depuis le monitoring (Prometheus/Grafana)
+    # -------------------------------------------------------------------------
+    {% if lions_monitoring_enabled | default(lookup('env', 'LIONS_MONITORING_ENABLED') | default('true')) | bool %}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: "{{ lions_monitoring_namespace | default(lookup('env', 'LIONS_MONITORING_NAMESPACE') | default('monitoring')) }}"
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "prometheus"
+      ports:
+        - protocol: TCP
+          port: {{ lions_primereact_metrics_port | default(lions_primereact_port | default(3000)) }}
+
+    # Trafic depuis Grafana pour les dashboards
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: "{{ lions_monitoring_namespace | default('monitoring') }}"
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "grafana"
+      ports:
+        - protocol: TCP
+          port: {{ lions_primereact_port | default(3000) }}
+    {% endif %}
+
+    # -------------------------------------------------------------------------
+    # Trafic depuis les services backend autorisés
+    # -------------------------------------------------------------------------
+    {% if lions_primereact_backend_services is defined %}
+    {% for backend_service in lions_primereact_backend_services %}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: "{{ backend_service.namespace | default('applications') }}"
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "{{ backend_service.name }}"
+      ports:
+        - protocol: TCP
+          port: {{ lions_primereact_port | default(3000) }}
+    {% endfor %}
+    {% endif %}
+
+    # -------------------------------------------------------------------------
+    # Trafic depuis API Gateway (si configuré)
+    # -------------------------------------------------------------------------
+    {% if lions_api_gateway_enabled | default(false) | bool %}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: "{{ lions_api_gateway_namespace | default('gateway') }}"
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "{{ lions_api_gateway_service | default('api-gateway') }}"
+      ports:
+        - protocol: TCP
+          port: {{ lions_primereact_port | default(3000) }}
+    {% endif %}
+
+  # =========================================================================
+  # RÈGLES DE SORTIE (EGRESS)
+  # =========================================================================
   egress:
-    # Autoriser le trafic sortant vers les serveurs DNS
+    # -------------------------------------------------------------------------
+    # DNS Resolution (CoreDNS)
+    # -------------------------------------------------------------------------
     - to:
-        - namespaceSelector: {}
-          podSelector:
+        - namespaceSelector:
             matchLabels:
-              k8s-app: kube-dns
+              name: "kube-system"
+        - podSelector:
+            matchLabels:
+              k8s-app: "kube-dns"
       ports:
         - protocol: UDP
           port: 53
         - protocol: TCP
           port: 53
-    
-    # Autoriser le trafic sortant vers les services internes
+
+    # -------------------------------------------------------------------------
+    # Services backend autorisés
+    # -------------------------------------------------------------------------
+    {% if lions_primereact_backend_apis is defined %}
+    {% for api in lions_primereact_backend_apis %}
+    - to:
+        {% if api.type == 'internal' %}
+        - namespaceSelector:
+            matchLabels:
+              name: "{{ api.namespace | default('applications') }}"
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "{{ api.service_name }}"
+        {% elif api.type == 'external' %}
+        - ipBlock:
+            cidr: "{{ api.cidr }}"
+        {% endif %}
+      ports:
+        - protocol: TCP
+          port: {{ api.port }}
+    {% endfor %}
+    {% endif %}
+
+    # -------------------------------------------------------------------------
+    # Base de données Redis (si utilisée)
+    # -------------------------------------------------------------------------
+    {% if lions_primereact_redis_enabled | default(false) | bool %}
     - to:
         - namespaceSelector:
             matchLabels:
-              name: "{{ app_namespace }}"
-    
-    {% if primereact_use_redis | bool %}
-    # Autoriser le trafic sortant vers Redis
-    - to:
+              name: "{{ lions_redis_namespace | default('database') }}"
         - podSelector:
             matchLabels:
-              app: "{{ primereact_redis_service }}"
+              app.kubernetes.io/name: "{{ lions_redis_service_name | default('redis') }}"
       ports:
         - protocol: TCP
-          port: {{ primereact_redis_port }}
+          port: {{ lions_redis_port | default(lookup('env', 'LIONS_REDIS_PORT') | default(6379)) }}
     {% endif %}
-    
-    # Autoriser le trafic sortant vers les API externes
+
+    # -------------------------------------------------------------------------
+    # API de notification (si configurée)
+    # -------------------------------------------------------------------------
+    {% if lions_notification_service_enabled | default(lookup('env', 'LIONS_NOTIFICATION_SERVICE_ENABLED') | default('false')) | bool %}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: "{{ lions_notification_service_namespace | default('services') }}"
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "notification-service"
+      ports:
+        - protocol: TCP
+          port: {{ lions_notification_service_port | default(8080) }}
+    {% endif %}
+
+    # -------------------------------------------------------------------------
+    # Services d'authentification (Keycloak)
+    # -------------------------------------------------------------------------
+    {% if lions_keycloak_enabled | default(lookup('env', 'LIONS_KEYCLOAK_ENABLED') | default('true')) | bool %}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: "{{ lions_keycloak_namespace | default('security') }}"
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "{{ lions_keycloak_service_name | default('keycloak') }}"
+      ports:
+        - protocol: TCP
+          port: {{ lions_keycloak_port | default(lookup('env', 'LIONS_KEYCLOAK_PORT') | default(8080)) }}
+    {% endif %}
+
+    # -------------------------------------------------------------------------
+    # APIs externes autorisées (HTTPS uniquement)
+    # -------------------------------------------------------------------------
+    {% if lions_primereact_external_apis_enabled | default(true) | bool %}
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
             except:
+              # Exclure les réseaux privés
               - 10.0.0.0/8
               - 172.16.0.0/12
               - 192.168.0.0/16
+              # Exclure les réseaux Kubernetes
+              - "{{ lions_k8s_cluster_cidr | default('10.42.0.0/16') }}"
+              - "{{ lions_k8s_service_cidr | default('10.43.0.0/16') }}"
+              {% if lions_primereact_blocked_external_cidrs is defined %}
+              # Exclure les CIDRs spécifiquement bloqués
+              {% for blocked_cidr in lions_primereact_blocked_external_cidrs %}
+              - "{{ blocked_cidr }}"
+              {% endfor %}
+              {% endif %}
+      ports:
+        - protocol: TCP
+          port: 443  # HTTPS uniquement
+        {% if lions_environment == 'development' %}
+        - protocol: TCP
+          port: 80   # HTTP autorisé en développement uniquement
+        {% endif %}
+    {% endif %}
+
+    # -------------------------------------------------------------------------
+    # CDN et ressources statiques autorisées
+    # -------------------------------------------------------------------------
+    {% if lions_primereact_cdn_enabled | default(true) | bool %}
+    {% for cdn in lions_primereact_allowed_cdns | default([]) %}
+    - to:
+        - ipBlock:
+            cidr: "{{ cdn.cidr }}"
       ports:
         - protocol: TCP
           port: 443
+    {% endfor %}
+    {% endif %}
+
+    # -------------------------------------------------------------------------
+    # Services de télémétrie et logging
+    # -------------------------------------------------------------------------
+    {% if lions_logging_enabled | default(true) | bool %}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: "{{ lions_monitoring_namespace | default('monitoring') }}"
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "{{ lions_logging_service | default('loki') }}"
+      ports:
+        - protocol: TCP
+          port: {{ lions_logging_port | default(3100) }}
+    {% endif %}
+
+# =========================================================================
+# CONFIGURATION CONDITIONNELLE PAR ENVIRONNEMENT
+# =========================================================================
+{% if lions_environment == 'development' %}
+---
+# NetworkPolicy supplémentaire pour l'environnement de développement
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: "{{ lions_primereact_service_name | default('primereact') }}-dev-debug-netpol"
+  namespace: "{{ lions_primereact_namespace | default('applications') }}"
+  labels:
+    app.kubernetes.io/name: "{{ lions_primereact_service_name | default('primereact') }}"
+    lions.dev/environment: "development"
+    lions.dev/purpose: "debug"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: "{{ lions_primereact_service_name | default('primereact') }}"
+  policyTypes:
+    - Ingress
+  ingress:
+    # Autoriser l'accès de debug depuis les pods de développement
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              lions.dev/environment: "development"
+        - podSelector:
+            matchLabels:
+              lions.dev/purpose: "debug"
+      ports:
+        - protocol: TCP
+          port: {{ lions_primereact_debug_port | default(9229) }}
+{% endif %}

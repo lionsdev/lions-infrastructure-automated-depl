@@ -1,84 +1,385 @@
 ---
-# Titre: Template de ConfigMap Kubernetes pour PrimeReact
-# Description: Définit la ConfigMap Kubernetes pour une application PrimeReact
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - CONFIGMAP PRIMEREACT
+# =========================================================================
+# Description: Template de ConfigMap Kubernetes pour applications PrimeReact
+# Version: 5.0.0
+# Auteur: Équipe LIONS Infrastructure DevOps
+# Date: {{ ansible_date_time.date }}
+# Documentation: https://docs.lions.dev/applications/primereact
+# =========================================================================
 
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: "{{ app_name }}-config"
-  namespace: "{{ app_namespace }}"
+  name: "{{ lions_primereact_service_name }}-config"
+  namespace: "{{ lions_primereact_namespace }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
+    # Labels standards LIONS
+    app.kubernetes.io/name: "{{ lions_primereact_service_name }}"
+    app.kubernetes.io/instance: "{{ lions_primereact_service_name }}-{{ lions_environment }}"
+    app.kubernetes.io/version: "{{ primereact_app_version | default(lions_primereact_version) }}"
+    app.kubernetes.io/component: "frontend"
+    app.kubernetes.io/part-of: "lions-platform"
+    app.kubernetes.io/managed-by: "ansible"
+
+    # Labels LIONS spécifiques
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/tier: "frontend"
+    lions.dev/technology: "primereact"
+    lions.dev/monitoring: "{{ lions_monitoring_enabled | string }}"
+    lions.dev/backup: "{{ primereact_backup_enabled | default('false') | string }}"
+
+    # Labels métier
+    app: "{{ lions_primereact_service_name }}"
+    version: "{{ primereact_app_version | default(lions_primereact_version) }}"
+    environment: "{{ lions_environment }}"
     technology: "primereact"
+
   annotations:
-    description: "ConfigMap pour l'application {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    # Annotations standards
+    description: "ConfigMap pour l'application PrimeReact {{ lions_primereact_service_name }} v{{ primereact_app_version | default(lions_primereact_version) }} en environnement {{ lions_environment }}"
+    documentation: "https://docs.lions.dev/applications/primereact"
+    maintainer: "{{ lions_config_maintainer }}"
+
+    # Annotations de configuration
+    config.lions.dev/version: "{{ lions_config_version }}"
+    config.lions.dev/last-updated: "{{ ansible_date_time.iso8601 }}"
+    config.lions.dev/checksum: "{{ (primereact_config | to_json | hash('sha256'))[:16] }}"
+
+    # Annotations de sécurité
+    {% if lions_security_encryption_at_rest %}
+    security.lions.dev/encryption: "enabled"
+    {% endif %}
+    {% if lions_audit_enabled %}
+    audit.lions.dev/tracked: "true"
+    {% endif %}
+
 data:
-  # Variables d'environnement pour l'application
-  NODE_ENV: "{{ primereact_node_env }}"
-  PORT: "{{ primereact_default_port | string }}"
-  APP_NAME: "{{ app_name }}"
-  APP_VERSION: "{{ app_version }}"
-  
-  # Variables spécifiques à l'environnement
-  LOG_LEVEL: "{% if app_environment == 'production' %}warn{% elif app_environment == 'staging' %}info{% else %}debug{% endif %}"
-  API_URL: "{% if app_environment == 'production' %}https://api.{{ app_domain }}{% elif app_environment == 'staging' %}https://api.staging.{{ app_domain }}{% else %}https://api.dev.{{ app_domain }}{% endif %}"
-  
-  # Variables pour PrimeReact
-  PRIMEREACT_THEME: "{{ primereact_theme }}"
-  PRIMEREACT_RIPPLE: "{{ primereact_ripple | string | lower }}"
-  PRIMEREACT_RESPONSIVE: "{{ primereact_responsive | string | lower }}"
-  
-  # Variables pour Redis
-  REDIS_ENABLED: "{{ primereact_use_redis | string | lower }}"
-  {% if primereact_use_redis | bool %}
-  REDIS_HOST: "{{ primereact_redis_service }}"
-  REDIS_PORT: "{{ primereact_redis_port | string }}"
+  # =========================================================================
+  # CONFIGURATION RUNTIME NODEJS
+  # =========================================================================
+  NODE_ENV: "{{ primereact_node_env | default(lions_environment) }}"
+  PORT: "{{ lions_primereact_port | string }}"
+
+  # Configuration des limites Node.js
+  NODE_OPTIONS: "--max-old-space-size={{ primereact_max_memory | default('512') }}"
+  UV_THREADPOOL_SIZE: "{{ primereact_uv_threadpool_size | default('4') }}"
+
+  # =========================================================================
+  # MÉTADONNÉES APPLICATION
+  # =========================================================================
+  APP_NAME: "{{ lions_primereact_service_name }}"
+  APP_VERSION: "{{ primereact_app_version | default(lions_primereact_version) }}"
+  APP_ENVIRONMENT: "{{ lions_environment }}"
+  APP_NAMESPACE: "{{ lions_primereact_namespace }}"
+  APP_DOMAIN: "{{ lions_dns_full_domain }}"
+
+  # Configuration du déployement
+  DEPLOYMENT_MODE: "{{ lions_deployment_mode }}"
+  DEBUG_MODE: "{{ lions_debug_mode | string }}"
+  DRY_RUN: "{{ lions_dry_run | string }}"
+
+  # =========================================================================
+  # CONFIGURATION LOGGING
+  # =========================================================================
+  LOG_LEVEL: "{{ primereact_log_level | default(lions_log_level) }}"
+  LOG_FORMAT: "{{ lions_log_format }}"
+  LOG_OUTPUT: "{{ lions_log_output }}"
+
+  # Configuration des logs d'audit
+  AUDIT_ENABLED: "{{ lions_audit_enabled | string }}"
+  AUDIT_LOG_LEVEL: "{{ lions_audit_log_level }}"
+
+  # =========================================================================
+  # CONFIGURATION RÉSEAU ET APIS
+  # =========================================================================
+  # URL de l'API backend
+  {% if primereact_api_service_name is defined %}
+  API_URL: "https://{{ primereact_api_service_name }}.{{ lions_dns_full_domain }}"
+  {% else %}
+  API_URL: "https://api.{{ lions_dns_full_domain }}"
   {% endif %}
-  
-  # Configuration .env
-  env.config: |
-    # Configuration de l'application
-    NODE_ENV={{ primereact_node_env }}
-    PORT={{ primereact_default_port }}
-    
-    # Configuration de l'API
-    API_URL={% if app_environment == 'production' %}https://api.{{ app_domain }}{% elif app_environment == 'staging' %}https://api.staging.{{ app_domain }}{% else %}https://api.dev.{{ app_domain }}{% endif %}
-    
-    # Configuration des logs
-    LOG_LEVEL={% if app_environment == 'production' %}warn{% elif app_environment == 'staging' %}info{% else %}debug{% endif %}
-    
-    # Configuration PrimeReact
-    PRIMEREACT_THEME={{ primereact_theme }}
-    PRIMEREACT_RIPPLE={{ primereact_ripple | string | lower }}
-    PRIMEREACT_RESPONSIVE={{ primereact_responsive | string | lower }}
-    
-    # Configuration Redis
-    REDIS_ENABLED={{ primereact_use_redis | string | lower }}
-    {% if primereact_use_redis | bool %}
-    REDIS_HOST={{ primereact_redis_service }}
-    REDIS_PORT={{ primereact_redis_port }}
-    {% endif %}
-    
-    # Configuration du monitoring
-    PROMETHEUS_METRICS_ENABLED={{ primereact_prometheus_scrape | string | lower }}
-    METRICS_PATH={{ primereact_prometheus_path }}
-    
-    # Configuration spécifique à l'environnement
-    {% if app_environment == 'production' %}
-    # Configuration de production
-    CACHE_ENABLED=true
-    COMPRESSION_ENABLED=true
-    {% elif app_environment == 'staging' %}
-    # Configuration de staging
-    CACHE_ENABLED=true
-    COMPRESSION_ENABLED=true
+
+  # URLs des services externes
+  {% if lions_keycloak_enabled %}
+  KEYCLOAK_URL: "https://{{ lions_keycloak_service_name }}.{{ lions_dns_full_domain }}"
+  KEYCLOAK_REALM: "{{ lions_keycloak_realm }}"
+  {% endif %}
+
+  {% if lions_vault_enabled %}
+  VAULT_ADDR: "{{ lions_vault_addr }}"
+  {% endif %}
+
+  # Configuration CORS
+  CORS_ENABLED: "{{ primereact_cors_enabled | default('true') | string }}"
+  CORS_ORIGINS: "{{ primereact_cors_origins | default('*') }}"
+
+  # =========================================================================
+  # CONFIGURATION PRIMEREACT SPÉCIFIQUE
+  # =========================================================================
+  # Thème et apparence
+  PRIMEREACT_THEME: "{{ primereact_theme | default('saga-blue') }}"
+  PRIMEREACT_RIPPLE: "{{ primereact_ripple | default(true) | string }}"
+  PRIMEREACT_RESPONSIVE: "{{ primereact_responsive | default(true) | string }}"
+  PRIMEREACT_INPUT_STYLE: "{{ primereact_input_style | default('outlined') }}"
+
+  # Configuration des composants
+  PRIMEREACT_LOCALE: "{{ primereact_locale | default('fr') }}"
+  PRIMEREACT_TIMEZONE: "{{ primereact_timezone | default('Europe/Paris') }}"
+  PRIMEREACT_DATE_FORMAT: "{{ primereact_date_format | default('dd/mm/yy') }}"
+
+  # =========================================================================
+  # CONFIGURATION CACHE ET PERFORMANCE
+  # =========================================================================
+  # Cache local
+  CACHE_ENABLED: "{{ primereact_cache_enabled | default(lions_environment != 'development') | string }}"
+  CACHE_TTL: "{{ primereact_cache_ttl | default('3600') }}"
+
+  # Configuration Redis (si activé)
+  REDIS_ENABLED: "{{ lions_redis_enabled | string }}"
+  {% if lions_redis_enabled %}
+  REDIS_HOST: "{{ lions_redis_service_name }}.{{ lions_redis_namespace }}.svc.{{ lions_k8s_dns_domain }}"
+  REDIS_PORT: "{{ lions_redis_port | string }}"
+  REDIS_DB: "{{ primereact_redis_db | default('0') }}"
+  REDIS_TTL: "{{ primereact_redis_ttl | default('7200') }}"
+  {% endif %}
+
+  # Compression et optimisation
+  COMPRESSION_ENABLED: "{{ primereact_compression_enabled | default(lions_environment != 'development') | string }}"
+  MINIFICATION_ENABLED: "{{ primereact_minification_enabled | default(lions_environment == 'production') | string }}"
+
+  # =========================================================================
+  # CONFIGURATION SÉCURITÉ
+  # =========================================================================
+  # Configuration TLS
+  TLS_ENABLED: "{{ lions_security_tls_enabled | string }}"
+  HTTPS_REDIRECT: "{{ primereact_https_redirect | default(lions_security_tls_enabled) | string }}"
+
+  # Configuration CSP (Content Security Policy)
+  CSP_ENABLED: "{{ primereact_csp_enabled | default('true') | string }}"
+  CSP_REPORT_ONLY: "{{ primereact_csp_report_only | default(lions_environment == 'development') | string }}"
+
+  # Configuration des headers de sécurité
+  SECURITY_HEADERS_ENABLED: "{{ primereact_security_headers | default('true') | string }}"
+  HSTS_ENABLED: "{{ primereact_hsts_enabled | default(lions_environment == 'production') | string }}"
+
+  # =========================================================================
+  # CONFIGURATION MONITORING ET MÉTRIQUES
+  # =========================================================================
+  # Monitoring général
+  MONITORING_ENABLED: "{{ lions_monitoring_enabled | string }}"
+  HEALTH_CHECK_ENABLED: "{{ primereact_health_check_enabled | default('true') | string }}"
+  HEALTH_CHECK_PATH: "{{ primereact_health_check_path | default('/health') }}"
+
+  # Configuration Prometheus
+  PROMETHEUS_METRICS_ENABLED: "{{ primereact_prometheus_scrape | default(lions_monitoring_enabled) | string }}"
+  METRICS_PATH: "{{ primereact_prometheus_path | default('/metrics') }}"
+  METRICS_PORT: "{{ primereact_metrics_port | default('9090') }}"
+
+  # Configuration des traces
+  TRACING_ENABLED: "{{ primereact_tracing_enabled | default('false') | string }}"
+  {% if primereact_tracing_enabled | default(false) %}
+  JAEGER_ENDPOINT: "{{ primereact_jaeger_endpoint | default('http://jaeger-collector:14268/api/traces') }}"
+  {% endif %}
+
+  # =========================================================================
+  # CONFIGURATION FEATURES FLAGS
+  # =========================================================================
+  # Features par environnement
+  {% if lions_environment == 'development' %}
+  FEATURE_HOT_RELOAD: "true"
+  FEATURE_DEBUG_PANEL: "true"
+  FEATURE_SOURCE_MAPS: "true"
+  {% elif lions_environment == 'staging' %}
+  FEATURE_HOT_RELOAD: "false"
+  FEATURE_DEBUG_PANEL: "true"
+  FEATURE_SOURCE_MAPS: "true"
+  {% else %}
+  FEATURE_HOT_RELOAD: "false"
+  FEATURE_DEBUG_PANEL: "false"
+  FEATURE_SOURCE_MAPS: "false"
+  {% endif %}
+
+  # Features fonctionnelles
+  FEATURE_NOTIFICATIONS: "{{ primereact_feature_notifications | default('true') | string }}"
+  FEATURE_ANALYTICS: "{{ primereact_feature_analytics | default(lions_environment == 'production') | string }}"
+  FEATURE_A_B_TESTING: "{{ primereact_feature_ab_testing | default('false') | string }}"
+
+  # =========================================================================
+  # CONFIGURATION PERSONNALISÉE PAR ENVIRONNEMENT
+  # =========================================================================
+  {% if lions_environment == 'development' %}
+  # Configuration spécifique au développement
+  WEBPACK_DEV_SERVER: "true"
+  REACT_STRICT_MODE: "true"
+  REACT_PROFILER: "true"
+  {% elif lions_environment == 'staging' %}
+  # Configuration spécifique au staging
+  WEBPACK_DEV_SERVER: "false"
+  REACT_STRICT_MODE: "true"
+  REACT_PROFILER: "true"
+  {% else %}
+  # Configuration spécifique à la production
+  WEBPACK_DEV_SERVER: "false"
+  REACT_STRICT_MODE: "false"
+  REACT_PROFILER: "false"
+  {% endif %}
+
+  # =========================================================================
+  # FICHIER DE CONFIGURATION .ENV COMPLET
+  # =========================================================================
+  .env: |
+    # =========================================================================
+    # CONFIGURATION GÉNÉRÉE AUTOMATIQUEMENT POUR PRIMEREACT
+    # Date de génération: {{ ansible_date_time.iso8601 }}
+    # Environnement: {{ lions_environment }}
+    # Version: {{ primereact_app_version | default(lions_primereact_version) }}
+    # =========================================================================
+
+    # Configuration runtime
+    NODE_ENV={{ primereact_node_env | default(lions_environment) }}
+    PORT={{ lions_primereact_port }}
+    NODE_OPTIONS=--max-old-space-size={{ primereact_max_memory | default('512') }}
+
+    # Métadonnées application
+    APP_NAME={{ lions_primereact_service_name }}
+    APP_VERSION={{ primereact_app_version | default(lions_primereact_version) }}
+    APP_ENVIRONMENT={{ lions_environment }}
+    APP_DOMAIN={{ lions_dns_full_domain }}
+
+    # Configuration logging
+    LOG_LEVEL={{ primereact_log_level | default(lions_log_level) }}
+    LOG_FORMAT={{ lions_log_format }}
+    AUDIT_ENABLED={{ lions_audit_enabled | string }}
+
+    # Configuration réseau
+    {% if primereact_api_service_name is defined %}
+    API_URL=https://{{ primereact_api_service_name }}.{{ lions_dns_full_domain }}
     {% else %}
-    # Configuration de développement
-    CACHE_ENABLED=false
-    COMPRESSION_ENABLED=false
+    API_URL=https://api.{{ lions_dns_full_domain }}
     {% endif %}
+
+    {% if lions_keycloak_enabled %}
+    KEYCLOAK_URL=https://{{ lions_keycloak_service_name }}.{{ lions_dns_full_domain }}
+    KEYCLOAK_REALM={{ lions_keycloak_realm }}
+    {% endif %}
+
+    # Configuration PrimeReact
+    PRIMEREACT_THEME={{ primereact_theme | default('saga-blue') }}
+    PRIMEREACT_RIPPLE={{ primereact_ripple | default(true) | string }}
+    PRIMEREACT_RESPONSIVE={{ primereact_responsive | default(true) | string }}
+    PRIMEREACT_LOCALE={{ primereact_locale | default('fr') }}
+
+    # Configuration cache
+    CACHE_ENABLED={{ primereact_cache_enabled | default(lions_environment != 'development') | string }}
+    {% if lions_redis_enabled %}
+    REDIS_ENABLED=true
+    REDIS_HOST={{ lions_redis_service_name }}.{{ lions_redis_namespace }}.svc.{{ lions_k8s_dns_domain }}
+    REDIS_PORT={{ lions_redis_port }}
+    REDIS_DB={{ primereact_redis_db | default('0') }}
+    {% else %}
+    REDIS_ENABLED=false
+    {% endif %}
+
+    # Configuration sécurité
+    TLS_ENABLED={{ lions_security_tls_enabled | string }}
+    CSP_ENABLED={{ primereact_csp_enabled | default('true') | string }}
+    SECURITY_HEADERS_ENABLED={{ primereact_security_headers | default('true') | string }}
+
+    # Configuration monitoring
+    MONITORING_ENABLED={{ lions_monitoring_enabled | string }}
+    PROMETHEUS_METRICS_ENABLED={{ primereact_prometheus_scrape | default(lions_monitoring_enabled) | string }}
+    METRICS_PATH={{ primereact_prometheus_path | default('/metrics') }}
+    HEALTH_CHECK_PATH={{ primereact_health_check_path | default('/health') }}
+
+    # Configuration performance
+    COMPRESSION_ENABLED={{ primereact_compression_enabled | default(lions_environment != 'development') | string }}
+    MINIFICATION_ENABLED={{ primereact_minification_enabled | default(lions_environment == 'production') | string }}
+
+    # Features flags
+    {% if lions_environment == 'development' %}
+    FEATURE_HOT_RELOAD=true
+    FEATURE_DEBUG_PANEL=true
+    FEATURE_SOURCE_MAPS=true
+    {% elif lions_environment == 'staging' %}
+    FEATURE_HOT_RELOAD=false
+    FEATURE_DEBUG_PANEL=true
+    FEATURE_SOURCE_MAPS=true
+    {% else %}
+    FEATURE_HOT_RELOAD=false
+    FEATURE_DEBUG_PANEL=false
+    FEATURE_SOURCE_MAPS=false
+    {% endif %}
+
+    FEATURE_NOTIFICATIONS={{ primereact_feature_notifications | default('true') | string }}
+    FEATURE_ANALYTICS={{ primereact_feature_analytics | default(lions_environment == 'production') | string }}
+
+  # =========================================================================
+  # CONFIGURATION NGINX (SI UTILISÉ)
+  # =========================================================================
+  nginx.conf: |
+    # Configuration générée automatiquement pour PrimeReact
+    # {{ ansible_managed }}
+
+    upstream primereact_backend {
+        server 127.0.0.1:{{ lions_primereact_port }};
+    }
+
+    server {
+        listen 8080;
+        server_name {{ lions_primereact_service_name }}.{{ lions_dns_full_domain }};
+
+        # Configuration des logs
+        access_log /var/log/nginx/access.log;
+        error_log /var/log/nginx/error.log {{ primereact_log_level | default(lions_log_level) | lower }};
+
+        # Configuration sécurité
+        {% if primereact_security_headers | default('true') %}
+        add_header X-Frame-Options "SAMEORIGIN" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-XSS-Protection "1; mode=block" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        {% endif %}
+
+        {% if primereact_csp_enabled | default('true') %}
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:;" always;
+        {% endif %}
+
+        # Configuration cache statique
+        location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
+            expires 1y;
+            add_header Cache-Control "public, immutable";
+        }
+
+        # Health check
+        location {{ primereact_health_check_path | default('/health') }} {
+            proxy_pass http://primereact_backend;
+            access_log off;
+        }
+
+        # Métriques
+        {% if primereact_prometheus_scrape | default(lions_monitoring_enabled) %}
+        location {{ primereact_prometheus_path | default('/metrics') }} {
+            proxy_pass http://primereact_backend;
+            allow 10.0.0.0/8;
+            deny all;
+        }
+        {% endif %}
+
+        # Application principale
+        location / {
+            proxy_pass http://primereact_backend;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+
+            {% if primereact_compression_enabled | default(lions_environment != 'development') %}
+            gzip on;
+            gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;
+            {% endif %}
+        }
+    }
+
+---

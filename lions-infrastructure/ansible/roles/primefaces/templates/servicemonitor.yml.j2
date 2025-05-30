@@ -1,55 +1,389 @@
----
-# Titre: Template de ServiceMonitor Kubernetes pour PrimeFaces
-# Description: Définit le ServiceMonitor Kubernetes pour une application PrimeFaces
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - PRIMEFACES SERVICEMONITOR TEMPLATE
+# =========================================================================
+# Description: Template Kubernetes avancé pour le ServiceMonitor PrimeFaces
+# Composant: PrimeFaces Application ServiceMonitor
+# Version: 5.0.0
+# Maintainer: DevOps LIONS Team
+# Documentation: https://docs.lions.dev/infrastructure/primefaces/servicemonitor
+# =========================================================================
 
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: "{{ app_name }}"
-  namespace: "{{ app_namespace }}"
+  name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+  namespace: "{{ lions_primefaces_namespace }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "primefaces"
-    prometheus: k8s
+    # Labels Kubernetes standards
+    app.kubernetes.io/name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+    app.kubernetes.io/instance: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-{{ lions_environment }}"
+    app.kubernetes.io/version: "{{ lions_primefaces_app_version | default('latest') }}"
+    app.kubernetes.io/component: "servicemonitor"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "lions-infrastructure-ansible"
+    
+    # Labels LIONS spécifiques
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/technology: "primefaces"
+    lions.dev/tier: "frontend"
+    lions.dev/monitoring-profile: "{{ lions_primefaces_monitoring_profile | default('standard') }}"
+    lions.dev/data-classification: "{{ lions_primefaces_data_classification | default('internal') }}"
+    lions.dev/business-unit: "{{ lions_business_unit | default('infrastructure') }}"
+    lions.dev/cost-center: "{{ lions_cost_center | default('devops') }}"
+    
+    # Labels pour Prometheus
+    prometheus: "{{ lions_prometheus_instance | default('kube-prometheus') }}"
+    release: "{{ lions_prometheus_release | default('prometheus') }}"
+    
+    # Labels pour l'observabilité
+    app: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+    version: "{{ lions_primefaces_app_version | default('latest') }}"
+    environment: "{{ lions_environment }}"
+    
   annotations:
-    description: "ServiceMonitor pour l'application {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    # Annotations standards
+    description: "ServiceMonitor enterprise LIONS 5.0 pour l'application PrimeFaces {{ lions_primefaces_app_name | default(lions_primefaces_service_name) }} ({{ lions_primefaces_app_version | default('latest') }}) en environnement {{ lions_environment }}"
+    
+    # Annotations LIONS de gestion
+    lions.dev/created-by: "lions-infrastructure-ansible"
+    lions.dev/last-updated: "{{ ansible_date_time.iso8601 }}"
+    lions.dev/servicemonitor-purpose: "{{ lions_primefaces_servicemonitor_purpose | default('Collecte avancée de métriques Prometheus pour l application PrimeFaces avec alerting intelligent') }}"
+    lions.dev/support-contact: "{{ lions_support_contact | default('devops@lions.dev') }}"
+    lions.dev/documentation-url: "https://docs.lions.dev/infrastructure/primefaces/servicemonitor"
+    lions.dev/monitoring-documentation: "https://docs.lions.dev/infrastructure/monitoring/primefaces"
+    
+    # Configuration de monitoring
+    lions.dev/scrape-interval: "{{ lions_primefaces_scrape_interval | default('30s') }}"
+    lions.dev/metrics-retention: "{{ lions_primefaces_metrics_retention | default('15d') }}"
+    lions.dev/alert-severity: "{{ lions_primefaces_alert_severity | default('warning') }}"
+
 spec:
+  # Sélecteur des services à monitorer
   selector:
     matchLabels:
-      app: "{{ app_name }}"
+      app.kubernetes.io/name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+      app.kubernetes.io/instance: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-{{ lions_environment }}"
+  
+  # Sélecteur de namespace pour le monitoring
   namespaceSelector:
+    {% if lions_primefaces_monitoring_cross_namespace | default(false) | bool %}
+    any: true
+    {% else %}
     matchNames:
-      - "{{ app_namespace }}"
+      - "{{ lions_primefaces_namespace }}"
+    {% endif %}
+  
+  # Configuration des endpoints de scraping
   endpoints:
-    - port: http
-      path: "{{ primefaces_prometheus_path }}"
-      interval: 15s
-      scrapeTimeout: 10s
-      honorLabels: true
+    # Endpoint principal pour les métriques d'application
+    - port: "{{ lions_primefaces_metrics_port_name | default('http') }}"
+      path: "{{ lions_primefaces_metrics_path | default('/actuator/prometheus') }}"
+      scheme: "{{ lions_primefaces_metrics_scheme | default('http') }}"
+      interval: "{{ lions_primefaces_scrape_interval | default('30s') }}"
+      scrapeTimeout: "{{ lions_primefaces_scrape_timeout | default('10s') }}"
+      honorLabels: {{ lions_primefaces_honor_labels | default('true') }}
+      honorTimestamps: {{ lions_primefaces_honor_timestamps | default('true') }}
+      
+      # Configuration TLS (si activé)
+      {% if lions_primefaces_metrics_tls_enabled | default(false) | bool %}
+      tlsConfig:
+        {% if lions_primefaces_metrics_tls_ca_file | default('') %}
+        caFile: "{{ lions_primefaces_metrics_tls_ca_file }}"
+        {% endif %}
+        {% if lions_primefaces_metrics_tls_cert_file | default('') %}
+        certFile: "{{ lions_primefaces_metrics_tls_cert_file }}"
+        {% endif %}
+        {% if lions_primefaces_metrics_tls_key_file | default('') %}
+        keyFile: "{{ lions_primefaces_metrics_tls_key_file }}"
+        {% endif %}
+        {% if lions_primefaces_metrics_tls_server_name | default('') %}
+        serverName: "{{ lions_primefaces_metrics_tls_server_name }}"
+        {% endif %}
+        insecureSkipVerify: {{ lions_primefaces_metrics_tls_insecure_skip_verify | default('false') }}
+      {% endif %}
+      
+      # Configuration d'authentification (si activée)
+      {% if lions_primefaces_metrics_basic_auth_enabled | default(false) | bool %}
+      basicAuth:
+        username:
+          name: "{{ lions_primefaces_metrics_basic_auth_secret }}"
+          key: username
+        password:
+          name: "{{ lions_primefaces_metrics_basic_auth_secret }}"
+          key: password
+      {% endif %}
+      
+      # Configuration OAuth2 (si activée)
+      {% if lions_primefaces_metrics_oauth2_enabled | default(false) | bool %}
+      oauth2:
+        clientId:
+          name: "{{ lions_primefaces_metrics_oauth2_secret }}"
+          key: client_id
+        clientSecret:
+          name: "{{ lions_primefaces_metrics_oauth2_secret }}"
+          key: client_secret
+        tokenUrl: "{{ lions_primefaces_metrics_oauth2_token_url }}"
+        {% if lions_primefaces_metrics_oauth2_scopes | default([]) | length > 0 %}
+        scopes:
+          {% for scope in lions_primefaces_metrics_oauth2_scopes %}
+          - "{{ scope }}"
+          {% endfor %}
+        {% endif %}
+      {% endif %}
+      
+      # Paramètres de requête personnalisés
+      {% if lions_primefaces_metrics_params | default({}) %}
+      params:
+        {% for key, values in lions_primefaces_metrics_params.items() %}
+        {{ key }}:
+          {% for value in values %}
+          - "{{ value }}"
+          {% endfor %}
+        {% endfor %}
+      {% endif %}
+      
+      # Headers HTTP personnalisés
+      {% if lions_primefaces_metrics_headers | default({}) %}
+      headers:
+        {% for key, value in lions_primefaces_metrics_headers.items() %}
+        {{ key }}: "{{ value }}"
+        {% endfor %}
+      {% endif %}
+      
+      # Relabeling avancé des métriques
       metricRelabelings:
+        # Labels d'environnement et d'application
+        - sourceLabels: []
+          targetLabel: environment
+          replacement: "{{ lions_environment }}"
+        - sourceLabels: []
+          targetLabel: application
+          replacement: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+        - sourceLabels: []
+          targetLabel: version
+          replacement: "{{ lions_primefaces_app_version | default('latest') }}"
+        - sourceLabels: []
+          targetLabel: technology
+          replacement: "primefaces"
+        - sourceLabels: []
+          targetLabel: lions_component
+          replacement: "frontend"
+        
+        # Métriques JVM essentielles
         - sourceLabels: [__name__]
-          regex: 'jvm_.*'
+          regex: 'jvm_(memory|gc|threads|classes)_.*'
           action: keep
+        
+        # Métriques HTTP/Web essentielles
         - sourceLabels: [__name__]
-          regex: 'http_.*'
+          regex: 'http_(server_requests|client_requests)_.*'
           action: keep
+        
+        # Métriques système et processus
         - sourceLabels: [__name__]
-          regex: 'process_.*'
+          regex: '(process|system)_(cpu|memory|files|start_time)_.*'
           action: keep
-        - sourceLabels: [__name__]
-          regex: 'system_.*'
-          action: keep
-        - sourceLabels: [__name__]
-          regex: 'application_.*'
-          action: keep
+        
+        # Métriques de base de données (HikariCP)
+        {% if lions_postgres_enabled | bool %}
         - sourceLabels: [__name__]
           regex: 'hikaricp_.*'
           action: keep
         - sourceLabels: [__name__]
-          regex: 'tomcat_.*'
+          regex: 'jdbc_.*'
           action: keep
+        {% endif %}
+        
+        # Métriques de cache (Redis)
+        {% if lions_redis_enabled | bool %}
+        - sourceLabels: [__name__]
+          regex: '(redis|cache)_.*'
+          action: keep
+        {% endif %}
+        
+        # Métriques Tomcat/Servlet
+        - sourceLabels: [__name__]
+          regex: 'tomcat_(sessions|servlet|threads|global_request)_.*'
+          action: keep
+        
+        # Métriques Spring Boot Actuator
+        - sourceLabels: [__name__]
+          regex: '(spring|application)_.*'
+          action: keep
+        
+        # Métriques PrimeFaces spécifiques
+        - sourceLabels: [__name__]
+          regex: 'primefaces_.*'
+          action: keep
+        
+        # Métriques de sécurité et authentification
+        {% if lions_keycloak_enabled | bool %}
+        - sourceLabels: [__name__]
+          regex: '(oauth2|oidc|keycloak|auth)_.*'
+          action: keep
+        {% endif %}
+        
+        # Métriques business custom
+        {% if lions_primefaces_custom_metrics_enabled | default(true) | bool %}
+        - sourceLabels: [__name__]
+          regex: '{{ lions_primefaces_custom_metrics_prefix | default("lions") }}_.*'
+          action: keep
+        {% endif %}
+        
+        # Exclusion des métriques non pertinentes
+        {% if lions_primefaces_exclude_metrics | default([]) | length > 0 %}
+        {% for metric in lions_primefaces_exclude_metrics %}
+        - sourceLabels: [__name__]
+          regex: '{{ metric }}'
+          action: drop
+        {% endfor %}
+        {% endif %}
+        
+        # Renommage des métriques pour cohérence
+        {% if lions_primefaces_metric_relabeling | default([]) | length > 0 %}
+        {% for relabel in lions_primefaces_metric_relabeling %}
+        - sourceLabels: {{ relabel.sourceLabels | default([]) }}
+          {% if relabel.separator | default('') %}
+          separator: "{{ relabel.separator }}"
+          {% endif %}
+          {% if relabel.targetLabel | default('') %}
+          targetLabel: "{{ relabel.targetLabel }}"
+          {% endif %}
+          {% if relabel.regex | default('') %}
+          regex: "{{ relabel.regex }}"
+          {% endif %}
+          {% if relabel.modulus | default('') %}
+          modulus: {{ relabel.modulus }}
+          {% endif %}
+          {% if relabel.replacement | default('') %}
+          replacement: "{{ relabel.replacement }}"
+          {% endif %}
+          action: "{{ relabel.action }}"
+        {% endfor %}
+        {% endif %}
+      
+      # Relabeling des labels de service discovery
+      relabelings:
+        # Préservation des labels Kubernetes importants
+        - sourceLabels: [__meta_kubernetes_service_name]
+          targetLabel: service
+        - sourceLabels: [__meta_kubernetes_namespace]
+          targetLabel: namespace
+        - sourceLabels: [__meta_kubernetes_service_label_app_kubernetes_io_name]
+          targetLabel: app_name
+        - sourceLabels: [__meta_kubernetes_service_label_app_kubernetes_io_version]
+          targetLabel: app_version
+        - sourceLabels: [__meta_kubernetes_service_label_lions_dev_environment]
+          targetLabel: environment
+        - sourceLabels: [__meta_kubernetes_service_label_lions_dev_technology]
+          targetLabel: technology
+        
+        # Configuration de l'instance ID unique
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: instance
+        - sourceLabels: [__meta_kubernetes_pod_node_name]
+          targetLabel: node
+        
+        # Labels pour le monitoring avancé
+        - sourceLabels: []
+          targetLabel: lions_monitoring_profile
+          replacement: "{{ lions_primefaces_monitoring_profile | default('standard') }}"
+        - sourceLabels: []
+          targetLabel: lions_data_classification
+          replacement: "{{ lions_primefaces_data_classification | default('internal') }}"
+        
+        # Relabeling personnalisé
+        {% if lions_primefaces_service_relabeling | default([]) | length > 0 %}
+        {% for relabel in lions_primefaces_service_relabeling %}
+        - sourceLabels: {{ relabel.sourceLabels | default([]) }}
+          {% if relabel.separator | default('') %}
+          separator: "{{ relabel.separator }}"
+          {% endif %}
+          {% if relabel.targetLabel | default('') %}
+          targetLabel: "{{ relabel.targetLabel }}"
+          {% endif %}
+          {% if relabel.regex | default('') %}
+          regex: "{{ relabel.regex }}"
+          {% endif %}
+          {% if relabel.modulus | default('') %}
+          modulus: {{ relabel.modulus }}
+          {% endif %}
+          {% if relabel.replacement | default('') %}
+          replacement: "{{ relabel.replacement }}"
+          {% endif %}
+          action: "{{ relabel.action }}"
+        {% endfor %}
+        {% endif %}
+    
+    # Endpoint séparé pour les métriques JMX (si activé)
+    {% if lions_primefaces_jmx_metrics_enabled | default(false) | bool %}
+    - port: "{{ lions_primefaces_jmx_port_name | default('jmx') }}"
+      path: "{{ lions_primefaces_jmx_metrics_path | default('/metrics') }}"
+      scheme: http
+      interval: "{{ lions_primefaces_jmx_scrape_interval | default('60s') }}"
+      scrapeTimeout: "{{ lions_primefaces_jmx_scrape_timeout | default('30s') }}"
+      honorLabels: true
+      
+      metricRelabelings:
+        # Labels d'identification
+        - sourceLabels: []
+          targetLabel: metrics_type
+          replacement: "jmx"
+        - sourceLabels: []
+          targetLabel: environment
+          replacement: "{{ lions_environment }}"
+        
+        # Conservation des métriques JMX pertinentes
+        - sourceLabels: [__name__]
+          regex: 'jmx_.*'
+          action: keep
+    {% endif %}
+    
+    # Endpoint pour les métriques de santé avancées (si activé)
+    {% if lions_primefaces_health_metrics_enabled | default(false) | bool %}
+    - port: "{{ lions_primefaces_metrics_port_name | default('http') }}"
+      path: "{{ lions_primefaces_health_metrics_path | default('/actuator/health') }}"
+      scheme: http
+      interval: "{{ lions_primefaces_health_scrape_interval | default('15s') }}"
+      scrapeTimeout: "{{ lions_primefaces_health_scrape_timeout | default('5s') }}"
+      honorLabels: true
+      
+      metricRelabelings:
+        # Transformation des métriques de santé en format Prometheus
+        - sourceLabels: []
+          targetLabel: metrics_type
+          replacement: "health"
+        - sourceLabels: []
+          targetLabel: environment
+          replacement: "{{ lions_environment }}"
+    {% endif %}
+  
+  # Configuration de découverte de services avancée
+  {% if lions_primefaces_service_discovery_config | default({}) %}
+  jobLabel: "{{ lions_primefaces_service_discovery_config.jobLabel | default('app.kubernetes.io/name') }}"
+  {% endif %}
+  
+  # Limite du nombre de targets
+  {% if lions_primefaces_target_limit | default('') %}
+  targetLimit: {{ lions_primefaces_target_limit }}
+  {% endif %}
+  
+  # Limite du nombre de labels par target
+  {% if lions_primefaces_label_limit | default('') %}
+  labelLimit: {{ lions_primefaces_label_limit }}
+  {% endif %}
+  
+  # Limite de la longueur des noms de labels
+  {% if lions_primefaces_label_name_length_limit | default('') %}
+  labelNameLengthLimit: {{ lions_primefaces_label_name_length_limit }}
+  {% endif %}
+  
+  # Limite de la longueur des valeurs de labels
+  {% if lions_primefaces_label_value_length_limit | default('') %}
+  labelValueLengthLimit: {{ lions_primefaces_label_value_length_limit }}
+  {% endif %}
+  
+  # Limite du nombre de samples par scrape
+  {% if lions_primefaces_sample_limit | default('') %}
+  sampleLimit: {{ lions_primefaces_sample_limit }}
+  {% endif %}

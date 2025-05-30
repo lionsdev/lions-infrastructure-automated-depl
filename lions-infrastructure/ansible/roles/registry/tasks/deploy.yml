@@ -1,61 +1,385 @@
 ---
-# Titre: Déploiement de la registry de conteneurs
-# Description: Déploie la registry de conteneurs Docker sur Kubernetes
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-10
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - DÉPLOIEMENT REGISTRY
+# =========================================================================
+# Description: Déploiement sécurisé de la registry de conteneurs Docker
+# Composant: Registry de conteneurs (Docker Registry v2)
+# Namespace: {{ lions_registry_namespace }}
+# Version: 5.0.0
+# Maintainer: DevOps Team LIONS
+# Documentation: https://docs.lions.dev/infrastructure/components/registry
+# =========================================================================
 
-- name: Déploiement de la registry
-  k8s:
+# =========================================================================
+# VALIDATION PRÉ-DÉPLOIEMENT
+# =========================================================================
+- name: "📋 Validation - Vérification des prérequis pour {{ registry_component_name }}"
+  assert:
+    that:
+      - lions_registry_enabled | bool
+      - lions_registry_namespace is defined
+      - lions_registry_service_name is defined
+      - temp_dir.path is defined
+    fail_msg: "❌ Prérequis manquants pour le déploiement de la registry"
+    success_msg: "✅ Prérequis validés pour {{ registry_component_name }}"
+  tags:
+    - validation
+    - registry
+    - deploy
+
+- name: "🔍 Validation - Vérification de l'existence des templates"
+  stat:
+    path: "{{ item }}"
+  register: template_files
+  with_items:
+    - "{{ temp_dir.path }}/deployment.yml"
+    - "{{ temp_dir.path }}/service.yml"
+    - "{{ temp_dir.path }}/ingress.yml"
+    - "{{ temp_dir.path }}/serviceaccount.yml"
+    - "{{ temp_dir.path }}/configmap.yml"
+    - "{{ temp_dir.path }}/persistentvolumeclaim.yml"
+  failed_when: not template_files.results | selectattr('stat.exists') | list
+  tags:
+    - validation
+    - registry
+    - templates
+
+# =========================================================================
+# DÉPLOIEMENT DES RESSOURCES KUBERNETES
+# =========================================================================
+- name: "🔧 Déploiement - ServiceAccount pour {{ registry_component_name }}"
+  kubernetes.core.k8s:
+    state: present
+    src: "{{ temp_dir.path }}/serviceaccount.yml"
+    wait: true
+    wait_condition:
+      type: "Ready"
+      status: "True"
+    wait_timeout: "{{ lions_timeout_default | default(300) }}"
+  register: serviceaccount_result
+  tags:
+    - deploy
+    - registry
+    - security
+
+- name: "📁 Déploiement - ConfigMap pour {{ registry_component_name }}"
+  kubernetes.core.k8s:
+    state: present
+    src: "{{ temp_dir.path }}/configmap.yml"
+    wait: true
+    wait_timeout: "{{ lions_timeout_default | default(300) }}"
+  register: configmap_result
+  tags:
+    - deploy
+    - registry
+    - configuration
+
+- name: "💾 Déploiement - PersistentVolumeClaim pour {{ registry_component_name }}"
+  kubernetes.core.k8s:
+    state: present
+    src: "{{ temp_dir.path }}/persistentvolumeclaim.yml"
+    wait: true
+    wait_condition:
+      type: "Bound"
+      status: "True"
+    wait_timeout: "{{ lions_timeout_default | default(300) }}"
+  register: pvc_result
+  when: lions_registry_storage_enabled | default(true) | bool
+  tags:
+    - deploy
+    - registry
+    - storage
+
+- name: "🚀 Déploiement - Deployment pour {{ registry_component_name }}"
+  kubernetes.core.k8s:
     state: present
     src: "{{ temp_dir.path }}/deployment.yml"
+    wait: true
+    wait_condition:
+      type: "Progressing"
+      status: "True"
+      reason: "NewReplicaSetAvailable"
+    wait_timeout: "{{ lions_timeout_deployment | default(1800) }}"
   register: deployment_result
+  retries: "{{ lions_deployment_retries | default(3) }}"
+  delay: "{{ lions_deployment_retry_delay | default(30) }}"
+  until: deployment_result is succeeded
+  tags:
+    - deploy
+    - registry
+    - application
 
-- name: Création du service pour la registry
-  k8s:
+- name: "🌐 Déploiement - Service pour {{ registry_component_name }}"
+  kubernetes.core.k8s:
     state: present
     src: "{{ temp_dir.path }}/service.yml"
+    wait: true
+    wait_timeout: "{{ lions_timeout_default | default(300) }}"
   register: service_result
+  tags:
+    - deploy
+    - registry
+    - networking
 
-- name: Création de l'ingress pour la registry
-  k8s:
+- name: "🔗 Déploiement - Ingress pour {{ registry_component_name }}"
+  kubernetes.core.k8s:
     state: present
     src: "{{ temp_dir.path }}/ingress.yml"
+    wait: true
+    wait_timeout: "{{ lions_timeout_default | default(300) }}"
   register: ingress_result
+  when:
+    - lions_registry_ingress_enabled | default(true) | bool
+    - lions_security_tls_enabled | default(true) | bool
   failed_when: false
+  tags:
+    - deploy
+    - registry
+    - networking
+    - tls
 
-- name: Vérification du déploiement
-  k8s_info:
+# =========================================================================
+# DÉPLOIEMENT DU MONITORING
+# =========================================================================
+- name: "📊 Monitoring - ServiceMonitor pour {{ registry_component_name }}"
+  kubernetes.core.k8s:
+    state: present
+    src: "{{ temp_dir.path }}/servicemonitor.yml"
+    wait: true
+    wait_timeout: "{{ lions_timeout_default | default(300) }}"
+  register: servicemonitor_result
+  when:
+    - lions_monitoring_enabled | default(true) | bool
+    - lions_prometheus_enabled | default(true) | bool
+  failed_when: false
+  tags:
+    - deploy
+    - registry
+    - monitoring
+
+# =========================================================================
+# VÉRIFICATIONS POST-DÉPLOIEMENT
+# =========================================================================
+- name: "✅ Vérification - État du déploiement {{ registry_component_name }}"
+  kubernetes.core.k8s_info:
     api_version: apps/v1
     kind: Deployment
-    name: "{{ app_name | default('registry') }}"
-    namespace: "{{ app_namespace | default('registry') }}"
+    name: "{{ lions_registry_service_name }}"
+    namespace: "{{ lions_registry_namespace }}"
   register: deployment_info
-  until: deployment_info.resources | length > 0 and deployment_info.resources[0].status.availableReplicas is defined and deployment_info.resources[0].status.availableReplicas > 0
-  retries: 30
-  delay: 10
+  until: >
+    deployment_info.resources | length > 0 and
+    deployment_info.resources[0].status.availableReplicas is defined and
+    deployment_info.resources[0].status.availableReplicas | int >= 1 and
+    deployment_info.resources[0].status.readyReplicas is defined and
+    deployment_info.resources[0].status.readyReplicas | int >= 1
+  retries: "{{ lions_health_check_retries | default(30) }}"
+  delay: "{{ lions_health_check_delay | default(10) }}"
   failed_when: false
+  tags:
+    - validation
+    - registry
+    - health-check
 
-- name: Échec si le déploiement n'est pas réussi
-  fail:
-    msg: "Le déploiement de la registry a échoué. Veuillez vérifier les logs pour plus d'informations."
-  when: deployment_info.resources | length == 0 or deployment_info.resources[0].status.availableReplicas is not defined or deployment_info.resources[0].status.availableReplicas == 0
-
-- name: Récupération des informations sur les pods
-  k8s_info:
+- name: "🔍 Vérification - Récupération des informations sur les pods"
+  kubernetes.core.k8s_info:
     api_version: v1
     kind: Pod
-    namespace: "{{ app_namespace | default('registry') }}"
+    namespace: "{{ lions_registry_namespace }}"
     label_selectors:
-      - app={{ app_name | default('registry') }}
+      - "app.kubernetes.io/name={{ lions_registry_service_name }}"
+      - "app.kubernetes.io/component=registry"
   register: pods_info
+  tags:
+    - validation
+    - registry
+    - pods
 
-- name: Affichage des informations sur les pods
-  debug:
-    var: pods_info.resources[0].metadata.name
-  when: pods_info.resources | length > 0
+- name: "📋 Vérification - Analyse de l'état des pods"
+  set_fact:
+    registry_healthy_pods: >-
+      {{
+        pods_info.resources |
+        selectattr('status.phase', 'equalto', 'Running') |
+        selectattr('status.containerStatuses', 'defined') |
+        selectattr('status.containerStatuses.0.ready', 'equalto', true) |
+        list | length
+      }}
+    registry_total_pods: "{{ pods_info.resources | length }}"
+  tags:
+    - validation
+    - registry
+    - pods
 
-- name: Attente de l'initialisation de la registry
+# =========================================================================
+# GESTION DES ERREURS ET RECOVERY
+# =========================================================================
+- name: "❌ Gestion d'erreur - Échec du déploiement détecté"
+  block:
+    - name: "📋 Collecte des logs de déploiement"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Pod
+        namespace: "{{ lions_registry_namespace }}"
+        label_selectors:
+          - "app.kubernetes.io/name={{ lions_registry_service_name }}"
+      register: failed_pods
+
+    - name: "📊 Affichage des détails d'erreur"
+      debug:
+        msg: |
+          ❌ Déploiement de {{ registry_component_name }} échoué
+          Namespace: {{ lions_registry_namespace }}
+          Pods sains: {{ registry_healthy_pods | default(0) }}/{{ registry_total_pods | default(0) }}
+          Statut du déploiement: {{ deployment_info.resources[0].status | default('Indisponible') }}
+
+    - name: "🔄 Tentative de récupération automatique"
+      kubernetes.core.k8s:
+        state: present
+        api_version: apps/v1
+        kind: Deployment
+        name: "{{ lions_registry_service_name }}"
+        namespace: "{{ lions_registry_namespace }}"
+        merge_type: strategic-merge
+        definition:
+          spec:
+            template:
+              metadata:
+                annotations:
+                  kubectl.kubernetes.io/restartedAt: "{{ ansible_date_time.iso8601 }}"
+      when: lions_auto_recovery_enabled | default(true) | bool
+
+    - name: "⏰ Attente après tentative de récupération"
+      pause:
+        seconds: "{{ lions_recovery_wait_time | default(60) }}"
+      when: lions_auto_recovery_enabled | default(true) | bool
+
+    - name: "💥 Échec définitif du déploiement"
+      fail:
+        msg: |
+          ❌ Le déploiement de {{ registry_component_name }} a échoué de manière irrémédiable.
+          
+          Détails:
+          - Namespace: {{ lions_registry_namespace }}
+          - Service: {{ lions_registry_service_name }}
+          - Pods sains: {{ registry_healthy_pods | default(0) }}/{{ registry_total_pods | default(0) }}
+          
+          Actions recommandées:
+          1. Vérifier les logs: kubectl logs -n {{ lions_registry_namespace }} -l app.kubernetes.io/name={{ lions_registry_service_name }}
+          2. Vérifier les événements: kubectl get events -n {{ lions_registry_namespace }}
+          3. Vérifier les ressources: kubectl describe deployment {{ lions_registry_service_name }} -n {{ lions_registry_namespace }}
+
+  when: >
+    deployment_info.resources | length == 0 or
+    deployment_info.resources[0].status.availableReplicas is not defined or
+    deployment_info.resources[0].status.availableReplicas | int < 1 or
+    registry_healthy_pods | default(0) | int < 1
+  tags:
+    - error-handling
+    - registry
+    - recovery
+
+# =========================================================================
+# FINALISATION ET ATTENTE
+# =========================================================================
+- name: "⏰ Attente - Stabilisation du service {{ registry_component_name }}"
   pause:
-    seconds: "{{ registry_init_delay | default(30) }}"
-  when: deployment_result.changed
+    seconds: "{{ lions_registry_stabilization_delay | default(30) }}"
+  when: deployment_result.changed or service_result.changed
+  tags:
+    - deploy
+    - registry
+    - stabilization
+
+- name: "🔗 Vérification - Test de connectivité du service"
+  uri:
+    url: "http://{{ lions_registry_service_name }}.{{ lions_registry_namespace }}.svc.cluster.local:{{ lions_registry_port }}/v2/"
+    method: GET
+    status_code: [200, 401]  # 401 est acceptable pour un registry sécurisé
+    timeout: 30
+  register: connectivity_test
+  retries: 5
+  delay: 10
+  until: connectivity_test is succeeded
+  failed_when: false
+  tags:
+    - validation
+    - registry
+    - connectivity
+
+# =========================================================================
+# AFFICHAGE DES RÉSULTATS
+# =========================================================================
+- name: "✅ Succès - Résumé du déploiement {{ registry_component_name }}"
+  debug:
+    msg: |
+      🎉 Déploiement de {{ registry_component_name }} terminé avec succès !
+      
+      📊 Informations de déploiement:
+      - Namespace: {{ lions_registry_namespace }}
+      - Service: {{ lions_registry_service_name }}
+      - Version: {{ lions_registry_version }}
+      - Pods déployés: {{ registry_healthy_pods | default(1) }}/{{ registry_total_pods | default(1) }}
+      
+      🌐 Accès au service:
+      - URL interne: http://{{ lions_registry_service_name }}.{{ lions_registry_namespace }}.svc.cluster.local:{{ lions_registry_port }}
+      {% if lions_registry_ingress_enabled | default(true) -%}
+      - URL externe: https://registry.{{ lions_dns_full_domain }}
+      {% endif -%}
+      
+      📋 Composants déployés:
+      - ✅ ServiceAccount: {{ serviceaccount_result.changed | ternary('Créé', 'Existant') }}
+      - ✅ ConfigMap: {{ configmap_result.changed | ternary('Créé', 'Existant') }}
+      {% if lions_registry_storage_enabled | default(true) -%}
+      - ✅ PersistentVolumeClaim: {{ pvc_result.changed | ternary('Créé', 'Existant') }}
+      {% endif -%}
+      - ✅ Deployment: {{ deployment_result.changed | ternary('Créé', 'Mis à jour') }}
+      - ✅ Service: {{ service_result.changed | ternary('Créé', 'Existant') }}
+      {% if lions_registry_ingress_enabled | default(true) -%}
+      - ✅ Ingress: {{ ingress_result.changed | ternary('Créé', 'Existant') }}
+      {% endif -%}
+      {% if lions_monitoring_enabled | default(true) -%}
+      - ✅ ServiceMonitor: {{ servicemonitor_result.changed | ternary('Créé', 'Existant') }}
+      {% endif -%}
+      
+      ⏱️  Temps de déploiement: {{ ansible_date_time.iso8601 }}
+  tags:
+    - deploy
+    - registry
+    - summary
+
+# =========================================================================
+# TAGS DE TRAÇABILITÉ
+# =========================================================================
+- name: "📝 Traçabilité - Enregistrement des métadonnées de déploiement"
+  kubernetes.core.k8s:
+    state: present
+    api_version: v1
+    kind: ConfigMap
+    name: "{{ lions_registry_service_name }}-deployment-metadata"
+    namespace: "{{ lions_registry_namespace }}"
+    definition:
+      metadata:
+        labels:
+          app.kubernetes.io/name: "{{ lions_registry_service_name }}"
+          app.kubernetes.io/component: "registry"
+          app.kubernetes.io/part-of: "lions-infrastructure"
+          app.kubernetes.io/managed-by: "ansible"
+          lions.dev/version: "{{ lions_config_version | default('5.0.0') }}"
+          lions.dev/environment: "{{ lions_environment }}"
+        annotations:
+          lions.dev/deployed-at: "{{ ansible_date_time.iso8601 }}"
+          lions.dev/deployed-by: "{{ ansible_user_id | default('ansible') }}"
+          lions.dev/deployment-method: "ansible"
+      data:
+        deployment-version: "{{ lions_config_version | default('5.0.0') }}"
+        deployment-timestamp: "{{ ansible_date_time.iso8601 }}"
+        deployment-environment: "{{ lions_environment }}"
+        deployment-namespace: "{{ lions_registry_namespace }}"
+        component-version: "{{ lions_registry_version }}"
+        deployment-status: "success"
+  tags:
+    - deploy
+    - registry
+    - metadata
+    - traceability

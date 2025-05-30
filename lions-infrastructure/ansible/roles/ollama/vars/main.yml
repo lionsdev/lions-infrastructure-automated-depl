@@ -1,101 +1,691 @@
 ---
-# Titre: Variables pour le déploiement d'Ollama
-# Description: Variables spécifiques à Ollama
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-14
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - VARIABLES OLLAMA AI SERVICE
+# =========================================================================
+# Description: Variables de configuration optimisées pour le service IA Ollama
+# Composant: Ollama LLM Service - Plateforme d'exécution de modèles de langage
+# Version: 5.0.0
+# Auteur: Équipe DevOps LIONS Infrastructure
+# Date: {{ ansible_date_time.iso8601 }}
+# Documentation: https://docs.lions.dev/infrastructure/ai/ollama
+# Dépendances: Kubernetes, Persistent Storage, Prometheus
+# Cohérence: Variables alignées avec lions-infrastructure/.env
+# =========================================================================
 
-# Configuration par défaut pour Ollama
-ollama_default_port: 11434
-ollama_health_path: "/api/tags"
-ollama_metrics_path: "/metrics"
-ollama_api_key_secret: "ollama-api-key"
+# =========================================================================
+# 📋 MÉTADONNÉES ET CONFIGURATION DE BASE
+# =========================================================================
+ollama_meta:
+  service_name: "{{ lookup('env', 'LIONS_OLLAMA_SERVICE_NAME') | default('ollama') }}"
+  version: "{{ lookup('env', 'LIONS_OLLAMA_VERSION') | default('0.1.39') }}"
+  namespace: "{{ lookup('env', 'LIONS_OLLAMA_NAMESPACE') | default('ai') }}"
+  environment: "{{ lookup('env', 'LIONS_ENVIRONMENT') | default('development') }}"
+  config_version: "5.0.0"
+  maintainer: "{{ lookup('env', 'LIONS_CONFIG_MAINTAINER') | default('devops@lions.dev') }}"
 
-# Configuration des modèles à précharger
-ollama_models:
-  - "phi3"           # 3B - léger et rapide
-  - "llama3:7b"     # 7B - bon équilibre
-  - "mistral"       # 7B - performant
-  - "neural-chat"   # 7B - optimisé pour le chat
+  # Classification du service
+  tier: "application"
+  category: "ai-ml"
+  criticality: "{{ (ollama_meta.environment == 'production') | ternary('high', 'medium') }}"
 
-# Configuration des sondes de santé
-ollama_readiness_probe:
-  httpGet:
-    path: "{{ ollama_health_path }}"
-    port: http
-  initialDelaySeconds: 30
-  periodSeconds: 10
-  timeoutSeconds: 15
-  failureThreshold: 3
+  # URLs et documentation
+  documentation_url: "https://docs.lions.dev/infrastructure/ai/ollama"
+  support_channel: "#ai-platform-support"
+  runbook_url: "https://docs.lions.dev/runbooks/ollama"
 
-ollama_liveness_probe:
-  httpGet:
-    path: "{{ ollama_health_path }}"
-    port: http
-  initialDelaySeconds: 60
-  periodSeconds: 30
-  timeoutSeconds: 15
-  failureThreshold: 3
+# Variables calculées pour faciliter l'usage dans les templates
+ollama_service_name: "{{ ollama_meta.service_name }}"
+ollama_environment: "{{ ollama_meta.environment }}"
+ollama_namespace: "{{ ollama_meta.namespace }}"
+ollama_version: "{{ ollama_meta.version }}"
 
-# Configuration du monitoring
-ollama_prometheus_port: 11434
-ollama_prometheus_path: "/metrics"
-ollama_prometheus_scrape: true
-ollama_init_delay: 60
+# =========================================================================
+# 🌐 CONFIGURATION RÉSEAU ET EXPOSITION
+# =========================================================================
+ollama_network:
+  # Configuration du service Kubernetes
+  service:
+    type: "{{ lookup('env', 'LIONS_OLLAMA_SERVICE_TYPE') | default('ClusterIP') }}"
+    port: "{{ lookup('env', 'LIONS_OLLAMA_PORT') | default(11434) | int }}"
+    target_port: "{{ lookup('env', 'LIONS_OLLAMA_TARGET_PORT') | default(11434) | int }}"
+    protocol: "TCP"
+    session_affinity: "{{ lookup('env', 'LIONS_OLLAMA_SESSION_AFFINITY') | default('None') }}"
 
-# Configuration des ressources par environnement
-# Adapté pour votre VPS avec 11GB RAM et CPU AMD EPYC
+  # Configuration des ports par fonction
+  ports:
+    api: "{{ ollama_network.service.port }}"
+    metrics: "{{ lookup('env', 'LIONS_OLLAMA_METRICS_PORT') | default(ollama_network.service.port) | int }}"
+    health: "{{ ollama_network.service.port }}"
+    admin: "{{ lookup('env', 'LIONS_OLLAMA_ADMIN_PORT') | default(ollama_network.service.port) | int }}"
+
+  # Configuration NodePort (si nécessaire)
+  nodeport:
+    enabled: "{{ lookup('env', 'LIONS_OLLAMA_NODEPORT_ENABLED') | default('false') | bool }}"
+    port: "{{ lookup('env', 'LIONS_OLLAMA_NODEPORT') | default('30434') | int }}"
+
+  # Configuration Load Balancer
+  loadbalancer:
+    enabled: "{{ lookup('env', 'LIONS_OLLAMA_LB_ENABLED') | default('false') | bool }}"
+    source_ranges: "{{ lookup('env', 'LIONS_OLLAMA_LB_SOURCE_RANGES') | default([]) | from_yaml }}"
+
+# Configuration DNS et domaines
+ollama_dns:
+  base_domain: "{{ lookup('env', 'LIONS_DNS_DOMAIN_BASE') | default('lions.local') }}"
+  subdomain_prefix: "{{ lookup('env', 'LIONS_DNS_SUBDOMAIN_PREFIX') | default(ollama_environment) }}"
+  full_domain: "{{ ollama_dns.subdomain_prefix }}.{{ ollama_dns.base_domain }}"
+  service_domain: "{{ ollama_service_name }}.{{ ollama_dns.full_domain }}"
+
+# Configuration des endpoints API
+ollama_endpoints:
+  api_root: "/"
+  health_check: "/api/tags"
+  metrics: "/metrics"
+  models_list: "/api/tags"
+  generate: "/api/generate"
+  chat: "/api/chat"
+  embeddings: "/api/embeddings"
+  pull_model: "/api/pull"
+  push_model: "/api/push"
+  delete_model: "/api/delete"
+
+# =========================================================================
+# 💾 GESTION DES RESSOURCES OPTIMISÉE
+# =========================================================================
 ollama_resources:
-  development:
-    requests:
-      cpu: "2"
-      memory: "4Gi"
-    limits:
-      cpu: "4"
-      memory: "6Gi"
-  staging:
-    requests:
-      cpu: "3"
-      memory: "6Gi"
-    limits:
-      cpu: "4"
-      memory: "8Gi"
-  production:
-    requests:
-      cpu: "4"
-      memory: "8Gi"
-    limits:
-      cpu: "4"
-      memory: "10Gi"
+  # Profils de ressources selon la capacité du VPS (11GB RAM + AMD EPYC)
+  profiles:
+    small:
+      requests:
+        cpu: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_CPU_REQUEST') | default('100m') }}"
+        memory: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_MEMORY_REQUEST') | default('512Mi') }}"
+      limits:
+        cpu: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_CPU_LIMIT') | default('1000m') }}"
+        memory: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_MEMORY_LIMIT') | default('2Gi') }}"
 
-# Configuration des réplicas par environnement
-ollama_replicas:
-  development: 1
-  staging: 1
-  production: 1
+    medium:
+      requests:
+        cpu: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_CPU_REQUEST') | default('500m') }}"
+        memory: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_MEMORY_REQUEST') | default('2Gi') }}"
+      limits:
+        cpu: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_CPU_LIMIT') | default('2000m') }}"
+        memory: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_MEMORY_LIMIT') | default('6Gi') }}"
 
-# Configuration de l'ingress
-ollama_ingress_annotations:
-  cert-manager.io/cluster-issuer: "letsencrypt-prod"
-  traefik.ingress.kubernetes.io/router.entrypoints: "websecure"
-  traefik.ingress.kubernetes.io/router.tls: "true"
-  traefik.ingress.kubernetes.io/ssl-redirect: "true"
-  traefik.ingress.kubernetes.io/ssl-permanent-redirect: "true"
-  traefik.ingress.kubernetes.io/request-timeout: "600"
-  traefik.ingress.kubernetes.io/compress: "true"
-  traefik.ingress.kubernetes.io/headers-customrequestheaders: "X-Forwarded-Proto:https||X-Forwarded-Port:443"
-  traefik.ingress.kubernetes.io/headers-customresponseheaders: "X-Content-Type-Options:nosniff||X-Frame-Options:SAMEORIGIN||X-XSS-Protection:1; mode=block"
-  traefik.ingress.kubernetes.io/proxy-body-size: "500m"
-  traefik.ingress.kubernetes.io/proxy-read-timeout: "600"
-  traefik.ingress.kubernetes.io/proxy-send-timeout: "600"
+    large:
+      requests:
+        cpu: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_CPU_REQUEST') | default('1000m') }}"
+        memory: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_MEMORY_REQUEST') | default('4Gi') }}"
+      limits:
+        cpu: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_CPU_LIMIT') | default('4000m') }}"
+        memory: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_MEMORY_LIMIT') | default('10Gi') }}"
 
-# Configuration de la persistance
-ollama_persistent_storage: true
-ollama_storage_size: "100Gi"
-ollama_storage_class: "standard"
+  # Sélection automatique du profil selon l'environnement
+  active_profile: >-
+    {{
+      {
+        'development': 'small',
+        'staging': 'medium', 
+        'production': 'large'
+      }[ollama_environment] | default('medium')
+    }}
 
-# Configuration d'Ollama
-ollama_app_name: "LIONS AI Service"
-ollama_root_url: "https://{{ app_domain }}"
-ollama_gpu_enabled: false
-ollama_cors_allowed_origins: "*"
+  # Configuration GPU
+  gpu:
+    enabled: "{{ lookup('env', 'LIONS_OLLAMA_GPU_ENABLED') | default('false') | bool }}"
+    count: "{{ lookup('env', 'LIONS_OLLAMA_GPU_COUNT') | default(1) | int }}"
+    type: "{{ lookup('env', 'LIONS_OLLAMA_GPU_TYPE') | default('nvidia.com/gpu') }}"
+    memory_fraction: "{{ lookup('env', 'LIONS_OLLAMA_GPU_MEMORY_FRACTION') | default('0.8') | float }}"
+
+  # Configuration autoscaling
+  autoscaling:
+    enabled: "{{ lookup('env', 'LIONS_AUTOSCALING_ENABLED') | default('false') | bool }}"
+    min_replicas: "{{ lookup('env', 'LIONS_AUTOSCALING_MIN_REPLICAS') | default(1) | int }}"
+    max_replicas: "{{ lookup('env', 'LIONS_AUTOSCALING_MAX_REPLICAS') | default(3) | int }}"
+    target_cpu: "{{ lookup('env', 'LIONS_AUTOSCALING_CPU_TARGET') | default(70) | int }}"
+    target_memory: "{{ lookup('env', 'LIONS_AUTOSCALING_MEMORY_TARGET') | default(80) | int }}"
+
+# Configuration déploiement
+ollama_deployment:
+  replicas: >-
+    {{
+      {
+        'development': 1,
+        'staging': 1,
+        'production': (lookup('env', 'LIONS_K8S_HA_ENABLED') | default('false') | bool) | ternary(2, 1)
+      }[ollama_environment] | default(1)
+    }}
+
+  strategy: "{{ lookup('env', 'LIONS_DEPLOYMENT_STRATEGY') | default('RollingUpdate') }}"
+  max_unavailable: "{{ lookup('env', 'LIONS_DEPLOYMENT_MAX_UNAVAILABLE') | default('25%') }}"
+  max_surge: "{{ lookup('env', 'LIONS_DEPLOYMENT_MAX_SURGE') | default('25%') }}"
+
+  # Anti-affinité pour la haute disponibilité
+  anti_affinity:
+    enabled: "{{ (ollama_environment == 'production') | bool }}"
+    type: "{{ lookup('env', 'LIONS_ANTI_AFFINITY_TYPE') | default('soft') }}"
+
+# =========================================================================
+# 💿 CONFIGURATION STOCKAGE OPTIMISÉE
+# =========================================================================
+ollama_storage:
+  # Configuration principale
+  enabled: "{{ lookup('env', 'LIONS_OLLAMA_STORAGE_ENABLED') | default('true') | bool }}"
+  class: "{{ lookup('env', 'LIONS_STORAGE_CLASS_DEFAULT') | default('local-path') }}"
+  access_mode: "ReadWriteOnce"
+
+  # Tailles par environnement (optimisé pour modèles IA)
+  size: >-
+    {{
+      {
+        'development': lookup('env', 'LIONS_STORAGE_PV_SIZE_MEDIUM') | default('20Gi'),
+        'staging': lookup('env', 'LIONS_STORAGE_PV_SIZE_LARGE') | default('50Gi'),
+        'production': lookup('env', 'LIONS_OLLAMA_STORAGE_SIZE') | default('100Gi')
+      }[ollama_environment] | default('50Gi')
+    }}
+
+  # Configuration des modèles
+  models:
+    path: "/root/.ollama/models"
+    cache_path: "/tmp/ollama/cache"
+
+  # Configuration backup
+  backup:
+    enabled: "{{ lookup('env', 'LIONS_BACKUP_ENABLED') | default('true') | bool }}"
+    schedule: "{{ lookup('env', 'LIONS_BACKUP_SCHEDULE') | default('0 2 * * *') }}"
+    retention_days: >-
+      {{
+        {
+          'development': 7,
+          'staging': 15,
+          'production': lookup('env', 'LIONS_BACKUP_RETENTION_DAYS') | default(30) | int
+        }[ollama_environment] | default(30)
+      }}
+    encryption: "{{ lookup('env', 'LIONS_BACKUP_ENCRYPTION') | default('true') | bool }}"
+
+# =========================================================================
+# 🔒 CONFIGURATION SÉCURITÉ INTÉGRÉE
+# =========================================================================
+ollama_security:
+  # Configuration Pod Security Standards
+  pod_security:
+    enabled: "{{ lookup('env', 'LIONS_SECURITY_POD_SECURITY_STANDARDS') | default('restricted') != 'none' }}"
+    standard: "{{ lookup('env', 'LIONS_SECURITY_POD_SECURITY_STANDARDS') | default('restricted') }}"
+
+    # Configuration utilisateur (non-root)
+    run_as_user: 1000
+    run_as_group: 1000
+    fs_group: 1000
+    run_as_non_root: true
+    read_only_root_filesystem: false  # Ollama a besoin d'écrire dans /tmp
+    allow_privilege_escalation: false
+
+    # Capabilities minimales
+    drop_capabilities:
+      - ALL
+    add_capabilities: []
+
+    # Configuration seccomp
+    seccomp_profile:
+      type: "RuntimeDefault"
+
+  # Configuration RBAC
+  rbac:
+    enabled: "{{ lookup('env', 'LIONS_SECURITY_RBAC_ENABLED') | default('true') | bool }}"
+    create_service_account: true
+    service_account_name: "{{ ollama_service_name }}"
+
+  # Configuration Network Policies
+  network_policies:
+    enabled: "{{ lookup('env', 'LIONS_SECURITY_NETWORK_POLICIES') | default('true') | bool }}"
+
+    # Règles d'ingress (trafic entrant)
+    ingress_rules:
+      - from_namespaces:
+          - "{{ lookup('env', 'LIONS_MONITORING_NAMESPACE') | default('monitoring') }}"
+        ports:
+          - port: "{{ ollama_network.ports.metrics }}"
+            protocol: TCP
+      - from_same_namespace: true
+        ports:
+          - port: "{{ ollama_network.ports.api }}"
+            protocol: TCP
+      - from_ingress_controller: true
+        ports:
+          - port: "{{ ollama_network.ports.api }}"
+            protocol: TCP
+
+    # Règles d'egress (trafic sortant)
+    egress_rules:
+      - to_dns: true
+      - to_internet: "{{ lookup('env', 'LIONS_OLLAMA_INTERNET_ACCESS') | default('true') | bool }}"  # Pour télécharger modèles
+      - to_namespaces:
+          - "{{ lookup('env', 'LIONS_POSTGRES_NAMESPACE') | default('database') }}"
+          - "{{ lookup('env', 'LIONS_REDIS_NAMESPACE') | default('database') }}"
+
+  # Configuration authentification et autorisation
+  authentication:
+    enabled: "{{ lookup('env', 'LIONS_OLLAMA_AUTH_ENABLED') | default('false') | bool }}"
+    type: "{{ lookup('env', 'LIONS_OLLAMA_AUTH_TYPE') | default('bearer') }}"
+    secret_name: "{{ ollama_service_name }}-auth"
+
+    # Intégration Keycloak
+    keycloak:
+      enabled: "{{ lookup('env', 'LIONS_KEYCLOAK_ENABLED') | default('false') | bool }}"
+      realm: "{{ lookup('env', 'LIONS_KEYCLOAK_REALM') | default('lions') }}"
+      client_id: "{{ ollama_service_name }}"
+
+  # Configuration TLS
+  tls:
+    enabled: "{{ lookup('env', 'LIONS_SECURITY_TLS_ENABLED') | default('true') | bool }}"
+    provider: "{{ lookup('env', 'LIONS_SECURITY_TLS_PROVIDER') | default('letsencrypt') }}"
+    secret_name: "{{ ollama_service_name }}-tls"
+
+  # Configuration rate limiting
+  rate_limiting:
+    enabled: true
+    requests_per_minute: "{{ lookup('env', 'LIONS_OLLAMA_RATE_LIMIT_RPM') | default(100) | int }}"
+    burst_size: "{{ lookup('env', 'LIONS_OLLAMA_RATE_LIMIT_BURST') | default(50) | int }}"
+    per_ip: true
+
+# =========================================================================
+# 🏥 CONFIGURATION HEALTH CHECKS ET OBSERVABILITÉ
+# =========================================================================
+ollama_health:
+  # Configuration des sondes Kubernetes
+  probes:
+    startup:
+      enabled: true
+      http_get:
+        path: "{{ ollama_endpoints.health_check }}"
+        port: "{{ ollama_network.ports.health }}"
+        scheme: "{{ ollama_security.tls.enabled | ternary('HTTPS', 'HTTP') }}"
+      initial_delay_seconds: 30
+      period_seconds: 10
+      timeout_seconds: 15
+      failure_threshold: 30  # Généreux pour le démarrage d'Ollama
+      success_threshold: 1
+
+    liveness:
+      enabled: true
+      http_get:
+        path: "{{ ollama_endpoints.health_check }}"
+        port: "{{ ollama_network.ports.health }}"
+        scheme: "{{ ollama_security.tls.enabled | ternary('HTTPS', 'HTTP') }}"
+      initial_delay_seconds: 60
+      period_seconds: 30
+      timeout_seconds: 15
+      failure_threshold: 3
+      success_threshold: 1
+
+    readiness:
+      enabled: true
+      http_get:
+        path: "{{ ollama_endpoints.health_check }}"
+        port: "{{ ollama_network.ports.health }}"
+        scheme: "{{ ollama_security.tls.enabled | ternary('HTTPS', 'HTTP') }}"
+      initial_delay_seconds: 30
+      period_seconds: 10
+      timeout_seconds: 15
+      failure_threshold: 3
+      success_threshold: 1
+
+# =========================================================================
+# 🌍 CONFIGURATION INGRESS OPTIMISÉE
+# =========================================================================
+ollama_ingress:
+  enabled: "{{ lookup('env', 'LIONS_OLLAMA_INGRESS_ENABLED') | default('true') | bool }}"
+  class: "{{ lookup('env', 'LIONS_INGRESS_CLASS') | default('traefik') }}"
+
+  # Configuration de l'hôte
+  hosts:
+    - host: "{{ ollama_dns.service_domain }}"
+      paths:
+        - path: "/"
+          path_type: "Prefix"
+          service:
+            name: "{{ ollama_service_name }}"
+            port: "{{ ollama_network.service.port }}"
+
+  # Annotations optimisées pour l'IA (requêtes longues, gros uploads)
+  annotations:
+    # Configuration TLS
+    "cert-manager.io/cluster-issuer": "{{ lookup('env', 'LIONS_SECURITY_TLS_PROVIDER') | default('letsencrypt') }}-prod"
+
+    # Configuration Traefik
+    "traefik.ingress.kubernetes.io/router.entrypoints": "websecure"
+    "traefik.ingress.kubernetes.io/router.tls": "true"
+    "traefik.ingress.kubernetes.io/ssl-redirect": "true"
+
+    # Timeouts généreux pour génération IA
+    "traefik.ingress.kubernetes.io/router.middlewares": "{{ ollama_namespace }}-ollama-timeout@kubernetescrd"
+
+    # Taille des requêtes pour upload de modèles
+    "nginx.ingress.kubernetes.io/proxy-body-size": "10g"
+    "traefik.ingress.kubernetes.io/proxy-body-size": "10g"
+
+    # Headers de sécurité
+    "traefik.ingress.kubernetes.io/headers-customresponseheaders": |
+      X-Content-Type-Options:nosniff||
+      X-Frame-Options:SAMEORIGIN||
+      X-XSS-Protection:1; mode=block||
+      Content-Security-Policy:default-src 'self'
+
+    # Rate limiting au niveau ingress
+    "traefik.ingress.kubernetes.io/rate-limit": "{{ ollama_security.rate_limiting.requests_per_minute }}"
+
+  # Configuration TLS
+  tls:
+    - hosts:
+        - "{{ ollama_dns.service_domain }}"
+      secret_name: "{{ ollama_security.tls.secret_name }}"
+
+# =========================================================================
+# 📊 CONFIGURATION MONITORING PROMETHEUS
+# =========================================================================
+ollama_monitoring:
+  enabled: "{{ lookup('env', 'LIONS_MONITORING_ENABLED') | default('true') | bool }}"
+
+  # Configuration ServiceMonitor
+  servicemonitor:
+    enabled: true
+    namespace: "{{ lookup('env', 'LIONS_MONITORING_NAMESPACE') | default('monitoring') }}"
+
+    # Configuration Prometheus
+    scrape_interval: "30s"
+    scrape_timeout: "25s"
+    honor_labels: true
+    honor_timestamps: true
+
+    # Configuration métriques
+    metrics_path: "{{ ollama_endpoints.metrics }}"
+
+    # Limites pour éviter la surcharge
+    sample_limit: 10000
+    target_limit: 100
+    label_limit: 50
+    label_name_length_limit: 100
+    label_value_length_limit: 200
+
+    # Configuration TLS pour monitoring
+    tls_config:
+      insecure_skip_verify: "{{ lookup('env', 'LIONS_MONITORING_TLS_SKIP_VERIFY') | default('false') | bool }}"
+
+    # Relabeling pour enrichir les métriques
+    metric_relabelings:
+      - source_labels: [__name__]
+        target_label: lions_environment
+        replacement: "{{ ollama_environment }}"
+      - source_labels: [__name__]
+        target_label: lions_service
+        replacement: "{{ ollama_service_name }}"
+      - source_labels: [__name__]
+        target_label: lions_version
+        replacement: "{{ ollama_version }}"
+
+  # Configuration Probe pour health checks externes
+  probe:
+    enabled: true
+    module: "http_2xx"
+    targets:
+      - "{{ ollama_dns.service_domain }}"
+    interval: "60s"
+    timeout: "30s"
+
+# =========================================================================
+# 📝 CONFIGURATION LOGGING CENTRALISÉ
+# =========================================================================
+ollama_logging:
+  enabled: "{{ lookup('env', 'LIONS_LOGGING_ENABLED') | default('true') | bool }}"
+
+  # Configuration des niveaux de log
+  level: >-
+    {{
+      {
+        'development': 'DEBUG',
+        'staging': 'INFO', 
+        'production': 'WARN'
+      }[ollama_environment] | default(lookup('env', 'LIONS_LOG_LEVEL') | default('INFO'))
+    }}
+
+  format: "{{ lookup('env', 'LIONS_LOG_FORMAT') | default('json') }}"
+
+  # Configuration rotation des logs
+  rotation:
+    enabled: true
+    max_size: "100MB"
+    max_files: 10
+    max_age: "{{ lookup('env', 'LIONS_LOG_RETENTION_DAYS') | default(7) }}d"
+
+  # Configuration logging centralisé (Loki)
+  centralized:
+    enabled: "{{ lookup('env', 'LIONS_LOKI_ENABLED') | default('false') | bool }}"
+    endpoint: "http://loki.{{ lookup('env', 'LIONS_MONITORING_NAMESPACE') | default('monitoring') }}.svc.cluster.local:3100"
+
+# =========================================================================
+# 🤖 CONFIGURATION SPÉCIFIQUE OLLAMA
+# =========================================================================
+ollama_app_config:
+  # Configuration des modèles (optimisé pour VPS 11GB)
+  models:
+    # Modèles recommandés par taille
+    small_models:  # < 2GB
+      - name: "phi3"
+        enabled: "{{ lookup('env', 'LIONS_OLLAMA_MODEL_PHI3_ENABLED') | default('true') | bool }}"
+        auto_pull: true
+      - name: "gemma:2b"
+        enabled: "{{ lookup('env', 'LIONS_OLLAMA_MODEL_GEMMA2B_ENABLED') | default('false') | bool }}"
+        auto_pull: false
+
+    medium_models:  # 2-8GB
+      - name: "llama3:7b"
+        enabled: "{{ lookup('env', 'LIONS_OLLAMA_MODEL_LLAMA3_ENABLED') | default('true') | bool }}"
+        auto_pull: true
+      - name: "mistral:7b"
+        enabled: "{{ lookup('env', 'LIONS_OLLAMA_MODEL_MISTRAL_ENABLED') | default('false') | bool }}"
+        auto_pull: false
+      - name: "neural-chat:7b"
+        enabled: "{{ lookup('env', 'LIONS_OLLAMA_MODEL_NEURAL_CHAT_ENABLED') | default('false') | bool }}"
+        auto_pull: false
+
+    large_models:  # > 8GB (pour production avec plus de RAM)
+      - name: "llama3:13b"
+        enabled: "{{ (ollama_environment == 'production') and (lookup('env', 'LIONS_OLLAMA_MODEL_LLAMA3_13B_ENABLED') | default('false') | bool) }}"
+        auto_pull: false
+
+    # Configuration téléchargement
+    concurrent_downloads: 2
+    download_timeout: "3600"  # 1 heure pour gros modèles
+    auto_pull_on_startup: true
+
+  # Configuration GPU
+  gpu:
+    enabled: "{{ ollama_resources.gpu.enabled }}"
+    memory_fraction: "{{ ollama_resources.gpu.memory_fraction }}"
+
+  # Configuration API
+  api:
+    timeout: "{{ lookup('env', 'LIONS_TIMEOUT_DEFAULT') | default(300) }}s"
+    max_request_size: "100MB"
+    cors_enabled: true
+    cors_origins: "*"
+
+  # Configuration performance
+  performance:
+    concurrent_requests: >-
+      {{
+        {
+          'development': 2,
+          'staging': 4,
+          'production': 8
+        }[ollama_environment] | default(4)
+      }}
+    keep_alive_duration: "5m"
+    model_cache_size: "4GB"
+
+# =========================================================================
+# 🔌 CONFIGURATION INTÉGRATIONS
+# =========================================================================
+ollama_integrations:
+  # Intégration avec Vault pour les secrets
+  vault:
+    enabled: "{{ lookup('env', 'LIONS_VAULT_ENABLED') | default('false') | bool }}"
+    address: "{{ lookup('env', 'LIONS_VAULT_ADDR') | default('') }}"
+    role: "{{ ollama_service_name }}"
+    secret_path: "secret/{{ ollama_namespace }}/{{ ollama_service_name }}"
+
+  # Intégration avec PostgreSQL
+  postgres:
+    enabled: "{{ lookup('env', 'LIONS_POSTGRES_ENABLED') | default('false') | bool }}"
+    host: "{{ lookup('env', 'LIONS_POSTGRES_SERVICE_NAME') | default('postgresql') }}.{{ lookup('env', 'LIONS_POSTGRES_NAMESPACE') | default('database') }}.svc.cluster.local"
+    port: "{{ lookup('env', 'LIONS_POSTGRES_PORT') | default(5432) }}"
+    database: "{{ ollama_service_name }}"
+
+  # Intégration avec Redis
+  redis:
+    enabled: "{{ lookup('env', 'LIONS_REDIS_ENABLED') | default('false') | bool }}"
+    host: "{{ lookup('env', 'LIONS_REDIS_SERVICE_NAME') | default('redis') }}.{{ lookup('env', 'LIONS_REDIS_NAMESPACE') | default('database') }}.svc.cluster.local"
+    port: "{{ lookup('env', 'LIONS_REDIS_PORT') | default(6379) }}"
+
+  # Intégration avec Registry
+  registry:
+    enabled: "{{ lookup('env', 'LIONS_REGISTRY_ENABLED') | default('false') | bool }}"
+    url: "{{ lookup('env', 'LIONS_REGISTRY_SERVICE_NAME') | default('registry') }}.{{ lookup('env', 'LIONS_REGISTRY_NAMESPACE') | default('development') }}.svc.cluster.local"
+    namespace: "lions/ai"
+
+# =========================================================================
+# 📦 CONFIGURATION CONTENEUR
+# =========================================================================
+ollama_container:
+  # Configuration de l'image
+  image:
+    registry: "{{ lookup('env', 'LIONS_CONTAINER_REGISTRY') | default('docker.io') }}"
+    repository: "ollama/ollama"
+    tag: "{{ ollama_version }}"
+    pull_policy: "{{ lookup('env', 'LIONS_IMAGE_PULL_POLICY') | default('IfNotPresent') }}"
+
+  # Configuration authentification registry
+  image_pull_secrets:
+    enabled: "{{ lookup('env', 'LIONS_REGISTRY_AUTH_REQUIRED') | default('false') | bool }}"
+    secret_name: "{{ lookup('env', 'LIONS_IMAGE_PULL_SECRET') | default('registry-credentials') }}"
+
+  # Configuration du runtime
+  restart_policy: "Always"
+  termination_grace_period: 60  # Temps pour sauvegarder l'état des modèles
+
+  # Variables d'environnement pour Ollama
+  environment_variables:
+    OLLAMA_HOST: "0.0.0.0:{{ ollama_network.ports.api }}"
+    OLLAMA_MODELS: "{{ ollama_storage.models.path }}"
+    OLLAMA_KEEP_ALIVE: "{{ ollama_app_config.performance.keep_alive_duration }}"
+    OLLAMA_MAX_LOADED_MODELS: "{{ ollama_app_config.performance.concurrent_requests }}"
+    OLLAMA_NUM_PARALLEL: "{{ ollama_app_config.performance.concurrent_requests }}"
+    OLLAMA_DEBUG: "{{ (ollama_environment == 'development') | ternary('1', '0') }}"
+
+# =========================================================================
+# 🏷️ LABELS ET ANNOTATIONS STANDARDISÉS
+# =========================================================================
+ollama_labels:
+  # Labels standards Kubernetes
+  app_kubernetes_io_name: "{{ ollama_service_name }}"
+  app_kubernetes_io_instance: "{{ ollama_environment }}-{{ ollama_service_name }}"
+  app_kubernetes_io_version: "{{ ollama_version }}"
+  app_kubernetes_io_component: "ai-service"
+  app_kubernetes_io_part_of: "lions-infrastructure"
+  app_kubernetes_io_managed_by: "ansible"
+
+  # Labels spécifiques LIONS
+  lions_dev_service_type: "ai-ml"
+  lions_dev_tier: "{{ ollama_meta.tier }}"
+  lions_dev_environment: "{{ ollama_environment }}"
+  lions_dev_criticality: "{{ ollama_meta.criticality }}"
+
+  # Labels pour le monitoring
+  monitoring_lions_dev_enabled: "true"
+  monitoring_lions_dev_service_type: "ai-service"
+  prometheus_io_scrape: "true"
+  prometheus_io_port: "{{ ollama_network.ports.metrics }}"
+  prometheus_io_path: "{{ ollama_endpoints.metrics }}"
+
+ollama_annotations:
+  # Annotations de documentation
+  lions_dev_description: "Service IA Ollama - Plateforme d'exécution de modèles de langage"
+  lions_dev_documentation: "{{ ollama_meta.documentation_url }}"
+  lions_dev_support: "{{ ollama_meta.support_channel }}"
+  lions_dev_runbook: "{{ ollama_meta.runbook_url }}"
+
+  # Annotations de configuration
+  config_lions_dev_version: "{{ ollama_meta.config_version }}"
+  config_lions_dev_last_updated: "{{ ansible_date_time.iso8601 }}"
+
+  # Annotations de sécurité
+  security_lions_dev_pod_security_standard: "{{ ollama_security.pod_security.standard }}"
+  security_lions_dev_network_policy: "{{ ollama_security.network_policies.enabled | string }}"
+
+# =========================================================================
+# ✅ CONFIGURATION VALIDATION ET TESTS
+# =========================================================================
+ollama_validation:
+  enabled: true
+
+  # Tests de base
+  basic_tests:
+    - name: "service_health"
+      endpoint: "{{ ollama_endpoints.health_check }}"
+      expected_status: 200
+      timeout: 30
+
+    - name: "models_endpoint"
+      endpoint: "{{ ollama_endpoints.models_list }}"
+      expected_status: 200
+      timeout: 30
+
+    - name: "metrics_endpoint"
+      endpoint: "{{ ollama_endpoints.metrics }}"
+      expected_status: 200
+      timeout: 15
+      condition: "{{ ollama_monitoring.enabled }}"
+
+  # Tests de performance (optionnel)
+  performance_tests:
+    enabled: "{{ ollama_environment != 'production' }}"
+    simple_generation:
+      prompt: "Hello"
+      max_tokens: 5
+      timeout: 60
+
+  # Tests de sécurité
+  security_tests:
+    enabled: true
+    network_policy_validation: "{{ ollama_security.network_policies.enabled }}"
+    tls_validation: "{{ ollama_security.tls.enabled }}"
+
+# =========================================================================
+# 📋 SLA ET MÉTRIQUES DE PERFORMANCE
+# =========================================================================
+ollama_sla:
+  # Objectifs par environnement
+  availability_target: >-
+    {{
+      {
+        'development': '95.0',
+        'staging': '98.0',
+        'production': '99.5'
+      }[ollama_environment] | default('99.0')
+    }}
+
+  response_time_target: >-
+    {{
+      {
+        'development': '10s',
+        'staging': '7s', 
+        'production': '5s'
+      }[ollama_environment] | default('5s')
+    }}
+
+  # Métriques de performance IA
+  ai_performance_targets:
+    tokens_per_second: "{{ lookup('env', 'LIONS_OLLAMA_TOKENS_PER_SECOND_TARGET') | default(10) }}"
+    model_load_time: "{{ lookup('env', 'LIONS_OLLAMA_MODEL_LOAD_TIME_TARGET') | default(30) }}s"
+
+ollama_compliance:
+  audit_enabled: "{{ lookup('env', 'LIONS_AUDIT_ENABLED') | default('true') | bool }}"
+  data_retention_days: "{{ lookup('env', 'LIONS_AUDIT_RETENTION_DAYS') | default(90) }}"

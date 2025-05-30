@@ -1,116 +1,335 @@
 ---
-# Titre: Configuration du monitoring pour Gitea
-# Description: Configure le monitoring pour Gitea
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - GITEA MONITORING CONFIGURATION
+# =========================================================================
+# Description: Configuration complète du monitoring pour Gitea avec intégration
+#              Prometheus/Grafana et alertes intelligentes
+# Version: 5.0.0
+# Maintainer: DevOps Team LIONS
+# Documentation: https://docs.lions.dev/gitea/monitoring
+# =========================================================================
 
-- name: Vérification de l'existence de Prometheus Operator
+# =========================================================================
+# VÉRIFICATIONS PRÉALABLES
+# =========================================================================
+- name: "{{ ansible_role_name }} | Monitoring | Vérification de l'état du monitoring global"
+  assert:
+    that:
+      - lions_monitoring_enabled | bool
+      - lions_prometheus_enabled | bool
+    fail_msg: "Le monitoring global doit être activé pour configurer le monitoring Gitea"
+    success_msg: "Monitoring global confirmé - Configuration Gitea en cours"
+  tags:
+    - monitoring
+    - validation
+
+- name: "{{ ansible_role_name }} | Monitoring | Vérification de Prometheus Operator"
   k8s_info:
     api_version: apiextensions.k8s.io/v1
     kind: CustomResourceDefinition
     name: servicemonitors.monitoring.coreos.com
-  register: prometheus_operator_check
-  ignore_errors: yes
+  register: prometheus_operator_crd
+  ignore_errors: true
+  tags:
+    - monitoring
+    - prometheus
 
-- name: Création du ServiceMonitor pour Prometheus
+- name: "{{ ansible_role_name }} | Monitoring | Vérification des PrometheusRule CRD"
+  k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: prometheusrules.monitoring.coreos.com
+  register: prometheus_rules_crd
+  ignore_errors: true
+  tags:
+    - monitoring
+    - prometheus
+
+- name: "{{ ansible_role_name }} | Monitoring | Définition des variables de monitoring"
+  set_fact:
+    prometheus_operator_available: "{{ prometheus_operator_crd is succeeded and prometheus_operator_crd.resources | length > 0 }}"
+    prometheus_rules_available: "{{ prometheus_rules_crd is succeeded and prometheus_rules_crd.resources | length > 0 }}"
+    monitoring_labels:
+      app.kubernetes.io/name: "{{ lions_gitea_service_name }}"
+      app.kubernetes.io/instance: "{{ lions_gitea_service_name }}-{{ lions_environment }}"
+      app.kubernetes.io/component: monitoring
+      app.kubernetes.io/part-of: lions-infrastructure
+      app.kubernetes.io/managed-by: ansible
+      lions.dev/environment: "{{ lions_environment }}"
+      lions.dev/monitoring: "enabled"
+  tags:
+    - monitoring
+    - facts
+
+# =========================================================================
+# CONFIGURATION SERVICEMONITOR POUR PROMETHEUS
+# =========================================================================
+- name: "{{ ansible_role_name }} | Monitoring | Création du ServiceMonitor Prometheus"
   k8s:
     state: present
-    src: "{{ temp_dir.path }}/servicemonitor.yml"
+    definition:
+      apiVersion: monitoring.coreos.com/v1
+      kind: ServiceMonitor
+      metadata:
+        name: "{{ lions_gitea_service_name }}-monitor"
+        namespace: "{{ lions_gitea_namespace }}"
+        labels: "{{ monitoring_labels }}"
+        annotations:
+          lions.dev/created-by: "ansible-gitea-role"
+          lions.dev/documentation: "https://docs.lions.dev/gitea/monitoring"
+      spec:
+        selector:
+          matchLabels:
+            app.kubernetes.io/name: "{{ lions_gitea_service_name }}"
+        endpoints:
+          - port: http
+            path: /metrics
+            interval: "{{ lions_prometheus_scrape_interval | default('30s') }}"
+            scrapeTimeout: "{{ lions_prometheus_scrape_timeout | default('10s') }}"
+            honorLabels: true
+            metricRelabelings:
+              - sourceLabels: [__name__]
+                regex: 'go_.*'
+                action: drop
+              - sourceLabels: [__name__]
+                regex: 'process_.*'
+                action: drop
+            relabelings:
+              - sourceLabels: [__meta_kubernetes_pod_name]
+                targetLabel: pod
+              - sourceLabels: [__meta_kubernetes_namespace]
+                targetLabel: kubernetes_namespace
+              - sourceLabels: [__meta_kubernetes_service_name]
+                targetLabel: kubernetes_service_name
+              - targetLabel: service_type
+                replacement: gitea
+              - targetLabel: environment
+                replacement: "{{ lions_environment }}"
+        namespaceSelector:
+          matchNames:
+            - "{{ lions_gitea_namespace }}"
   register: servicemonitor_result
-  when: 
-    - prometheus_operator_check is succeeded
-    - prometheus_operator_check.resources | length > 0
-    - gitea_prometheus_scrape | bool
+  when:
+    - prometheus_operator_available | bool
+    - lions_gitea_monitoring_enabled | default(true) | bool
+  tags:
+    - monitoring
+    - prometheus
+    - servicemonitor
 
-- name: Avertissement si Prometheus Operator n'est pas installé
-  debug:
-    msg: "AVERTISSEMENT: Prometheus Operator n'est pas installé. Le monitoring automatique ne sera pas configuré."
-  when: prometheus_operator_check is failed or prometheus_operator_check.resources | length == 0
-
-- name: Configuration des règles d'alerte pour Gitea
+# =========================================================================
+# CONFIGURATION DES RÈGLES D'ALERTE PROMETHEUS
+# =========================================================================
+- name: "{{ ansible_role_name }} | Monitoring | Création des règles d'alerte Gitea"
   k8s:
     state: present
     definition:
       apiVersion: monitoring.coreos.com/v1
       kind: PrometheusRule
       metadata:
-        name: "{{ app_name }}-alerts"
-        namespace: "{{ app_namespace }}"
-        labels:
-          app: "{{ app_name }}"
-          prometheus: k8s
-          role: alert-rules
+        name: "{{ lions_gitea_service_name }}-alerts"
+        namespace: "{{ lions_gitea_namespace }}"
+        labels: "{{ monitoring_labels }}"
+        annotations:
+          lions.dev/alert-severity-levels: "critical,warning,info"
+          lions.dev/alert-documentation: "https://docs.lions.dev/gitea/alerts"
       spec:
         groups:
-          - name: "{{ app_name }}.rules"
+          # Groupe d'alertes de disponibilité
+          - name: "gitea.availability.{{ lions_environment }}"
+            interval: "{{ lions_alertmanager_evaluation_interval | default('30s') }}"
             rules:
               - alert: GiteaInstanceDown
-                expr: up{job="{{ app_name }}"} == 0
-                for: 5m
+                expr: 'up{job="{{ lions_gitea_service_name }}", kubernetes_namespace="{{ lions_gitea_namespace }}"} == 0'
+                for: "{{ lions_alertmanager_instance_down_threshold | default('2m') }}"
                 labels:
                   severity: critical
+                  service: gitea
+                  environment: "{{ lions_environment }}"
+                  team: platform
+                  component: git-server
                 annotations:
-                  summary: "Instance Gitea {{ app_name }} down"
-                  description: "L'instance Gitea {{ app_name }} est indisponible depuis plus de 5 minutes."
-              - alert: GiteaHighMemoryUsage
-                expr: container_memory_usage_bytes{pod=~"{{ app_name }}.*"} / container_spec_memory_limit_bytes{pod=~"{{ app_name }}.*"} > 0.85
-                for: 10m
-                labels:
-                  severity: warning
-                annotations:
-                  summary: "Utilisation mémoire élevée pour Gitea {{ app_name }}"
-                  description: "Gitea {{ app_name }} utilise plus de 85% de sa limite mémoire depuis plus de 10 minutes."
-              - alert: GiteaHighCPUUsage
-                expr: container_cpu_usage_seconds_total{pod=~"{{ app_name }}.*"} / container_spec_cpu_quota{pod=~"{{ app_name }}.*"} > 0.85
-                for: 10m
-                labels:
-                  severity: warning
-                annotations:
-                  summary: "Utilisation CPU élevée pour Gitea {{ app_name }}"
-                  description: "Gitea {{ app_name }} utilise plus de 85% de sa limite CPU depuis plus de 10 minutes."
-              - alert: GiteaHighResponseTime
-                expr: http_request_duration_seconds{service="{{ app_name }}"} > 2
-                for: 5m
-                labels:
-                  severity: warning
-                annotations:
-                  summary: "Temps de réponse élevé pour Gitea {{ app_name }}"
-                  description: "Gitea {{ app_name }} a un temps de réponse élevé (>2s) depuis plus de 5 minutes."
-              - alert: GiteaHighErrorRate
-                expr: sum(rate(http_requests_total{service="{{ app_name }}", status=~"5.."}[5m])) / sum(rate(http_requests_total{service="{{ app_name }}"}[5m])) > 0.05
-                for: 5m
-                labels:
-                  severity: warning
-                annotations:
-                  summary: "Taux d'erreur élevé pour Gitea {{ app_name }}"
-                  description: "Gitea {{ app_name }} a un taux d'erreur supérieur à 5% depuis plus de 5 minutes."
-              - alert: GiteaDatabaseConnectionFailure
-                expr: gitea_database_connections == 0
-                for: 5m
-                labels:
-                  severity: critical
-                annotations:
-                  summary: "Échec de connexion à la base de données pour Gitea {{ app_name }}"
-                  description: "Gitea {{ app_name }} ne peut pas se connecter à la base de données depuis plus de 5 minutes."
-  when: 
-    - prometheus_operator_check is succeeded
-    - prometheus_operator_check.resources | length > 0
-    - gitea_prometheus_scrape | bool
+                  summary: "Gitea instance {{ lions_gitea_service_name }} is down"
+                  description: |
+                    L'instance Gitea {{ lions_gitea_service_name }} dans l'environnement {{ lions_environment }}
+                    est indisponible depuis {{ lions_alertmanager_instance_down_threshold | default('2m') }}.
+                    
+                    Namespace: {{ lions_gitea_namespace }}
+                    Service: {{ lions_gitea_service_name }}
+                    Environment: {{ lions_environment }}
+                  runbook_url: "https://docs.lions.dev/runbooks/gitea-instance-down"
+                  dashboard_url: "https://grafana.{{ lions_dns_full_domain }}/d/gitea-{{ lions_environment }}"
 
-- name: Configuration de Grafana Dashboard pour Gitea
+              - alert: GiteaHighUnavailability
+                expr: |
+                  (
+                    sum(rate(http_requests_total{job="{{ lions_gitea_service_name }}", code=~"5.."}[5m])) /
+                    sum(rate(http_requests_total{job="{{ lions_gitea_service_name }}"}[5m]))
+                  ) > {{ lions_gitea_error_rate_threshold | default('0.05') }}
+                for: 5m
+                labels:
+                  severity: warning
+                  service: gitea
+                  environment: "{{ lions_environment }}"
+                  team: platform
+                annotations:
+                  summary: "High error rate for Gitea {{ lions_gitea_service_name }}"
+                  description: |
+                    Gitea {{ lions_gitea_service_name }} a un taux d'erreur de {{ "{{ $value | humanizePercentage }}" }}
+                    supérieur au seuil de {{ lions_gitea_error_rate_threshold | default('5') }}% depuis 5 minutes.
+
+          # Groupe d'alertes de performance
+          - name: "gitea.performance.{{ lions_environment }}"
+            interval: "{{ lions_alertmanager_evaluation_interval | default('30s') }}"
+            rules:
+              - alert: GiteaHighMemoryUsage
+                expr: |
+                  (
+                    container_memory_working_set_bytes{pod=~"{{ lions_gitea_service_name }}-.*", namespace="{{ lions_gitea_namespace }}"} /
+                    container_spec_memory_limit_bytes{pod=~"{{ lions_gitea_service_name }}-.*", namespace="{{ lions_gitea_namespace }}"}
+                  ) > {{ lions_gitea_memory_usage_threshold | default('0.85') }}
+                for: "{{ lions_alertmanager_memory_threshold_duration | default('10m') }}"
+                labels:
+                  severity: warning
+                  service: gitea
+                  environment: "{{ lions_environment }}"
+                  team: platform
+                  resource: memory
+                annotations:
+                  summary: "High memory usage for Gitea {{ lions_gitea_service_name }}"
+                  description: |
+                    Gitea {{ lions_gitea_service_name }} utilise {{ "{{ $value | humanizePercentage }}" }} de sa limite mémoire
+                    depuis {{ lions_alertmanager_memory_threshold_duration | default('10m') }}.
+                    
+                    Seuil configuré: {{ lions_gitea_memory_usage_threshold | default('85') }}%
+                    Valeur actuelle: {{ "{{ $value | humanizePercentage }}" }}
+
+              - alert: GiteaHighCPUUsage
+                expr: |
+                  (
+                    rate(container_cpu_usage_seconds_total{pod=~"{{ lions_gitea_service_name }}-.*", namespace="{{ lions_gitea_namespace }}"}[5m]) /
+                    container_spec_cpu_quota{pod=~"{{ lions_gitea_service_name }}-.*", namespace="{{ lions_gitea_namespace }}"} * 100000
+                  ) > {{ lions_gitea_cpu_usage_threshold | default('0.85') }}
+                for: "{{ lions_alertmanager_cpu_threshold_duration | default('10m') }}"
+                labels:
+                  severity: warning
+                  service: gitea
+                  environment: "{{ lions_environment }}"
+                  team: platform
+                  resource: cpu
+                annotations:
+                  summary: "High CPU usage for Gitea {{ lions_gitea_service_name }}"
+                  description: |
+                    Gitea {{ lions_gitea_service_name }} utilise {{ "{{ $value | humanizePercentage }}" }} de sa limite CPU
+                    depuis {{ lions_alertmanager_cpu_threshold_duration | default('10m') }}.
+
+              - alert: GiteaSlowResponseTime
+                expr: |
+                  histogram_quantile(0.95, 
+                    rate(http_request_duration_seconds_bucket{job="{{ lions_gitea_service_name }}"}[5m])
+                  ) > {{ lions_gitea_response_time_threshold | default('2') }}
+                for: 5m
+                labels:
+                  severity: warning
+                  service: gitea
+                  environment: "{{ lions_environment }}"
+                  team: platform
+                  component: performance
+                annotations:
+                  summary: "Slow response time for Gitea {{ lions_gitea_service_name }}"
+                  description: |
+                    Le 95ème percentile des temps de réponse de Gitea {{ lions_gitea_service_name }}
+                    est de {{ "{{ $value }}s" }}, supérieur au seuil de {{ lions_gitea_response_time_threshold | default('2') }}s.
+
+          # Groupe d'alertes spécifiques à Gitea
+          - name: "gitea.application.{{ lions_environment }}"
+            interval: "{{ lions_alertmanager_evaluation_interval | default('30s') }}"
+            rules:
+              - alert: GiteaDatabaseConnectionIssue
+                expr: 'gitea_database_connections{job="{{ lions_gitea_service_name }}"} == 0'
+                for: 2m
+                labels:
+                  severity: critical
+                  service: gitea
+                  environment: "{{ lions_environment }}"
+                  team: platform
+                  component: database
+                annotations:
+                  summary: "Gitea database connection failure"
+                  description: |
+                    Gitea {{ lions_gitea_service_name }} ne peut pas se connecter à la base de données
+                    depuis 2 minutes dans l'environnement {{ lions_environment }}.
+
+              - alert: GiteaDiskSpaceRunningLow
+                expr: |
+                  (
+                    node_filesystem_avail_bytes{mountpoint="{{ lions_gitea_data_path | default('/data') }}"} /
+                    node_filesystem_size_bytes{mountpoint="{{ lions_gitea_data_path | default('/data') }}"}
+                  ) < {{ lions_gitea_disk_usage_threshold | default('0.15') }}
+                for: 5m
+                labels:
+                  severity: warning
+                  service: gitea
+                  environment: "{{ lions_environment }}"
+                  team: platform
+                  component: storage
+                annotations:
+                  summary: "Gitea disk space running low"
+                  description: |
+                    L'espace disque de Gitea {{ lions_gitea_service_name }} est faible:
+                    {{ "{{ $value | humanizePercentage }}" }} disponible (seuil: {{ lions_gitea_disk_usage_threshold | default('15') }}%).
+
+              - alert: GiteaRepositoryOperationFailures
+                expr: |
+                  increase(gitea_repository_operation_errors_total{job="{{ lions_gitea_service_name }}"}[10m]) > 5
+                for: 2m
+                labels:
+                  severity: warning
+                  service: gitea
+                  environment: "{{ lions_environment }}"
+                  team: platform
+                  component: repository
+                annotations:
+                  summary: "High number of repository operation failures in Gitea"
+                  description: |
+                    Gitea {{ lions_gitea_service_name }} a connu {{ "{{ $value }}" }} échecs d'opérations
+                    sur les dépôts au cours des 10 dernières minutes.
+
+  register: prometheus_rules_result
+  when:
+    - prometheus_rules_available | bool
+    - lions_gitea_monitoring_enabled | default(true) | bool
+  tags:
+    - monitoring
+    - prometheus
+    - alerts
+
+# =========================================================================
+# CONFIGURATION GRAFANA DASHBOARD
+# =========================================================================
+- name: "{{ ansible_role_name }} | Monitoring | Configuration du dashboard Grafana Gitea"
   k8s:
     state: present
     definition:
       apiVersion: v1
       kind: ConfigMap
       metadata:
-        name: "{{ app_name }}-dashboard"
-        namespace: monitoring
+        name: "{{ lions_gitea_service_name }}-dashboard"
+        namespace: "{{ lions_monitoring_namespace }}"
         labels:
           grafana_dashboard: "1"
+          grafana_folder: "LIONS Infrastructure"
+          app.kubernetes.io/name: grafana-dashboard
+          app.kubernetes.io/instance: "{{ lions_gitea_service_name }}-dashboard"
+          app.kubernetes.io/component: monitoring
+          app.kubernetes.io/part-of: lions-infrastructure
+          lions.dev/service: gitea
+          lions.dev/environment: "{{ lions_environment }}"
+        annotations:
+          lions.dev/dashboard-version: "5.0.0"
+          lions.dev/dashboard-description: "Dashboard Grafana complet pour Gitea"
       data:
-        "{{ app_name }}-dashboard.json": |
+        "{{ lions_gitea_service_name }}-dashboard.json": |
           {
             "annotations": {
               "list": [
@@ -125,274 +344,401 @@
                 }
               ]
             },
+            "description": "Dashboard LIONS Infrastructure - Gitea {{ lions_environment }}",
             "editable": true,
-            "gnetId": null,
-            "graphTooltip": 0,
+            "fiscalYearStartMonth": 0,
+            "graphTooltip": 1,
             "id": null,
-            "links": [],
+            "links": [
+              {
+                "asDropdown": false,
+                "icon": "external link",
+                "includeVars": false,
+                "keepTime": false,
+                "tags": ["lions-infrastructure"],
+                "title": "LIONS Infrastructure Dashboards",
+                "type": "dashboards",
+                "url": ""
+              }
+            ],
+            "liveNow": false,
             "panels": [
               {
-                "aliasColors": {},
-                "bars": false,
-                "dashLength": 10,
-                "dashes": false,
-                "datasource": "Prometheus",
-                "fill": 1,
-                "fillGradient": 0,
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "fieldConfig": {
+                  "defaults": {
+                    "color": {
+                      "mode": "palette-classic"
+                    },
+                    "custom": {
+                      "axisLabel": "",
+                      "axisPlacement": "auto",
+                      "barAlignment": 0,
+                      "drawStyle": "line",
+                      "fillOpacity": 10,
+                      "gradientMode": "none",
+                      "hideFrom": {
+                        "legend": false,
+                        "tooltip": false,
+                        "vis": false
+                      },
+                      "lineInterpolation": "linear",
+                      "lineWidth": 1,
+                      "pointSize": 5,
+                      "scaleDistribution": {
+                        "type": "linear"
+                      },
+                      "showPoints": "never",
+                      "spanNulls": false,
+                      "stacking": {
+                        "group": "A",
+                        "mode": "none"
+                      },
+                      "thresholdsStyle": {
+                        "mode": "off"
+                      }
+                    },
+                    "mappings": [],
+                    "thresholds": {
+                      "mode": "absolute",
+                      "steps": [
+                        {
+                          "color": "green",
+                          "value": null
+                        },
+                        {
+                          "color": "red",
+                          "value": 80
+                        }
+                      ]
+                    },
+                    "unit": "percent"
+                  },
+                  "overrides": []
+                },
                 "gridPos": {
                   "h": 8,
                   "w": 12,
                   "x": 0,
                   "y": 0
                 },
-                "hiddenSeries": false,
-                "id": 2,
-                "legend": {
-                  "avg": false,
-                  "current": true,
-                  "max": false,
-                  "min": false,
-                  "show": true,
-                  "total": false,
-                  "values": true
-                },
-                "lines": true,
-                "linewidth": 1,
-                "nullPointMode": "null",
+                "id": 1,
                 "options": {
-                  "dataLinks": []
+                  "legend": {
+                    "calcs": ["lastNotNull"],
+                    "displayMode": "table",
+                    "placement": "bottom"
+                  },
+                  "tooltip": {
+                    "mode": "single",
+                    "sort": "none"
+                  }
                 },
-                "percentage": false,
-                "pointradius": 2,
-                "points": false,
-                "renderer": "flot",
-                "seriesOverrides": [],
-                "spaceLength": 10,
-                "stack": false,
-                "steppedLine": false,
                 "targets": [
                   {
-                    "expr": "container_memory_usage_bytes{pod=~\"{{ app_name }}.*\"}",
+                    "datasource": {
+                      "type": "prometheus",
+                      "uid": "prometheus"
+                    },
+                    "expr": "rate(container_cpu_usage_seconds_total{pod=~\"{{ lions_gitea_service_name }}-.*\", namespace=\"{{ lions_gitea_namespace }}\"}[5m]) * 100",
+                    "interval": "",
+                    "legendFormat": "CPU Usage - {{ "{{pod}}" }}",
                     "refId": "A"
                   }
                 ],
-                "thresholds": [],
-                "timeFrom": null,
-                "timeRegions": [],
-                "timeShift": null,
-                "title": "Utilisation Mémoire",
-                "tooltip": {
-                  "shared": true,
-                  "sort": 0,
-                  "value_type": "individual"
-                },
-                "type": "graph",
-                "xaxis": {
-                  "buckets": null,
-                  "mode": "time",
-                  "name": null,
-                  "show": true,
-                  "values": []
-                },
-                "yaxes": [
-                  {
-                    "format": "bytes",
-                    "label": null,
-                    "logBase": 1,
-                    "max": null,
-                    "min": null,
-                    "show": true
-                  },
-                  {
-                    "format": "short",
-                    "label": null,
-                    "logBase": 1,
-                    "max": null,
-                    "min": null,
-                    "show": true
-                  }
-                ],
-                "yaxis": {
-                  "align": false,
-                  "alignLevel": null
-                }
+                "title": "Gitea CPU Usage",
+                "type": "timeseries"
               },
               {
-                "aliasColors": {},
-                "bars": false,
-                "dashLength": 10,
-                "dashes": false,
-                "datasource": "Prometheus",
-                "fill": 1,
-                "fillGradient": 0,
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "fieldConfig": {
+                  "defaults": {
+                    "color": {
+                      "mode": "palette-classic"
+                    },
+                    "custom": {
+                      "axisLabel": "",
+                      "axisPlacement": "auto",
+                      "barAlignment": 0,
+                      "drawStyle": "line",
+                      "fillOpacity": 10,
+                      "gradientMode": "none",
+                      "hideFrom": {
+                        "legend": false,
+                        "tooltip": false,
+                        "vis": false
+                      },
+                      "lineInterpolation": "linear",
+                      "lineWidth": 1,
+                      "pointSize": 5,
+                      "scaleDistribution": {
+                        "type": "linear"
+                      },
+                      "showPoints": "never",
+                      "spanNulls": false,
+                      "stacking": {
+                        "group": "A",
+                        "mode": "none"
+                      },
+                      "thresholdsStyle": {
+                        "mode": "off"
+                      }
+                    },
+                    "mappings": [],
+                    "thresholds": {
+                      "mode": "absolute",
+                      "steps": [
+                        {
+                          "color": "green",
+                          "value": null
+                        },
+                        {
+                          "color": "red",
+                          "value": 80
+                        }
+                      ]
+                    },
+                    "unit": "bytes"
+                  },
+                  "overrides": []
+                },
                 "gridPos": {
                   "h": 8,
                   "w": 12,
                   "x": 12,
                   "y": 0
                 },
-                "hiddenSeries": false,
-                "id": 3,
-                "legend": {
-                  "avg": false,
-                  "current": true,
-                  "max": false,
-                  "min": false,
-                  "show": true,
-                  "total": false,
-                  "values": true
-                },
-                "lines": true,
-                "linewidth": 1,
-                "nullPointMode": "null",
+                "id": 2,
                 "options": {
-                  "dataLinks": []
+                  "legend": {
+                    "calcs": ["lastNotNull"],
+                    "displayMode": "table",
+                    "placement": "bottom"
+                  },
+                  "tooltip": {
+                    "mode": "single",
+                    "sort": "none"
+                  }
                 },
-                "percentage": false,
-                "pointradius": 2,
-                "points": false,
-                "renderer": "flot",
-                "seriesOverrides": [],
-                "spaceLength": 10,
-                "stack": false,
-                "steppedLine": false,
                 "targets": [
                   {
-                    "expr": "rate(container_cpu_usage_seconds_total{pod=~\"{{ app_name }}.*\"}[5m])",
+                    "datasource": {
+                      "type": "prometheus",
+                      "uid": "prometheus"
+                    },
+                    "expr": "container_memory_working_set_bytes{pod=~\"{{ lions_gitea_service_name }}-.*\", namespace=\"{{ lions_gitea_namespace }}\"}",
+                    "interval": "",
+                    "legendFormat": "Memory Usage - {{ "{{pod}}" }}",
                     "refId": "A"
                   }
                 ],
-                "thresholds": [],
-                "timeFrom": null,
-                "timeRegions": [],
-                "timeShift": null,
-                "title": "Utilisation CPU",
-                "tooltip": {
-                  "shared": true,
-                  "sort": 0,
-                  "value_type": "individual"
-                },
-                "type": "graph",
-                "xaxis": {
-                  "buckets": null,
-                  "mode": "time",
-                  "name": null,
-                  "show": true,
-                  "values": []
-                },
-                "yaxes": [
-                  {
-                    "format": "short",
-                    "label": null,
-                    "logBase": 1,
-                    "max": null,
-                    "min": null,
-                    "show": true
-                  },
-                  {
-                    "format": "short",
-                    "label": null,
-                    "logBase": 1,
-                    "max": null,
-                    "min": null,
-                    "show": true
-                  }
-                ],
-                "yaxis": {
-                  "align": false,
-                  "alignLevel": null
-                }
+                "title": "Gitea Memory Usage",
+                "type": "timeseries"
               },
               {
-                "aliasColors": {},
-                "bars": false,
-                "dashLength": 10,
-                "dashes": false,
-                "datasource": "Prometheus",
-                "fill": 1,
-                "fillGradient": 0,
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "fieldConfig": {
+                  "defaults": {
+                    "color": {
+                      "mode": "palette-classic"
+                    },
+                    "custom": {
+                      "axisLabel": "",
+                      "axisPlacement": "auto",
+                      "barAlignment": 0,
+                      "drawStyle": "line",
+                      "fillOpacity": 10,
+                      "gradientMode": "none",
+                      "hideFrom": {
+                        "legend": false,
+                        "tooltip": false,
+                        "vis": false
+                      },
+                      "lineInterpolation": "linear",
+                      "lineWidth": 1,
+                      "pointSize": 5,
+                      "scaleDistribution": {
+                        "type": "linear"
+                      },
+                      "showPoints": "never",
+                      "spanNulls": false,
+                      "stacking": {
+                        "group": "A",
+                        "mode": "none"
+                      },
+                      "thresholdsStyle": {
+                        "mode": "off"
+                      }
+                    },
+                    "mappings": [],
+                    "thresholds": {
+                      "mode": "absolute",
+                      "steps": [
+                        {
+                          "color": "green",
+                          "value": null
+                        },
+                        {
+                          "color": "red",
+                          "value": 80
+                        }
+                      ]
+                    },
+                    "unit": "reqps"
+                  },
+                  "overrides": []
+                },
                 "gridPos": {
                   "h": 8,
                   "w": 12,
                   "x": 0,
                   "y": 8
                 },
-                "hiddenSeries": false,
-                "id": 4,
-                "legend": {
-                  "avg": false,
-                  "current": true,
-                  "max": false,
-                  "min": false,
-                  "show": true,
-                  "total": false,
-                  "values": true
-                },
-                "lines": true,
-                "linewidth": 1,
-                "nullPointMode": "null",
+                "id": 3,
                 "options": {
-                  "dataLinks": []
+                  "legend": {
+                    "calcs": ["lastNotNull"],
+                    "displayMode": "table",
+                    "placement": "bottom"
+                  },
+                  "tooltip": {
+                    "mode": "single",
+                    "sort": "none"
+                  }
                 },
-                "percentage": false,
-                "pointradius": 2,
-                "points": false,
-                "renderer": "flot",
-                "seriesOverrides": [],
-                "spaceLength": 10,
-                "stack": false,
-                "steppedLine": false,
                 "targets": [
                   {
-                    "expr": "rate(http_requests_total{service=\"{{ app_name }}\"}[5m])",
+                    "datasource": {
+                      "type": "prometheus",
+                      "uid": "prometheus"
+                    },
+                    "expr": "rate(http_requests_total{job=\"{{ lions_gitea_service_name }}\"}[5m])",
+                    "interval": "",
+                    "legendFormat": "Request Rate - {{ "{{method}} {{status}}" }}",
                     "refId": "A"
                   }
                 ],
-                "thresholds": [],
-                "timeFrom": null,
-                "timeRegions": [],
-                "timeShift": null,
-                "title": "Taux de Requêtes",
-                "tooltip": {
-                  "shared": true,
-                  "sort": 0,
-                  "value_type": "individual"
+                "title": "Gitea Request Rate",
+                "type": "timeseries"
+              },
+              {
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
                 },
-                "type": "graph",
-                "xaxis": {
-                  "buckets": null,
-                  "mode": "time",
-                  "name": null,
-                  "show": true,
-                  "values": []
+                "fieldConfig": {
+                  "defaults": {
+                    "color": {
+                      "mode": "palette-classic"
+                    },
+                    "custom": {
+                      "axisLabel": "",
+                      "axisPlacement": "auto",
+                      "barAlignment": 0,
+                      "drawStyle": "line",
+                      "fillOpacity": 10,
+                      "gradientMode": "none",
+                      "hideFrom": {
+                        "legend": false,
+                        "tooltip": false,
+                        "vis": false
+                      },
+                      "lineInterpolation": "linear",
+                      "lineWidth": 1,
+                      "pointSize": 5,
+                      "scaleDistribution": {
+                        "type": "linear"
+                      },
+                      "showPoints": "never",
+                      "spanNulls": false,
+                      "stacking": {
+                        "group": "A",
+                        "mode": "none"
+                      },
+                      "thresholdsStyle": {
+                        "mode": "off"
+                      }
+                    },
+                    "mappings": [],
+                    "thresholds": {
+                      "mode": "absolute",
+                      "steps": [
+                        {
+                          "color": "green",
+                          "value": null
+                        },
+                        {
+                          "color": "red",
+                          "value": 80
+                        }
+                      ]
+                    },
+                    "unit": "s"
+                  },
+                  "overrides": []
                 },
-                "yaxes": [
+                "gridPos": {
+                  "h": 8,
+                  "w": 12,
+                  "x": 12,
+                  "y": 8
+                },
+                "id": 4,
+                "options": {
+                  "legend": {
+                    "calcs": ["lastNotNull"],
+                    "displayMode": "table",
+                    "placement": "bottom"
+                  },
+                  "tooltip": {
+                    "mode": "single",
+                    "sort": "none"
+                  }
+                },
+                "targets": [
                   {
-                    "format": "short",
-                    "label": null,
-                    "logBase": 1,
-                    "max": null,
-                    "min": null,
-                    "show": true
+                    "datasource": {
+                      "type": "prometheus",
+                      "uid": "prometheus"
+                    },
+                    "expr": "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{job=\"{{ lions_gitea_service_name }}\"}[5m]))",
+                    "interval": "",
+                    "legendFormat": "95th Percentile Response Time",
+                    "refId": "A"
                   },
                   {
-                    "format": "short",
-                    "label": null,
-                    "logBase": 1,
-                    "max": null,
-                    "min": null,
-                    "show": true
+                    "datasource": {
+                      "type": "prometheus",
+                      "uid": "prometheus"
+                    },
+                    "expr": "histogram_quantile(0.50, rate(http_request_duration_seconds_bucket{job=\"{{ lions_gitea_service_name }}\"}[5m]))",
+                    "interval": "",
+                    "legendFormat": "50th Percentile Response Time",
+                    "refId": "B"
                   }
                 ],
-                "yaxis": {
-                  "align": false,
-                  "alignLevel": null
-                }
+                "title": "Gitea Response Time",
+                "type": "timeseries"
               }
             ],
-            "schemaVersion": 22,
+            "refresh": "{{ lions_grafana_refresh_interval | default('30s') }}",
+            "schemaVersion": 36,
             "style": "dark",
-            "tags": ["gitea", "git"],
+            "tags": [
+              "lions-infrastructure",
+              "gitea",
+              "git",
+              "{{ lions_environment }}"
+            ],
             "templating": {
               "list": []
             },
@@ -402,12 +748,76 @@
             },
             "timepicker": {},
             "timezone": "",
-            "title": "Gitea - {{ app_name }} Dashboard",
-            "uid": "{{ app_name }}-gitea-dashboard",
-            "version": 1
+            "title": "LIONS Gitea - {{ lions_environment | title }}",
+            "uid": "lions-gitea-{{ lions_environment }}",
+            "version": 1,
+            "weekStart": ""
           }
-  when: 
-    - prometheus_operator_check is succeeded
-    - prometheus_operator_check.resources | length > 0
-    - gitea_prometheus_scrape | bool
-  ignore_errors: yes
+  register: grafana_dashboard_result
+  when:
+    - lions_grafana_enabled | default(true) | bool
+    - lions_gitea_monitoring_enabled | default(true) | bool
+  tags:
+    - monitoring
+    - grafana
+    - dashboard
+
+# =========================================================================
+# VÉRIFICATIONS POST-DÉPLOIEMENT
+# =========================================================================
+- name: "{{ ansible_role_name }} | Monitoring | Vérification du ServiceMonitor"
+  k8s_info:
+    api_version: monitoring.coreos.com/v1
+    kind: ServiceMonitor
+    name: "{{ lions_gitea_service_name }}-monitor"
+    namespace: "{{ lions_gitea_namespace }}"
+  register: servicemonitor_check
+  when:
+    - prometheus_operator_available | bool
+    - lions_gitea_monitoring_enabled | default(true) | bool
+  tags:
+    - monitoring
+    - validation
+
+- name: "{{ ansible_role_name }} | Monitoring | Vérification des règles Prometheus"
+  k8s_info:
+    api_version: monitoring.coreos.com/v1
+    kind: PrometheusRule
+    name: "{{ lions_gitea_service_name }}-alerts"
+    namespace: "{{ lions_gitea_namespace }}"
+  register: rules_check
+  when:
+    - prometheus_rules_available | bool
+    - lions_gitea_monitoring_enabled | default(true) | bool
+  tags:
+    - monitoring
+    - validation
+
+# =========================================================================
+# RÉSULTATS ET LOGGING
+# =========================================================================
+- name: "{{ ansible_role_name }} | Monitoring | Affichage du statut de configuration"
+  debug:
+    msg:
+      - "✅ Configuration monitoring Gitea terminée"
+      - "🏷️  Service: {{ lions_gitea_service_name }}"
+      - "🏗️  Namespace: {{ lions_gitea_namespace }}"
+      - "🌐 Environnement: {{ lions_environment }}"
+      - "📊 ServiceMonitor: {{ 'Configuré' if servicemonitor_result is succeeded else 'Non configuré' }}"
+      - "🚨 Alertes: {{ 'Configurées' if prometheus_rules_result is succeeded else 'Non configurées' }}"
+      - "📈 Dashboard: {{ 'Configuré' if grafana_dashboard_result is succeeded else 'Non configuré' }}"
+      - "🔍 Prometheus Operator: {{ 'Disponible' if prometheus_operator_available else 'Non disponible' }}"
+  tags:
+    - monitoring
+    - summary
+
+- name: "{{ ansible_role_name }} | Monitoring | Avertissements si composants manquants"
+  debug:
+    msg:
+      - "⚠️  AVERTISSEMENT: Prometheus Operator n'est pas installé"
+      - "   Le monitoring automatique ne sera pas configuré"
+      - "   Installez Prometheus Operator pour activer le monitoring"
+  when: not prometheus_operator_available | bool
+  tags:
+    - monitoring
+    - warning

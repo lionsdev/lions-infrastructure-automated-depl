@@ -1,48 +1,507 @@
 ---
-# Titre: Template de ConfigMap Kubernetes pour pgAdmin
-# Description: Définit la ConfigMap Kubernetes pour pgAdmin
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-10
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - TEMPLATE CONFIGMAP PGADMIN
+# =========================================================================
+# Description: Template de ConfigMap Kubernetes pour pgAdmin dans l'écosystème LIONS
+# Version: 5.0.0
+# Maintainer: DevOps Team LIONS
+# Documentation: https://docs.lions.dev/database/pgadmin
+# Compatibilité: pgAdmin 4.x, Kubernetes 1.30+
+# =========================================================================
 
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: "{{ app_name }}-config"
-  namespace: "{{ app_namespace }}"
+  name: "{{ lions_pgadmin_service_name }}-config"
+  namespace: "{{ lions_pgadmin_namespace }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "pgadmin"
+    # Labels standards LIONS
+    app.kubernetes.io/name: "{{ lions_pgladmin_service_name }}"
+    app.kubernetes.io/instance: "{{ lions_pgadmin_service_name }}-{{ lions_environment }}"
+    app.kubernetes.io/version: "{{ lions_pgadmin_version }}"
+    app.kubernetes.io/component: "database-admin"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+
+    # Labels LIONS spécifiques
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/tier: "database"
+    lions.dev/technology: "pgadmin"
+    lions.dev/backup-required: "{{ lions_pgadmin_backup_enabled | default('false') | string }}"
+    lions.dev/monitoring-enabled: "{{ lions_monitoring_enabled | string }}"
+    lions.dev/security-level: "{{ lions_pgadmin_security_level | default('standard') }}"
+
   annotations:
-    description: "ConfigMap pour pgAdmin {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    # Annotations de déploiement
+    deployment.lions.dev/config-version: "{{ lions_config_version }}"
+    deployment.lions.dev/deployed-by: "ansible-{{ ansible_version }}"
+    deployment.lions.dev/deployment-date: "{{ ansible_date_time.iso8601 }}"
+
+    # Annotations de configuration
+    config.lions.dev/checksum: "{{ (pgadmin_config_content | string) | hash('sha256') }}"
+    config.lions.dev/source: "ansible-template"
+    config.lions.dev/last-updated: "{{ ansible_date_time.iso8601 }}"
+
+    # Documentation
+    documentation.lions.dev/description: "ConfigMap pour pgAdmin {{ lions_pgadmin_version }} - Environnement {{ lions_environment }}"
+    documentation.lions.dev/wiki: "https://docs.lions.dev/database/pgadmin"
+    documentation.lions.dev/contact: "{{ lions_config_maintainer | default('devops@lions.dev') }}"
+
 data:
-  # Configuration personnalisée pour pgAdmin
+  # =========================================================================
+  # CONFIGURATION PRINCIPALE PGADMIN
+  # =========================================================================
   config_local.py: |
     # -*- coding: utf-8 -*-
 
     ##########################################################################
-    # Configuration personnalisée pour pgAdmin dans l'infrastructure LIONS
+    #                   LIONS INFRASTRUCTURE 5.0
+    #                   Configuration pgAdmin personnalisée
+    ##########################################################################
+    # Environnement: {{ lions_environment | upper }}
+    # Version: {{ lions_pgadmin_version }}
+    # Namespace: {{ lions_pgadmin_namespace }}
+    # Généré automatiquement le: {{ ansible_date_time.iso8601 }}
     ##########################################################################
 
-    # Paramètres de sécurité
-    MASTER_PASSWORD_REQUIRED = False
+    import os
+    import logging
+    from datetime import timedelta
+
+    # =========================================================================
+    # CONFIGURATION DE BASE
+    # =========================================================================
+
+    # Mode serveur activé pour l'infrastructure LIONS
+    SERVER_MODE = True
+
+    # Configuration des données et stockage
+    DATA_DIR = os.environ.get('PGADMIN_DATA_DIR', '/var/lib/pgadmin')
+    STORAGE_DIR = os.path.join(DATA_DIR, 'storage')
+    SESSION_DB_PATH = os.path.join(DATA_DIR, 'sessions')
+    SQLITE_PATH = os.path.join(DATA_DIR, 'pgadmin4.db')
+
+    # Configuration des logs
+    LOG_FILE = os.path.join(DATA_DIR, 'pgadmin4.log')
+    CONSOLE_LOG_LEVEL = {{ pgladmin_log_level_mapping[lions_log_level] | default('logging.INFO') }}
+    FILE_LOG_LEVEL = {{ pgladmin_log_level_mapping[lions_log_level] | default('logging.INFO') }}
+
+    # =========================================================================
+    # CONFIGURATION DE SÉCURITÉ
+    # =========================================================================
+
+    # Configuration des mots de passe et authentification
+    MASTER_PASSWORD_REQUIRED = {{ lions_pgadmin_master_password_required | default('True') }}
     ENHANCED_COOKIE_PROTECTION = True
+    ALLOW_SAVE_PASSWORD = {{ lions_pgadmin_allow_save_password | default('True') }}
+
+    # Configuration des sessions
+    SESSION_EXPIRATION_TIME = {{ lions_pgadmin_session_timeout | default('28800') }}  # 8 heures par défaut
+    SESSION_COOKIE_SECURE = {{ lions_security_tls_enabled | string }}
+    SESSION_COOKIE_HTTPONLY = True
+    SESSION_COOKIE_SAMESITE = 'Lax'
+
+    # Configuration CSRF
+    WTF_CSRF_ENABLED = True
+    WTF_CSRF_TIME_LIMIT = {{ lions_pgadmin_csrf_timeout | default('86400') }}  # 24 heures
+
+    # Sécurité des connexions
+    {% if lions_environment == 'production' %}
+    AUTHENTICATION_SOURCES = ['oauth2', 'internal']
+    OAUTH2_AUTO_CREATE_USER = True
+    {% else %}
+    AUTHENTICATION_SOURCES = ['internal']
+    {% endif %}
+
+    # =========================================================================
+    # CONFIGURATION DE PERFORMANCE ET LIMITES
+    # =========================================================================
+
+    # Limites de connexions et requêtes
+    MAX_LOGIN_ATTEMPTS = {{ lions_pgadmin_max_login_attempts | default('5') }}
+    LOGIN_BANNER = "LIONS Infrastructure {{ lions_environment | upper }} - pgAdmin"
+
+    # Configuration de la pagination
+    DATA_PAGING_ENABLED = True
+    DATA_PAGE_SIZE = {{ lions_pgladmin_page_size | default('1000') }}
+
+    # Timeout des requêtes
+    QUERY_TIMEOUT = {{ lions_pgadmin_query_timeout | default('300') }}  # 5 minutes
+
+    # =========================================================================
+    # CONFIGURATION DE L'INTERFACE UTILISATEUR
+    # =========================================================================
+
+    # Thème et apparence
+    THEME_SETTINGS = {
+        'theme': '{{ lions_pgadmin_theme | default("standard") }}',
+        'show_system_objects': {{ lions_pgadmin_show_system_objects | default('false') | string }},
+    }
+
+    # Configuration du tableau de bord
+    ENABLE_DASHBOARD = True
+    DASHBOARD_REFRESH_RATE = {{ lions_pgadmin_dashboard_refresh | default('30') }}  # 30 secondes
+
+    # =========================================================================
+    # CONFIGURATION DES OUTILS ET FONCTIONNALITÉS
+    # =========================================================================
+
+    # Outils disponibles
+    ENABLE_PSQL = True
+    ENABLE_BACKUP = True
+    ENABLE_RESTORE = True
+
+    # Configuration de l'éditeur SQL
+    EDITOR_SETTINGS = {
+        'font_size': '{{ lions_pgadmin_editor_font_size | default("12") }}',
+        'tab_size': {{ lions_pgladmin_editor_tab_size | default('4') }},
+    'use_spaces': {{ lions_pgadmin_editor_use_spaces | default('true') | string }},
+    'wrap_lines': {{ lions_pgadmin_editor_wrap_lines | default('false') | string }},
+    }
+
+    # =========================================================================
+    # CONFIGURATION DE MONITORING ET OBSERVABILITÉ
+    # =========================================================================
+
+    {% if lions_monitoring_enabled %}
+    # Configuration du monitoring
+    MONITORING_ENABLED = True
+    STATS_COLLECTION_ENABLED = True
+
+    # Métriques exportées
+    ENABLE_PROMETHEUS_METRICS = True
+    PROMETHEUS_METRICS_PORT = {{ lions_pgadmin_metrics_port | default('9090') }}
+
+    # Configuration des logs structurés
+    STRUCTURED_LOGGING = True
+    LOG_FORMAT = 'json' if '{{ lions_log_format }}' == 'json' else 'text'
+    {% else %}
+    MONITORING_ENABLED = False
+    STATS_COLLECTION_ENABLED = False
+    {% endif %}
+
+    # =========================================================================
+    # CONFIGURATION SPÉCIFIQUE PAR ENVIRONNEMENT
+    # =========================================================================
+
+    {% if lions_environment == 'development' %}
+    # Configuration développement
+    DEBUG = True
+    CONSOLE_LOG_LEVEL = logging.DEBUG
+    SHOW_SYSTEM_OBJECTS = True
     ALLOW_SAVE_PASSWORD = True
 
-    # Paramètres d'interface
-    SERVER_MODE = True
-    CONSOLE_LOG_LEVEL = 10
+    {% elif lions_environment == 'staging' %}
+    # Configuration staging
+    DEBUG = False
+    CONSOLE_LOG_LEVEL = logging.INFO
+    SHOW_SYSTEM_OBJECTS = False
+    ALLOW_SAVE_PASSWORD = True
 
-    # Paramètres d'authentification
-    AUTHENTICATION_SOURCES = ['internal']
+    {% elif lions_environment == 'production' %}
+    # Configuration production
+    DEBUG = False
+    CONSOLE_LOG_LEVEL = logging.WARN
+    SHOW_SYSTEM_OBJECTS = False
+    ALLOW_SAVE_PASSWORD = {{ lions_pgadmin_allow_save_password_prod | default('False') }}
 
-    # Paramètres de stockage
-    STORAGE_DIR = '/var/lib/pgadmin/storage'
-    SESSION_DB_PATH = '/var/lib/pgadmin/sessions'
-    SQLITE_PATH = '/var/lib/pgadmin/pgadmin4.db'
+    # Sécurité renforcée en production
+    MASTER_PASSWORD_REQUIRED = True
+    MAX_LOGIN_ATTEMPTS = 3
+    SESSION_EXPIRATION_TIME = 14400  # 4 heures en production
 
-    # Paramètres de monitoring
-    ENABLE_PSQL = True
-    ENABLE_DASHBOARD = True
+    {% endif %}
+
+    # =========================================================================
+    # CONFIGURATION DE SAUVEGARDE ET RÉCUPÉRATION
+    # =========================================================================
+
+    {% if lions_backup_enabled %}
+    # Configuration des sauvegardes
+    BACKUP_ENABLED = True
+    BACKUP_RETENTION_DAYS = {{ lions_backup_retention_days }}
+    BACKUP_COMPRESSION = '{{ lions_backup_compression }}'
+    BACKUP_ENCRYPTION = {{ lions_backup_encryption | string }}
+
+    # Répertoires de sauvegarde
+    BACKUP_DIR = os.path.join(DATA_DIR, 'backups')
+    {% endif %}
+
+    # =========================================================================
+    # CONFIGURATION RÉSEAU ET CONNEXIONS
+    # =========================================================================
+
+    # Configuration des serveurs PostgreSQL par défaut
+    DEFAULT_SERVERS = [
+        {
+            'Name': 'LIONS PostgreSQL Primary',
+            'Group': 'LIONS Infrastructure',
+            'Host': '{{ lions_postgres_service_name }}.{{ lions_postgres_namespace }}.svc.{{ lions_k8s_dns_domain }}',
+            'Port': {{ lions_postgres_port }},
+        'MaintenanceDB': '{{ lions_postgres_database }}',
+    'Username': 'postgres',
+    'SSLMode': 'require' if {{ lions_security_tls_enabled | string }} else 'disable',
+    'Comment': 'Serveur PostgreSQL principal de l\'infrastructure LIONS'
+    }
+    ]
+
+    # Configuration proxy et reverse proxy
+    {% if lions_security_tls_enabled %}
+    PROXY_X_FOR = 1
+    PROXY_X_PROTO = 1
+    PROXY_X_HOST = 1
+    PROXY_X_PREFIX = 1
+    {% endif %}
+
+    # =========================================================================
+    # FONCTIONS UTILITAIRES
+    # =========================================================================
+
+    def get_environment_config():
+        """Retourne la configuration spécifique à l'environnement actuel."""
+        return {
+            'environment': '{{ lions_environment }}',
+            'namespace': '{{ lions_pgladmin_namespace }}',
+            'version': '{{ lions_pgladmin_version }}',
+            'monitoring_enabled': {{ lions_monitoring_enabled | string }},
+        'backup_enabled': {{ lions_backup_enabled | string }},
+        'security_level': '{{ lions_pgladmin_security_level | default("standard") }}'
+        }
+
+        def validate_configuration():
+            """Valide la configuration pgAdmin."""
+            errors = []
+
+            # Validation des répertoires
+            required_dirs = [DATA_DIR, STORAGE_DIR]
+            for directory in required_dirs:
+                if not os.path.exists(directory):
+                    try:
+                        os.makedirs(directory, mode=0o755, exist_ok=True)
+                    except Exception as e:
+                        errors.append(f"Impossible de créer le répertoire {directory}: {e}")
+
+            # Validation des permissions
+            if not os.access(DATA_DIR, os.W_OK):
+                errors.append(f"Permissions d'écriture manquantes sur {DATA_DIR}")
+
+            if errors:
+                raise RuntimeError(f"Erreurs de configuration pgAdmin: {'; '.join(errors)}")
+
+            return True
+
+        # Validation automatique au démarrage
+        try:
+            validate_configuration()
+            print(f"✅ Configuration pgAdmin validée pour l'environnement {{ lions_environment }}")
+        except Exception as e:
+            print(f"❌ Erreur de configuration pgAdmin: {e}")
+            raise
+
+        ##########################################################################
+        # FIN DE LA CONFIGURATION PGLADMIN LIONS INFRASTRUCTURE 5.0
+        ##########################################################################
+
+  # =========================================================================
+  # CONFIGURATION DE LOGGING AVANCÉE
+  # =========================================================================
+  logging.conf: |
+    [loggers]
+    keys=root,pgladmin
+
+    [handlers]
+    keys=consoleHandler,fileHandler{% if lions_monitoring_enabled %},structuredHandler{% endif %}
+
+    [formatters]
+    keys=simpleFormatter,detailedFormatter{% if lions_log_format == 'json' %},jsonFormatter{% endif %}
+
+    [logger_root]
+    level={{ lions_log_level }}
+    handlers=consoleHandler{% if lions_pgladmin_file_logging_enabled | default(true) %},fileHandler{% endif %}
+
+    [logger_pgladmin]
+    level={{ lions_log_level }}
+    handlers=consoleHandler{% if lions_pgladmin_file_logging_enabled | default(true) %},fileHandler{% endif %}
+    qualname=pgladmin
+    propagate=0
+
+    [handler_consoleHandler]
+    class=StreamHandler
+    level={{ lions_log_level }}
+    formatter={% if lions_log_format == 'json' %}jsonFormatter{% else %}simpleFormatter{% endif %}
+    args=(sys.stdout,)
+
+    {% if lions_pgladmin_file_logging_enabled | default(true) %}
+    [handler_fileHandler]
+    class=handlers.RotatingFileHandler
+    level={{ lions_log_level }}
+    formatter=detailedFormatter
+    args=('/var/lib/pgladmin/pgladmin4.log', 'a', {{ lions_pgladmin_log_max_size | default('10485760') }}, {{ lions_pgladmin_log_backup_count | default('5') }})
+    {% endif %}
+
+    {% if lions_monitoring_enabled %}
+    [handler_structuredHandler]
+    class=StreamHandler
+    level=INFO
+    formatter=jsonFormatter
+    args=(sys.stdout,)
+    {% endif %}
+
+    [formatter_simpleFormatter]
+    format=%(asctime)s - %(name)s - %(levelname)s - %(message)s
+    datefmt=%Y-%m-%d %H:%M:%S
+
+    [formatter_detailedFormatter]
+    format=%(asctime)s - %(name)s - %(process)d - %(thread)d - %(levelname)s - %(filename)s:%(lineno)d - %(message)s
+    datefmt=%Y-%m-%d %H:%M:%S
+
+    {% if lions_log_format == 'json' %}
+    [formatter_jsonFormatter]
+    class=pythonjsonlogger.jsonlogger.JsonFormatter
+    format=%(asctime)s %(name)s %(process)d %(thread)d %(levelname)s %(filename)s %(lineno)d %(message)s
+    {% endif %}
+
+  # =========================================================================
+  # SCRIPTS D'INITIALISATION ET UTILITAIRES
+  # =========================================================================
+  init-pgladmin.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    # =========================================================================
+    # SCRIPT D'INITIALISATION PGLADMIN LIONS INFRASTRUCTURE 5.0
+    # =========================================================================
+
+    echo "🚀 Initialisation de pgAdmin pour l'environnement {{ lions_environment }}"
+
+    # Variables
+    PGLADMIN_DATA_DIR="${PGLADMIN_DATA_DIR:-/var/lib/pgladmin}"
+    PGLADMIN_CONFIG_DIR="${PGLADMIN_CONFIG_DIR:-/etc/pgladmin}"
+
+    # Fonction de logging
+    log() {
+        echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*"
+    }
+
+    # Création des répertoires nécessaires
+    log "📁 Création des répertoires de données..."
+    mkdir -p "${PGLADMIN_DATA_DIR}"/{storage,sessions,backups,logs}
+    mkdir -p "${PGLADMIN_CONFIG_DIR}"
+
+    # Configuration des permissions
+    log "🔒 Configuration des permissions..."
+    chown -R pgladmin:pgladmin "${PGLADMIN_DATA_DIR}"
+    chmod -R 755 "${PGLADMIN_DATA_DIR}"
+    chmod 700 "${PGLADMIN_DATA_DIR}/storage"
+
+    # Initialisation de la base de données pgAdmin
+    log "🗄️  Initialisation de la base de données pgAdmin..."
+    if [[ ! -f "${PGLADMIN_DATA_DIR}/pgadmin4.db" ]]; then
+        python3 /pgladmin4/setup.py --load-servers /tmp/servers.json
+    fi
+
+    # Configuration du monitoring si activé
+    {% if lions_monitoring_enabled %}
+    log "📊 Configuration du monitoring..."
+    # Configuration des métriques Prometheus
+    mkdir -p "${PGLADMIN_DATA_DIR}/metrics"
+    chown pgladmin:pgladmin "${PGLADMIN_DATA_DIR}/metrics"
+    {% endif %}
+
+    # Configuration des sauvegardes si activées
+    {% if lions_backup_enabled %}
+    log "💾 Configuration des sauvegardes..."
+    mkdir -p "${PGLADMIN_DATA_DIR}/backups"
+
+    # Script de sauvegarde automatique
+    cat > "${PGLADMIN_DATA_DIR}/backup-config.sh" << 'EOF'
+    #!/bin/bash
+    # Sauvegarde automatique de la configuration pgAdmin
+    tar -czf "${PGLADMIN_DATA_DIR}/backups/pgladmin-config-$(date +%Y%m%d-%H%M%S).tar.gz" \
+        "${PGLADMIN_DATA_DIR}/pgladmin4.db" \
+        "${PGLADMIN_DATA_DIR}/storage" \
+        2>/dev/null || true
+
+    # Nettoyage des anciennes sauvegardes
+    find "${PGLADMIN_DATA_DIR}/backups" -name "pgladmin-config-*.tar.gz" -mtime +{{ lions_backup_retention_days }} -delete
+    EOF
+
+    chmod +x "${PGLADMIN_DATA_DIR}/backup-config.sh"
+    {% endif %}
+
+    log "✅ Initialisation de pgAdmin terminée avec succès"
+
+  # =========================================================================
+  # CONFIGURATION DE MONITORING
+  # =========================================================================
+  {% if lions_monitoring_enabled %}
+  monitoring-config.json: |
+    {
+      "monitoring": {
+        "enabled": true,
+        "metrics_port": {{ lions_pgladmin_metrics_port | default('9090') }},
+        "health_check_interval": {{ lions_pgladmin_health_check_interval | default('30') }},
+        "metrics": {
+          "connection_count": true,
+          "query_duration": true,
+          "error_rate": true,
+          "session_count": true
+        },
+        "alerts": {
+          "max_connections": {{ lions_pgladmin_alert_max_connections | default('100') }},
+          "query_timeout": {{ lions_pgladmin_alert_query_timeout | default('300') }},
+          "error_rate_threshold": {{ lions_pgladmin_alert_error_rate | default('0.05') }}
+        }
+      },
+      "environment": "{{ lions_environment }}",
+      "namespace": "{{ lions_pgladmin_namespace }}",
+      "service": "{{ lions_pgladmin_service_name }}"
+    }
+  {% endif %}
+
+  # =========================================================================
+  # CONFIGURATION DES SERVEURS PAR DÉFAUT
+  # =========================================================================
+  servers.json: |
+    {
+      "Servers": {
+        "1": {
+          "Name": "LIONS PostgreSQL Primary",
+          "Group": "LIONS Infrastructure",
+          "Host": "{{ lions_postgres_service_name }}.{{ lions_postgres_namespace }}.svc.{{ lions_k8s_dns_domain }}",
+          "Port": {{ lions_postgres_port }},
+          "MaintenanceDB": "{{ lions_postgres_database }}",
+          "Username": "postgres",
+          "SSLMode": "{{ 'require' if lions_security_tls_enabled else 'disable' }}",
+          "Comment": "Serveur PostgreSQL principal - Environnement {{ lions_environment }}"
+        }
+        {% if lions_environment == 'production' and lions_postgres_ha_enabled | default(false) %}
+      ,
+        "2": {
+          "Name": "LIONS PostgreSQL Secondary",
+          "Group": "LIONS Infrastructure",
+          "Host": "{{ lions_postgres_service_name }}-replica.{{ lions_postgres_namespace }}.svc.{{ lions_k8s_dns_domain }}",
+          "Port": {{ lions_postgres_port }},
+          "MaintenanceDB": "{{ lions_postgres_database }}",
+          "Username": "postgres",
+          "SSLMode": "require",
+          "Comment": "Serveur PostgreSQL secondaire - Réplication"
+        }
+        {% endif %}
+      }
+    }
+
+---
+# =========================================================================
+# VARIABLES DE MAPPING POUR JINJA2
+# =========================================================================
+# Ces variables sont utilisées dans le template ci-dessus
+# Elles doivent être définies dans les variables Ansible du rôle pgladmin
+
+  # Mapping des niveaux de log
+{% set pgladmin_log_level_mapping = {
+    'DEBUG': 'logging.DEBUG',
+    'INFO': 'logging.INFO',
+    'WARN': 'logging.WARNING',
+    'ERROR': 'logging.ERROR'
+} %}

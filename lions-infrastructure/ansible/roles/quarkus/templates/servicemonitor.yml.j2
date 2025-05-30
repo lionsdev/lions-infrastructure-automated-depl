@@ -1,49 +1,309 @@
----
-# Titre: Template de ServiceMonitor Kubernetes pour Quarkus
-# Description: Définit le ServiceMonitor Kubernetes pour une application Quarkus
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - QUARKUS SERVICE MONITOR TEMPLATE
+# =========================================================================
+# Description: Template Jinja2 pour le ServiceMonitor Kubernetes des applications Quarkus
+# Composant: Quarkus Application ServiceMonitor
+# Version: 5.0.0
+# Maintainer: DevOps LIONS Team
+# Documentation: https://docs.lions.dev/infrastructure/quarkus/monitoring
+# =========================================================================
 
+{% if lions_monitoring_enabled | bool %}
+---
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: "{{ app_name }}"
-  namespace: "{{ app_namespace }}"
+  name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
+  namespace: "{{ lions_monitoring_namespace | default(lions_quarkus_namespace) }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "quarkus"
-    prometheus: k8s
+    # Labels standards Kubernetes
+    app.kubernetes.io/name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
+    app.kubernetes.io/instance: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-{{ lions_environment }}"
+    app.kubernetes.io/version: "{{ lions_quarkus_app_version | default('latest') }}"
+    app.kubernetes.io/component: "backend"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+    
+    # Labels spécifiques LIONS
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/technology: "quarkus"
+    lions.dev/tier: "application"
+    lions.dev/monitoring-enabled: "true"
+    
+    # Labels pour Prometheus
+    prometheus: "{{ lions_prometheus_instance | default('kube-prometheus') }}"
+    monitoring.lions.dev/scrape: "true"
+    monitoring.lions.dev/team: "{{ lions_quarkus_team | default('platform') }}"
+    
   annotations:
-    description: "ServiceMonitor pour l'application {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    # Annotations de documentation
+    description: "ServiceMonitor Quarkus {{ lions_quarkus_app_name | default(lions_quarkus_service_name) }} v{{ lions_quarkus_app_version | default('latest') }}"
+    lions.dev/documentation: "https://docs.lions.dev/infrastructure/quarkus"
+    lions.dev/servicemonitor-checksum: "{{ ansible_date_time.epoch }}"
+    
+    # Annotations pour la configuration
+    monitoring.lions.dev/last-updated: "{{ ansible_date_time.iso8601 }}"
+    monitoring.lions.dev/environment: "{{ lions_environment }}"
+    monitoring.lions.dev/managed-by: "lions-infrastructure-ansible"
+    
+    # Annotations pour les alertes
+    monitoring.lions.dev/alert-severity: "{{ lions_quarkus_alert_severity | default('warning') }}"
+    monitoring.lions.dev/alert-team: "{{ lions_quarkus_alert_team | default('platform') }}"
+    
+{% if lions_quarkus_custom_monitoring_annotations is defined %}
+    # Annotations personnalisées
+{% for key, value in lions_quarkus_custom_monitoring_annotations.items() %}
+    {{ key }}: "{{ value }}"
+{% endfor %}
+{% endif %}
+
 spec:
+  # =========================================================================
+  # SÉLECTION DES SERVICES À MONITORER
+  # =========================================================================
+  
+  # Sélecteur pour identifier les services à monitorer
   selector:
     matchLabels:
-      app: "{{ app_name }}"
+      app.kubernetes.io/name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
+      app.kubernetes.io/instance: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-{{ lions_environment }}"
+  
+  # Sélection des namespaces
   namespaceSelector:
     matchNames:
-      - "{{ app_namespace }}"
+      - "{{ lions_quarkus_namespace }}"
+{% if lions_quarkus_additional_namespaces is defined %}
+{% for namespace in lions_quarkus_additional_namespaces %}
+      - "{{ namespace }}"
+{% endfor %}
+{% endif %}
+
+  # =========================================================================
+  # CONFIGURATION DES ENDPOINTS DE SCRAPING
+  # =========================================================================
+  
   endpoints:
+    # Endpoint principal pour les métriques d'application
     - port: http
-      path: "{{ quarkus_prometheus_path }}"
-      interval: 15s
-      scrapeTimeout: 10s
-      honorLabels: true
+      path: "{{ lions_quarkus_metrics_path | default('/metrics') }}"
+      interval: "{{ lions_quarkus_scrape_interval | default('30s') }}"
+      scrapeTimeout: "{{ lions_quarkus_scrape_timeout | default('10s') }}"
+      scheme: "{{ 'https' if lions_security_tls_enabled | bool else 'http' }}"
+      honorLabels: {{ lions_quarkus_honor_labels | default('true') }}
+      honorTimestamps: {{ lions_quarkus_honor_timestamps | default('true') }}
+      
+{% if lions_security_tls_enabled | bool %}
+      # Configuration TLS
+      tlsConfig:
+        insecureSkipVerify: {{ lions_quarkus_tls_skip_verify | default('false') }}
+{% if lions_quarkus_ca_file is defined %}
+        caFile: "{{ lions_quarkus_ca_file }}"
+{% endif %}
+{% if lions_quarkus_cert_file is defined and lions_quarkus_key_file is defined %}
+        certFile: "{{ lions_quarkus_cert_file }}"
+        keyFile: "{{ lions_quarkus_key_file }}"
+{% endif %}
+{% if lions_quarkus_server_name is defined %}
+        serverName: "{{ lions_quarkus_server_name }}"
+{% endif %}
+{% endif %}
+      
+      # ===================================================================
+      # RELABELING DES MÉTRIQUES
+      # ===================================================================
+      
+      # Ajout de labels personnalisés
+      relabelings:
+        # Ajout du label d'environnement
+        - sourceLabels: []
+          targetLabel: environment
+          replacement: "{{ lions_environment }}"
+        
+        # Ajout du label d'application
+        - sourceLabels: []
+          targetLabel: application
+          replacement: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
+        
+        # Ajout du label de technologie
+        - sourceLabels: []
+          targetLabel: technology
+          replacement: "quarkus"
+        
+        # Ajout du label de version
+        - sourceLabels: []
+          targetLabel: version
+          replacement: "{{ lions_quarkus_app_version | default('latest') }}"
+        
+        # Ajout du label d'équipe
+        - sourceLabels: []
+          targetLabel: team
+          replacement: "{{ lions_quarkus_team | default('platform') }}"
+        
+        # Préservation du nom du service Kubernetes
+        - sourceLabels: [__meta_kubernetes_service_name]
+          targetLabel: kubernetes_service_name
+        
+        # Préservation du namespace Kubernetes
+        - sourceLabels: [__meta_kubernetes_namespace]
+          targetLabel: kubernetes_namespace
+        
+        # Préservation du nom du pod
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: kubernetes_pod_name
+        
+        # Préservation de l'adresse IP du pod
+        - sourceLabels: [__meta_kubernetes_pod_ip]
+          targetLabel: kubernetes_pod_ip
+        
+{% if lions_quarkus_custom_relabelings is defined %}
+        # Relabelings personnalisés
+{% for relabeling in lions_quarkus_custom_relabelings %}
+        - sourceLabels: {{ relabeling.source_labels | to_json }}
+          targetLabel: "{{ relabeling.target_label }}"
+{% if relabeling.regex is defined %}
+          regex: "{{ relabeling.regex }}"
+{% endif %}
+{% if relabeling.replacement is defined %}
+          replacement: "{{ relabeling.replacement }}"
+{% endif %}
+{% if relabeling.action is defined %}
+          action: "{{ relabeling.action }}"
+{% endif %}
+{% endfor %}
+{% endif %}
+      
+      # ===================================================================
+      # FILTRAGE ET TRANSFORMATION DES MÉTRIQUES
+      # ===================================================================
+      
       metricRelabelings:
+        # Conservation des métriques JVM essentielles
         - sourceLabels: [__name__]
-          regex: 'jvm_.*'
+          regex: 'jvm_(memory|gc|threads|classes|buffer)_.*'
           action: keep
+        
+        # Conservation des métriques HTTP
         - sourceLabels: [__name__]
-          regex: 'http_.*'
+          regex: 'http_(requests|request_duration|response_size)_.*'
           action: keep
+        
+        # Conservation des métriques système
         - sourceLabels: [__name__]
-          regex: 'process_.*'
+          regex: '(process|system)_(cpu|memory|disk|network)_.*'
           action: keep
-        - sourceLabels: [__name__]
-          regex: 'system_.*'
-          action: keep
+        
+        # Conservation des métriques d'application Quarkus
         - sourceLabels: [__name__]
           regex: 'application_.*'
           action: keep
+        
+        # Conservation des métriques de santé
+        - sourceLabels: [__name__]
+          regex: '(up|quarkus_health)_.*'
+          action: keep
+        
+        # Conservation des métriques de base de données (si activées)
+{% if lions_postgres_enabled | bool %}
+        - sourceLabels: [__name__]
+          regex: '(hikaricp|agroal|jdbc)_.*'
+          action: keep
+{% endif %}
+        
+        # Conservation des métriques de cache (si activées)
+{% if lions_redis_enabled | bool or lions_quarkus_cache_enabled | default(false) | bool %}
+        - sourceLabels: [__name__]
+          regex: '(cache|redis)_.*'
+          action: keep
+{% endif %}
+        
+        # Suppression des métriques trop détaillées en production
+{% if lions_environment == 'production' %}
+        - sourceLabels: [__name__]
+          regex: 'jvm_gc_pause_.*'
+          action: drop
+        
+        - sourceLabels: [__name__]
+          regex: 'http_requests_seconds_bucket.*'
+          action: drop
+{% endif %}
+        
+        # Ajout de préfixes pour éviter les conflits
+        - sourceLabels: [__name__]
+          regex: 'application_(.*)'
+          targetLabel: __name__
+          replacement: 'quarkus_${1}'
+        
+        # Nettoyage des labels sensibles
+        - regex: '(password|secret|token|key).*'
+          action: labeldrop
+        
+{% if lions_quarkus_custom_metric_relabelings is defined %}
+        # Relabelings de métriques personnalisés
+{% for relabeling in lions_quarkus_custom_metric_relabelings %}
+        - sourceLabels: {{ relabeling.source_labels | to_json }}
+{% if relabeling.target_label is defined %}
+          targetLabel: "{{ relabeling.target_label }}"
+{% endif %}
+{% if relabeling.regex is defined %}
+          regex: "{{ relabeling.regex }}"
+{% endif %}
+{% if relabeling.replacement is defined %}
+          replacement: "{{ relabeling.replacement }}"
+{% endif %}
+          action: "{{ relabeling.action | default('replace') }}"
+{% endfor %}
+{% endif %}
+
+{% if lions_quarkus_management_port is defined %}
+    # Endpoint pour les métriques de management (si configuré)
+    - port: management
+      path: "{{ lions_quarkus_management_metrics_path | default('/metrics') }}"
+      interval: "{{ lions_quarkus_management_scrape_interval | default('60s') }}"
+      scrapeTimeout: "{{ lions_quarkus_management_scrape_timeout | default('10s') }}"
+      scheme: "{{ 'https' if lions_security_tls_enabled | bool else 'http' }}"
+      
+      metricRelabelings:
+        # Conservation uniquement des métriques de management
+        - sourceLabels: [__name__]
+          regex: '(quarkus_management|actuator)_.*'
+          action: keep
+        
+        # Ajout du préfixe management
+        - sourceLabels: [__name__]
+          targetLabel: __name__
+          replacement: 'management_${1}'
+{% endif %}
+
+{% if lions_quarkus_custom_endpoints is defined %}
+    # Endpoints personnalisés
+{% for endpoint in lions_quarkus_custom_endpoints %}
+    - port: "{{ endpoint.port }}"
+      path: "{{ endpoint.path }}"
+      interval: "{{ endpoint.interval | default('30s') }}"
+      scrapeTimeout: "{{ endpoint.scrape_timeout | default('10s') }}"
+      scheme: "{{ endpoint.scheme | default('http') }}"
+{% if endpoint.params is defined %}
+      params:
+{% for key, values in endpoint.params.items() %}
+        {{ key }}: {{ values | to_json }}
+{% endfor %}
+{% endif %}
+{% endfor %}
+{% endif %}
+
+  # =========================================================================
+  # CONFIGURATION AVANCÉE
+  # =========================================================================
+  
+  # Limite sur le nombre de métriques
+  sampleLimit: {{ lions_quarkus_sample_limit | default('100000') }}
+  
+  # Limite sur le nombre de targets
+  targetLimit: {{ lions_quarkus_target_limit | default('100') }}
+  
+  # Limite sur la longueur des labels
+  labelLimit: {{ lions_quarkus_label_limit | default('200') }}
+  labelNameLengthLimit: {{ lions_quarkus_label_name_limit | default('200') }}
+  labelValueLengthLimit: {{ lions_quarkus_label_value_limit | default('200') }}
+
+{% endif %}

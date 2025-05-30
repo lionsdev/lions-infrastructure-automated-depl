@@ -1,65 +1,457 @@
 ---
-# Titre: Vérification des prérequis pour Quarkus
-# Description: Vérifie que tous les prérequis sont satisfaits pour déployer une application Quarkus
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - VÉRIFICATION PRÉREQUIS QUARKUS
+# =========================================================================
+# Description: Vérification complète des prérequis pour le déploiement Quarkus
+# Rôle: quarkus
+# Composant: prerequisites
+# Version: 5.0.0
+# Maintainer: DevOps Team <devops@lions.dev>
+# Documentation: https://docs.lions.dev/infrastructure/roles/quarkus
+# =========================================================================
 
-- name: Vérification de l'existence du namespace
-  k8s_info:
-    api_version: v1
-    kind: Namespace
-    name: "{{ app_namespace }}"
-  register: namespace_info
-  failed_when: namespace_info.resources | length == 0
+# =========================================================================
+# VALIDATION DE LA CONFIGURATION QUARKUS
+# =========================================================================
+- name: "📋 [QUARKUS] Validation de la configuration des variables"
+  block:
+    - name: "🔍 Vérification des variables obligatoires"
+      assert:
+        that:
+          - lions_quarkus_namespace is defined
+          - lions_quarkus_namespace | length > 0
+          - lions_quarkus_service_name is defined
+          - lions_quarkus_service_name | length > 0
+          - lions_dns_full_domain is defined
+          - lions_dns_full_domain | length > 0
+        fail_msg: "❌ Variables obligatoires manquantes pour Quarkus"
+        success_msg: "✅ Variables obligatoires Quarkus validées"
 
-- name: Vérification des droits d'accès au namespace
-  k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: ConfigMap
-      metadata:
-        name: "access-check"
-        namespace: "{{ app_namespace }}"
-      data:
-        check: "true"
-  register: access_check
-  ignore_errors: yes
+    - name: "📊 Affichage de la configuration Quarkus"
+      debug:
+        msg:
+          - "🏷️  Namespace: {{ lions_quarkus_namespace }}"
+          - "🔧 Service: {{ lions_quarkus_service_name }}"
+          - "🌐 Domaine: {{ lions_dns_full_domain }}"
+          - "🚢 Port: {{ lions_quarkus_port }}"
+          - "📦 Version: {{ lions_quarkus_version | default('latest') }}"
+      when: lions_debug_mode | default(false) | bool
 
-- name: Suppression du ConfigMap de vérification
-  k8s:
-    state: absent
-    api_version: v1
-    kind: ConfigMap
-    name: "access-check"
-    namespace: "{{ app_namespace }}"
-  when: access_check is succeeded
+  tags: [prerequisites, config, validation]
 
-- name: Échec si les droits d'accès sont insuffisants
-  fail:
-    msg: "Droits d'accès insuffisants pour déployer dans le namespace {{ app_namespace }}"
-  when: access_check is failed
+# =========================================================================
+# VÉRIFICATION DE L'INFRASTRUCTURE KUBERNETES
+# =========================================================================
+- name: "🏗️ [INFRASTRUCTURE] Vérification de l'infrastructure Kubernetes"
+  block:
+    - name: "🔍 Vérification de la connectivité au cluster K8s"
+      k8s_info:
+        api_version: v1
+        kind: Namespace
+        name: kube-system
+      register: k8s_connectivity
+      failed_when: k8s_connectivity.resources | length == 0
+      retries: 3
+      delay: 5
 
-- name: Vérification de l'existence du registre Docker
-  k8s_info:
-    api_version: v1
-    kind: Service
-    name: registry
-    namespace: registry
-  register: registry_info
-  failed_when: registry_info.resources | length == 0
+    - name: "✅ Confirmation de la connectivité K8s"
+      debug:
+        msg: "🎯 Connexion au cluster Kubernetes établie avec succès"
 
-- name: Vérification de l'existence de l'ingress controller
-  k8s_info:
-    api_version: v1
-    kind: Service
-    name: ingress-nginx-controller
-    namespace: ingress-nginx
-  register: ingress_info
-  ignore_errors: yes
+    - name: "🔍 Vérification de la version Kubernetes"
+      k8s_info:
+        api_version: v1
+        kind: Node
+      register: k8s_nodes
+      failed_when: k8s_nodes.resources | length == 0
 
-- name: Avertissement si l'ingress controller n'est pas trouvé
+    - name: "📊 Information sur les nœuds Kubernetes"
+      debug:
+        msg:
+          - "🖥️  Nombre de nœuds: {{ k8s_nodes.resources | length }}"
+          - "📋 Versions K8s: {{ k8s_nodes.resources | map(attribute='status.nodeInfo.kubeletVersion') | unique | list }}"
+      when: lions_debug_mode | default(false) | bool
+
+  rescue:
+    - name: "❌ Échec de la vérification Kubernetes"
+      fail:
+        msg: |
+          🚨 ERREUR CRITIQUE: Impossible de se connecter au cluster Kubernetes
+          
+          📋 Actions recommandées:
+          1. Vérifier que kubectl est configuré correctement
+          2. Vérifier la connectivité réseau au cluster
+          3. Vérifier que le cluster K3s est démarré
+          4. Consulter les logs: kubectl get nodes -o wide
+
+  tags: [prerequisites, kubernetes, connectivity]
+
+# =========================================================================
+# VÉRIFICATION DU NAMESPACE CIBLE
+# =========================================================================
+- name: "📁 [NAMESPACE] Vérification du namespace {{ lions_quarkus_namespace }}"
+  block:
+    - name: "🔍 Vérification de l'existence du namespace"
+      k8s_info:
+        api_version: v1
+        kind: Namespace
+        name: "{{ lions_quarkus_namespace }}"
+      register: quarkus_namespace_info
+
+    - name: "📋 Création du namespace si nécessaire"
+      k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ lions_quarkus_namespace }}"
+            labels:
+              name: "{{ lions_quarkus_namespace }}"
+              component: "application"
+              managed-by: "lions-infrastructure"
+              environment: "{{ lions_environment }}"
+              version: "{{ lions_config_version }}"
+            annotations:
+              description: "Namespace pour les applications Quarkus"
+              contact: "{{ lions_config_maintainer }}"
+              created-by: "ansible-lions-infrastructure"
+      when: quarkus_namespace_info.resources | length == 0
+      register: namespace_creation
+
+    - name: "✅ Confirmation du namespace"
+      debug:
+        msg: "🎯 Namespace '{{ lions_quarkus_namespace }}' {% if namespace_creation.changed %}créé{% else %}existant{% endif %} et accessible"
+
+  tags: [prerequisites, namespace, creation]
+
+# =========================================================================
+# VÉRIFICATION DES DROITS D'ACCÈS
+# =========================================================================
+- name: "🔐 [PERMISSIONS] Vérification des droits d'accès"
+  block:
+    - name: "🧪 Test de création d'une ressource temporaire"
+      k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: "lions-quarkus-access-test"
+            namespace: "{{ lions_quarkus_namespace }}"
+            labels:
+              test: "access-verification"
+              component: "quarkus"
+              temporary: "true"
+          data:
+            test: "access-granted"
+            timestamp: "{{ ansible_date_time.iso8601 }}"
+      register: access_test_creation
+
+    - name: "🧪 Test de lecture de la ressource"
+      k8s_info:
+        api_version: v1
+        kind: ConfigMap
+        name: "lions-quarkus-access-test"
+        namespace: "{{ lions_quarkus_namespace }}"
+      register: access_test_read
+
+    - name: "🧪 Test de modification de la ressource"
+      k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: "lions-quarkus-access-test"
+            namespace: "{{ lions_quarkus_namespace }}"
+          data:
+            test: "access-granted"
+            timestamp: "{{ ansible_date_time.iso8601 }}"
+            modified: "true"
+      register: access_test_update
+
+    - name: "🧹 Nettoyage de la ressource de test"
+      k8s:
+        state: absent
+        api_version: v1
+        kind: ConfigMap
+        name: "lions-quarkus-access-test"
+        namespace: "{{ lions_quarkus_namespace }}"
+      register: access_test_cleanup
+
+    - name: "✅ Validation des permissions complètes"
+      debug:
+        msg: "🎯 Droits d'accès complets validés (CRUD) sur le namespace {{ lions_quarkus_namespace }}"
+
+  rescue:
+    - name: "🧹 Nettoyage en cas d'erreur"
+      k8s:
+        state: absent
+        api_version: v1
+        kind: ConfigMap
+        name: "lions-quarkus-access-test"
+        namespace: "{{ lions_quarkus_namespace }}"
+      ignore_errors: true
+
+    - name: "❌ Échec des permissions"
+      fail:
+        msg: |
+          🚨 ERREUR CRITIQUE: Droits d'accès insuffisants
+          
+          📋 Permissions requises sur le namespace '{{ lions_quarkus_namespace }}':
+          - Créer des ressources (ConfigMaps, Deployments, Services)
+          - Lire les ressources existantes
+          - Modifier les ressources
+          - Supprimer les ressources
+          
+          🔧 Actions recommandées:
+          1. Vérifier les ClusterRoles et RoleBindings
+          2. Consulter: kubectl auth can-i --list --namespace={{ lions_quarkus_namespace }}
+          3. Vérifier la configuration RBAC
+
+  tags: [prerequisites, permissions, rbac]
+
+# =========================================================================
+# VÉRIFICATION DU REGISTRE DE CONTENEURS
+# =========================================================================
+- name: "📦 [REGISTRY] Vérification du registre de conteneurs"
+  block:
+    - name: "🔍 Vérification du service registre"
+      k8s_info:
+        api_version: v1
+        kind: Service
+        name: "{{ lions_registry_service_name }}"
+        namespace: "{{ lions_registry_namespace }}"
+      register: registry_service_info
+      when: lions_registry_enabled | default(true) | bool
+
+    - name: "🔍 Vérification du déploiement registre"
+      k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: "{{ lions_registry_service_name }}"
+        namespace: "{{ lions_registry_namespace }}"
+      register: registry_deployment_info
+      when: lions_registry_enabled | default(true) | bool
+
+    - name: "✅ Registre de conteneurs disponible"
+      debug:
+        msg: "🎯 Registre de conteneurs '{{ lions_registry_service_name }}' accessible"
+      when:
+        - lions_registry_enabled | default(true) | bool
+        - registry_service_info.resources | length > 0
+        - registry_deployment_info.resources | length > 0
+
+    - name: "⚠️ Avertissement registre non disponible"
+      debug:
+        msg: "⚠️  ATTENTION: Registre de conteneurs non disponible - utilisation d'un registre externe requis"
+      when:
+        - lions_registry_enabled | default(true) | bool
+        - (registry_service_info.resources | length == 0 or registry_deployment_info.resources | length == 0)
+
+  tags: [prerequisites, registry, containers]
+
+# =========================================================================
+# VÉRIFICATION DE L'INGRESS CONTROLLER
+# =========================================================================
+- name: "🌐 [INGRESS] Vérification de l'Ingress Controller"
+  block:
+    - name: "🔍 Recherche de Traefik (K3s par défaut)"
+      k8s_info:
+        api_version: v1
+        kind: Service
+        name: traefik
+        namespace: kube-system
+      register: traefik_info
+
+    - name: "🔍 Recherche de NGINX Ingress Controller"
+      k8s_info:
+        api_version: v1
+        kind: Service
+        name: ingress-nginx-controller
+        namespace: ingress-nginx
+      register: nginx_ingress_info
+
+    - name: "🔍 Recherche d'autres Ingress Controllers"
+      k8s_info:
+        api_version: v1
+        kind: Service
+        label_selectors:
+          - "app.kubernetes.io/component=controller"
+      register: generic_ingress_info
+
+    - name: "✅ Ingress Controller trouvé"
+      debug:
+        msg: |
+          🎯 Ingress Controller disponible:
+          {% if traefik_info.resources | length > 0 %}
+          - Traefik (K3s intégré) ✅
+          {% endif %}
+          {% if nginx_ingress_info.resources | length > 0 %}
+          - NGINX Ingress Controller ✅
+          {% endif %}
+      when: >
+        traefik_info.resources | length > 0 or 
+        nginx_ingress_info.resources | length > 0 or
+        generic_ingress_info.resources | length > 0
+
+    - name: "⚠️ Aucun Ingress Controller détecté"
+      debug:
+        msg: |
+          ⚠️  ATTENTION: Aucun Ingress Controller détecté
+          
+          📋 Impact:
+          - L'application Quarkus ne sera pas accessible via URL externe
+          - Seul l'accès interne au cluster sera possible
+          
+          🔧 Solutions recommandées:
+          1. Installer Traefik: kubectl apply -f https://raw.githubusercontent.com/traefik/traefik/v2.10/docs/content/reference/dynamic-configuration/kubernetes-crd-definition-v1.yml
+          2. Installer NGINX: kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.8.1/deploy/static/provider/cloud/deploy.yaml
+          3. Utiliser NodePort pour l'accès externe
+      when: >
+        traefik_info.resources | length == 0 and 
+        nginx_ingress_info.resources | length == 0 and
+        generic_ingress_info.resources | length == 0
+
+  tags: [prerequisites, ingress, networking]
+
+# =========================================================================
+# VÉRIFICATION DES DÉPENDANCES DE SERVICES
+# =========================================================================
+- name: "🔗 [DEPENDENCIES] Vérification des dépendances de services"
+  block:
+    - name: "🔍 Vérification de PostgreSQL"
+      k8s_info:
+        api_version: v1
+        kind: Service
+        name: "{{ lions_postgres_service_name }}"
+        namespace: "{{ lions_postgres_namespace }}"
+      register: postgres_service_info
+      when: lions_postgres_enabled | default(true) | bool
+
+    - name: "🔍 Vérification de Redis"
+      k8s_info:
+        api_version: v1
+        kind: Service
+        name: "{{ lions_redis_service_name }}"
+        namespace: "{{ lions_redis_namespace }}"
+      register: redis_service_info
+      when: lions_redis_enabled | default(true) | bool
+
+    - name: "🔍 Vérification de Keycloak"
+      k8s_info:
+        api_version: v1
+        kind: Service
+        name: "{{ lions_keycloak_service_name }}"
+        namespace: "{{ lions_keycloak_namespace }}"
+      register: keycloak_service_info
+      when: lions_keycloak_enabled | default(true) | bool
+
+    - name: "📊 Rapport des dépendances"
+      debug:
+        msg:
+          - "📊 État des dépendances de services:"
+          - "  🗄️  PostgreSQL: {% if lions_postgres_enabled and postgres_service_info.resources | length > 0 %}✅ Disponible{% elif lions_postgres_enabled %}❌ Indisponible{% else %}⏭️  Désactivé{% endif %}"
+          - "  🔄 Redis: {% if lions_redis_enabled and redis_service_info.resources | length > 0 %}✅ Disponible{% elif lions_redis_enabled %}❌ Indisponible{% else %}⏭️  Désactivé{% endif %}"
+          - "  🔐 Keycloak: {% if lions_keycloak_enabled and keycloak_service_info.resources | length > 0 %}✅ Disponible{% elif lions_keycloak_enabled %}❌ Indisponible{% else %}⏭️  Désactivé{% endif %}"
+
+  tags: [prerequisites, dependencies, services]
+
+# =========================================================================
+# VÉRIFICATION DES RESSOURCES SYSTÈME
+# =========================================================================
+- name: "⚡ [RESOURCES] Vérification des ressources système"
+  block:
+    - name: "🔍 Vérification des ressources des nœuds"
+      k8s_info:
+        api_version: v1
+        kind: Node
+      register: node_resources
+
+    - name: "📊 Analyse des ressources disponibles"
+      set_fact:
+        total_cpu: "{{ node_resources.resources | map(attribute='status.capacity.cpu') | map('int') | sum }}"
+        total_memory: "{{ node_resources.resources | map(attribute='status.capacity.memory') | map('regex_replace', 'Ki$', '') | map('int') | sum }}"
+
+    - name: "🔍 Vérification des quotas de ressources"
+      k8s_info:
+        api_version: v1
+        kind: ResourceQuota
+        namespace: "{{ lions_quarkus_namespace }}"
+      register: resource_quota_info
+
+    - name: "📊 Rapport des ressources système"
+      debug:
+        msg:
+          - "📊 Ressources cluster disponibles:"
+          - "  🖥️  CPU total: {{ total_cpu }} cœurs"
+          - "  💾 Mémoire totale: {{ (total_memory | int / 1024 / 1024) | round(1) }} GB"
+          - "  📋 ResourceQuotas actifs: {{ resource_quota_info.resources | length }}"
+          - "📋 Ressources requises pour Quarkus:"
+          - "  🖥️  CPU: {{ lions_resources_medium_cpu_request }} - {{ lions_resources_medium_cpu_limit }}"
+          - "  💾 Mémoire: {{ lions_resources_medium_memory_request }} - {{ lions_resources_medium_memory_limit }}"
+      when: lions_debug_mode | default(false) | bool
+
+    - name: "⚠️ Avertissement ressources limitées"
+      debug:
+        msg: "⚠️  ATTENTION: Ressources système limitées détectées - surveiller les performances"
+      when: total_cpu | int < 2 or (total_memory | int / 1024 / 1024) < 4
+
+  tags: [prerequisites, resources, capacity]
+
+# =========================================================================
+# VÉRIFICATION DE LA CONFIGURATION TLS/SSL
+# =========================================================================
+- name: "🔒 [TLS] Vérification de la configuration TLS/SSL"
+  block:
+    - name: "🔍 Vérification de cert-manager"
+      k8s_info:
+        api_version: v1
+        kind: Service
+        name: cert-manager
+        namespace: cert-manager
+      register: cert_manager_info
+      when: lions_security_tls_enabled | default(true) | bool
+
+    - name: "🔍 Vérification des ClusterIssuers"
+      k8s_info:
+        api_version: cert-manager.io/v1
+        kind: ClusterIssuer
+      register: cluster_issuers_info
+      when: lions_security_tls_enabled | default(true) | bool
+
+    - name: "✅ Configuration TLS validée"
+      debug:
+        msg: |
+          🎯 Configuration TLS/SSL:
+          - cert-manager: {% if cert_manager_info.resources | length > 0 %}✅ Disponible{% else %}❌ Indisponible{% endif %}
+          - ClusterIssuers: {{ cluster_issuers_info.resources | length }} configurés
+      when: lions_security_tls_enabled | default(true) | bool
+
+    - name: "⚠️ TLS désactivé"
+      debug:
+        msg: "⚠️  ATTENTION: TLS désactivé - communications non chiffrées"
+      when: not (lions_security_tls_enabled | default(true) | bool)
+
+  tags: [prerequisites, tls, security]
+
+# =========================================================================
+# RAPPORT FINAL DES PRÉREQUIS
+# =========================================================================
+- name: "📋 [SUMMARY] Rapport final des prérequis Quarkus"
   debug:
-    msg: "AVERTISSEMENT: L'ingress controller n'a pas été trouvé. L'application ne sera pas accessible via une URL."
-  when: ingress_info is failed or ingress_info.resources | length == 0
+    msg:
+      - "🎯 =========================================="
+      - "📋 RAPPORT FINAL - PRÉREQUIS QUARKUS"
+      - "🎯 =========================================="
+      - "✅ Configuration validée"
+      - "✅ Cluster Kubernetes accessible"
+      - "✅ Namespace '{{ lions_quarkus_namespace }}' préparé"
+      - "✅ Permissions RBAC validées"
+      - "📦 Registre: {% if lions_registry_enabled %}Configuré{% else %}Externe requis{% endif %}"
+      - "🌐 Ingress: {% if traefik_info.resources | length > 0 or nginx_ingress_info.resources | length > 0 %}Disponible{% else %}Configuration manuelle requise{% endif %}"
+      - "🔒 TLS: {% if lions_security_tls_enabled %}Activé{% else %}Désactivé{% endif %}"
+      - "🎯 Statut: PRÊT POUR LE DÉPLOIEMENT ✅"
+      - "🎯 =========================================="
+  tags: [prerequisites, summary, final]

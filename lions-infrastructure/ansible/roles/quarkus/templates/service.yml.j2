@@ -1,31 +1,200 @@
----
-# Titre: Template de service Kubernetes pour Quarkus
-# Description: Définit le service Kubernetes pour une application Quarkus
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - QUARKUS SERVICE TEMPLATE
+# =========================================================================
+# Description: Template Jinja2 pour le service Kubernetes des applications Quarkus
+# Composant: Quarkus Application Service
+# Version: 5.0.0
+# Maintainer: DevOps LIONS Team
+# Documentation: https://docs.lions.dev/infrastructure/quarkus/service
+# =========================================================================
 
+---
 apiVersion: v1
 kind: Service
 metadata:
-  name: "{{ app_name }}"
-  namespace: "{{ app_namespace }}"
+  name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
+  namespace: "{{ lions_quarkus_namespace }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "quarkus"
+    # Labels standards Kubernetes
+    app.kubernetes.io/name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
+    app.kubernetes.io/instance: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-{{ lions_environment }}"
+    app.kubernetes.io/version: "{{ lions_quarkus_app_version | default('latest') }}"
+    app.kubernetes.io/component: "backend"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+    
+    # Labels spécifiques LIONS
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/technology: "quarkus"
+    lions.dev/tier: "application"
+    lions.dev/monitoring: "{{ lions_monitoring_enabled | lower }}"
+    
+    # Labels pour le service
+    service.lions.dev/type: "{{ lions_quarkus_service_type | default('ClusterIP') }}"
+    service.lions.dev/load-balancer: "{{ lions_quarkus_load_balancer_enabled | default('false') | lower }}"
+    
   annotations:
-    description: "Service pour l'application {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
-    prometheus.io/scrape: "{{ quarkus_prometheus_scrape | string | lower }}"
-    prometheus.io/path: "{{ quarkus_prometheus_path }}"
-    prometheus.io/port: "{{ quarkus_prometheus_port | string }}"
+    # Annotations de documentation
+    description: "Service Quarkus {{ lions_quarkus_app_name | default(lions_quarkus_service_name) }} v{{ lions_quarkus_app_version | default('latest') }}"
+    lions.dev/documentation: "https://docs.lions.dev/infrastructure/quarkus"
+    lions.dev/service-checksum: "{{ ansible_date_time.epoch }}"
+    
+    # Annotations pour la configuration
+    service.lions.dev/last-updated: "{{ ansible_date_time.iso8601 }}"
+    service.lions.dev/environment: "{{ lions_environment }}"
+    service.lions.dev/managed-by: "lions-infrastructure-ansible"
+    
+{% if lions_monitoring_enabled | bool %}
+    # Annotations pour le monitoring Prometheus
+    prometheus.io/scrape: "true"
+    prometheus.io/path: "/metrics"
+    prometheus.io/port: "{{ lions_quarkus_port }}"
+    prometheus.io/scheme: "http"
+{% endif %}
+    
+{% if lions_quarkus_service_type | default('ClusterIP') == 'LoadBalancer' and lions_cloud_provider is defined %}
+    # Annotations spécifiques au cloud provider
+{% if lions_cloud_provider == 'aws' %}
+    service.beta.kubernetes.io/aws-load-balancer-type: "{{ lions_quarkus_aws_lb_type | default('nlb') }}"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "{{ lions_quarkus_aws_lb_scheme | default('internal') }}"
+{% elif lions_cloud_provider == 'gcp' %}
+    cloud.google.com/load-balancer-type: "{{ lions_quarkus_gcp_lb_type | default('Internal') }}"
+{% elif lions_cloud_provider == 'azure' %}
+    service.beta.kubernetes.io/azure-load-balancer-internal: "{{ lions_quarkus_azure_internal | default('true') }}"
+{% endif %}
+{% endif %}
+    
+{% if lions_quarkus_custom_service_annotations is defined %}
+    # Annotations personnalisées
+{% for key, value in lions_quarkus_custom_service_annotations.items() %}
+    {{ key }}: "{{ value }}"
+{% endfor %}
+{% endif %}
+    
 spec:
-  type: ClusterIP
+  # =========================================================================
+  # CONFIGURATION DU SERVICE
+  # =========================================================================
+  
+  # Type de service selon l'environnement et la configuration
+  type: "{{ lions_quarkus_service_type | default('ClusterIP') }}"
+  
+{% if lions_quarkus_service_type | default('ClusterIP') == 'LoadBalancer' %}
+  # Configuration Load Balancer
+{% if lions_quarkus_load_balancer_ip is defined %}
+  loadBalancerIP: "{{ lions_quarkus_load_balancer_ip }}"
+{% endif %}
+{% if lions_quarkus_load_balancer_source_ranges is defined %}
+  loadBalancerSourceRanges:
+{% for range in lions_quarkus_load_balancer_source_ranges %}
+    - "{{ range }}"
+{% endfor %}
+{% endif %}
+{% endif %}
+  
+{% if lions_quarkus_service_type | default('ClusterIP') == 'NodePort' %}
+  # Configuration pour les environnements de développement
+{% if lions_quarkus_node_port is defined %}
+  # Port statique pour le développement
+{% endif %}
+{% endif %}
+  
+{% if lions_quarkus_cluster_ip is defined %}
+  # IP de cluster spécifique (si requis)
+  clusterIP: "{{ lions_quarkus_cluster_ip }}"
+{% endif %}
+  
+  # Configuration de la session
+  sessionAffinity: "{{ lions_quarkus_session_affinity | default('None') }}"
+{% if lions_quarkus_session_affinity | default('None') == 'ClientIP' %}
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: {{ lions_quarkus_session_timeout | default('10800') }}
+{% endif %}
+  
+  # =========================================================================
+  # CONFIGURATION DES PORTS
+  # =========================================================================
+  
   ports:
+    # Port principal HTTP
     - name: http
-      port: 80
+      port: {{ lions_quarkus_service_port | default('80') }}
       targetPort: http
       protocol: TCP
+{% if lions_quarkus_service_type | default('ClusterIP') == 'NodePort' and lions_quarkus_node_port is defined %}
+      nodePort: {{ lions_quarkus_node_port }}
+{% endif %}
+    
+{% if lions_quarkus_management_port is defined %}
+    # Port de management (si défini)
+    - name: management
+      port: {{ lions_quarkus_management_service_port | default(lions_quarkus_management_port) }}
+      targetPort: management
+      protocol: TCP
+{% if lions_quarkus_service_type | default('ClusterIP') == 'NodePort' and lions_quarkus_management_node_port is defined %}
+      nodePort: {{ lions_quarkus_management_node_port }}
+{% endif %}
+{% endif %}
+    
+{% if lions_debug_mode | bool and lions_environment == 'development' %}
+    # Port de débogage (développement seulement)
+    - name: debug
+      port: {{ lions_quarkus_debug_port | default('5005') }}
+      targetPort: debug
+      protocol: TCP
+{% if lions_quarkus_service_type | default('ClusterIP') == 'NodePort' and lions_quarkus_debug_node_port is defined %}
+      nodePort: {{ lions_quarkus_debug_node_port }}
+{% endif %}
+{% endif %}
+    
+{% if lions_security_tls_enabled | bool and lions_quarkus_ssl_port is defined %}
+    # Port HTTPS (si TLS activé)
+    - name: https
+      port: {{ lions_quarkus_ssl_service_port | default('443') }}
+      targetPort: {{ lions_quarkus_ssl_port }}
+      protocol: TCP
+{% if lions_quarkus_service_type | default('ClusterIP') == 'NodePort' and lions_quarkus_ssl_node_port is defined %}
+      nodePort: {{ lions_quarkus_ssl_node_port }}
+{% endif %}
+{% endif %}
+    
+{% if lions_quarkus_custom_ports is defined %}
+    # Ports personnalisés
+{% for custom_port in lions_quarkus_custom_ports %}
+    - name: "{{ custom_port.name }}"
+      port: {{ custom_port.port }}
+      targetPort: "{{ custom_port.target_port | default(custom_port.name) }}"
+      protocol: "{{ custom_port.protocol | default('TCP') }}"
+{% if lions_quarkus_service_type | default('ClusterIP') == 'NodePort' and custom_port.node_port is defined %}
+      nodePort: {{ custom_port.node_port }}
+{% endif %}
+{% endfor %}
+{% endif %}
+  
+  # =========================================================================
+  # SÉLECTEUR DES PODS
+  # =========================================================================
+  
   selector:
-    app: "{{ app_name }}"
+    app.kubernetes.io/name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
+    app.kubernetes.io/instance: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-{{ lions_environment }}"
+  
+{% if lions_quarkus_external_traffic_policy is defined and lions_quarkus_service_type | default('ClusterIP') in ['LoadBalancer', 'NodePort'] %}
+  # Politique de trafic externe
+  externalTrafficPolicy: "{{ lions_quarkus_external_traffic_policy }}"
+{% endif %}
+  
+{% if lions_quarkus_internal_traffic_policy is defined %}
+  # Politique de trafic interne
+  internalTrafficPolicy: "{{ lions_quarkus_internal_traffic_policy }}"
+{% endif %}
+  
+{% if lions_quarkus_ip_families is defined %}
+  # Familles d'adresses IP supportées
+  ipFamilies:
+{% for family in lions_quarkus_ip_families %}
+    - "{{ family }}"
+{% endfor %}
+  ipFamilyPolicy: "{{ lions_quarkus_ip_family_policy | default('SingleStack') }}"
+{% endif %}

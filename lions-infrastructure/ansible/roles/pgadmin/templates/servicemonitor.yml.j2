@@ -1,57 +1,302 @@
 ---
-# Titre: Template de ServiceMonitor Kubernetes pour pgAdmin
-# Description: Définit le ServiceMonitor Kubernetes pour pgAdmin
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-10
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - SERVICEMONITOR PGADMIN
+# =========================================================================
+# Description: Template ServiceMonitor Kubernetes pour pgAdmin avec monitoring avancé
+# Composant: pgAdmin Database Administration Interface
+# Technologie: PostgreSQL Admin Tool
+# Version: 5.0.0
+# Auteur: DevOps Team LIONS
+# Date: {{ ansible_date_time.iso8601 }}
+# Documentation: https://docs.lions.dev/monitoring/pgadmin
+# =========================================================================
 
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: "{{ app_name }}"
-  namespace: monitoring
+  name: "{{ pgadmin_service_name | default(lookup('env', 'LIONS_PGADMIN_SERVICE_NAME') | default('pgadmin')) }}"
+  namespace: "{{ lions_monitoring_namespace | default(lookup('env', 'LIONS_MONITORING_NAMESPACE') | default('monitoring')) }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "pgadmin"
-    release: prometheus
+    # Labels d'identification LIONS
+    app.kubernetes.io/name: "{{ pgadmin_service_name | default(lookup('env', 'LIONS_PGADMIN_SERVICE_NAME') | default('pgadmin')) }}"
+    app.kubernetes.io/instance: "{{ pgadmin_service_name | default(lookup('env', 'LIONS_PGLADMIN_SERVICE_NAME') | default('pgadmin')) }}-{{ lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT') | default('development')) }}"
+    app.kubernetes.io/version: "{{ pgladmin_version | default(lookup('env', 'LIONS_PGADMIN_VERSION') | default('latest')) }}"
+    app.kubernetes.io/component: database-admin
+    app.kubernetes.io/part-of: lions-infrastructure
+    app.kubernetes.io/managed-by: ansible
+
+    # Labels techniques
+    technology: pgladmin
+    database.type: postgresql
+    interface.type: web-admin
+
+    # Labels organisationnels LIONS
+    lions.dev/environment: "{{ lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT') | default('development')) }}"
+    lions.dev/project: lions-infrastructure
+    lions.dev/team: devops
+    lions.dev/tier: tools
+    lions.dev/category: database-management
+
+    # Labels de monitoring
+    monitoring.lions.dev/enabled: "true"
+    monitoring.lions.dev/type: application
+    monitoring.lions.dev/priority: medium
+    monitoring.lions.dev/alerts-enabled: "{{ pgladmin_alerts_enabled | default('true') }}"
+
+    # Labels Prometheus
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "{{ pgladmin_metrics_port | default('80') }}"
+    prometheus.io/path: "{{ pgladmin_metrics_path | default('/metrics') }}"
+    release: "{{ prometheus_release | default('prometheus') }}"
+
   annotations:
-    description: "ServiceMonitor pour pgAdmin {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    # Annotations descriptives
+    description: "ServiceMonitor pour l'interface d'administration pgAdmin de l'infrastructure LIONS"
+    lions.dev/description: "Monitoring de pgAdmin pour la gestion de PostgreSQL"
+    lions.dev/documentation: "https://docs.lions.dev/components/pgladmin"
+    lions.dev/contact: "{{ lions_team_contact | default('devops@lions.dev') }}"
+
+    # Annotations de monitoring
+    monitoring.lions.dev/dashboard-url: "{{ grafana_url | default('') }}/d/pgladmin-dashboard"
+    monitoring.lions.dev/runbook-url: "{{ lions_runbook_base_url | default('') }}/pgladmin"
+    monitoring.lions.dev/alert-manager: "{{ alertmanager_url | default('') }}"
+
+    # Annotations de déploiement
+    deployment.lions.dev/created-by: "{{ ansible_user_id | default('ansible') }}"
+    deployment.lions.dev/created-at: "{{ ansible_date_time.iso8601 }}"
+    deployment.lions.dev/config-checksum: "{{ pgladmin_config_checksum | default('') }}"
+
+    # Annotations de configuration
+    config.lions.dev/backup-enabled: "{{ pgladmin_backup_enabled | default('false') }}"
+    config.lions.dev/high-availability: "{{ pgladmin_ha_enabled | default('false') }}"
+    config.lions.dev/auto-scaling: "{{ pgladmin_autoscaling_enabled | default('false') }}"
+
 spec:
+  # Sélecteur de service
   selector:
     matchLabels:
-      app: "{{ app_name }}"
-      technology: "pgadmin"
+      app.kubernetes.io/name: "{{ pgladmin_service_name | default(lookup('env', 'LIONS_PGADMIN_SERVICE_NAME') | default('pgladmin')) }}"
+      app.kubernetes.io/component: database-admin
+      technology: pgladmin
+
+  # Sélecteur de namespace
   namespaceSelector:
     matchNames:
-      - "{{ app_namespace }}"
+      - "{{ pgladmin_namespace | default(lookup('env', 'LIONS_PGADMIN_NAMESPACE') | default('database')) }}"
+
+  # Configuration des endpoints de monitoring
   endpoints:
-    - port: http
-      path: "{{ pgadmin_prometheus_path | default('/metrics') }}"
-      interval: 30s
-      scrapeTimeout: 10s
+    # Endpoint principal pour les métriques pgAdmin
+    - port: "{{ pgladmin_metrics_port_name | default('http') }}"
+      path: "{{ pgladmin_metrics_path | default('/metrics') }}"
+      interval: "{{ pgladmin_scrape_interval | default('30s') }}"
+      scrapeTimeout: "{{ pgladmin_scrape_timeout | default('10s') }}"
       honorLabels: true
+      honorTimestamps: true
+
+      # Configuration TLS si activée
+      {% if pgladmin_tls_enabled | default(lookup('env', 'LIONS_SECURITY_TLS_ENABLED') | default('true')) == 'true' %}
+      scheme: https
+      tlsConfig:
+        insecureSkipVerify: {{ pgladmin_tls_skip_verify | default('false') }}
+        {% if pgladmin_tls_cert_file is defined %}
+        certFile: "{{ pgladmin_tls_cert_file }}"
+        {% endif %}
+        {% if pgladmin_tls_key_file is defined %}
+        keyFile: "{{ pgladmin_tls_key_file }}"
+        {% endif %}
+        {% if pgladmin_tls_ca_file is defined %}
+        caFile: "{{ pgladmin_tls_ca_file }}"
+        {% endif %}
+      {% else %}
+      scheme: http
+      {% endif %}
+
+      # Configuration d'authentification si nécessaire
+      {% if pgladmin_basic_auth_enabled | default('false') == 'true' %}
+      basicAuth:
+        username:
+          name: "{{ pgladmin_auth_secret_name | default('pgladmin-auth') }}"
+          key: username
+        password:
+          name: "{{ pgladmin_auth_secret_name | default('pgladmin-auth') }}"
+          key: password
+      {% endif %}
+
+      # Re-labeling avancé
       relabelings:
+        # Enrichissement des labels de base
         - sourceLabels: [__meta_kubernetes_pod_name]
           action: replace
           targetLabel: pod
+
+        - sourceLabels: [__meta_kubernetes_pod_node_name]
+          action: replace
+          targetLabel: node
+
         - sourceLabels: [__meta_kubernetes_namespace]
           action: replace
           targetLabel: namespace
+
         - sourceLabels: [__meta_kubernetes_service_name]
           action: replace
           targetLabel: service
-        - sourceLabels: [__meta_kubernetes_service_label_app]
+
+        # Labels spécifiques à l'application
+        - sourceLabels: [__meta_kubernetes_service_label_app_kubernetes_io_name]
           action: replace
           targetLabel: app
-        - sourceLabels: [__meta_kubernetes_service_label_version]
+
+        - sourceLabels: [__meta_kubernetes_service_label_app_kubernetes_io_version]
           action: replace
           targetLabel: version
-        - sourceLabels: [__meta_kubernetes_service_label_environment]
+
+        - sourceLabels: [__meta_kubernetes_service_label_lions_dev_environment]
           action: replace
           targetLabel: environment
+
+        - sourceLabels: [__meta_kubernetes_service_label_lions_dev_tier]
+          action: replace
+          targetLabel: tier
+
+        # Labels de monitoring
+        - sourceLabels: [__meta_kubernetes_service_label_monitoring_lions_dev_priority]
+          action: replace
+          targetLabel: monitoring_priority
+
+        # Ajout de labels fixes pour l'identification
+        - targetLabel: infrastructure
+          replacement: "lions"
+
+        - targetLabel: component_type
+          replacement: "database-admin"
+
+        - targetLabel: monitoring_source
+          replacement: "servicemonitor"
+
+        # Modification de l'instance pour inclure l'environnement
+        - sourceLabels: [__meta_kubernetes_service_name, __meta_kubernetes_namespace]
+          separator: "."
+          targetLabel: instance
+
+        # Ajout du cluster si défini
+        {% if lions_cluster_name is defined %}
+        - targetLabel: cluster
+          replacement: "{{ lions_cluster_name }}"
+        {% endif %}
+
+        # Préservation de l'adresse originale
+        - sourceLabels: [__address__]
+          action: replace
+          targetLabel: __original_address__
+
+      # Filtrage et transformation des métriques
+      metricRelabelings:
+        # Conservation des métriques pgAdmin spécifiques
+        - sourceLabels: [__name__]
+          regex: '(pgladmin_.*|postgres_.*|http_.*|process_.*|go_.*)'
+          action: keep
+
+        # Suppression des métriques non pertinentes
+        - sourceLabels: [__name__]
+          regex: '.*(debug|trace|test).*'
+          action: drop
+
+        # Normalisation des noms de métriques
+        - sourceLabels: [__name__]
+          regex: 'pgladmin_(.+)'
+          replacement: 'lions_pgladmin_${1}'
+          targetLabel: __name__
+
+        # Ajout de préfixes pour les métriques génériques
+        - sourceLabels: [__name__]
+          regex: '(http_requests_total|http_request_duration_seconds.*)'
+          replacement: 'pgladmin_${1}'
+          targetLabel: __name__
+
+        # Enrichissement avec des labels de contexte
+        - targetLabel: job_type
+          replacement: "database-admin"
+
+        - targetLabel: service_tier
+          replacement: "{{ pgladmin_service_tier | default('tools') }}"
+
+        # Ajout de métadonnées sur l'environnement
+        - targetLabel: deployment_environment
+          replacement: "{{ lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT') | default('development')) }}"
+
+        {% if lions_deployment_mode is defined %}
+        - targetLabel: deployment_mode
+          replacement: "{{ lions_deployment_mode }}"
+        {% endif %}
+
+    # Endpoint secondaire pour les métriques système (si activé)
+    {% if pgladmin_system_metrics_enabled | default('false') == 'true' %}
+    - port: "{{ pgladmin_system_metrics_port_name | default('metrics') }}"
+      path: "{{ pgladmin_system_metrics_path | default('/metrics/system') }}"
+      interval: "{{ pgladmin_system_scrape_interval | default('60s') }}"
+      scrapeTimeout: "{{ pgladmin_system_scrape_timeout | default('15s') }}"
+      honorLabels: true
+
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_service_name]
+          action: replace
+          targetLabel: service
+        - targetLabel: metrics_type
+          replacement: "system"
+
       metricRelabelings:
         - sourceLabels: [__name__]
-          regex: 'pgadmin_.*'
+          regex: '(node_.*|container_.*|kubelet_.*)'
           action: keep
+        - sourceLabels: [__name__]
+          regex: 'system_(.+)'
+          replacement: 'pgladmin_system_${1}'
+          targetLabel: __name__
+    {% endif %}
+
+---
+# =========================================================================
+# CONFIGURATION COMPLEMENTAIRE - PODMONITOR (OPTIONNEL)
+# =========================================================================
+{% if pgladmin_pod_monitoring_enabled | default('false') == 'true' %}
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: "{{ pgladmin_service_name | default(lookup('env', 'LIONS_PGADMIN_SERVICE_NAME') | default('pgladmin')) }}-pods"
+  namespace: "{{ lions_monitoring_namespace | default(lookup('env', 'LIONS_MONITORING_NAMESPACE') | default('monitoring')) }}"
+  labels:
+    app.kubernetes.io/name: "{{ pgladmin_service_name | default(lookup('env', 'LIONS_PGADMIN_SERVICE_NAME') | default('pgladmin')) }}"
+    app.kubernetes.io/component: database-admin
+    monitoring.type: pod-level
+    lions.dev/environment: "{{ lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT') | default('development')) }}"
+  annotations:
+    description: "Monitoring au niveau des pods pour pgAdmin"
+    lions.dev/purpose: "Monitoring granulaire des instances pgAdmin"
+
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: "{{ pgladmin_service_name | default(lookup('env', 'LIONS_PGLADMIN_SERVICE_NAME') | default('pgladmin')) }}"
+      app.kubernetes.io/component: database-admin
+
+  namespaceSelector:
+    matchNames:
+      - "{{ pgladmin_namespace | default(lookup('env', 'LIONS_PGLADMIN_NAMESPACE') | default('database')) }}"
+
+  podMetricsEndpoints:
+    - port: "{{ pgladmin_metrics_port_name | default('http') }}"
+      path: "{{ pgladmin_pod_metrics_path | default('/metrics/pod') }}"
+      interval: "{{ pgladmin_pod_scrape_interval | default('45s') }}"
+      scrapeTimeout: "{{ pgladmin_pod_scrape_timeout | default('15s') }}"
+
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          action: replace
+          targetLabel: pod_name
+        - sourceLabels: [__meta_kubernetes_pod_ip]
+          action: replace
+          targetLabel: pod_ip
+        - targetLabel: monitoring_level
+          replacement: "pod"
+{% endif %}

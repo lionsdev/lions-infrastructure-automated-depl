@@ -1,97 +1,417 @@
 ---
-# Titre: Variables pour le déploiement de PostgreSQL
-# Description: Variables spécifiques à PostgreSQL
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - CONFIGURATION POSTGRESQL
+# =========================================================================
+# Description: Variables de déploiement PostgreSQL pour infrastructure LIONS
+# Version: 5.0.0
+# Maintainer: DevOps Team <devops@lions.dev>
+# Documentation: https://docs.lions.dev/infrastructure/databases/postgresql
+# Compatible: PostgreSQL 15.x, Kubernetes 1.28+
+# =========================================================================
 
-# Configuration par défaut pour PostgreSQL
-postgres_version: "14"
-postgres_default_port: 5432
-postgres_health_path: "/healthz"
-postgres_metrics_path: "/metrics"
-postgres_admin_user: "postgres"
-postgres_admin_password_secret: "postgres-admin-password"
+# =========================================================================
+# MÉTADONNÉES DE CONFIGURATION
+# =========================================================================
+lions_postgres_config_version: "5.0.0"
+lions_postgres_config_schema: "1.2"
+lions_postgres_last_updated: "{{ ansible_date_time.iso8601 }}"
+lions_postgres_maintainer: "devops@lions.dev"
 
-# Configuration des sondes de santé
-postgres_readiness_probe:
-  exec:
-    command:
-      - /bin/sh
-      - -c
-      - pg_isready -U postgres -h 127.0.0.1 -p 5432
-  initialDelaySeconds: 30
-  periodSeconds: 10
-  timeoutSeconds: 5
-  failureThreshold: 3
+# =========================================================================
+# CONFIGURATION PRINCIPALE POSTGRESQL
+# =========================================================================
+# Version et image
+lions_postgres_version: "{{ lookup('env', 'LIONS_POSTGRES_VERSION') | default('15.4', true) }}"
+lions_postgres_image_repository: "{{ lookup('env', 'LIONS_POSTGRES_IMAGE_REPO') | default('postgres', true) }}"
+lions_postgres_image_tag: "{{ lions_postgres_version }}-alpine"
+lions_postgres_image_pull_policy: "{{ lookup('env', 'LIONS_POSTGRES_PULL_POLICY') | default('IfNotPresent', true) }}"
 
-postgres_liveness_probe:
-  exec:
-    command:
-      - /bin/sh
-      - -c
-      - pg_isready -U postgres -h 127.0.0.1 -p 5432
-  initialDelaySeconds: 60
-  periodSeconds: 20
-  timeoutSeconds: 5
-  failureThreshold: 3
+# Configuration du service
+lions_postgres_service_name: "{{ lookup('env', 'LIONS_POSTGRES_SERVICE_NAME') | default('postgresql', true) }}"
+lions_postgres_service_port: "{{ lookup('env', 'LIONS_POSTGRES_PORT') | default('5432', true) | int }}"
+lions_postgres_service_type: "{{ lookup('env', 'LIONS_POSTGRES_SERVICE_TYPE') | default('ClusterIP', true) }}"
 
-# Configuration du monitoring
-postgres_prometheus_port: 9187
-postgres_prometheus_path: "/metrics"
-postgres_prometheus_scrape: true
-postgres_init_delay: 30
+# Namespace et déploiement
+lions_postgres_namespace: "{{ lookup('env', 'LIONS_POSTGRES_NAMESPACE') | default('database', true) }}"
+lions_postgres_deployment_name: "{{ lions_postgres_service_name }}"
+lions_postgres_labels:
+  app.kubernetes.io/name: postgresql
+  app.kubernetes.io/instance: "{{ lions_postgres_deployment_name }}"
+  app.kubernetes.io/version: "{{ lions_postgres_version }}"
+  app.kubernetes.io/component: database
+  app.kubernetes.io/part-of: lions-infrastructure
+  app.kubernetes.io/managed-by: ansible
+  lions.dev/environment: "{{ lookup('env', 'LIONS_ENVIRONMENT') | default('development', true) }}"
+  lions.dev/tier: database
 
-# Configuration des ressources par environnement
-postgres_resources:
+# =========================================================================
+# CONFIGURATION DE SÉCURITÉ
+# =========================================================================
+# Configuration des utilisateurs et authentification
+lions_postgres_admin_user: "{{ lookup('env', 'LIONS_POSTGRES_ADMIN_USER') | default('postgres', true) }}"
+lions_postgres_admin_password_secret: "postgresql-admin-credentials"
+lions_postgres_admin_password_key: "password"
+
+# Utilisateur applicatif
+lions_postgres_app_user: "{{ lookup('env', 'LIONS_POSTGRES_APP_USER') | default('lions_app', true) }}"
+lions_postgres_app_password_secret: "postgresql-app-credentials"
+lions_postgres_app_password_key: "password"
+lions_postgres_app_database: "{{ lookup('env', 'LIONS_POSTGRES_DATABASE') | default('lions_db', true) }}"
+
+# Configuration de réplication (pour HA)
+lions_postgres_replication_enabled: "{{ lookup('env', 'LIONS_POSTGRES_HA_ENABLED') | default('false', true) | bool }}"
+lions_postgres_replication_user: "{{ lookup('env', 'LIONS_POSTGRES_REPLICATION_USER') | default('replicator', true) }}"
+lions_postgres_replication_password_secret: "postgresql-replication-credentials"
+lions_postgres_replication_password_key: "password"
+
+# Configuration TLS/SSL
+lions_postgres_tls_enabled: "{{ lookup('env', 'LIONS_POSTGRES_TLS_ENABLED') | default('true', true) | bool }}"
+lions_postgres_tls_secret: "postgresql-tls-certificates"
+lions_postgres_tls_cert_key: "tls.crt"
+lions_postgres_tls_private_key: "tls.key"
+
+# =========================================================================
+# CONFIGURATION DES RESSOURCES
+# =========================================================================
+# Calcul automatique des ressources selon l'environnement
+lions_postgres_environment: "{{ lookup('env', 'LIONS_ENVIRONMENT') | default('development', true) }}"
+
+# Ressources par défaut basées sur les variables d'environnement globales
+lions_postgres_resources_config:
   development:
     requests:
-      cpu: "200m"
-      memory: "512Mi"
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_CPU_REQUEST') | default('200m', true) }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_MEMORY_REQUEST') | default('512Mi', true) }}"
     limits:
-      cpu: "800m"
-      memory: "1Gi"
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_CPU_LIMIT') | default('1000m', true) }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_MEMORY_LIMIT') | default('2Gi', true) }}"
   staging:
     requests:
-      cpu: "500m"
-      memory: "1Gi"
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_CPU_REQUEST') | default('500m', true) }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_MEMORY_REQUEST') | default('1Gi', true) }}"
     limits:
-      cpu: "2000m"
-      memory: "2Gi"
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_CPU_LIMIT') | default('2000m', true) }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_MEMORY_LIMIT') | default('4Gi', true) }}"
   production:
     requests:
       cpu: "1000m"
       memory: "2Gi"
     limits:
       cpu: "4000m"
-      memory: "4Gi"
+      memory: "8Gi"
 
-# Configuration des réplicas par environnement (pour les déploiements en mode HA)
-postgres_replicas:
+# Ressources effectives calculées
+lions_postgres_resources: "{{ lions_postgres_resources_config[lions_postgres_environment] }}"
+
+# Configuration des réplicas
+lions_postgres_replicas_config:
   development: 1
   staging: 1
-  production: 3
+  production: "{{ lookup('env', 'LIONS_POSTGRES_HA_REPLICAS') | default('3', true) | int }}"
 
-# Configuration de la persistance
-postgres_persistent_storage: true
-postgres_storage_size: "20Gi"
-postgres_storage_class: "standard"
+lions_postgres_replicas: "{{ lions_postgres_replicas_config[lions_postgres_environment] }}"
 
-# Configuration de PostgreSQL
-postgres_max_connections: 100
-postgres_shared_buffers: "256MB"
-postgres_effective_cache_size: "1GB"
-postgres_maintenance_work_mem: "64MB"
-postgres_checkpoint_completion_target: 0.9
-postgres_wal_buffers: "16MB"
-postgres_default_statistics_target: 100
-postgres_random_page_cost: 4
-postgres_effective_io_concurrency: 2
-postgres_work_mem: "4MB"
-postgres_min_wal_size: "1GB"
-postgres_max_wal_size: "4GB"
+# =========================================================================
+# CONFIGURATION DE STOCKAGE
+# =========================================================================
+# Stockage persistant
+lions_postgres_storage_enabled: "{{ lookup('env', 'LIONS_POSTGRES_STORAGE_ENABLED') | default('true', true) | bool }}"
+lions_postgres_storage_size: "{{ lookup('env', 'LIONS_POSTGRES_STORAGE_SIZE') | default('20Gi', true) }}"
+lions_postgres_storage_class: "{{ lookup('env', 'LIONS_POSTGRES_STORAGE_CLASS') | default(lookup('env', 'LIONS_STORAGE_CLASS_DEFAULT'), true) | default('local-path', true) }}"
+lions_postgres_storage_access_mode: "{{ lookup('env', 'LIONS_POSTGRES_STORAGE_ACCESS_MODE') | default('ReadWriteOnce', true) }}"
+lions_postgres_storage_reclaim_policy: "{{ lookup('env', 'LIONS_STORAGE_RECLAIM_POLICY') | default('Retain', true) }}"
 
-# Configuration de la haute disponibilité
-postgres_ha_enabled: "{{ app_environment == 'production' }}"
-postgres_ha_replication_user: "replicator"
-postgres_ha_replication_password_secret: "postgres-replication-password"
+# Configuration des répertoires
+lions_postgres_data_dir: "/var/lib/postgresql/data"
+lions_postgres_config_dir: "/etc/postgresql"
+lions_postgres_log_dir: "/var/log/postgresql"
+lions_postgres_backup_dir: "/var/backups/postgresql"
+
+# =========================================================================
+# CONFIGURATION POSTGRESQL AVANCÉE
+# =========================================================================
+# Configuration de performance (calculée dynamiquement selon les ressources)
+lions_postgres_performance_config:
+  max_connections: "{{ lookup('env', 'LIONS_POSTGRES_MAX_CONNECTIONS') | default('100', true) | int }}"
+  shared_buffers: "{{ (lions_postgres_resources.limits.memory | regex_replace('Gi', '') | int * 0.25) | round | int }}MB"
+  effective_cache_size: "{{ (lions_postgres_resources.limits.memory | regex_replace('Gi', '') | int * 0.75) | round | int }}MB"
+  maintenance_work_mem: "{{ (lions_postgres_resources.limits.memory | regex_replace('Gi', '') | int * 64) | round | int }}MB"
+  work_mem: "{{ ((lions_postgres_resources.limits.memory | regex_replace('Gi', '') | int * 1024) / (lions_postgres_performance_config.max_connections * 4)) | round | int }}MB"
+  wal_buffers: "16MB"
+  checkpoint_completion_target: 0.9
+  default_statistics_target: 100
+  random_page_cost: 1.1
+  effective_io_concurrency: "{{ ansible_processor_vcpus | default(2) }}"
+  min_wal_size: "1GB"
+  max_wal_size: "4GB"
+
+# Configuration de logging
+lions_postgres_logging_config:
+  log_destination: "stderr"
+  logging_collector: "on"
+  log_directory: "{{ lions_postgres_log_dir }}"
+  log_filename: "postgresql-%Y-%m-%d_%H%M%S.log"
+  log_rotation_age: "1d"
+  log_rotation_size: "100MB"
+  log_min_duration_statement: "{{ lookup('env', 'LIONS_POSTGRES_SLOW_QUERY_LOG') | default('1000', true) }}"
+  log_checkpoints: "on"
+  log_connections: "on"
+  log_disconnections: "on"
+  log_lock_waits: "on"
+  log_statement: "{{ 'all' if lions_postgres_environment == 'development' else 'ddl' }}"
+
+# Configuration de sécurité PostgreSQL
+lions_postgres_security_config:
+  ssl: "{{ 'on' if lions_postgres_tls_enabled else 'off' }}"
+  ssl_cert_file: "{{ lions_postgres_config_dir }}/server.crt"
+  ssl_key_file: "{{ lions_postgres_config_dir }}/server.key"
+  ssl_ca_file: "{{ lions_postgres_config_dir }}/ca.crt"
+  password_encryption: "scram-sha-256"
+  row_security: "on"
+  shared_preload_libraries: "pg_stat_statements,auto_explain"
+
+# =========================================================================
+# CONFIGURATION DES SONDES DE SANTÉ
+# =========================================================================
+# Probe de disponibilité (readiness)
+lions_postgres_readiness_probe:
+  exec:
+    command:
+      - /bin/sh
+      - -c
+      - |
+        pg_isready -U {{ lions_postgres_admin_user }} -h 127.0.0.1 -p {{ lions_postgres_service_port }} && \
+        psql -U {{ lions_postgres_admin_user }} -d postgres -c "SELECT 1" > /dev/null
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+  successThreshold: 1
+
+# Probe de vivacité (liveness)
+lions_postgres_liveness_probe:
+  exec:
+    command:
+      - /bin/sh
+      - -c
+      - |
+        pg_isready -U {{ lions_postgres_admin_user }} -h 127.0.0.1 -p {{ lions_postgres_service_port }}
+  initialDelaySeconds: 60
+  periodSeconds: 30
+  timeoutSeconds: 10
+  failureThreshold: 3
+  successThreshold: 1
+
+# Probe de démarrage (startup)
+lions_postgres_startup_probe:
+  exec:
+    command:
+      - /bin/sh
+      - -c
+      - pg_isready -U {{ lions_postgres_admin_user }} -h 127.0.0.1 -p {{ lions_postgres_service_port }}
+  initialDelaySeconds: 10
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 30
+  successThreshold: 1
+
+# =========================================================================
+# CONFIGURATION DU MONITORING
+# =========================================================================
+# Monitoring Prometheus
+lions_postgres_monitoring_enabled: "{{ lookup('env', 'LIONS_MONITORING_ENABLED') | default('true', true) | bool }}"
+lions_postgres_exporter_enabled: "{{ lions_postgres_monitoring_enabled }}"
+lions_postgres_exporter_image: "{{ lookup('env', 'LIONS_POSTGRES_EXPORTER_IMAGE') | default('wrouesnel/postgres_exporter:latest', true) }}"
+lions_postgres_exporter_port: 9187
+lions_postgres_exporter_path: "/metrics"
+
+# Configuration des métriques
+lions_postgres_metrics_config:
+  collect_detailed_stats: true
+  collect_table_stats: true
+  collect_index_stats: true
+  collect_database_stats: true
+  collect_bgwriter_stats: true
+  collect_wal_stats: true
+  scrape_interval: "30s"
+  scrape_timeout: "10s"
+
+# ServiceMonitor pour Prometheus Operator
+lions_postgres_service_monitor:
+  enabled: "{{ lions_postgres_monitoring_enabled }}"
+  namespace: "{{ lookup('env', 'LIONS_MONITORING_NAMESPACE') | default('monitoring', true) }}"
+  labels:
+    app.kubernetes.io/name: postgresql-exporter
+    app.kubernetes.io/instance: "{{ lions_postgres_deployment_name }}"
+    lions.dev/monitoring: "true"
+  interval: "{{ lions_postgres_metrics_config.scrape_interval }}"
+  scrapeTimeout: "{{ lions_postgres_metrics_config.scrape_timeout }}"
+
+# =========================================================================
+# CONFIGURATION DE SAUVEGARDE
+# =========================================================================
+# Configuration de sauvegarde
+lions_postgres_backup_enabled: "{{ lookup('env', 'LIONS_POSTGRES_BACKUP_ENABLED') | default('true', true) | bool }}"
+lions_postgres_backup_schedule: "{{ lookup('env', 'LIONS_BACKUP_SCHEDULE') | default('0 2 * * *', true) }}"
+lions_postgres_backup_retention: "{{ lookup('env', 'LIONS_BACKUP_RETENTION_DAYS') | default('30', true) | int }}"
+lions_postgres_backup_compression: "{{ lookup('env', 'LIONS_BACKUP_COMPRESSION') | default('gzip', true) }}"
+lions_postgres_backup_encryption: "{{ lookup('env', 'LIONS_BACKUP_ENCRYPTION') | default('true', true) | bool }}"
+
+# Configuration du stockage de sauvegarde
+lions_postgres_backup_storage_class: "{{ lookup('env', 'LIONS_BACKUP_STORAGE_CLASS') | default(lions_postgres_storage_class, true) }}"
+lions_postgres_backup_storage_size: "{{ lookup('env', 'LIONS_POSTGRES_BACKUP_STORAGE_SIZE') | default('50Gi', true) }}"
+
+# Configuration de sauvegarde externe
+lions_postgres_backup_external_enabled: "{{ lookup('env', 'LIONS_BACKUP_EXTERNAL_ENABLED') | default('false', true) | bool }}"
+lions_postgres_backup_external_type: "{{ lookup('env', 'LIONS_BACKUP_EXTERNAL_TYPE') | default('s3', true) }}"
+lions_postgres_backup_external_bucket: "{{ lookup('env', 'LIONS_BACKUP_EXTERNAL_BUCKET') | default('lions-postgres-backup', true) }}"
+
+# =========================================================================
+# CONFIGURATION HAUTE DISPONIBILITÉ
+# =========================================================================
+# Configuration Master-Slave
+lions_postgres_ha_enabled: "{{ lookup('env', 'LIONS_POSTGRES_HA_ENABLED') | default('false', true) | bool }}"
+lions_postgres_ha_mode: "{{ lookup('env', 'LIONS_POSTGRES_HA_MODE') | default('master-slave', true) }}"  # master-slave|patroni|pgpool
+
+# Configuration de réplication streaming
+lions_postgres_replication_config:
+  enabled: "{{ lions_postgres_ha_enabled }}"
+  synchronous_commit: "{{ 'on' if lions_postgres_environment == 'production' else 'off' }}"
+  max_wal_senders: 10
+  max_replication_slots: 10
+  wal_level: "replica"
+  wal_log_hints: "on"
+  hot_standby: "on"
+  hot_standby_feedback: "on"
+
+# Configuration des connexions de réplication
+lions_postgres_replication_connections:
+  max_connections: "{{ lions_postgres_performance_config.max_connections + 10 }}"
+  superuser_reserved_connections: 3
+
+# =========================================================================
+# CONFIGURATION DE SÉCURITÉ AVANCÉE
+# =========================================================================
+# Configuration des politiques de sécurité
+lions_postgres_security_policies:
+  pod_security_context:
+    runAsNonRoot: true
+    runAsUser: 999
+    runAsGroup: 999
+    fsGroup: 999
+    fsGroupChangePolicy: "OnRootMismatch"
+    seccompProfile:
+      type: RuntimeDefault
+  container_security_context:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 999
+    runAsGroup: 999
+    capabilities:
+      drop:
+        - ALL
+      add:
+        - CHOWN
+        - DAC_OVERRIDE
+        - FOWNER
+        - SETGID
+        - SETUID
+
+# Configuration réseau et accès
+lions_postgres_network_policies:
+  enabled: "{{ lookup('env', 'LIONS_SECURITY_NETWORK_POLICIES') | default('true', true) | bool }}"
+  ingress_rules:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: "{{ lookup('env', 'LIONS_KEYCLOAK_NAMESPACE') | default('security', true) }}"
+        - namespaceSelector:
+            matchLabels:
+              name: "{{ lookup('env', 'LIONS_PRIMEREACT_NAMESPACE') | default('applications', true) }}"
+        - namespaceSelector:
+            matchLabels:
+              name: "{{ lookup('env', 'LIONS_QUARKUS_NAMESPACE') | default('applications', true) }}"
+        - namespaceSelector:
+            matchLabels:
+              name: "{{ lookup('env', 'LIONS_MONITORING_NAMESPACE') | default('monitoring', true) }}"
+      ports:
+        - protocol: TCP
+          port: "{{ lions_postgres_service_port }}"
+
+# =========================================================================
+# CONFIGURATION D'INITIALISATION
+# =========================================================================
+# Scripts d'initialisation
+lions_postgres_init_scripts:
+  enabled: true
+  create_app_user: |
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{{ lions_postgres_app_user }}') THEN
+        CREATE USER {{ lions_postgres_app_user }} WITH PASSWORD '${POSTGRES_APP_PASSWORD}';
+      END IF;
+    END
+    $$;
+  create_app_database: |
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT FROM pg_database WHERE datname = '{{ lions_postgres_app_database }}') THEN
+        CREATE DATABASE {{ lions_postgres_app_database }} OWNER {{ lions_postgres_app_user }};
+      END IF;
+    END
+    $$;
+  setup_extensions: |
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    CREATE EXTENSION IF NOT EXISTS "pg_stat_statements";
+    CREATE EXTENSION IF NOT EXISTS "pg_trgm";
+    CREATE EXTENSION IF NOT EXISTS "btree_gin";
+  setup_monitoring: |
+    CREATE OR REPLACE VIEW pg_stat_statements_normalized AS
+    SELECT query, calls, total_time, mean_time, rows
+    FROM pg_stat_statements 
+    WHERE query NOT LIKE '%pg_stat_statements%'
+    ORDER BY total_time DESC;
+
+# Configuration des hooks de cycle de vie
+lions_postgres_lifecycle_hooks:
+  pre_stop:
+    exec:
+      command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Arrêt gracieux de PostgreSQL..."
+          pg_ctl stop -D {{ lions_postgres_data_dir }} -m smart -w -t 60
+
+# =========================================================================
+# CONFIGURATION DE VALIDATION
+# =========================================================================
+# Validation de la configuration
+lions_postgres_validation:
+  required_vars:
+    - lions_postgres_admin_user
+    - lions_postgres_service_name
+    - lions_postgres_namespace
+    - lions_postgres_storage_size
+  performance_checks:
+    memory_buffer_ratio: 0.25  # shared_buffers ne doit pas dépasser 25% de la RAM
+    connection_memory_ratio: 4  # work_mem * max_connections ne doit pas dépasser 25% de la RAM
+  security_checks:
+    tls_required_prod: "{{ lions_postgres_environment == 'production' }}"
+    backup_required_prod: "{{ lions_postgres_environment == 'production' }}"
+
+# =========================================================================
+# INFORMATIONS DE DÉBOGAGE
+# =========================================================================
+# Informations de debug (actives uniquement en mode debug)
+lions_postgres_debug_info:
+  config_version: "{{ lions_postgres_config_version }}"
+  environment: "{{ lions_postgres_environment }}"
+  replicas: "{{ lions_postgres_replicas }}"
+  resources: "{{ lions_postgres_resources }}"
+  ha_enabled: "{{ lions_postgres_ha_enabled }}"
+  monitoring_enabled: "{{ lions_postgres_monitoring_enabled }}"
+  backup_enabled: "{{ lions_postgres_backup_enabled }}"
+  calculated_shared_buffers: "{{ lions_postgres_performance_config.shared_buffers }}"
+  calculated_effective_cache_size: "{{ lions_postgres_performance_config.effective_cache_size }}"

@@ -1,93 +1,397 @@
 ---
-# Titre: Préparation des ressources pour PrimeReact
-# Description: Prépare les ressources nécessaires pour déployer une application PrimeReact
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - PRÉPARATION PRIMEREACT
+# =========================================================================
+# Description: Prépare les ressources nécessaires pour déployer PrimeReact
+# Responsabilité: Provisioning et validation des prérequis infrastructure
+# Auteur: Équipe DevOps LIONS Infrastructure
+# Version: 5.0.0
+# Date: "{{ ansible_date_time.iso8601 }}"
+# Documentation: https://docs.lions.dev/applications/primereact/preparation
+# =========================================================================
 
-- name: Création du répertoire temporaire pour les templates
-  tempfile:
-    state: directory
-    suffix: primereact-deploy
-  register: temp_dir
-  changed_when: false
+# =========================================================================
+# PHASE 1: VALIDATION DES PRÉREQUIS CRITIQUES
+# =========================================================================
 
-- name: Génération des fichiers de configuration Kubernetes
-  template:
-    src: "{{ item.src }}"
-    dest: "{{ temp_dir.path }}/{{ item.dest }}"
-  loop:
-    - { src: "deployment.yml.j2", dest: "deployment.yml" }
-    - { src: "service.yml.j2", dest: "service.yml" }
-    - { src: "ingress.yml.j2", dest: "ingress.yml" }
-    - { src: "configmap.yml.j2", dest: "configmap.yml" }
-    - { src: "serviceaccount.yml.j2", dest: "serviceaccount.yml" }
-    - { src: "servicemonitor.yml.j2", dest: "servicemonitor.yml" }
-    - { src: "networkpolicy.yml.j2", dest: "networkpolicy.yml" }
-  register: templates_generated
+- name: "🔍 Validation - Vérification du statut d'activation de PrimeReact"
+  assert:
+    that:
+      - primereact_enabled | default(lookup('env', 'LIONS_PRIMEREACT_ENABLED') | bool) | bool
+    fail_msg: "❌ PrimeReact n'est pas activé. Vérifiez LIONS_PRIMEREACT_ENABLED dans votre configuration."
+    success_msg: "✅ PrimeReact est activé et prêt pour le déploiement"
+  tags: [validation, primereact, critical]
 
-- name: Vérification des fichiers générés
-  stat:
-    path: "{{ temp_dir.path }}/{{ item }}"
-  loop:
-    - "deployment.yml"
-    - "service.yml"
-    - "ingress.yml"
-    - "configmap.yml"
-    - "serviceaccount.yml"
-    - "servicemonitor.yml"
-    - "networkpolicy.yml"
-  register: files_check
-  failed_when: not item.stat.exists
-
-- name: Création du compte de service
-  k8s:
-    state: present
-    src: "{{ temp_dir.path }}/serviceaccount.yml"
-  register: serviceaccount_result
-
-- name: Création du ConfigMap pour la configuration de l'application
-  k8s:
-    state: present
-    src: "{{ temp_dir.path }}/configmap.yml"
-  register: configmap_result
-
-- name: Création de la NetworkPolicy pour l'application
-  k8s:
-    state: present
-    src: "{{ temp_dir.path }}/networkpolicy.yml"
-  register: networkpolicy_result
-  when: primereact_create_networkpolicy | bool
-
-- name: Vérification de l'existence des secrets nécessaires
+- name: "🔍 Validation - Vérification de la disponibilité du namespace"
   k8s_info:
     api_version: v1
-    kind: Secret
-    namespace: "{{ app_namespace }}"
-    name: "{{ app_name }}-secrets"
-  register: secrets_info
-  ignore_errors: yes
+    kind: Namespace
+    name: "{{ primereact_namespace }}"
+  register: namespace_check
+  failed_when: false
+  tags: [validation, namespace]
 
-- name: Avertissement si les secrets n'existent pas
+- name: "🏗️  Provisioning - Création du namespace si nécessaire"
+  k8s:
+    name: "{{ primereact_namespace }}"
+    api_version: v1
+    kind: Namespace
+    state: present
+    definition:
+      metadata:
+        name: "{{ primereact_namespace }}"
+        labels:
+          app.kubernetes.io/name: primereact
+          app.kubernetes.io/component: frontend
+          app.kubernetes.io/part-of: lions-infrastructure
+          app.kubernetes.io/managed-by: ansible
+          lions.dev/environment: "{{ lions_environment }}"
+          lions.dev/version: "{{ primereact_version }}"
+        annotations:
+          lions.dev/created-by: "ansible-lions-infrastructure"
+          lions.dev/creation-timestamp: "{{ ansible_date_time.iso8601 }}"
+  when: namespace_check.resources | length == 0
+  register: namespace_creation
+  tags: [provisioning, namespace]
+
+# =========================================================================
+# PHASE 2: PRÉPARATION DE L'ENVIRONNEMENT DE TRAVAIL
+# =========================================================================
+
+- name: "📁 Workspace - Création du répertoire temporaire sécurisé"
+  tempfile:
+    state: directory
+    suffix: ".primereact-{{ ansible_date_time.epoch }}"
+    prefix: "lions-deploy-"
+  register: primereact_workspace
+  changed_when: false
+  tags: [workspace, security]
+
+- name: "🔒 Sécurité - Configuration des permissions du workspace"
+  file:
+    path: "{{ primereact_workspace.path }}"
+    mode: '0700'
+    owner: "{{ ansible_user | default('root') }}"
+  changed_when: false
+  tags: [workspace, security]
+
+- name: "📝 Debug - Affichage des informations de workspace"
   debug:
-    msg: "AVERTISSEMENT: Les secrets pour l'application {{ app_name }} n'existent pas. Utilisez kubectl pour créer les secrets nécessaires."
-  when: secrets_info is failed or secrets_info.resources | length == 0
+    msg:
+      - "Workspace PrimeReact créé: {{ primereact_workspace.path }}"
+      - "Namespace cible: {{ primereact_namespace }}"
+      - "Environnement: {{ lions_environment }}"
+      - "Version PrimeReact: {{ primereact_version }}"
+  when: primereact_debug_enabled | default(false) | bool
+  tags: [debug, workspace]
 
-- name: Préparation des ressources spécifiques à PrimeReact
-  debug:
-    msg: "Préparation des ressources spécifiques à PrimeReact"
+# =========================================================================
+# PHASE 3: GÉNÉRATION DES MANIFESTES KUBERNETES
+# =========================================================================
 
-- name: Vérification de l'existence du service de cache Redis
+- name: "🏗️  Template - Génération des manifestes Kubernetes"
+  template:
+    src: "{{ item.template }}"
+    dest: "{{ primereact_workspace.path }}/{{ item.manifest }}"
+    mode: '0600'
+    backup: no
+  loop:
+    - { template: "serviceaccount.yml.j2", manifest: "01-serviceaccount.yml" }
+    - { template: "configmap.yml.j2", manifest: "02-configmap.yml" }
+    - { template: "service.yml.j2", manifest: "03-service.yml" }
+    - { template: "deployment.yml.j2", manifest: "04-deployment.yml" }
+    - { template: "ingress.yml.j2", manifest: "05-ingress.yml" }
+    - { template: "servicemonitor.yml.j2", manifest: "06-servicemonitor.yml" }
+    - { template: "networkpolicy.yml.j2", manifest: "07-networkpolicy.yml" }
+  register: primereact_templates_generated
+  notify: "cleanup workspace"
+  tags: [templating, kubernetes]
+
+- name: "✅ Validation - Vérification de l'intégrité des manifestes générés"
+  stat:
+    path: "{{ primereact_workspace.path }}/{{ item }}"
+    get_checksum: yes
+    checksum_algorithm: sha256
+  loop:
+    - "01-serviceaccount.yml"
+    - "02-configmap.yml"
+    - "03-service.yml"
+    - "04-deployment.yml"
+    - "05-ingress.yml"
+    - "06-servicemonitor.yml"
+    - "07-networkpolicy.yml"
+  register: primereact_manifests_validation
+  failed_when: not item.stat.exists
+  tags: [validation, kubernetes]
+
+- name: "📊 Audit - Enregistrement des checksums des manifestes"
+  set_fact:
+    primereact_manifests_checksums: "{{ primereact_manifests_validation.results | map(attribute='stat.checksum') | list }}"
+  tags: [audit, security]
+
+# =========================================================================
+# PHASE 4: VALIDATION DE LA SYNTAXE KUBERNETES
+# =========================================================================
+
+- name: "🔍 Validation - Vérification de la syntaxe YAML des manifestes"
+  k8s:
+    state: present
+    src: "{{ primereact_workspace.path }}/{{ item }}"
+    dry_run: yes
+    validate:
+      fail_on_error: yes
+      strict: yes
+  loop:
+    - "01-serviceaccount.yml"
+    - "02-configmap.yml"
+    - "03-service.yml"
+    - "04-deployment.yml"
+    - "05-ingress.yml"
+    - "06-servicemonitor.yml"
+    - "07-networkpolicy.yml"
+  register: primereact_syntax_validation
+  when: primereact_validate_syntax | default(true) | bool
+  tags: [validation, syntax, kubernetes]
+
+# =========================================================================
+# PHASE 5: CRÉATION DES RESSOURCES DE BASE
+# =========================================================================
+
+- name: "🔐 Sécurité - Création du ServiceAccount avec permissions minimales"
+  k8s:
+    state: present
+    src: "{{ primereact_workspace.path }}/01-serviceaccount.yml"
+    wait: true
+    wait_condition:
+      type: Ready
+      status: "True"
+    wait_timeout: "{{ primereact_timeout_short | default(60) }}"
+  register: primereact_serviceaccount_creation
+  tags: [security, rbac, kubernetes]
+
+- name: "⚙️  Configuration - Création du ConfigMap applicatif"
+  k8s:
+    state: present
+    src: "{{ primereact_workspace.path }}/02-configmap.yml"
+    wait: true
+    wait_timeout: "{{ primereact_timeout_short | default(60) }}"
+  register: primereact_configmap_creation
+  tags: [configuration, kubernetes]
+
+- name: "🌐 Réseau - Création du Service de communication"
+  k8s:
+    state: present
+    src: "{{ primereact_workspace.path }}/03-service.yml"
+    wait: true
+    wait_condition:
+      type: Ready
+      status: "True"
+    wait_timeout: "{{ primereact_timeout_short | default(60) }}"
+  register: primereact_service_creation
+  tags: [networking, kubernetes]
+
+- name: "🔒 Sécurité - Application des NetworkPolicies"
+  k8s:
+    state: present
+    src: "{{ primereact_workspace.path }}/07-networkpolicy.yml"
+    wait: true
+    wait_timeout: "{{ primereact_timeout_short | default(60) }}"
+  register: primereact_networkpolicy_creation
+  when: primereact_network_policies_enabled | default(lookup('env', 'LIONS_SECURITY_NETWORK_POLICIES') | bool) | bool
+  tags: [security, networking, kubernetes]
+
+# =========================================================================
+# PHASE 6: VALIDATION DES DÉPENDANCES EXTERNES
+# =========================================================================
+
+- name: "🔍 Dépendances - Vérification de la disponibilité de Redis"
   k8s_info:
     api_version: v1
     kind: Service
-    namespace: "{{ app_namespace }}"
-    name: "{{ primereact_redis_service | default(app_name + '-redis') }}"
-  register: redis_service_info
-  ignore_errors: yes
-  when: primereact_use_redis | bool
+    namespace: "{{ primereact_redis_namespace | default(redis_namespace | default('database')) }}"
+    name: "{{ primereact_redis_service_name | default('redis') }}"
+  register: primereact_redis_check
+  failed_when: false
+  when: primereact_redis_enabled | default(lookup('env', 'LIONS_REDIS_ENABLED') | bool) | bool
+  tags: [dependencies, redis, validation]
 
-- name: Avertissement si le service Redis n'existe pas
+- name: "⚠️  Dépendances - Avertissement Redis indisponible"
   debug:
-    msg: "AVERTISSEMENT: Le service Redis n'existe pas. L'application PrimeReact pourrait avoir des performances réduites."
-  when: primereact_use_redis | bool and (redis_service_info is failed or redis_service_info.resources | length == 0)
+    msg:
+      - "⚠️  ATTENTION: Service Redis non disponible"
+      - "Namespace recherché: {{ primereact_redis_namespace | default(redis_namespace | default('database')) }}"
+      - "Service recherché: {{ primereact_redis_service_name | default('redis') }}"
+      - "Impact: Performances réduites pour le cache applicatif"
+      - "Action recommandée: Déployez Redis avant PrimeReact ou désactivez la dépendance"
+  when:
+    - primereact_redis_enabled | default(lookup('env', 'LIONS_REDIS_ENABLED') | bool) | bool
+    - primereact_redis_check is defined
+    - (primereact_redis_check is failed or primereact_redis_check.resources | length == 0)
+  tags: [dependencies, redis, warning]
+
+- name: "🔍 Dépendances - Vérification de la disponibilité de PostgreSQL"
+  k8s_info:
+    api_version: v1
+    kind: Service
+    namespace: "{{ primereact_postgres_namespace | default(postgres_namespace | default('database')) }}"
+    name: "{{ primereact_postgres_service_name | default('postgresql') }}"
+  register: primereact_postgres_check
+  failed_when: false
+  when: primereact_postgres_enabled | default(lookup('env', 'LIONS_POSTGRES_ENABLED') | bool) | bool
+  tags: [dependencies, postgres, validation]
+
+- name: "❌ Dépendances - Échec critique PostgreSQL"
+  fail:
+    msg:
+      - "❌ ERREUR CRITIQUE: Service PostgreSQL non disponible"
+      - "Namespace recherché: {{ primereact_postgres_namespace | default(postgres_namespace | default('database')) }}"
+      - "Service recherché: {{ primereact_postgres_service_name | default('postgresql') }}"
+      - "Impact: Impossible de démarrer PrimeReact sans base de données"
+      - "Action requise: Déployez PostgreSQL avant de continuer"
+  when:
+    - primereact_postgres_enabled | default(lookup('env', 'LIONS_POSTGRES_ENABLED') | bool) | bool
+    - primereact_postgres_check is defined
+    - (primereact_postgres_check is failed or primereact_postgres_check.resources | length == 0)
+    - primereact_fail_on_missing_deps | default(true) | bool
+  tags: [dependencies, postgres, critical]
+
+# =========================================================================
+# PHASE 7: VALIDATION DES SECRETS APPLICATIFS
+# =========================================================================
+
+- name: "🔐 Secrets - Vérification de l'existence des secrets applicatifs"
+  k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: "{{ primereact_namespace }}"
+    name: "{{ item }}"
+  register: primereact_secrets_check
+  failed_when: false
+  loop: "{{ primereact_required_secrets }}"
+  tags: [security, secrets, validation]
+
+- name: "🔐 Secrets - Compilation des secrets manquants"
+  set_fact:
+    primereact_missing_secrets: >-
+      {{
+        primereact_secrets_check.results |
+        selectattr('failed', 'defined') |
+        selectattr('failed', 'equalto', true) |
+        map(attribute='item') |
+        list +
+        primereact_secrets_check.results |
+        selectattr('resources', 'defined') |
+        selectattr('resources', 'equalto', []) |
+        map(attribute='item') |
+        list
+      }}
+  tags: [security, secrets]
+
+- name: "⚠️  Secrets - Avertissement secrets manquants"
+  debug:
+    msg:
+      - "⚠️  ATTENTION: Secrets manquants détectés"
+      - "Secrets manquants: {{ primereact_missing_secrets | join(', ') }}"
+      - "Namespace: {{ primereact_namespace }}"
+      - "Impact: L'application peut ne pas démarrer correctement"
+      - "Action recommandée: Créez les secrets avant le déploiement"
+      - "Commande exemple: kubectl create secret generic <nom> --from-literal=<clé>=<valeur> -n {{ primereact_namespace }}"
+  when: primereact_missing_secrets | length > 0
+  tags: [security, secrets, warning]
+
+- name: "❌ Secrets - Échec critique secrets manquants"
+  fail:
+    msg:
+      - "❌ ERREUR CRITIQUE: Secrets obligatoires manquants"
+      - "Secrets manquants: {{ primereact_missing_secrets | join(', ') }}"
+      - "Action requise: Créez tous les secrets avant de continuer"
+  when:
+    - primereact_missing_secrets | length > 0
+    - primereact_fail_on_missing_secrets | default(false) | bool
+  tags: [security, secrets, critical]
+
+# =========================================================================
+# PHASE 8: PRÉPARATION DU MONITORING
+# =========================================================================
+
+- name: "📊 Monitoring - Vérification de la disponibilité de Prometheus"
+  k8s_info:
+    api_version: v1
+    kind: Service
+    namespace: "{{ monitoring_namespace | default('monitoring') }}"
+    name: "prometheus-server"
+  register: primereact_prometheus_check
+  failed_when: false
+  when: primereact_monitoring_enabled | default(lookup('env', 'LIONS_MONITORING_ENABLED') | bool) | bool
+  tags: [monitoring, prometheus, validation]
+
+- name: "📊 Monitoring - Préparation du ServiceMonitor"
+  debug:
+    msg:
+      - "ServiceMonitor sera créé pour: {{ primereact_app_name }}"
+      - "Namespace monitoring: {{ monitoring_namespace | default('monitoring') }}"
+      - "Métriques exposées sur le port: {{ primereact_metrics_port | default(9090) }}"
+  when:
+    - primereact_monitoring_enabled | default(lookup('env', 'LIONS_MONITORING_ENABLED') | bool) | bool
+    - primereact_prometheus_check is defined
+    - not (primereact_prometheus_check is failed or primereact_prometheus_check.resources | length == 0)
+  tags: [monitoring, preparation]
+
+# =========================================================================
+# PHASE 9: RÉSUMÉ ET ÉTAT FINAL
+# =========================================================================
+
+- name: "📋 Résumé - Compilation du statut de préparation"
+  set_fact:
+    primereact_preparation_summary:
+      status: "ready"
+      timestamp: "{{ ansible_date_time.iso8601 }}"
+      workspace: "{{ primereact_workspace.path }}"
+      namespace: "{{ primereact_namespace }}"
+      environment: "{{ lions_environment }}"
+      version: "{{ primereact_version }}"
+      manifests_generated: "{{ primereact_templates_generated.results | length }}"
+      manifests_validated: "{{ primereact_manifests_validation.results | length }}"
+      dependencies:
+        redis:
+          enabled: "{{ primereact_redis_enabled | default(lookup('env', 'LIONS_REDIS_ENABLED') | bool) | bool }}"
+          available: "{{ primereact_redis_check is defined and not (primereact_redis_check is failed or primereact_redis_check.resources | length == 0) }}"
+        postgres:
+          enabled: "{{ primereact_postgres_enabled | default(lookup('env', 'LIONS_POSTGRES_ENABLED') | bool) | bool }}"
+          available: "{{ primereact_postgres_check is defined and not (primereact_postgres_check is failed or primereact_postgres_check.resources | length == 0) }}"
+        monitoring:
+          enabled: "{{ primereact_monitoring_enabled | default(lookup('env', 'LIONS_MONITORING_ENABLED') | bool) | bool }}"
+          available: "{{ primereact_prometheus_check is defined and not (primereact_prometheus_check is failed or primereact_prometheus_check.resources | length == 0) }}"
+      security:
+        network_policies: "{{ primereact_network_policies_enabled | default(lookup('env', 'LIONS_SECURITY_NETWORK_POLICIES') | bool) | bool }}"
+        missing_secrets: "{{ primereact_missing_secrets | default([]) | length }}"
+      warnings: "{{ (primereact_missing_secrets | default([]) | length > 0) or (primereact_redis_enabled | default(false) and primereact_redis_check is defined and (primereact_redis_check is failed or primereact_redis_check.resources | length == 0)) }}"
+  tags: [summary, audit]
+
+- name: "✅ Résumé - Affichage du statut final de préparation"
+  debug:
+    msg:
+      - "🎯 PRÉPARATION PRIMEREACT TERMINÉE"
+      - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+      - "📊 Statut: {{ primereact_preparation_summary.status | upper }}"
+      - "🕐 Timestamp: {{ primereact_preparation_summary.timestamp }}"
+      - "📁 Workspace: {{ primereact_preparation_summary.workspace }}"
+      - "🏷️  Namespace: {{ primereact_preparation_summary.namespace }}"
+      - "🌍 Environnement: {{ primereact_preparation_summary.environment }}"
+      - "🔖 Version: {{ primereact_preparation_summary.version }}"
+      - "📝 Manifestes générés: {{ primereact_preparation_summary.manifests_generated }}"
+      - "✅ Manifestes validés: {{ primereact_preparation_summary.manifests_validated }}"
+      - "⚠️  Avertissements: {{ primereact_preparation_summary.warnings | ternary('OUI', 'AUCUN') }}"
+      - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+      - "🚀 Prêt pour le déploiement: {{ not primereact_preparation_summary.warnings or primereact_ignore_warnings | default(false) }}"
+  tags: [summary, final]
+
+# =========================================================================
+# HANDLERS DE NETTOYAGE
+# =========================================================================
+
+- name: "🧹 Cleanup - Enregistrement du workspace pour nettoyage"
+  set_fact:
+    workspaces_to_cleanup: "{{ workspaces_to_cleanup | default([]) + [primereact_workspace.path] }}"
+  changed_when: false
+  tags: [cleanup, always]

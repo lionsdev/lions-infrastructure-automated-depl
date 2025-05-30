@@ -1,155 +1,491 @@
 ---
-# Titre: Validation post-déploiement pour Keycloak
-# Description: Valide le déploiement de Keycloak
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - VALIDATION KEYCLOAK
+# =========================================================================
+# Description: Validation post-déploiement complète pour Keycloak
+# Version: 5.0.0
+# Maintainer: DevOps Team
+# Documentation: https://docs.lions.dev/infrastructure/keycloak/validation
+# =========================================================================
 
-- name: Attente que Keycloak soit prêt
-  uri:
-    url: "http://{{ app_name }}.{{ app_namespace }}.svc.cluster.local:{{ keycloak_default_port }}{{ keycloak_health_path }}/ready"
-    status_code: 200
-    validate_certs: no
-  register: health_check
-  until: health_check.status == 200
-  retries: 30
-  delay: 10
-  ignore_errors: yes
-
-- name: Vérification de l'état de santé de Keycloak
-  debug:
-    msg: "Keycloak {{ app_name }} est en bonne santé et prêt à recevoir des requêtes."
-  when: health_check is succeeded
-
-- name: Avertissement si Keycloak n'est pas en bonne santé
-  debug:
-    msg: "AVERTISSEMENT: Keycloak {{ app_name }} n'est pas en bonne santé. Vérifiez les logs pour plus d'informations."
-  when: health_check is failed
-
-- name: Récupération de l'URL d'accès
+# =========================================================================
+# INITIALISATION ET CONFIGURATION
+# =========================================================================
+- name: "🔧 [INIT] Configuration des variables de validation Keycloak"
   set_fact:
-    app_url: "https://{{ app_domain }}"
-  when: app_environment != 'development' or (extra_params.create_ingress | default(true) | bool)
+    keycloak_validation_config:
+      # Configuration des timeouts et retry basée sur les variables d'environnement
+      health_check_timeout: "{{ lions_timeout_default | default(300) }}"
+      health_check_retries: "{{ 30 if lions_environment == 'production' else 20 }}"
+      health_check_delay: "{{ 10 if lions_environment == 'production' else 5 }}"
 
-- name: Affichage de l'URL d'accès
+      # URLs et endpoints
+      internal_base_url: "http://{{ lions_keycloak_service_name }}.{{ lions_keycloak_namespace }}.svc.{{ lions_k8s_dns_domain }}:{{ lions_keycloak_port }}"
+      external_base_url: "{{ 'https' if lions_security_tls_enabled | bool else 'http' }}://{{ lions_keycloak_service_name }}.{{ lions_dns_full_domain }}"
+
+      # Chemins d'API
+      health_path: "/health"
+      ready_path: "/health/ready"
+      live_path: "/health/live"
+      admin_path: "/admin"
+      metrics_path: "/metrics"
+      auth_path: "/realms/{{ lions_keycloak_realm }}"
+
+      # Configuration de sécurité
+      tls_verify: "{{ not (lions_environment == 'development' and lions_debug_mode | bool) }}"
+
+      # Configuration du monitoring
+      metrics_enabled: "{{ lions_monitoring_enabled | bool and lions_prometheus_enabled | bool }}"
+
+    # Variables dynamiques
+    keycloak_deployment_info:
+      name: "{{ lions_keycloak_service_name }}"
+      namespace: "{{ lions_keycloak_namespace }}"
+      environment: "{{ lions_environment }}"
+      version: "{{ lions_keycloak_version }}"
+      timestamp: "{{ ansible_date_time.iso8601 }}"
+
+- name: "📋 [INIT] Affichage de la configuration de validation"
   debug:
-    msg: "Keycloak {{ app_name }} est accessible à l'adresse: {{ app_url }}"
-  when: app_url is defined
+    msg:
+      - "🔍 Validation Keycloak pour l'environnement: {{ lions_environment | upper }}"
+      - "🏷️  Service: {{ keycloak_deployment_info.name }}"
+      - "📦 Namespace: {{ keycloak_deployment_info.namespace }}"
+      - "🔗 URL interne: {{ keycloak_validation_config.internal_base_url }}"
+      - "🌐 URL externe: {{ keycloak_validation_config.external_base_url }}"
+      - "⏱️  Timeout: {{ keycloak_validation_config.health_check_timeout }}s"
+  when: lions_debug_mode | bool
 
-- name: Vérification de l'accessibilité externe (si ingress est configuré)
+# =========================================================================
+# VALIDATIONS PRÉLIMINAIRES
+# =========================================================================
+- name: "🔍 [VALIDATION] Vérification de la présence du déploiement Keycloak"
+  k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: "{{ keycloak_deployment_info.name }}"
+    namespace: "{{ keycloak_deployment_info.namespace }}"
+    wait: true
+    wait_condition:
+      type: Available
+      status: "True"
+    wait_timeout: "{{ keycloak_validation_config.health_check_timeout }}"
+  register: keycloak_deployment_status
+  failed_when: false
+
+- name: "❌ [ERROR] Échec si le déploiement Keycloak n'existe pas"
+  fail:
+    msg: |
+      ❌ Le déploiement Keycloak '{{ keycloak_deployment_info.name }}' n'a pas été trouvé dans le namespace '{{ keycloak_deployment_info.namespace }}'.
+      🔍 Vérifiez que le déploiement a été créé correctement.
+  when: keycloak_deployment_status.resources | length == 0
+
+- name: "📊 [INFO] Statut du déploiement Keycloak"
+  debug:
+    msg:
+      - "📈 Répliques souhaitées: {{ keycloak_deployment_status.resources[0].spec.replicas }}"
+      - "✅ Répliques disponibles: {{ keycloak_deployment_status.resources[0].status.readyReplicas | default(0) }}"
+      - "🔄 Répliques mises à jour: {{ keycloak_deployment_status.resources[0].status.updatedReplicas | default(0) }}"
+  when:
+    - keycloak_deployment_status.resources | length > 0
+    - lions_debug_mode | bool
+
+# =========================================================================
+# VALIDATION DE SANTÉ APPLICATIVE
+# =========================================================================
+- name: "🏥 [HEALTH] Vérification de l'endpoint de santé Keycloak"
   uri:
-    url: "{{ app_url }}"
+    url: "{{ keycloak_validation_config.internal_base_url }}{{ keycloak_validation_config.health_path }}"
     method: GET
-    status_code: 200, 301, 302, 307, 308
-    validate_certs: no
+    status_code: [200, 204]
+    validate_certs: "{{ keycloak_validation_config.tls_verify }}"
+    timeout: 30
+    follow_redirects: safe
+  register: keycloak_health_check
+  until: keycloak_health_check.status in [200, 204]
+  retries: "{{ keycloak_validation_config.health_check_retries }}"
+  delay: "{{ keycloak_validation_config.health_check_delay }}"
+  failed_when: false
+  tags: ['health', 'validation']
+
+- name: "🟢 [SUCCESS] Keycloak - État de santé OK"
+  debug:
+    msg: |
+      ✅ Keycloak '{{ keycloak_deployment_info.name }}' est en bonne santé
+      📡 Réponse HTTP: {{ keycloak_health_check.status }}
+      ⏱️  Temps de réponse: {{ keycloak_health_check.elapsed }}s
+  when: keycloak_health_check.status in [200, 204]
+
+- name: "🔴 [WARNING] Keycloak - Problème de santé détecté"
+  debug:
+    msg: |
+      ⚠️  ATTENTION: Keycloak '{{ keycloak_deployment_info.name }}' présente des problèmes de santé
+      📡 Code de réponse: {{ keycloak_health_check.status | default('N/A') }}
+      ❌ Message d'erreur: {{ keycloak_health_check.msg | default('Timeout ou connexion impossible') }}
+      🔍 Action recommandée: Vérifiez les logs du conteneur Keycloak
+  when: keycloak_health_check.status not in [200, 204]
+
+# =========================================================================
+# VALIDATION DE DISPONIBILITÉ
+# =========================================================================
+- name: "🚀 [READINESS] Vérification de la disponibilité Keycloak"
+  uri:
+    url: "{{ keycloak_validation_config.internal_base_url }}{{ keycloak_validation_config.ready_path }}"
+    method: GET
+    status_code: [200, 204]
+    validate_certs: "{{ keycloak_validation_config.tls_verify }}"
+    timeout: 30
+  register: keycloak_readiness_check
+  until: keycloak_readiness_check.status in [200, 204]
+  retries: "{{ keycloak_validation_config.health_check_retries }}"
+  delay: "{{ keycloak_validation_config.health_check_delay }}"
+  failed_when: false
+  tags: ['readiness', 'validation']
+
+- name: "🟢 [SUCCESS] Keycloak - Prêt à recevoir du trafic"
+  debug:
+    msg: |
+      ✅ Keycloak '{{ keycloak_deployment_info.name }}' est prêt à recevoir du trafic
+      🔗 Endpoint: {{ keycloak_validation_config.ready_path }}
+      📡 Statut: {{ keycloak_readiness_check.status }}
+  when: keycloak_readiness_check.status in [200, 204]
+
+# =========================================================================
+# VALIDATION DE L'ACCESSIBILITÉ EXTERNE
+# =========================================================================
+- name: "🌐 [EXTERNAL] Vérification de l'accessibilité externe"
+  uri:
+    url: "{{ keycloak_validation_config.external_base_url }}{{ keycloak_validation_config.health_path }}"
+    method: GET
+    status_code: [200, 204, 301, 302, 307, 308]
+    validate_certs: "{{ keycloak_validation_config.tls_verify }}"
+    timeout: 30
     follow_redirects: no
-  register: external_check
-  ignore_errors: yes
-  when: app_url is defined
+  register: keycloak_external_check
+  failed_when: false
+  when: lions_security_tls_enabled | bool
+  tags: ['external', 'ingress']
 
-- name: Affichage du résultat de la vérification externe
+- name: "🟢 [SUCCESS] Keycloak - Accessible depuis l'extérieur"
   debug:
-    msg: "Keycloak {{ app_name }} est accessible depuis l'extérieur."
-  when: external_check is defined and external_check is succeeded
+    msg: |
+      ✅ Keycloak '{{ keycloak_deployment_info.name }}' est accessible depuis l'extérieur
+      🔗 URL: {{ keycloak_validation_config.external_base_url }}
+      📡 Statut HTTP: {{ keycloak_external_check.status }}
+  when:
+    - keycloak_external_check is defined
+    - keycloak_external_check.status in [200, 204, 301, 302, 307, 308]
 
-- name: Avertissement si Keycloak n'est pas accessible depuis l'extérieur
+- name: "🔴 [WARNING] Keycloak - Problème d'accès externe"
   debug:
-    msg: "AVERTISSEMENT: Keycloak {{ app_name }} n'est pas accessible depuis l'extérieur. Vérifiez la configuration de l'ingress."
-  when: external_check is defined and external_check is failed
+    msg: |
+      ⚠️  ATTENTION: Keycloak '{{ keycloak_deployment_info.name }}' n'est pas accessible depuis l'extérieur
+      🔗 URL testée: {{ keycloak_validation_config.external_base_url }}
+      📡 Statut: {{ keycloak_external_check.status | default('N/A') }}
+      🔍 Vérifiez la configuration de l'Ingress et des certificats TLS
+  when:
+    - keycloak_external_check is defined
+    - keycloak_external_check.status not in [200, 204, 301, 302, 307, 308]
 
-- name: Vérification de l'accès à la console d'administration
+# =========================================================================
+# VALIDATION DE LA CONSOLE D'ADMINISTRATION
+# =========================================================================
+- name: "👑 [ADMIN] Vérification de l'accès à la console d'administration"
   uri:
-    url: "http://{{ app_name }}.{{ app_namespace }}.svc.cluster.local:{{ keycloak_default_port }}/auth/admin/"
-    status_code: 200, 301, 302, 307, 308
-    validate_certs: no
-  register: admin_console_check
-  ignore_errors: yes
+    url: "{{ keycloak_validation_config.internal_base_url }}{{ keycloak_validation_config.admin_path }}"
+    method: GET
+    status_code: [200, 401, 403]  # 401/403 sont acceptables (authentification requise)
+    validate_certs: "{{ keycloak_validation_config.tls_verify }}"
+    timeout: 30
+  register: keycloak_admin_check
+  failed_when: false
+  tags: ['admin', 'security']
 
-- name: Affichage du résultat de la vérification de la console d'administration
+- name: "🟢 [SUCCESS] Console d'administration accessible"
   debug:
-    msg: "La console d'administration de Keycloak est accessible."
-  when: admin_console_check is succeeded
+    msg: |
+      ✅ Console d'administration Keycloak accessible
+      🔗 Endpoint: {{ keycloak_validation_config.admin_path }}
+      📡 Statut: {{ keycloak_admin_check.status }}
+      {{ '🔐 Authentification requise (normal)' if keycloak_admin_check.status in [401, 403] else '🔓 Accès direct possible' }}
+  when: keycloak_admin_check.status in [200, 401, 403]
 
-- name: Avertissement si la console d'administration n'est pas accessible
-  debug:
-    msg: "AVERTISSEMENT: La console d'administration de Keycloak n'est pas accessible. Vérifiez la configuration."
-  when: admin_console_check is failed
-
-- name: Vérification des métriques Prometheus
+# =========================================================================
+# VALIDATION DES REALMS
+# =========================================================================
+- name: "🏰 [REALM] Vérification du realm principal"
   uri:
-    url: "http://{{ app_name }}.{{ app_namespace }}.svc.cluster.local:{{ keycloak_prometheus_port }}{{ keycloak_prometheus_path }}"
-    status_code: 200
-    validate_certs: no
-  register: metrics_check
-  ignore_errors: yes
-  when: keycloak_prometheus_scrape | bool
+    url: "{{ keycloak_validation_config.internal_base_url }}{{ keycloak_validation_config.auth_path }}"
+    method: GET
+    status_code: [200]
+    validate_certs: "{{ keycloak_validation_config.tls_verify }}"
+    timeout: 30
+  register: keycloak_realm_check
+  failed_when: false
+  tags: ['realm', 'auth']
 
-- name: Affichage du résultat de la vérification des métriques
+- name: "🟢 [SUCCESS] Realm principal accessible"
   debug:
-    msg: "Les métriques Prometheus sont disponibles pour Keycloak {{ app_name }}."
-  when: metrics_check is defined and metrics_check is succeeded
+    msg: |
+      ✅ Realm '{{ lions_keycloak_realm }}' est accessible
+      🔗 Endpoint: {{ keycloak_validation_config.auth_path }}
+      📡 Statut: {{ keycloak_realm_check.status }}
+  when: keycloak_realm_check.status == 200
 
-- name: Avertissement si les métriques ne sont pas disponibles
+- name: "🔴 [WARNING] Problème avec le realm principal"
   debug:
-    msg: "AVERTISSEMENT: Les métriques Prometheus ne sont pas disponibles pour Keycloak {{ app_name }}."
-  when: metrics_check is defined and metrics_check is failed
+    msg: |
+      ⚠️  ATTENTION: Le realm '{{ lions_keycloak_realm }}' n'est pas accessible
+      📡 Statut: {{ keycloak_realm_check.status | default('N/A') }}
+      🔍 Vérifiez la configuration du realm dans Keycloak
+  when: keycloak_realm_check.status != 200
 
-- name: Vérification de la connexion à la base de données
+# =========================================================================
+# VALIDATION DU MONITORING
+# =========================================================================
+- name: "📊 [METRICS] Vérification des métriques Prometheus"
   uri:
-    url: "http://{{ app_name }}.{{ app_namespace }}.svc.cluster.local:{{ keycloak_default_port }}/health/ready"
-    status_code: 200
-    validate_certs: no
-  register: db_check
-  ignore_errors: yes
+    url: "{{ keycloak_validation_config.internal_base_url }}{{ keycloak_validation_config.metrics_path }}"
+    method: GET
+    status_code: [200]
+    validate_certs: "{{ keycloak_validation_config.tls_verify }}"
+    timeout: 30
+  register: keycloak_metrics_check
+  failed_when: false
+  when: keycloak_validation_config.metrics_enabled | bool
+  tags: ['metrics', 'monitoring']
 
-- name: Affichage du résultat de la vérification de la base de données
+- name: "🟢 [SUCCESS] Métriques Prometheus disponibles"
   debug:
-    msg: "La connexion à la base de données est fonctionnelle pour Keycloak {{ app_name }}."
-  when: db_check is succeeded
+    msg: |
+      ✅ Métriques Prometheus accessibles pour Keycloak
+      🔗 Endpoint: {{ keycloak_validation_config.metrics_path }}
+      📊 Données collectées avec succès
+  when:
+    - keycloak_validation_config.metrics_enabled | bool
+    - keycloak_metrics_check.status == 200
 
-- name: Avertissement si la connexion à la base de données n'est pas fonctionnelle
+- name: "🔴 [WARNING] Métriques Prometheus indisponibles"
   debug:
-    msg: "AVERTISSEMENT: La connexion à la base de données n'est pas fonctionnelle pour Keycloak {{ app_name }}."
-  when: db_check is failed
+    msg: |
+      ⚠️  ATTENTION: Les métriques Prometheus ne sont pas disponibles
+      📡 Statut: {{ keycloak_metrics_check.status | default('N/A') }}
+      🔍 Vérifiez la configuration des métriques dans Keycloak
+  when:
+    - keycloak_validation_config.metrics_enabled | bool
+    - keycloak_metrics_check.status != 200
 
-- name: Enregistrement des informations de déploiement
+# =========================================================================
+# VALIDATION DE LA CONNECTIVITÉ BASE DE DONNÉES
+# =========================================================================
+- name: "🗄️  [DATABASE] Vérification de la connectivité base de données"
+  uri:
+    url: "{{ keycloak_validation_config.internal_base_url }}{{ keycloak_validation_config.ready_path }}"
+    method: GET
+    status_code: [200]
+    validate_certs: "{{ keycloak_validation_config.tls_verify }}"
+    timeout: 30
+  register: keycloak_db_connectivity
+  failed_when: false
+  tags: ['database', 'connectivity']
+
+- name: "🟢 [SUCCESS] Connectivité base de données OK"
+  debug:
+    msg: |
+      ✅ Connectivité base de données fonctionnelle
+      🔗 Keycloak peut accéder à sa base de données
+      📊 Statut: {{ keycloak_db_connectivity.status }}
+  when: keycloak_db_connectivity.status == 200
+
+# =========================================================================
+# VALIDATION DES PERFORMANCES
+# =========================================================================
+- name: "⚡ [PERFORMANCE] Test de performance basique"
+  uri:
+    url: "{{ keycloak_validation_config.internal_base_url }}{{ keycloak_validation_config.health_path }}"
+    method: GET
+    status_code: [200, 204]
+    validate_certs: "{{ keycloak_validation_config.tls_verify }}"
+    timeout: 10
+  register: keycloak_perf_test
+  with_sequence: start=1 end=5
+  failed_when: false
+  when: lions_environment == 'production'
+  tags: ['performance']
+
+- name: "📈 [PERFORMANCE] Résultats du test de performance"
+  debug:
+    msg: |
+      📊 Test de performance Keycloak ({{ item.item }}/5):
+      ⏱️  Temps de réponse: {{ item.elapsed }}s
+      📡 Statut: {{ item.status }}
+  loop: "{{ keycloak_perf_test.results | default([]) }}"
+  when:
+    - lions_environment == 'production'
+    - keycloak_perf_test.results is defined
+
+# =========================================================================
+# SYNTHÈSE DE VALIDATION
+# =========================================================================
+- name: "📋 [SUMMARY] Calcul du score de validation"
+  set_fact:
+    keycloak_validation_score:
+      health_ok: "{{ keycloak_health_check.status in [200, 204] }}"
+      readiness_ok: "{{ keycloak_readiness_check.status in [200, 204] }}"
+      external_ok: "{{ keycloak_external_check.status in [200, 204, 301, 302, 307, 308] if keycloak_external_check is defined else true }}"
+      admin_ok: "{{ keycloak_admin_check.status in [200, 401, 403] }}"
+      realm_ok: "{{ keycloak_realm_check.status == 200 }}"
+      metrics_ok: "{{ keycloak_metrics_check.status == 200 if keycloak_validation_config.metrics_enabled | bool else true }}"
+      db_ok: "{{ keycloak_db_connectivity.status == 200 }}"
+
+- name: "📊 [SUMMARY] Affichage du résumé de validation"
+  debug:
+    msg: |
+      
+      ═══════════════════════════════════════════════════════════
+      🎯 RÉSUMÉ DE VALIDATION KEYCLOAK - {{ keycloak_deployment_info.environment | upper }}
+      ═══════════════════════════════════════════════════════════
+      
+      📱 Service: {{ keycloak_deployment_info.name }}
+      📦 Namespace: {{ keycloak_deployment_info.namespace }}
+      🏷️  Version: {{ keycloak_deployment_info.version }}
+      ⏰ Timestamp: {{ keycloak_deployment_info.timestamp }}
+      
+      ✅ VALIDATIONS:
+      {{ '✅' if keycloak_validation_score.health_ok else '❌' }} Santé applicative
+      {{ '✅' if keycloak_validation_score.readiness_ok else '❌' }} Disponibilité
+      {{ '✅' if keycloak_validation_score.external_ok else '❌' }} Accessibilité externe
+      {{ '✅' if keycloak_validation_score.admin_ok else '❌' }} Console d'administration  
+      {{ '✅' if keycloak_validation_score.realm_ok else '❌' }} Realm principal
+      {{ '✅' if keycloak_validation_score.metrics_ok else '❌' }} Métriques Prometheus
+      {{ '✅' if keycloak_validation_score.db_ok else '❌' }} Connectivité base de données
+      
+      🔗 URLS:
+      📍 Interne: {{ keycloak_validation_config.internal_base_url }}
+      🌐 Externe: {{ keycloak_validation_config.external_base_url }}
+      👑 Admin: {{ keycloak_validation_config.external_base_url }}{{ keycloak_validation_config.admin_path }}
+      
+      ═══════════════════════════════════════════════════════════
+
+# =========================================================================
+# GÉNÉRATION DU RAPPORT DE VALIDATION
+# =========================================================================
+- name: "📄 [REPORT] Création du répertoire de logs"
+  file:
+    path: "/var/log/lions/validations"
+    state: directory
+    mode: '0755'
+  become: yes
+  failed_when: false
+
+- name: "📝 [REPORT] Génération du rapport de validation"
   copy:
     content: |
-      Application: {{ app_name }}
-      Version: {{ app_version }}
-      Environnement: {{ app_environment }}
-      Namespace: {{ app_namespace }}
-      URL: {{ app_url | default('Non disponible') }}
-      Date de déploiement: {{ ansible_date_time.iso8601 }}
-      Statut: {{ 'Succès' if health_check is succeeded else 'Avertissement' }}
+      # RAPPORT DE VALIDATION KEYCLOAK - LIONS INFRASTRUCTURE 5.0
       
-      Ressources:
-        Replicas: {{ app_replicas }}
-        CPU Requests: {{ app_resources.requests.cpu }}
-        Memory Requests: {{ app_resources.requests.memory }}
-        CPU Limits: {{ app_resources.limits.cpu }}
-        Memory Limits: {{ app_resources.limits.memory }}
+      ## Informations générales
+      - **Service**: {{ keycloak_deployment_info.name }}
+      - **Namespace**: {{ keycloak_deployment_info.namespace }}
+      - **Version**: {{ keycloak_deployment_info.version }}
+      - **Environnement**: {{ keycloak_deployment_info.environment }}
+      - **Date de validation**: {{ keycloak_deployment_info.timestamp }}
+      - **Validé par**: {{ ansible_user_id }}@{{ ansible_hostname }}
       
-      Monitoring:
-        Prometheus: {{ 'Activé' if keycloak_prometheus_scrape | bool else 'Désactivé' }}
-        Métriques: {{ 'Disponibles' if metrics_check is defined and metrics_check is succeeded else 'Non disponibles' }}
+      ## Configuration de validation
+      - **Timeout**: {{ keycloak_validation_config.health_check_timeout }}s
+      - **Retries**: {{ keycloak_validation_config.health_check_retries }}
+      - **Délai entre retry**: {{ keycloak_validation_config.health_check_delay }}s
+      - **Vérification TLS**: {{ keycloak_validation_config.tls_verify }}
       
-      Base de données:
-        Connexion: {{ 'Fonctionnelle' if db_check is succeeded else 'Non fonctionnelle' }}
+      ## Résultats de validation
       
-      Console d'administration:
-        Accès: {{ 'Fonctionnel' if admin_console_check is succeeded else 'Non fonctionnel' }}
+      ### ✅ Tests réussis
+      {% for key, value in keycloak_validation_score.items() %}
+      {% if value %}
+      - {{ key.replace('_', ' ').title() }}
+      {% endif %}
+      {% endfor %}
       
-      Notes:
-      - Vérifiez les logs de Keycloak pour plus d'informations.
-      - Pour les problèmes, contactez l'équipe d'infrastructure.
-    dest: "/var/log/lions/deployments/{{ app_name }}-{{ app_environment }}-{{ ansible_date_time.date }}.log"
+      ### ❌ Tests échoués
+      {% for key, value in keycloak_validation_score.items() %}
+      {% if not value %}
+      - {{ key.replace('_', ' ').title() }}
+      {% endif %}
+      {% endfor %}
+      
+      ## URLs validées
+      - **Santé**: {{ keycloak_validation_config.internal_base_url }}{{ keycloak_validation_config.health_path }}
+      - **Disponibilité**: {{ keycloak_validation_config.internal_base_url }}{{ keycloak_validation_config.ready_path }}
+      - **Administration**: {{ keycloak_validation_config.internal_base_url }}{{ keycloak_validation_config.admin_path }}
+      - **Realm**: {{ keycloak_validation_config.internal_base_url }}{{ keycloak_validation_config.auth_path }}
+      {% if keycloak_validation_config.metrics_enabled %}
+      - **Métriques**: {{ keycloak_validation_config.internal_base_url }}{{ keycloak_validation_config.metrics_path }}
+      {% endif %}
+      
+      ## Statuts HTTP obtenus
+      - **Santé**: {{ keycloak_health_check.status | default('N/A') }}
+      - **Disponibilité**: {{ keycloak_readiness_check.status | default('N/A') }}
+      - **Administration**: {{ keycloak_admin_check.status | default('N/A') }}
+      - **Realm**: {{ keycloak_realm_check.status | default('N/A') }}
+      {% if keycloak_external_check is defined %}
+      - **Externe**: {{ keycloak_external_check.status | default('N/A') }}
+      {% endif %}
+      {% if keycloak_metrics_check is defined %}
+      - **Métriques**: {{ keycloak_metrics_check.status | default('N/A') }}
+      {% endif %}
+      
+      ## Recommandations
+      {% if not keycloak_validation_score.health_ok %}
+      - ⚠️  Vérifiez les logs du conteneur Keycloak pour identifier les problèmes de santé
+      {% endif %}
+      {% if not keycloak_validation_score.external_ok %}
+      - ⚠️  Vérifiez la configuration de l'Ingress et des certificats TLS
+      {% endif %}
+      {% if not keycloak_validation_score.metrics_ok and keycloak_validation_config.metrics_enabled %}
+      - ⚠️  Vérifiez la configuration des métriques Prometheus dans Keycloak
+      {% endif %}
+      {% if not keycloak_validation_score.realm_ok %}
+      - ⚠️  Vérifiez la configuration du realm '{{ lions_keycloak_realm }}' dans Keycloak
+      {% endif %}
+      
+      ## Support
+      - **Documentation**: https://docs.lions.dev/infrastructure/keycloak
+      - **Contact**: devops@lions.dev
+      - **Logs système**: /var/log/lions/validations/
+      
+      ---
+      Rapport généré automatiquement par LIONS Infrastructure 5.0
+    dest: "/var/log/lions/validations/keycloak-{{ keycloak_deployment_info.environment }}-{{ ansible_date_time.date }}-{{ ansible_date_time.hour }}{{ ansible_date_time.minute }}.md"
     mode: '0644'
-  ignore_errors: yes
+  become: yes
+  failed_when: false
 
-- name: Nettoyage des fichiers temporaires
-  file:
-    path: "{{ temp_dir.path }}"
-    state: absent
+# =========================================================================
+# NETTOYAGE ET FINALISATION
+# =========================================================================
+- name: "🧹 [CLEANUP] Nettoyage des variables temporaires"
+  set_fact:
+    keycloak_validation_config: "{{ omit }}"
+    keycloak_deployment_info: "{{ omit }}"
   changed_when: false
-  ignore_errors: yes
+
+- name: "🎉 [SUCCESS] Validation Keycloak terminée avec succès"
+  debug:
+    msg: |
+      🎯 Validation de Keycloak terminée pour l'environnement {{ lions_environment | upper }}
+      📊 Consultez le rapport détaillé: /var/log/lions/validations/
+      🔍 Pour plus d'informations: https://docs.lions.dev/infrastructure/keycloak
+  when: keycloak_validation_score.health_ok and keycloak_validation_score.readiness_ok
+
+- name: "⚠️  [WARNING] Validation Keycloak terminée avec des avertissements"
+  debug:
+    msg: |
+      ⚠️  Validation de Keycloak terminée avec des avertissements pour {{ lions_environment | upper }}
+      📊 Consultez le rapport détaillé: /var/log/lions/validations/
+      🔧 Actions correctives recommandées - voir le rapport
+      📞 Contact support: devops@lions.dev
+  when: not (keycloak_validation_score.health_ok and keycloak_validation_score.readiness_ok)
+
+# =========================================================================
+# FIN DE VALIDATION
+# =========================================================================

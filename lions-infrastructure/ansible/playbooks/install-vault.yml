@@ -1,245 +1,574 @@
 ---
-# Titre: Playbook d'installation de HashiCorp Vault
-# Description: Installe et configure HashiCorp Vault pour la gestion des secrets
-# Auteur: Équipe LIONS Infrastructure
-# Date: 18/05/2025
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - PLAYBOOK HASHICORP VAULT
+# =========================================================================
+# Description: Installation et configuration complète de HashiCorp Vault
+# Version: 5.0.0
+# Maintainer: DevOps Team LIONS
+# Documentation: https://docs.lions.dev/infrastructure/vault
+# =========================================================================
 
-- name: Installation et configuration de HashiCorp Vault
-  hosts: vps
+- name: "LIONS VAULT: Installation et configuration HashiCorp Vault"
+  hosts: "{{ target_hosts | default('lions_vps') }}"
   become: true
   gather_facts: true
+  serial: "{{ vault_install_serial | default('100%') }}"
 
+  # =========================================================================
+  # VARIABLES DE CONFIGURATION VAULT
+  # =========================================================================
   vars:
-    vault_version: "{{ lookup('env', 'LIONS_VAULT_VERSION') | default('1.15.2') }}"
-    vault_port: "{{ lookup('env', 'LIONS_VAULT_PORT') | default('8200') }}"
-    vault_storage_path: "/opt/vault/data"
-    vault_log_path: "/var/log/vault"
-    vault_config_path: "/etc/vault.d"
-    vault_tls_enabled: "{{ lookup('env', 'LIONS_TLS_ENABLED') | default('true') | bool }}"
-    vault_tls_cert_path: "/etc/vault.d/tls/tls.crt"
-    vault_tls_key_path: "/etc/vault.d/tls/tls.key"
-    vault_ui_enabled: true
-    vault_api_addr: "{{ lookup('env', 'LIONS_VAULT_ADDR') | default('https://' + ansible_host + ':' + vault_port) }}"
-    vault_cluster_addr: "https://{{ ansible_host }}:8201"
-    vault_namespace: "vault"
-    vault_secrets_path: "kv"
+    # Configuration principale Vault
+    vault_version: "{{ lookup('env', 'LIONS_VAULT_VERSION') | default('1.15.2', true) }}"
+    vault_namespace: "{{ lookup('env', 'LIONS_VAULT_NAMESPACE') | default('vault-system', true) }}"
+    vault_service_name: "{{ lookup('env', 'LIONS_VAULT_SERVICE_NAME') | default('vault', true) }}"
+    vault_port: "{{ lookup('env', 'LIONS_VAULT_PORT') | default('8200', true) | int }}"
+    vault_cluster_port: "{{ vault_port | int + 1 }}"
 
+    # Configuration des chemins et répertoires
+    vault_data_dir: "{{ lookup('env', 'LIONS_VAULT_DATA_DIR') | default('/opt/vault/data', true) }}"
+    vault_config_dir: "{{ lookup('env', 'LIONS_VAULT_CONFIG_DIR') | default('/etc/vault.d', true) }}"
+    vault_log_dir: "/var/log/vault"
+    vault_binary_path: "/usr/local/bin/vault"
+    vault_temp_dir: "/tmp/vault-install"
+
+    # Configuration réseau et domaine
+    vault_domain_base: "{{ lookup('env', 'LIONS_DNS_DOMAIN_BASE') | default('lions.local', true) }}"
+    vault_domain_full: "{{ lookup('env', 'LIONS_DNS_FULL_DOMAIN') | default('dev.lions.local', true) }}"
+    vault_addr: "{{ lookup('env', 'LIONS_VAULT_ADDR') | default('https://vault.' + vault_domain_full, true) }}"
+    vault_skip_verify: "{{ lookup('env', 'LIONS_VAULT_SKIP_VERIFY') | default('false', true) | bool }}"
+
+    # Configuration sécurité
+    vault_tls_enabled: "{{ lookup('env', 'LIONS_SECURITY_TLS_ENABLED') | default('true', true) | bool }}"
+    vault_auto_unseal: "{{ lookup('env', 'LIONS_VAULT_AUTO_UNSEAL') | default('false', true) | bool }}"
+    vault_seal_type: "{{ lookup('env', 'LIONS_VAULT_SEAL_TYPE') | default('shamir', true) }}"
+    vault_ha_enabled: "{{ lookup('env', 'LIONS_VAULT_HA_ENABLED') | default('false', true) | bool }}"
+
+    # Configuration utilisateur et permissions
+    vault_user: "vault"
+    vault_group: "vault"
+    vault_uid: "1001"
+    vault_gid: "1001"
+
+    # Configuration backup et logging
+    vault_audit_enabled: "{{ lookup('env', 'LIONS_AUDIT_ENABLED') | default('true', true) | bool }}"
+    vault_log_level: "{{ lookup('env', 'LIONS_LOG_LEVEL') | default('INFO', true) }}"
+    vault_log_format: "{{ lookup('env', 'LIONS_LOG_FORMAT') | default('json', true) }}"
+
+    # Variables d'environnement pour l'exécution
+    vault_environment:
+      LIONS_ENVIRONMENT: "{{ lookup('env', 'LIONS_ENVIRONMENT') | default('development', true) }}"
+      VAULT_ADDR: "{{ vault_addr }}"
+      VAULT_SKIP_VERIFY: "{{ vault_skip_verify | lower }}"
+      VAULT_FORMAT: "json"
+      VAULT_LOG_LEVEL: "{{ vault_log_level }}"
+
+  # =========================================================================
+  # TÂCHES DE PRÉPARATION ET VALIDATION
+  # =========================================================================
+  pre_tasks:
+    - name: "VAULT PREP: Validation de la configuration"
+      block:
+        - name: "VAULT PREP: Vérification des variables obligatoires"
+          assert:
+            that:
+              - vault_version is defined and vault_version != ""
+              - vault_domain_full is defined and vault_domain_full != ""
+              - vault_addr is defined and vault_addr != ""
+            fail_msg: "Variables de configuration Vault manquantes ou invalides"
+            success_msg: "Configuration Vault validée avec succès"
+
+        - name: "VAULT PREP: Affichage de la configuration"
+          debug:
+            msg:
+              - "🏗️  Installation HashiCorp Vault {{ vault_version }}"
+              - "🌐 Domaine: {{ vault_domain_full }}"
+              - "🔗 URL: {{ vault_addr }}"
+              - "🔒 TLS: {{ vault_tls_enabled | ternary('Activé', 'Désactivé') }}"
+              - "⚡ HA: {{ vault_ha_enabled | ternary('Activé', 'Désactivé') }}"
+              - "📁 Répertoire données: {{ vault_data_dir }}"
+          when: lookup('env', 'LIONS_DEBUG_MODE') | default('false', true) | bool
+
+    - name: "VAULT PREP: Vérification des prérequis système"
+      block:
+        - name: "VAULT PREP: Vérification de l'espace disque disponible"
+          shell: df -h {{ vault_data_dir | dirname }} | tail -1 | awk '{print $5}' | sed 's/%//'
+          register: disk_usage
+          changed_when: false
+          failed_when: disk_usage.stdout | int > 85
+
+        - name: "VAULT PREP: Vérification de la mémoire disponible"
+          shell: free -m | awk 'NR==2{printf "%.1f", $3*100/$2}'
+          register: memory_usage
+          changed_when: false
+          failed_when: memory_usage.stdout | float > 90.0
+
+  # =========================================================================
+  # TÂCHES PRINCIPALES D'INSTALLATION
+  # =========================================================================
   tasks:
-    - name: Création des répertoires pour Vault
-      file:
-        path: "{{ item }}"
-        state: directory
-        mode: '0755'
-      with_items:
-        - "{{ vault_storage_path }}"
-        - "{{ vault_log_path }}"
-        - "{{ vault_config_path }}"
-        - "{{ vault_config_path }}/tls"
+    # -------------------------------------------------------------------------
+    # SECTION: Préparation du système
+    # -------------------------------------------------------------------------
+    - name: "VAULT SYSTEM: Préparation du système pour Vault"
+      block:
+        - name: "VAULT SYSTEM: Installation des paquets requis"
+          package:
+            name:
+              - curl
+              - unzip
+              - jq
+              - gpg
+              - ca-certificates
+            state: present
+            update_cache: true
 
-    - name: Téléchargement de HashiCorp Vault
-      get_url:
-        url: "https://releases.hashicorp.com/vault/{{ vault_version }}/vault_{{ vault_version }}_linux_amd64.zip"
-        dest: "/tmp/vault.zip"
-        mode: '0644'
+        - name: "VAULT SYSTEM: Création du groupe vault"
+          group:
+            name: "{{ vault_group }}"
+            gid: "{{ vault_gid }}"
+            state: present
 
-    - name: Installation de HashiCorp Vault
-      unarchive:
-        src: "/tmp/vault.zip"
-        dest: "/usr/local/bin"
-        remote_src: yes
-        mode: '0755'
-        owner: root
-        group: root
+        - name: "VAULT SYSTEM: Création de l'utilisateur vault"
+          user:
+            name: "{{ vault_user }}"
+            uid: "{{ vault_uid }}"
+            group: "{{ vault_group }}"
+            system: true
+            shell: /bin/false
+            home: "{{ vault_data_dir }}"
+            create_home: false
+            state: present
 
-    - name: Création du fichier de configuration Vault
-      template:
-        src: "../templates/vault.hcl.j2"
-        dest: "{{ vault_config_path }}/vault.hcl"
-        mode: '0644'
-      notify: restart vault
+        - name: "VAULT SYSTEM: Création des répertoires Vault"
+          file:
+            path: "{{ item.path }}"
+            state: directory
+            owner: "{{ item.owner | default(vault_user) }}"
+            group: "{{ item.group | default(vault_group) }}"
+            mode: "{{ item.mode | default('0755') }}"
+          loop:
+            - { path: "{{ vault_data_dir }}", mode: "0750" }
+            - { path: "{{ vault_config_dir }}", mode: "0750" }
+            - { path: "{{ vault_config_dir }}/tls", mode: "0700" }
+            - { path: "{{ vault_config_dir }}/secure", mode: "0700", owner: "root", group: "root" }
+            - { path: "{{ vault_log_dir }}", mode: "0755" }
+            - { path: "{{ vault_temp_dir }}", mode: "0755", owner: "root", group: "root" }
 
-    - name: Création du service systemd pour Vault
-      template:
-        src: "../templates/vault.service.j2"
-        dest: "/etc/systemd/system/vault.service"
-        mode: '0644'
-      notify: restart vault
+    # -------------------------------------------------------------------------
+    # SECTION: Téléchargement et installation de Vault
+    # -------------------------------------------------------------------------
+    - name: "VAULT INSTALL: Téléchargement et installation HashiCorp Vault"
+      block:
+        - name: "VAULT INSTALL: Vérification de la version installée"
+          command: "{{ vault_binary_path }} version"
+          register: vault_current_version
+          changed_when: false
+          failed_when: false
 
-    - name: Démarrage et activation du service Vault
-      systemd:
-        name: vault
-        state: started
-        enabled: yes
-        daemon_reload: yes
+        - name: "VAULT INSTALL: Téléchargement de Vault {{ vault_version }}"
+          get_url:
+            url: "https://releases.hashicorp.com/vault/{{ vault_version }}/vault_{{ vault_version }}_linux_amd64.zip"
+            dest: "{{ vault_temp_dir }}/vault.zip"
+            mode: '0644'
+            timeout: 300
+          when: vault_current_version.rc != 0 or vault_version not in vault_current_version.stdout
 
-    - name: Attente que Vault soit prêt
-      uri:
-        url: "{{ vault_api_addr }}/v1/sys/health"
-        validate_certs: no
-        status_code: 200, 429, 501, 503
-      register: vault_status
-      until: vault_status.status == 200 or vault_status.status == 429 or vault_status.status == 501 or vault_status.status == 503
-      retries: 10
-      delay: 5
+        - name: "VAULT INSTALL: Téléchargement des checksums"
+          get_url:
+            url: "https://releases.hashicorp.com/vault/{{ vault_version }}/vault_{{ vault_version }}_SHA256SUMS"
+            dest: "{{ vault_temp_dir }}/vault_checksums.txt"
+            mode: '0644'
+          when: vault_current_version.rc != 0 or vault_version not in vault_current_version.stdout
 
-    - name: Création du répertoire sécurisé pour les données d'initialisation Vault
-      file:
-        path: "/etc/vault.d/secure"
-        state: directory
-        mode: '0700'
-        owner: root
-        group: root
+        - name: "VAULT INSTALL: Vérification des checksums"
+          shell: |
+            cd {{ vault_temp_dir }}
+            sha256sum -c vault_checksums.txt --ignore-missing
+          when: vault_current_version.rc != 0 or vault_version not in vault_current_version.stdout
 
-    - name: Initialisation de Vault (si nécessaire)
-      shell: |
-        vault operator init -format=json > /etc/vault.d/secure/vault-init.json
-        chmod 600 /etc/vault.d/secure/vault-init.json
-      environment:
-        VAULT_ADDR: "{{ vault_api_addr }}"
-        VAULT_SKIP_VERIFY: "true"
-      register: vault_init
-      failed_when: vault_init.rc != 0 and "Vault is already initialized" not in vault_init.stderr
-      changed_when: vault_init.rc == 0
+        - name: "VAULT INSTALL: Installation du binaire Vault"
+          unarchive:
+            src: "{{ vault_temp_dir }}/vault.zip"
+            dest: "/usr/local/bin"
+            remote_src: true
+            owner: root
+            group: root
+            mode: '0755'
+          when: vault_current_version.rc != 0 or vault_version not in vault_current_version.stdout
+          notify:
+            - restart vault
+            - validate vault installation
 
-    - name: Déverrouillage de Vault (si nécessaire)
-      shell: |
-        cat /etc/vault.d/secure/vault-init.json | jq -r '.unseal_keys_b64[0]' | vault operator unseal -
-        cat /etc/vault.d/secure/vault-init.json | jq -r '.unseal_keys_b64[1]' | vault operator unseal -
-        cat /etc/vault.d/secure/vault-init.json | jq -r '.unseal_keys_b64[2]' | vault operator unseal -
-      environment:
-        VAULT_ADDR: "{{ vault_api_addr }}"
-        VAULT_SKIP_VERIFY: "true"
-      when: vault_status.status == 503
-      ignore_errors: yes
+        - name: "VAULT INSTALL: Création des liens symboliques"
+          file:
+            src: "{{ vault_binary_path }}"
+            dest: "/usr/bin/vault"
+            state: link
 
-    - name: Activation du moteur de secrets KV version 2
-      shell: |
-        export VAULT_TOKEN=$(cat /etc/vault.d/secure/vault-init.json | jq -r '.root_token')
-        vault secrets enable -version=2 {{ vault_secrets_path }}
-      environment:
-        VAULT_ADDR: "{{ vault_api_addr }}"
-        VAULT_SKIP_VERIFY: "true"
-      register: kv_enable
-      failed_when: kv_enable.rc != 0 and "path is already in use" not in kv_enable.stderr
-      changed_when: kv_enable.rc == 0
+    # -------------------------------------------------------------------------
+    # SECTION: Configuration de Vault
+    # -------------------------------------------------------------------------
+    - name: "VAULT CONFIG: Configuration de HashiCorp Vault"
+      block:
+        - name: "VAULT CONFIG: Génération de la configuration Vault"
+          template:
+            src: "../templates/vault.hcl.j2"
+            dest: "{{ vault_config_dir }}/vault.hcl"
+            owner: "{{ vault_user }}"
+            group: "{{ vault_group }}"
+            mode: '0640'
+            backup: true
+          notify: restart vault
 
-    - name: Création d'une politique pour les applications
-      shell: |
-        export VAULT_TOKEN=$(cat /etc/vault.d/secure/vault-init.json | jq -r '.root_token')
-        cat > /tmp/app-policy.hcl << EOF
-        path "{{ vault_secrets_path }}/data/lions/*" {
-          capabilities = ["read"]
-        }
-        EOF
-        vault policy write app-policy /tmp/app-policy.hcl
-      environment:
-        VAULT_ADDR: "{{ vault_api_addr }}"
-        VAULT_SKIP_VERIFY: "true"
-      register: policy_create
-      changed_when: policy_create.rc == 0
+        - name: "VAULT CONFIG: Configuration du service systemd"
+          template:
+            src: "../templates/vault.service.j2"
+            dest: "/etc/systemd/system/vault.service"
+            owner: root
+            group: root
+            mode: '0644'
+            backup: true
+          notify:
+            - reload systemd
+            - restart vault
 
-    - name: Création d'un rôle pour Kubernetes
-      shell: |
-        export VAULT_TOKEN=$(cat /etc/vault.d/secure/vault-init.json | jq -r '.root_token')
-        vault auth enable kubernetes
-        vault write auth/kubernetes/config \
-          kubernetes_host="https://kubernetes.default.svc:443" \
-          token_reviewer_jwt="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" \
-          kubernetes_ca_cert="$(cat /var/run/secrets/kubernetes.io/serviceaccount/ca.crt)" \
-          issuer="https://kubernetes.default.svc.cluster.local"
-        vault write auth/kubernetes/role/app \
-          bound_service_account_names="*" \
-          bound_service_account_namespaces="*" \
-          policies=app-policy \
-          ttl=1h
-      environment:
-        VAULT_ADDR: "{{ vault_api_addr }}"
-        VAULT_SKIP_VERIFY: "true"
-      register: k8s_role
-      failed_when: k8s_role.rc != 0 and "path is already in use" not in k8s_role.stderr
-      changed_when: k8s_role.rc == 0
-      ignore_errors: yes
+        - name: "VAULT CONFIG: Configuration de l'environnement Vault"
+          template:
+            src: "../templates/vault.env.j2"
+            dest: "/etc/default/vault"
+            owner: root
+            group: root
+            mode: '0644'
+          notify: restart vault
 
-    - name: Déploiement de l'agent Vault sur Kubernetes
-      kubernetes.core.k8s:
-        state: present
-        definition:
-          apiVersion: v1
-          kind: Namespace
-          metadata:
+        - name: "VAULT CONFIG: Configuration de logrotate"
+          template:
+            src: "../templates/vault-logrotate.j2"
+            dest: "/etc/logrotate.d/vault"
+            owner: root
+            group: root
+            mode: '0644'
+
+    # -------------------------------------------------------------------------
+    # SECTION: Démarrage et validation du service
+    # -------------------------------------------------------------------------
+    - name: "VAULT SERVICE: Démarrage et activation du service Vault"
+      block:
+        - name: "VAULT SERVICE: Rechargement de systemd"
+          systemd:
+            daemon_reload: true
+
+        - name: "VAULT SERVICE: Activation et démarrage du service"
+          systemd:
+            name: vault
+            state: started
+            enabled: true
+
+        - name: "VAULT SERVICE: Vérification du statut du service"
+          systemd:
+            name: vault
+          register: vault_service_status
+
+        - name: "VAULT SERVICE: Attente de la disponibilité de Vault"
+          uri:
+            url: "{{ vault_addr }}/v1/sys/health"
+            method: GET
+            validate_certs: "{{ not vault_skip_verify }}"
+            status_code: [200, 429, 472, 501, 503]
+            timeout: 10
+          register: vault_health_check
+          until: vault_health_check.status in [200, 429, 472, 501, 503]
+          retries: 30
+          delay: 10
+
+    # -------------------------------------------------------------------------
+    # SECTION: Initialisation de Vault
+    # -------------------------------------------------------------------------
+    - name: "VAULT INIT: Initialisation de HashiCorp Vault"
+      block:
+        - name: "VAULT INIT: Vérification du statut d'initialisation"
+          uri:
+            url: "{{ vault_addr }}/v1/sys/init"
+            method: GET
+            validate_certs: "{{ not vault_skip_verify }}"
+          register: vault_init_status
+          environment: "{{ vault_environment }}"
+
+        - name: "VAULT INIT: Initialisation de Vault (première installation)"
+          uri:
+            url: "{{ vault_addr }}/v1/sys/init"
+            method: POST
+            body_format: json
+            body:
+              secret_shares: 5
+              secret_threshold: 3
+              recovery_shares: 5
+              recovery_threshold: 3
+              stored_shares: 1
+            validate_certs: "{{ not vault_skip_verify }}"
+          register: vault_initialization
+          when: not vault_init_status.json.initialized
+          environment: "{{ vault_environment }}"
+
+        - name: "VAULT INIT: Sauvegarde sécurisée des clés d'initialisation"
+          copy:
+            content: "{{ vault_initialization.json | to_nice_json }}"
+            dest: "{{ vault_config_dir }}/secure/vault-init.json"
+            owner: root
+            group: root
+            mode: '0600'
+            backup: true
+          when: vault_initialization is defined and vault_initialization.json is defined
+          no_log: true
+
+        - name: "VAULT INIT: Déverrouillage automatique de Vault"
+          uri:
+            url: "{{ vault_addr }}/v1/sys/unseal"
+            method: POST
+            body_format: json
+            body:
+              key: "{{ item }}"
+            validate_certs: "{{ not vault_skip_verify }}"
+          loop: "{{ vault_initialization.json.keys[:3] }}"
+          when:
+            - vault_initialization is defined
+            - vault_initialization.json is defined
+            - vault_health_check.status == 503
+          environment: "{{ vault_environment }}"
+          no_log: true
+
+    # -------------------------------------------------------------------------
+    # SECTION: Configuration post-initialisation
+    # -------------------------------------------------------------------------
+    - name: "VAULT POST-CONFIG: Configuration post-initialisation"
+      block:
+        - name: "VAULT POST-CONFIG: Lecture du token root"
+          slurp:
+            src: "{{ vault_config_dir }}/secure/vault-init.json"
+          register: vault_init_data
+          no_log: true
+
+        - name: "VAULT POST-CONFIG: Activation du moteur de secrets KV v2"
+          uri:
+            url: "{{ vault_addr }}/v1/sys/mounts/kv"
+            method: POST
+            headers:
+              X-Vault-Token: "{{ (vault_init_data.content | b64decode | from_json).root_token }}"
+            body_format: json
+            body:
+              type: kv
+              options:
+                version: "2"
+            validate_certs: "{{ not vault_skip_verify }}"
+            status_code: [200, 400]
+          register: kv_enable_result
+          failed_when:
+            - kv_enable_result.status == 400
+            - "'path is already in use' not in kv_enable_result.json.errors[0]"
+          environment: "{{ vault_environment }}"
+          no_log: true
+
+        - name: "VAULT POST-CONFIG: Création de la politique pour les applications"
+          uri:
+            url: "{{ vault_addr }}/v1/sys/policies/acl/lions-app-policy"
+            method: PUT
+            headers:
+              X-Vault-Token: "{{ (vault_init_data.content | b64decode | from_json).root_token }}"
+            body_format: json
+            body:
+              policy: |
+                path "kv/data/lions/*" {
+                  capabilities = ["read"]
+                }
+                path "kv/metadata/lions/*" {
+                  capabilities = ["list", "read"]
+                }
+                path "auth/token/lookup-self" {
+                  capabilities = ["read"]
+                }
+            validate_certs: "{{ not vault_skip_verify }}"
+          environment: "{{ vault_environment }}"
+          no_log: true
+
+        - name: "VAULT POST-CONFIG: Activation de l'audit logging"
+          uri:
+            url: "{{ vault_addr }}/v1/sys/audit/file"
+            method: PUT
+            headers:
+              X-Vault-Token: "{{ (vault_init_data.content | b64decode | from_json).root_token }}"
+            body_format: json
+            body:
+              type: file
+              options:
+                file_path: "{{ vault_log_dir }}/vault-audit.log"
+                log_raw: false
+                hmac_accessor: true
+                mode: "0640"
+            validate_certs: "{{ not vault_skip_verify }}"
+            status_code: [200, 400]
+          register: audit_enable_result
+          failed_when:
+            - audit_enable_result.status == 400
+            - "'path already in use' not in audit_enable_result.json.errors[0]"
+          when: vault_audit_enabled
+          environment: "{{ vault_environment }}"
+          no_log: true
+
+    # -------------------------------------------------------------------------
+    # SECTION: Déploiement Kubernetes
+    # -------------------------------------------------------------------------
+    - name: "VAULT K8S: Déploiement des ressources Kubernetes"
+      block:
+        - name: "VAULT K8S: Création du namespace Vault"
+          kubernetes.core.k8s:
             name: "{{ vault_namespace }}"
-      environment:
-        KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+            api_version: v1
+            kind: Namespace
+            state: present
+            kubeconfig: "{{ lookup('env', 'KUBECONFIG') | default('/etc/rancher/k3s/k3s.yaml', true) }}"
 
-    - name: Déploiement du service Vault sur Kubernetes
-      kubernetes.core.k8s:
-        state: present
-        definition:
-          apiVersion: v1
-          kind: Service
-          metadata:
-            name: vault
-            namespace: "{{ vault_namespace }}"
-          spec:
-            ports:
-            - name: http
-              port: 8200
-              targetPort: 8200
-              protocol: TCP
-            - name: cluster
-              port: 8201
-              targetPort: 8201
-              protocol: TCP
-            selector:
-              app: vault
-            type: ClusterIP
-      environment:
-        KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+        - name: "VAULT K8S: Déploiement du service externe Vault"
+          kubernetes.core.k8s:
+            state: present
+            kubeconfig: "{{ lookup('env', 'KUBECONFIG') | default('/etc/rancher/k3s/k3s.yaml', true) }}"
+            definition:
+              apiVersion: v1
+              kind: Service
+              metadata:
+                name: "{{ vault_service_name }}-external"
+                namespace: "{{ vault_namespace }}"
+                labels:
+                  app: vault
+                  component: external-service
+                  managed-by: lions-infrastructure
+              spec:
+                type: ExternalName
+                externalName: "{{ ansible_host }}"
+                ports:
+                  - name: http
+                    port: "{{ vault_port }}"
+                    targetPort: "{{ vault_port }}"
+                    protocol: TCP
+                  - name: cluster
+                    port: "{{ vault_cluster_port }}"
+                    targetPort: "{{ vault_cluster_port }}"
+                    protocol: TCP
 
-    - name: Déploiement de l'Ingress pour Vault
-      kubernetes.core.k8s:
-        state: present
-        definition:
-          apiVersion: networking.k8s.io/v1
-          kind: Ingress
-          metadata:
-            name: vault
-            namespace: "{{ vault_namespace }}"
-            annotations:
-              cert-manager.io/cluster-issuer: letsencrypt-prod
-              traefik.ingress.kubernetes.io/router.entrypoints: "websecure"
-              traefik.ingress.kubernetes.io/router.tls: "true"
-          spec:
-            ingressClassName: traefik
-            tls:
-            - hosts:
-              - "vault.{{ lookup('env', 'LIONS_DOMAIN') | default('dev.lions.dev') }}"
-              secretName: vault-tls
-            rules:
-            - host: "vault.{{ lookup('env', 'LIONS_DOMAIN') | default('dev.lions.dev') }}"
-              http:
-                paths:
-                - path: /
-                  pathType: Prefix
-                  backend:
-                    service:
-                      name: vault
-                      port:
-                        number: 8200
-      environment:
-        KUBECONFIG: /home/{{ ansible_user }}/.kube/config
+        - name: "VAULT K8S: Déploiement de l'Ingress Vault"
+          kubernetes.core.k8s:
+            state: present
+            kubeconfig: "{{ lookup('env', 'KUBECONFIG') | default('/etc/rancher/k3s/k3s.yaml', true) }}"
+            definition:
+              apiVersion: networking.k8s.io/v1
+              kind: Ingress
+              metadata:
+                name: "{{ vault_service_name }}"
+                namespace: "{{ vault_namespace }}"
+                labels:
+                  app: vault
+                  component: ingress
+                  managed-by: lions-infrastructure
+                annotations:
+                  cert-manager.io/cluster-issuer: "{{ 'letsencrypt-prod' if not (lookup('env', 'LIONS_SECURITY_TLS_STAGING') | default('true', true) | bool) else 'letsencrypt-staging' }}"
+                  traefik.ingress.kubernetes.io/router.entrypoints: "websecure"
+                  traefik.ingress.kubernetes.io/router.tls: "true"
+                  traefik.ingress.kubernetes.io/router.middlewares: "{{ vault_namespace }}-vault-headers@kubernetescrd"
+              spec:
+                ingressClassName: traefik
+                tls:
+                  - hosts:
+                      - "vault.{{ vault_domain_full }}"
+                    secretName: vault-tls
+                rules:
+                  - host: "vault.{{ vault_domain_full }}"
+                    http:
+                      paths:
+                        - path: /
+                          pathType: Prefix
+                          backend:
+                            service:
+                              name: "{{ vault_service_name }}-external"
+                              port:
+                                number: "{{ vault_port }}"
 
-    - name: Affichage des informations de Vault
-      debug:
-        msg: 
-          - "Vault est installé et configuré avec succès"
-          - "URL d'accès: {{ vault_api_addr }}"
-          - "Les informations d'initialisation sont stockées dans /etc/vault.d/secure/vault-init.json"
-          - "IMPORTANT: Sauvegardez ce fichier dans un endroit sécurisé, il contient les clés de déverrouillage et le token root"
+        - name: "VAULT K8S: Configuration des middlewares Traefik"
+          kubernetes.core.k8s:
+            state: present
+            kubeconfig: "{{ lookup('env', 'KUBECONFIG') | default('/etc/rancher/k3s/k3s.yaml', true) }}"
+            definition:
+              apiVersion: traefik.containo.us/v1alpha1
+              kind: Middleware
+              metadata:
+                name: vault-headers
+                namespace: "{{ vault_namespace }}"
+              spec:
+                headers:
+                  customRequestHeaders:
+                    X-Forwarded-Proto: "https"
+                  customResponseHeaders:
+                    X-Frame-Options: "DENY"
+                    X-Content-Type-Options: "nosniff"
+                    Referrer-Policy: "strict-origin-when-cross-origin"
 
+  # =========================================================================
+  # TÂCHES POST-INSTALLATION
+  # =========================================================================
+  post_tasks:
+    - name: "VAULT POST-INSTALL: Finalisation et validation"
+      block:
+        - name: "VAULT POST-INSTALL: Nettoyage des fichiers temporaires"
+          file:
+            path: "{{ vault_temp_dir }}"
+            state: absent
+
+        - name: "VAULT POST-INSTALL: Test final de connectivité"
+          uri:
+            url: "{{ vault_addr }}/v1/sys/health"
+            method: GET
+            validate_certs: "{{ not vault_skip_verify }}"
+          register: final_health_check
+          environment: "{{ vault_environment }}"
+
+        - name: "VAULT POST-INSTALL: Affichage du récapitulatif d'installation"
+          debug:
+            msg:
+              - "✅ HashiCorp Vault {{ vault_version }} installé avec succès"
+              - "🌐 URL d'accès: {{ vault_addr }}"
+              - "🔑 Interface Web: {{ vault_addr }}/ui"
+              - "🔒 Statut TLS: {{ vault_tls_enabled | ternary('Activé', 'Désactivé') }}"
+              - "⚡ Haute Disponibilité: {{ vault_ha_enabled | ternary('Activé', 'Désactivé') }}"
+              - "📁 Données: {{ vault_data_dir }}"
+              - "⚙️  Configuration: {{ vault_config_dir }}/vault.hcl"
+              - "🔐 Clés d'initialisation: {{ vault_config_dir }}/secure/vault-init.json"
+              - ""
+              - "⚠️  IMPORTANT: Sauvegardez le fichier d'initialisation dans un endroit sécurisé"
+              - "⚠️  Ce fichier contient les clés de déverrouillage et le token root"
+
+        - name: "VAULT POST-INSTALL: Création du rapport d'installation"
+          template:
+            src: "../templates/vault-installation-report.j2"
+            dest: "{{ vault_config_dir }}/installation-report-{{ ansible_date_time.date }}.json"
+            owner: root
+            group: root
+            mode: '0600'
+
+  # =========================================================================
+  # GESTIONNAIRES D'ÉVÉNEMENTS
+  # =========================================================================
   handlers:
+    - name: reload systemd
+      systemd:
+        daemon_reload: true
+
     - name: restart vault
       systemd:
         name: vault
         state: restarted
+      listen: "restart vault"
+
+    - name: validate vault installation
+      command: "{{ vault_binary_path }} version"
+      register: vault_version_check
+      changed_when: false
+      failed_when: vault_version not in vault_version_check.stdout

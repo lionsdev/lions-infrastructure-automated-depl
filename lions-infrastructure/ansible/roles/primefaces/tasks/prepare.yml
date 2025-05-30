@@ -1,92 +1,529 @@
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - PRIMEFACES PREPARATION TASKS
+# =========================================================================
+# Description: Tâches Ansible pour la préparation des ressources PrimeFaces
+# Composant: PrimeFaces Application Preparation
+# Version: 5.0.0
+# Maintainer: DevOps LIONS Team
+# Documentation: https://docs.lions.dev/infrastructure/primefaces/preparation
+# =========================================================================
+
 ---
-# Titre: Préparation des ressources pour PrimeFaces
-# Description: Prépare les ressources nécessaires pour déployer une application PrimeFaces
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# PHASE DE PRÉPARATION - INITIALISATION
+# =========================================================================
 
-- name: Création du répertoire temporaire pour les templates
-  tempfile:
+- name: "PrimeFaces Prepare | {{ current_phase | default('preparation') | title }} - Initialisation"
+  set_fact:
+    primefaces_prepare_start_time: "{{ ansible_date_time.epoch }}"
+    primefaces_prepare_components:
+      temp_directory: false
+      namespace: false
+      templates: false
+      secrets: false
+      database_connectivity: false
+      redis_connectivity: false
+      storage_class: false
+      rbac: false
+      network_policies: false
+    primefaces_prepare_errors: []
+    primefaces_temp_dir: "/tmp/primefaces-{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-{{ ansible_date_time.epoch }}"
+  tags:
+    - primefaces
+    - prepare
+    - init
+
+- name: "PrimeFaces Prepare | Affichage des informations de préparation"
+  debug:
+    msg:
+      - "🔧 Préparation des ressources PrimeFaces"
+      - "📋 Application: {{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+      - "🏷️  Namespace: {{ lions_primefaces_namespace }}"
+      - "🌍 Environnement: {{ lions_environment }}"
+      - "📁 Répertoire temporaire: {{ primefaces_temp_dir }}"
+  when: primefaces_deployment_config.debug_mode | default(false) | bool
+  tags:
+    - primefaces
+    - prepare
+    - debug
+
+# =========================================================================
+# CRÉATION DU RÉPERTOIRE TEMPORAIRE
+# =========================================================================
+
+- name: "PrimeFaces Prepare | Création du répertoire temporaire sécurisé"
+  file:
+    path: "{{ primefaces_temp_dir }}"
     state: directory
-    suffix: primefaces-deploy
-  register: temp_dir
-  changed_when: false
+    mode: '0700'
+    owner: "{{ ansible_user_id }}"
+  register: primefaces_temp_dir_creation
+  failed_when: false
 
-- name: Génération des fichiers de configuration Kubernetes
+- name: "PrimeFaces Prepare | Vérification du répertoire temporaire"
+  set_fact:
+    primefaces_prepare_components: "{{ primefaces_prepare_components | combine({'temp_directory': primefaces_temp_dir_creation is succeeded}) }}"
+    primefaces_prepare_errors: "{{ primefaces_prepare_errors + ['TempDirectory: ' + (primefaces_temp_dir_creation.msg | default('Unknown error'))] if primefaces_temp_dir_creation is failed else primefaces_prepare_errors }}"
+
+# =========================================================================
+# VÉRIFICATION ET CRÉATION DU NAMESPACE
+# =========================================================================
+
+- name: "PrimeFaces Prepare | Vérification de l'existence du namespace"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: "{{ lions_primefaces_namespace }}"
+  register: primefaces_namespace_check
+  failed_when: false
+
+- name: "PrimeFaces Prepare | Création du namespace si nécessaire"
+  kubernetes.core.k8s:
+    name: "{{ lions_primefaces_namespace }}"
+    api_version: v1
+    kind: Namespace
+    state: present
+    definition:
+      metadata:
+        labels:
+          name: "{{ lions_primefaces_namespace }}"
+          lions.dev/environment: "{{ lions_environment }}"
+          lions.dev/technology: "primefaces"
+          lions.dev/component: "application"
+          lions.dev/managed-by: "lions-infrastructure-ansible"
+          pod-security.kubernetes.io/enforce: "{{ lions_pod_security_standard | default('restricted') }}"
+          pod-security.kubernetes.io/audit: "{{ lions_pod_security_standard | default('restricted') }}"
+          pod-security.kubernetes.io/warn: "{{ lions_pod_security_standard | default('restricted') }}"
+        annotations:
+          description: "Namespace pour les applications PrimeFaces {{ lions_environment }}"
+          lions.dev/created-by: "lions-infrastructure-ansible"
+          lions.dev/last-updated: "{{ ansible_date_time.iso8601 }}"
+  when: primefaces_namespace_check.resources | default([]) | length == 0
+  register: primefaces_namespace_creation
+  failed_when: false
+
+- name: "PrimeFaces Prepare | Vérification du namespace"
+  set_fact:
+    primefaces_prepare_components: "{{ primefaces_prepare_components | combine({'namespace': (primefaces_namespace_check.resources | length > 0) or (primefaces_namespace_creation is succeeded)}) }}"
+    primefaces_prepare_errors: "{{ primefaces_prepare_errors + ['Namespace: ' + (primefaces_namespace_creation.msg | default('Unknown error'))] if primefaces_namespace_creation is failed else primefaces_prepare_errors }}"
+
+# =========================================================================
+# VÉRIFICATION DES CLASSES DE STOCKAGE
+# =========================================================================
+
+- name: "PrimeFaces Prepare | Vérification de la classe de stockage"
+  kubernetes.core.k8s_info:
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+    name: "{{ lions_storage_class | default('local-path') }}"
+  register: primefaces_storage_class_check
+  when: lions_primefaces_storage_enabled | default(false) | bool
+  failed_when: false
+
+- name: "PrimeFaces Prepare | Vérification alternative des classes de stockage"
+  kubernetes.core.k8s_info:
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+  register: primefaces_all_storage_classes
+  when: 
+    - lions_primefaces_storage_enabled | default(false) | bool
+    - primefaces_storage_class_check.resources | default([]) | length == 0
+
+- name: "PrimeFaces Prepare | Sélection automatique de la classe de stockage"
+  set_fact:
+    primefaces_selected_storage_class: "{{ primefaces_all_storage_classes.resources | selectattr('metadata.annotations.storageclass.kubernetes.io/is-default-class', 'defined') | map(attribute='metadata.name') | first | default(primefaces_all_storage_classes.resources | first | default({}) | json_query('metadata.name')) }}"
+  when:
+    - lions_primefaces_storage_enabled | default(false) | bool
+    - primefaces_storage_class_check.resources | default([]) | length == 0
+    - primefaces_all_storage_classes.resources | default([]) | length > 0
+
+- name: "PrimeFaces Prepare | Validation de la classe de stockage"
+  set_fact:
+    primefaces_prepare_components: "{{ primefaces_prepare_components | combine({'storage_class': (primefaces_storage_class_check.resources | default([]) | length > 0) or (primefaces_selected_storage_class is defined) or not (lions_primefaces_storage_enabled | default(false) | bool)}) }}"
+    primefaces_prepare_errors: "{{ primefaces_prepare_errors + ['StorageClass: No storage class available'] if (lions_primefaces_storage_enabled | default(false) | bool and primefaces_storage_class_check.resources | default([]) | length == 0 and primefaces_selected_storage_class is not defined) else primefaces_prepare_errors }}"
+
+# =========================================================================
+# GÉNÉRATION DES TEMPLATES KUBERNETES
+# =========================================================================
+
+- name: "PrimeFaces Prepare | Définition de la liste des templates requis"
+  set_fact:
+    primefaces_required_templates:
+      - name: "configmap"
+        src: "configmap.yml.j2"
+        dest: "configmap.yml"
+        required: true
+      - name: "serviceaccount"
+        src: "serviceaccount.yml.j2"
+        dest: "serviceaccount.yml"
+        required: true
+      - name: "deployment"
+        src: "deployment.yml.j2"
+        dest: "deployment.yml"
+        required: true
+      - name: "service"
+        src: "service.yml.j2"
+        dest: "service.yml"
+        required: true
+      - name: "ingress"
+        src: "ingress.yml.j2"
+        dest: "ingress.yml"
+        required: "{{ lions_ingress_enabled | bool }}"
+      - name: "servicemonitor"
+        src: "servicemonitor.yml.j2"
+        dest: "servicemonitor.yml"
+        required: "{{ lions_monitoring_enabled | bool }}"
+      - name: "persistentvolumeclaim"
+        src: "persistentvolumeclaim.yml.j2"
+        dest: "persistentvolumeclaim.yml"
+        required: "{{ lions_primefaces_storage_enabled | default(false) | bool }}"
+
+- name: "PrimeFaces Prepare | Génération des templates Kubernetes"
   template:
     src: "{{ item.src }}"
-    dest: "{{ temp_dir.path }}/{{ item.dest }}"
-  loop:
-    - { src: "deployment.yml.j2", dest: "deployment.yml" }
-    - { src: "service.yml.j2", dest: "service.yml" }
-    - { src: "ingress.yml.j2", dest: "ingress.yml" }
-    - { src: "configmap.yml.j2", dest: "configmap.yml" }
-    - { src: "serviceaccount.yml.j2", dest: "serviceaccount.yml" }
-    - { src: "servicemonitor.yml.j2", dest: "servicemonitor.yml" }
-    - { src: "persistentvolumeclaim.yml.j2", dest: "persistentvolumeclaim.yml" }
-  register: templates_generated
+    dest: "{{ primefaces_temp_dir }}/{{ item.dest }}"
+    mode: '0644'
+    backup: false
+  loop: "{{ primefaces_required_templates | selectattr('required') | list }}"
+  register: primefaces_templates_generation
+  failed_when: false
 
-- name: Vérification des fichiers générés
+- name: "PrimeFaces Prepare | Vérification des templates générés"
   stat:
-    path: "{{ temp_dir.path }}/{{ item }}"
-  loop:
-    - "deployment.yml"
-    - "service.yml"
-    - "ingress.yml"
-    - "configmap.yml"
-    - "serviceaccount.yml"
-    - "servicemonitor.yml"
-    - "persistentvolumeclaim.yml"
-  register: files_check
-  failed_when: not item.stat.exists
+    path: "{{ primefaces_temp_dir }}/{{ item.dest }}"
+  loop: "{{ primefaces_required_templates | selectattr('required') | list }}"
+  register: primefaces_templates_check
+  failed_when: false
 
-- name: Création du compte de service
-  k8s:
-    state: present
-    src: "{{ temp_dir.path }}/serviceaccount.yml"
-  register: serviceaccount_result
+- name: "PrimeFaces Prepare | Validation de la génération des templates"
+  set_fact:
+    primefaces_templates_status: "{{ primefaces_templates_check.results | map(attribute='stat.exists') | list }}"
+    primefaces_templates_failed: "{{ primefaces_templates_check.results | rejectattr('stat.exists') | map(attribute='item.name') | list }}"
 
-- name: Création du ConfigMap pour la configuration de l'application
-  k8s:
-    state: present
-    src: "{{ temp_dir.path }}/configmap.yml"
-  register: configmap_result
+- name: "PrimeFaces Prepare | Mise à jour du statut des templates"
+  set_fact:
+    primefaces_prepare_components: "{{ primefaces_prepare_components | combine({'templates': primefaces_templates_failed | length == 0}) }}"
+    primefaces_prepare_errors: "{{ primefaces_prepare_errors + ['Templates: Failed to generate ' + (primefaces_templates_failed | join(', '))] if primefaces_templates_failed | length > 0 else primefaces_prepare_errors }}"
 
-- name: Création du PersistentVolumeClaim pour les données de l'application
-  k8s:
-    state: present
-    src: "{{ temp_dir.path }}/persistentvolumeclaim.yml"
-  register: pvc_result
-  when: primefaces_persistent_storage | bool
+# =========================================================================
+# VÉRIFICATION DES SECRETS ET CREDENTIALS
+# =========================================================================
 
-- name: Vérification de l'existence des secrets nécessaires
-  k8s_info:
+- name: "PrimeFaces Prepare | Vérification des secrets de base de données"
+  kubernetes.core.k8s_info:
     api_version: v1
     kind: Secret
-    namespace: "{{ app_namespace }}"
-    name: "{{ app_name }}-secrets"
-  register: secrets_info
-  ignore_errors: yes
+    namespace: "{{ lions_primefaces_namespace }}"
+    name: "{{ lions_primefaces_db_secret_name | default(lions_primefaces_app_name | default(lions_primefaces_service_name) + '-db-secret') }}"
+  register: primefaces_db_secret_check
+  when: lions_postgres_enabled | bool
+  failed_when: false
 
-- name: Avertissement si les secrets n'existent pas
-  debug:
-    msg: "AVERTISSEMENT: Les secrets pour l'application {{ app_name }} n'existent pas. Utilisez kubectl pour créer les secrets nécessaires."
-  when: secrets_info is failed or secrets_info.resources | length == 0
+- name: "PrimeFaces Prepare | Vérification des secrets Redis"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: "{{ lions_primefaces_namespace }}"
+    name: "{{ lions_primefaces_redis_secret_name | default(lions_primefaces_app_name | default(lions_primefaces_service_name) + '-redis-secret') }}"
+  register: primefaces_redis_secret_check
+  when: lions_redis_enabled | bool
+  failed_when: false
 
-- name: Préparation des ressources spécifiques à PrimeFaces
-  debug:
-    msg: "Préparation des ressources spécifiques à PrimeFaces"
+- name: "PrimeFaces Prepare | Vérification des secrets Keycloak"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: "{{ lions_primefaces_namespace }}"
+    name: "{{ lions_primefaces_oidc_secret_name | default(lions_primefaces_app_name | default(lions_primefaces_service_name) + '-oidc-secret') }}"
+  register: primefaces_oidc_secret_check
+  when: lions_keycloak_enabled | bool
+  failed_when: false
 
-- name: Vérification de l'existence du serveur de base de données
-  k8s_info:
+- name: "PrimeFaces Prepare | Validation des secrets"
+  set_fact:
+    primefaces_secrets_status:
+      database: "{{ (primefaces_db_secret_check.resources | default([]) | length > 0) or not (lions_postgres_enabled | bool) }}"
+      redis: "{{ (primefaces_redis_secret_check.resources | default([]) | length > 0) or not (lions_redis_enabled | bool) }}"
+      oidc: "{{ (primefaces_oidc_secret_check.resources | default([]) | length > 0) or not (lions_keycloak_enabled | bool) }}"
+
+- name: "PrimeFaces Prepare | Mise à jour du statut des secrets"
+  set_fact:
+    primefaces_prepare_components: "{{ primefaces_prepare_components | combine({'secrets': primefaces_secrets_status.database and primefaces_secrets_status.redis and primefaces_secrets_status.oidc}) }}"
+    primefaces_prepare_errors: "{{ primefaces_prepare_errors + ['Secrets: Missing required secrets'] if not (primefaces_secrets_status.database and primefaces_secrets_status.redis and primefaces_secrets_status.oidc) else primefaces_prepare_errors }}"
+
+# =========================================================================
+# VÉRIFICATION DE LA CONNECTIVITÉ DES SERVICES EXTERNES
+# =========================================================================
+
+- name: "PrimeFaces Prepare | Test de connectivité PostgreSQL"
+  kubernetes.core.k8s_info:
     api_version: v1
     kind: Service
-    namespace: "{{ app_namespace }}"
-    name: "{{ primefaces_database_service | default(app_name + '-db') }}"
-  register: db_service_info
+    namespace: "{{ lions_postgres_namespace }}"
+    name: "{{ lions_postgres_service_name }}"
+  register: primefaces_postgres_service_check
+  when: lions_postgres_enabled | bool
+  failed_when: false
+
+- name: "PrimeFaces Prepare | Test de connectivité réseau PostgreSQL"
+  uri:
+    url: "http://{{ lions_postgres_service_name }}.{{ lions_postgres_namespace }}.svc.cluster.local:{{ lions_postgres_port }}"
+    method: GET
+    timeout: 5
+  register: primefaces_postgres_connectivity_test
+  when: 
+    - lions_postgres_enabled | bool
+    - primefaces_postgres_service_check.resources | default([]) | length > 0
+  failed_when: false
   ignore_errors: yes
 
-- name: Avertissement si le serveur de base de données n'existe pas
+- name: "PrimeFaces Prepare | Test de connectivité Redis"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Service
+    namespace: "{{ lions_redis_namespace }}"
+    name: "{{ lions_redis_service_name }}"
+  register: primefaces_redis_service_check
+  when: lions_redis_enabled | bool
+  failed_when: false
+
+- name: "PrimeFaces Prepare | Validation de la connectivité des services"
+  set_fact:
+    primefaces_connectivity_status:
+      database: "{{ (primefaces_postgres_service_check.resources | default([]) | length > 0) or not (lions_postgres_enabled | bool) }}"
+      redis: "{{ (primefaces_redis_service_check.resources | default([]) | length > 0) or not (lions_redis_enabled | bool) }}"
+
+- name: "PrimeFaces Prepare | Mise à jour du statut de connectivité"
+  set_fact:
+    primefaces_prepare_components: "{{ primefaces_prepare_components | combine({'database_connectivity': primefaces_connectivity_status.database, 'redis_connectivity': primefaces_connectivity_status.redis}) }}"
+    primefaces_prepare_errors: "{{ primefaces_prepare_errors + ['DatabaseConnectivity: PostgreSQL service not found'] if not primefaces_connectivity_status.database else primefaces_prepare_errors }}"
+    primefaces_prepare_errors: "{{ primefaces_prepare_errors + ['RedisConnectivity: Redis service not found'] if not primefaces_connectivity_status.redis else primefaces_prepare_errors }}"
+
+# =========================================================================
+# CONFIGURATION RBAC ET POLICIES DE SÉCURITÉ
+# =========================================================================
+
+- name: "PrimeFaces Prepare | Vérification des rôles RBAC existants"
+  kubernetes.core.k8s_info:
+    api_version: rbac.authorization.k8s.io/v1
+    kind: Role
+    namespace: "{{ lions_primefaces_namespace }}"
+    name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-role"
+  register: primefaces_rbac_role_check
+  failed_when: false
+
+- name: "PrimeFaces Prepare | Création du rôle RBAC si nécessaire"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-role"
+        namespace: "{{ lions_primefaces_namespace }}"
+        labels:
+          app.kubernetes.io/name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+          app.kubernetes.io/instance: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-{{ lions_environment }}"
+          lions.dev/environment: "{{ lions_environment }}"
+          lions.dev/technology: "primefaces"
+          lions.dev/component: "rbac"
+        annotations:
+          description: "Rôle RBAC pour l'application PrimeFaces {{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+      rules:
+        - apiGroups: [""]
+          resources: ["configmaps", "secrets"]
+          verbs: ["get", "list"]
+        - apiGroups: [""]
+          resources: ["pods"]
+          verbs: ["get", "list"]
+          resourceNames: []
+  when: 
+    - primefaces_rbac_role_check.resources | default([]) | length == 0
+    - lions_rbac_enabled | default(true) | bool
+  register: primefaces_rbac_creation
+  failed_when: false
+
+- name: "PrimeFaces Prepare | Validation RBAC"
+  set_fact:
+    primefaces_prepare_components: "{{ primefaces_prepare_components | combine({'rbac': (primefaces_rbac_role_check.resources | length > 0) or (primefaces_rbac_creation is succeeded) or not (lions_rbac_enabled | default(true) | bool)}) }}"
+    primefaces_prepare_errors: "{{ primefaces_prepare_errors + ['RBAC: Failed to create role'] if (primefaces_rbac_creation is failed and lions_rbac_enabled | default(true) | bool) else primefaces_prepare_errors }}"
+
+# =========================================================================
+# CONFIGURATION DES NETWORK POLICIES
+# =========================================================================
+
+- name: "PrimeFaces Prepare | Vérification des NetworkPolicies existantes"
+  kubernetes.core.k8s_info:
+    api_version: networking.k8s.io/v1
+    kind: NetworkPolicy
+    namespace: "{{ lions_primefaces_namespace }}"
+    name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-netpol"
+  register: primefaces_netpol_check
+  when: lions_network_policies_enabled | default(false) | bool
+  failed_when: false
+
+- name: "PrimeFaces Prepare | Création des NetworkPolicies de base"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-netpol"
+        namespace: "{{ lions_primefaces_namespace }}"
+        labels:
+          app.kubernetes.io/name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+          app.kubernetes.io/instance: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-{{ lions_environment }}"
+          lions.dev/environment: "{{ lions_environment }}"
+          lions.dev/technology: "primefaces"
+          lions.dev/component: "network-policy"
+      spec:
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+        policyTypes:
+          - Ingress
+          - Egress
+        ingress:
+          - from:
+              - namespaceSelector:
+                  matchLabels:
+                    name: "{{ lions_ingress_namespace | default('ingress-nginx') }}"
+            ports:
+              - protocol: TCP
+                port: "{{ lions_primefaces_port }}"
+        egress:
+          - to:
+              - namespaceSelector:
+                  matchLabels:
+                    name: "{{ lions_postgres_namespace }}"
+            ports:
+              - protocol: TCP
+                port: "{{ lions_postgres_port }}"
+          - to:
+              - namespaceSelector:
+                  matchLabels:
+                    name: "{{ lions_redis_namespace }}"
+            ports:
+              - protocol: TCP
+                port: "{{ lions_redis_port }}"
+          - to: []
+            ports:
+              - protocol: TCP
+                port: 53
+              - protocol: UDP
+                port: 53
+  when: 
+    - lions_network_policies_enabled | default(false) | bool
+    - primefaces_netpol_check.resources | default([]) | length == 0
+  register: primefaces_netpol_creation
+  failed_when: false
+
+- name: "PrimeFaces Prepare | Validation des NetworkPolicies"
+  set_fact:
+    primefaces_prepare_components: "{{ primefaces_prepare_components | combine({'network_policies': (primefaces_netpol_check.resources | default([]) | length > 0) or (primefaces_netpol_creation is succeeded) or not (lions_network_policies_enabled | default(false) | bool)}) }}"
+    primefaces_prepare_errors: "{{ primefaces_prepare_errors + ['NetworkPolicies: Failed to create network policy'] if (primefaces_netpol_creation is failed and lions_network_policies_enabled | default(false) | bool) else primefaces_prepare_errors }}"
+
+# =========================================================================
+# VALIDATION GLOBALE DE LA PRÉPARATION
+# =========================================================================
+
+- name: "PrimeFaces Prepare | Collecte des métriques de préparation"
+  set_fact:
+    primefaces_prepare_metrics:
+      duration: "{{ (ansible_date_time.epoch | int) - (primefaces_prepare_start_time | int) }}"
+      components_prepared: "{{ primefaces_prepare_components.values() | select('equalto', true) | list | length }}"
+      total_components: "{{ primefaces_prepare_components | length }}"
+      success_rate: "{{ ((primefaces_prepare_components.values() | select('equalto', true) | list | length) / (primefaces_prepare_components | length) * 100) | round(2) }}"
+      errors_count: "{{ primefaces_prepare_errors | length }}"
+      namespace_ready: "{{ 'OK' if primefaces_prepare_components.namespace else 'FAILED' }}"
+      templates_ready: "{{ 'OK' if primefaces_prepare_components.templates else 'FAILED' }}"
+      secrets_ready: "{{ 'OK' if primefaces_prepare_components.secrets else 'MISSING' }}"
+      connectivity_ready: "{{ 'OK' if primefaces_prepare_components.database_connectivity and primefaces_prepare_components.redis_connectivity else 'FAILED' }}"
+
+- name: "PrimeFaces Prepare | Rapport de préparation"
   debug:
-    msg: "AVERTISSEMENT: Le serveur de base de données n'existe pas. L'application PrimeFaces pourrait ne pas fonctionner correctement."
-  when: db_service_info is failed or db_service_info.resources | length == 0
+    msg:
+      - "📊 RAPPORT DE PRÉPARATION PRIMEFACES"
+      - "===================================="
+      - "⏱️  Durée: {{ primefaces_prepare_metrics.duration }}s"
+      - "📦 Composants préparés: {{ primefaces_prepare_metrics.components_prepared }}/{{ primefaces_prepare_metrics.total_components }}"
+      - "✅ Taux de succès: {{ primefaces_prepare_metrics.success_rate }}%"
+      - "🏷️  Namespace: {{ primefaces_prepare_metrics.namespace_ready }}"
+      - "📄 Templates: {{ primefaces_prepare_metrics.templates_ready }}"
+      - "🔐 Secrets: {{ primefaces_prepare_metrics.secrets_ready }}"
+      - "🌐 Connectivité: {{ primefaces_prepare_metrics.connectivity_ready }}"
+      - "❌ Erreurs: {{ primefaces_prepare_metrics.errors_count }}"
+      - "{% if primefaces_prepare_errors | length > 0 %}🚨 Détails des erreurs: {{ primefaces_prepare_errors | join(', ') }}{% endif %}"
+  tags:
+    - primefaces
+    - prepare
+    - report
+
+# =========================================================================
+# GESTION DES ÉCHECS DE PRÉPARATION
+# =========================================================================
+
+- name: "PrimeFaces Prepare | Échec critique de préparation"
+  fail:
+    msg: |
+      ❌ Échec critique de la préparation PrimeFaces!
+      
+      📋 Composants en échec:
+      {% for component, status in primefaces_prepare_components.items() %}
+      - {{ component }}: {{ 'OK' if status else 'FAILED' }}
+      {% endfor %}
+      
+      🚨 Erreurs détectées:
+      {% for error in primefaces_prepare_errors %}
+      - {{ error }}
+      {% endfor %}
+      
+      🔍 Vérifiez les prérequis avant de relancer le déploiement
+  when: >
+    not primefaces_prepare_components.temp_directory or
+    not primefaces_prepare_components.namespace or
+    not primefaces_prepare_components.templates or
+    primefaces_prepare_metrics.success_rate < 70
+
+- name: "PrimeFaces Prepare | Avertissement - Composants optionnels manquants"
+  debug:
+    msg:
+      - "⚠️  Avertissement: Certains composants optionnels sont manquants"
+      - "📋 La préparation principale est réussie mais des fonctionnalités peuvent être limitées"
+      - "🔧 Composants manquants: {{ primefaces_prepare_errors | join(', ') }}"
+  when: 
+    - primefaces_prepare_components.temp_directory
+    - primefaces_prepare_components.namespace
+    - primefaces_prepare_components.templates
+    - primefaces_prepare_errors | length > 0
+    - primefaces_prepare_metrics.success_rate >= 70
+
+- name: "PrimeFaces Prepare | Succès de la préparation"
+  debug:
+    msg:
+      - "🎉 Préparation PrimeFaces terminée avec succès!"
+      - "📁 Templates générés dans: {{ primefaces_temp_dir }}"
+      - "🏷️  Namespace prêt: {{ lions_primefaces_namespace }}"
+      - "🔐 Secrets validés: {{ 'Tous présents' if primefaces_prepare_components.secrets else 'Partiellement disponibles' }}"
+      - "🌐 Services connectés: {{ 'Tous accessibles' if primefaces_prepare_components.database_connectivity and primefaces_prepare_components.redis_connectivity else 'Partiellement accessibles' }}"
+  when: 
+    - primefaces_prepare_metrics.success_rate == 100
+    - primefaces_prepare_errors | length == 0
+
+# =========================================================================
+# EXPOSITION DES VARIABLES POUR LES PHASES SUIVANTES
+# =========================================================================
+
+- name: "PrimeFaces Prepare | Exposition des variables de préparation"
+  set_fact:
+    primefaces_temp_dir: "{{ primefaces_temp_dir }}"
+    primefaces_preparation_successful: "{{ primefaces_prepare_metrics.success_rate >= 70 }}"
+    primefaces_namespace_ready: "{{ primefaces_prepare_components.namespace }}"
+    primefaces_templates_ready: "{{ primefaces_prepare_components.templates }}"
+    primefaces_secrets_available: "{{ primefaces_prepare_components.secrets }}"
+    primefaces_services_connected: "{{ primefaces_prepare_components.database_connectivity and primefaces_prepare_components.redis_connectivity }}"
+  tags:
+    - primefaces
+    - prepare
+    - variables

@@ -1,21 +1,424 @@
 ---
-# Titre: Tâches pour le déploiement d'applications PrimeFaces
-# Description: Déploie une application PrimeFaces sur Kubernetes
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - RÔLE PRIMEFACES
+# =========================================================================
+# Description: Orchestrateur principal pour le déploiement d'applications PrimeFaces
+# Version: 5.0.0
+# Maintainer: DevOps Team <devops@lions.dev>
+# Documentation: https://docs.lions.dev/infrastructure/applications/primefaces
+# =========================================================================
 
-- name: Vérification des prérequis pour PrimeFaces
-  include_tasks: prerequisites.yml
+# =========================================================================
+# MÉTADONNÉES ET CONFIGURATION
+# =========================================================================
+- name: "PrimeFaces | Initialisation des métadonnées de déploiement"
+  set_fact:
+    primefaces_deployment_metadata:
+      role_name: "primefaces"
+      role_version: "5.0.0"
+      deployment_id: "{{ ansible_date_time.epoch }}"
+      environment: "{{ lions_environment | default('development') }}"
+      namespace: "{{ lions_primefaces_namespace | default('applications') }}"
+      started_at: "{{ ansible_date_time.iso8601 }}"
+      started_by: "{{ ansible_user_id | default('system') }}"
+    primefaces_deployment_config:
+      dry_run: "{{ lions_dry_run | default(false) | bool }}"
+      debug_mode: "{{ lions_debug_mode | default(false) | bool }}"
+      skip_validation: "{{ primefaces_skip_validation | default(false) | bool }}"
+      force_recreate: "{{ primefaces_force_recreate | default(false) | bool }}"
+  tags:
+    - primefaces
+    - metadata
+    - always
 
-- name: Préparation des ressources Kubernetes
-  include_tasks: prepare.yml
+- name: "PrimeFaces | Affichage des informations de déploiement"
+  debug:
+    msg:
+      - "🚀 Démarrage du déploiement PrimeFaces"
+      - "📊 Environnement: {{ primefaces_deployment_metadata.environment }}"
+      - "🏷️  Namespace: {{ primefaces_deployment_metadata.namespace }}"
+      - "🆔 ID de déploiement: {{ primefaces_deployment_metadata.deployment_id }}"
+      - "⏰ Démarré le: {{ primefaces_deployment_metadata.started_at }}"
+      - "👤 Initié par: {{ primefaces_deployment_metadata.started_by }}"
+      - "🔧 Mode debug: {{ primefaces_deployment_config.debug_mode }}"
+      - "🧪 Dry run: {{ primefaces_deployment_config.dry_run }}"
+  when: primefaces_deployment_config.debug_mode | bool
+  tags:
+    - primefaces
+    - debug
+    - always
 
-- name: Déploiement de l'application PrimeFaces
-  include_tasks: deploy.yml
+# =========================================================================
+# GESTION DES ERREURS ET ROLLBACK
+# =========================================================================
+- name: "PrimeFaces | Configuration de la gestion d'erreurs"
+  set_fact:
+    primefaces_error_handling:
+      max_retries: "{{ primefaces_max_retries | default(3) }}"
+      retry_delay: "{{ primefaces_retry_delay | default(10) }}"
+      rollback_on_failure: "{{ primefaces_rollback_on_failure | default(true) | bool }}"
+      error_log_file: "/tmp/primefaces-deployment-{{ primefaces_deployment_metadata.deployment_id }}.log"
+  tags:
+    - primefaces
+    - error-handling
+    - always
 
-- name: Configuration du monitoring pour PrimeFaces
-  include_tasks: monitoring.yml
+# =========================================================================
+# VÉRIFICATIONS PRÉALABLES CRITIQUES
+# =========================================================================
+- name: "PrimeFaces | Vérification de l'état de l'environnement"
+  block:
+    - name: "PrimeFaces | Vérification de l'accessibilité du cluster Kubernetes"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Namespace
+        name: "{{ primefaces_deployment_metadata.namespace }}"
+      register: primefaces_namespace_check
+      failed_when: false
 
-- name: Validation post-déploiement
-  include_tasks: validate.yml
+    - name: "PrimeFaces | Vérification des variables d'environnement critiques"
+      assert:
+        that:
+          - lions_primefaces_enabled is defined
+          - lions_primefaces_enabled | bool
+          - lions_primefaces_version is defined
+          - lions_primefaces_version | length > 0
+          - primefaces_deployment_metadata.namespace is defined
+        fail_msg: "Variables d'environnement PrimeFaces manquantes ou incorrectes"
+        success_msg: "Variables d'environnement PrimeFaces validées"
+
+  rescue:
+    - name: "PrimeFaces | Gestion d'erreur - Vérifications préalables"
+      fail:
+        msg: "❌ Échec des vérifications préalables PrimeFaces: {{ ansible_failed_result.msg | default('Erreur inconnue') }}"
+
+  tags:
+    - primefaces
+    - preflight
+    - validation
+
+# =========================================================================
+# PHASE 1: PRÉREQUIS ET DÉPENDANCES
+# =========================================================================
+- name: "PrimeFaces | Phase 1 - Vérification des prérequis"
+  block:
+    - name: "PrimeFaces | Inclusion des tâches de prérequis"
+      include_tasks: prerequisites.yml
+      vars:
+        current_phase: "prerequisites"
+        phase_description: "Vérification des prérequis système et Kubernetes"
+
+  rescue:
+    - name: "PrimeFaces | Échec Phase 1 - Prérequis"
+      set_fact:
+        primefaces_deployment_failed: true
+        primefaces_failure_phase: "prerequisites"
+        primefaces_failure_reason: "{{ ansible_failed_result.msg | default('Échec des prérequis') }}"
+
+    - name: "PrimeFaces | Log d'erreur Phase 1"
+      lineinfile:
+        path: "{{ primefaces_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] ERREUR Phase 1 (Prérequis): {{ primefaces_failure_reason }}"
+        create: yes
+
+    - name: "PrimeFaces | Arrêt du déploiement - Phase 1"
+      fail:
+        msg: "❌ Déploiement PrimeFaces interrompu en Phase 1 (Prérequis): {{ primefaces_failure_reason }}"
+
+  tags:
+    - primefaces
+    - prerequisites
+    - phase-1
+
+# =========================================================================
+# PHASE 2: PRÉPARATION DES RESSOURCES
+# =========================================================================
+- name: "PrimeFaces | Phase 2 - Préparation des ressources"
+  block:
+    - name: "PrimeFaces | Inclusion des tâches de préparation"
+      include_tasks: prepare.yml
+      vars:
+        current_phase: "preparation"
+        phase_description: "Création des ressources Kubernetes de base"
+
+  rescue:
+    - name: "PrimeFaces | Échec Phase 2 - Préparation"
+      set_fact:
+        primefaces_deployment_failed: true
+        primefaces_failure_phase: "preparation"
+        primefaces_failure_reason: "{{ ansible_failed_result.msg | default('Échec de la préparation') }}"
+
+    - name: "PrimeFaces | Log d'erreur Phase 2"
+      lineinfile:
+        path: "{{ primefaces_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] ERREUR Phase 2 (Préparation): {{ primefaces_failure_reason }}"
+        create: yes
+
+    - name: "PrimeFaces | Nettoyage partiel après échec Phase 2"
+      include_tasks: cleanup.yml
+      vars:
+        cleanup_scope: "preparation"
+      when: primefaces_error_handling.rollback_on_failure | bool
+
+    - name: "PrimeFaces | Arrêt du déploiement - Phase 2"
+      fail:
+        msg: "❌ Déploiement PrimeFaces interrompu en Phase 2 (Préparation): {{ primefaces_failure_reason }}"
+
+  when: primefaces_deployment_failed is not defined
+  tags:
+    - primefaces
+    - preparation
+    - phase-2
+
+# =========================================================================
+# PHASE 3: DÉPLOIEMENT PRINCIPAL
+# =========================================================================
+- name: "PrimeFaces | Phase 3 - Déploiement principal"
+  block:
+    - name: "PrimeFaces | Inclusion des tâches de déploiement"
+      include_tasks: deploy.yml
+      vars:
+        current_phase: "deployment"
+        phase_description: "Déploiement des composants PrimeFaces"
+
+  rescue:
+    - name: "PrimeFaces | Échec Phase 3 - Déploiement"
+      set_fact:
+        primefaces_deployment_failed: true
+        primefaces_failure_phase: "deployment"
+        primefaces_failure_reason: "{{ ansible_failed_result.msg | default('Échec du déploiement') }}"
+
+    - name: "PrimeFaces | Log d'erreur Phase 3"
+      lineinfile:
+        path: "{{ primefaces_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] ERREUR Phase 3 (Déploiement): {{ primefaces_failure_reason }}"
+        create: yes
+
+    - name: "PrimeFaces | Rollback complet après échec Phase 3"
+      include_tasks: rollback.yml
+      vars:
+        rollback_reason: "Échec du déploiement principal"
+      when: primefaces_error_handling.rollback_on_failure | bool
+
+    - name: "PrimeFaces | Arrêt du déploiement - Phase 3"
+      fail:
+        msg: "❌ Déploiement PrimeFaces interrompu en Phase 3 (Déploiement): {{ primefaces_failure_reason }}"
+
+  when: primefaces_deployment_failed is not defined
+  tags:
+    - primefaces
+    - deployment
+    - phase-3
+
+# =========================================================================
+# PHASE 4: CONFIGURATION DU MONITORING
+# =========================================================================
+- name: "PrimeFaces | Phase 4 - Configuration du monitoring"
+  block:
+    - name: "PrimeFaces | Inclusion des tâches de monitoring"
+      include_tasks: monitoring.yml
+      vars:
+        current_phase: "monitoring"
+        phase_description: "Configuration des métriques et alertes PrimeFaces"
+
+  rescue:
+    - name: "PrimeFaces | Avertissement Phase 4 - Monitoring"
+      debug:
+        msg:
+          - "⚠️  Échec de la configuration du monitoring PrimeFaces"
+          - "ℹ️  Le déploiement principal a réussi, mais les métriques peuvent être indisponibles"
+          - "🔍 Erreur: {{ ansible_failed_result.msg | default('Erreur de monitoring inconnue') }}"
+
+    - name: "PrimeFaces | Log d'avertissement Phase 4"
+      lineinfile:
+        path: "{{ primefaces_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] AVERTISSEMENT Phase 4 (Monitoring): {{ ansible_failed_result.msg | default('Erreur de monitoring') }}"
+        create: yes
+
+    - name: "PrimeFaces | Marquage du monitoring comme défaillant"
+      set_fact:
+        primefaces_monitoring_failed: true
+
+  when:
+    - primefaces_deployment_failed is not defined
+    - lions_monitoring_enabled | default(true) | bool
+  tags:
+    - primefaces
+    - monitoring
+    - phase-4
+
+# =========================================================================
+# PHASE 5: VALIDATION POST-DÉPLOIEMENT
+# =========================================================================
+- name: "PrimeFaces | Phase 5 - Validation post-déploiement"
+  block:
+    - name: "PrimeFaces | Inclusion des tâches de validation"
+      include_tasks: validate.yml
+      vars:
+        current_phase: "validation"
+        phase_description: "Validation de l'état et des fonctionnalités PrimeFaces"
+
+  rescue:
+    - name: "PrimeFaces | Échec Phase 5 - Validation"
+      set_fact:
+        primefaces_deployment_failed: true
+        primefaces_failure_phase: "validation"
+        primefaces_failure_reason: "{{ ansible_failed_result.msg | default('Échec de la validation') }}"
+
+    - name: "PrimeFaces | Log d'erreur Phase 5"
+      lineinfile:
+        path: "{{ primefaces_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] ERREUR Phase 5 (Validation): {{ primefaces_failure_reason }}"
+        create: yes
+
+    - name: "PrimeFaces | Décision sur le rollback après validation"
+      debug:
+        msg: "⚠️  Validation échouée mais PrimeFaces peut être partiellement fonctionnel"
+
+    - name: "PrimeFaces | Arrêt avec avertissement - Phase 5"
+      fail:
+        msg: "⚠️  Déploiement PrimeFaces terminé avec des erreurs de validation: {{ primefaces_failure_reason }}"
+
+  when:
+    - primefaces_deployment_failed is not defined
+    - not primefaces_deployment_config.skip_validation | bool
+  tags:
+    - primefaces
+    - validation
+    - phase-5
+
+# =========================================================================
+# PHASE 6: CONFIGURATION DE LA SAUVEGARDE
+# =========================================================================
+- name: "PrimeFaces | Phase 6 - Configuration de la sauvegarde"
+  block:
+    - name: "PrimeFaces | Inclusion des tâches de sauvegarde"
+      include_tasks: backup.yml
+      vars:
+        current_phase: "backup"
+        phase_description: "Configuration des stratégies de sauvegarde PrimeFaces"
+
+  rescue:
+    - name: "PrimeFaces | Avertissement Phase 6 - Sauvegarde"
+      debug:
+        msg:
+          - "⚠️  Échec de la configuration de sauvegarde PrimeFaces"
+          - "ℹ️  PrimeFaces fonctionne mais les sauvegardes automatiques sont désactivées"
+          - "🔍 Erreur: {{ ansible_failed_result.msg | default('Erreur de sauvegarde inconnue') }}"
+
+    - name: "PrimeFaces | Log d'avertissement Phase 6"
+      lineinfile:
+        path: "{{ primefaces_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] AVERTISSEMENT Phase 6 (Sauvegarde): {{ ansible_failed_result.msg | default('Erreur de sauvegarde') }}"
+        create: yes
+
+    - name: "PrimeFaces | Marquage de la sauvegarde comme défaillante"
+      set_fact:
+        primefaces_backup_failed: true
+
+  when:
+    - primefaces_deployment_failed is not defined
+    - lions_backup_enabled | default(true) | bool
+    - lions_primefaces_backup_enabled | default(true) | bool
+  tags:
+    - primefaces
+    - backup
+    - phase-6
+
+# =========================================================================
+# FINALISATION ET RAPPORT DE DÉPLOIEMENT
+# =========================================================================
+- name: "PrimeFaces | Génération du rapport de déploiement"
+  set_fact:
+    primefaces_deployment_report:
+      status: "{{ 'FAILED' if primefaces_deployment_failed | default(false) else 'SUCCESS' }}"
+      environment: "{{ primefaces_deployment_metadata.environment }}"
+      namespace: "{{ primefaces_deployment_metadata.namespace }}"
+      deployment_id: "{{ primefaces_deployment_metadata.deployment_id }}"
+      started_at: "{{ primefaces_deployment_metadata.started_at }}"
+      completed_at: "{{ ansible_date_time.iso8601 }}"
+      duration: "{{ (ansible_date_time.epoch | int) - (primefaces_deployment_metadata.deployment_id | int) }}"
+      failed_phase: "{{ primefaces_failure_phase | default('N/A') }}"
+      failure_reason: "{{ primefaces_failure_reason | default('N/A') }}"
+      monitoring_status: "{{ 'FAILED' if primefaces_monitoring_failed | default(false) else 'OK' }}"
+      backup_status: "{{ 'FAILED' if primefaces_backup_failed | default(false) else 'OK' }}"
+      primefaces_version: "{{ lions_primefaces_version }}"
+      primefaces_service_name: "{{ lions_primefaces_service_name | default('primefaces-app') }}"
+      primefaces_endpoint: "{{ lions_primefaces_service_name | default('primefaces-app') }}.{{ primefaces_deployment_metadata.namespace }}.svc.cluster.local:{{ lions_primefaces_port | default(8080) }}"
+  tags:
+    - primefaces
+    - report
+    - always
+
+- name: "PrimeFaces | Affichage du rapport de déploiement"
+  debug:
+    msg:
+      - "=============================================="
+      - "📊 RAPPORT DE DÉPLOIEMENT PRIMEFACES"
+      - "=============================================="
+      - "📈 Statut: {{ primefaces_deployment_report.status }}"
+      - "🌍 Environnement: {{ primefaces_deployment_report.environment }}"
+      - "🏷️  Namespace: {{ primefaces_deployment_report.namespace }}"
+      - "🆔 ID de déploiement: {{ primefaces_deployment_report.deployment_id }}"
+      - "⏰ Durée: {{ primefaces_deployment_report.duration }}s"
+      - "🌐 Version PrimeFaces: {{ primefaces_deployment_report.primefaces_version }}"
+      - "🔗 Point de connexion: {{ primefaces_deployment_report.primefaces_endpoint }}"
+      - "📊 Monitoring: {{ primefaces_deployment_report.monitoring_status }}"
+      - "💾 Sauvegarde: {{ primefaces_deployment_report.backup_status }}"
+      - "{{ '❌ Phase d\'échec: ' + primefaces_deployment_report.failed_phase if primefaces_deployment_report.status == 'FAILED' else '✅ Déploiement réussi' }}"
+      - "{{ '🔍 Raison: ' + primefaces_deployment_report.failure_reason if primefaces_deployment_report.status == 'FAILED' else '' }}"
+      - "=============================================="
+  tags:
+    - primefaces
+    - report
+    - always
+
+- name: "PrimeFaces | Sauvegarde du rapport de déploiement"
+  copy:
+    content: "{{ primefaces_deployment_report | to_nice_json }}"
+    dest: "/tmp/primefaces-deployment-report-{{ primefaces_deployment_metadata.deployment_id }}.json"
+  delegate_to: localhost
+  tags:
+    - primefaces
+    - report
+
+# =========================================================================
+# NETTOYAGE ET FINALISATION
+# =========================================================================
+- name: "PrimeFaces | Nettoyage des fichiers temporaires"
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ primefaces_error_handling.error_log_file }}"
+  when:
+    - primefaces_deployment_report.status == "SUCCESS"
+    - not primefaces_deployment_config.debug_mode | bool
+  ignore_errors: yes
+  tags:
+    - primefaces
+    - cleanup
+
+- name: "PrimeFaces | Message de finalisation"
+  debug:
+    msg: |
+      {% if primefaces_deployment_report.status == 'SUCCESS' %}
+      🎉 Déploiement PrimeFaces terminé avec succès !
+
+      📋 Informations de connexion:
+      - Hôte: {{ primefaces_deployment_report.primefaces_endpoint }}
+      - Port: {{ lions_primefaces_port | default(8080) }}
+
+      📚 Documentation disponible à: https://docs.lions.dev/infrastructure/applications/primefaces
+      {% else %}
+      💥 Déploiement PrimeFaces échoué en phase {{ primefaces_deployment_report.failed_phase }}
+
+      🔍 Consultez les logs d'erreur pour plus de détails:
+      - Fichier d'erreur: {{ primefaces_error_handling.error_log_file }}
+      - Rapport JSON: /tmp/primefaces-deployment-report-{{ primefaces_deployment_metadata.deployment_id }}.json
+
+      🛠️  Guide de dépannage: https://docs.lions.dev/infrastructure/troubleshooting/primefaces
+      {% endif %}
+  tags:
+    - primefaces
+    - always

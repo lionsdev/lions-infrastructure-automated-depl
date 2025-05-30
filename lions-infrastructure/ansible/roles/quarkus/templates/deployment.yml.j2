@@ -1,61 +1,194 @@
----
-# Titre: Template de déploiement Kubernetes pour Quarkus
-# Description: Définit le déploiement Kubernetes pour une application Quarkus
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - QUARKUS DEPLOYMENT TEMPLATE
+# =========================================================================
+# Description: Template Jinja2 pour le déploiement Kubernetes des applications Quarkus
+# Composant: Quarkus Application Deployment
+# Version: 5.0.0
+# Maintainer: DevOps LIONS Team
+# Documentation: https://docs.lions.dev/infrastructure/quarkus/deployment
+# =========================================================================
 
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: "{{ app_name }}"
-  namespace: "{{ app_namespace }}"
+  name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
+  namespace: "{{ lions_quarkus_namespace }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "quarkus"
+    # Labels standards Kubernetes
+    app.kubernetes.io/name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
+    app.kubernetes.io/instance: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-{{ lions_environment }}"
+    app.kubernetes.io/version: "{{ lions_quarkus_app_version | default('latest') }}"
+    app.kubernetes.io/component: "backend"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+    
+    # Labels spécifiques LIONS
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/technology: "quarkus"
+    lions.dev/tier: "application"
+    lions.dev/monitoring: "{{ lions_monitoring_enabled | lower }}"
+    
+    # Labels pour le déploiement
+    deployment.lions.dev/strategy: "{{ lions_quarkus_deployment_strategy | default('RollingUpdate') }}"
+    deployment.lions.dev/config-version: "{{ lions_config_version }}"
+    
   annotations:
-    description: "Déploiement de l'application {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
-    deployment.kubernetes.io/revision: "1"
+    # Annotations de documentation
+    description: "Déploiement Quarkus {{ lions_quarkus_app_name | default(lions_quarkus_service_name) }} v{{ lions_quarkus_app_version | default('latest') }}"
+    lions.dev/documentation: "https://docs.lions.dev/infrastructure/quarkus"
+    lions.dev/deployment-checksum: "{{ ansible_date_time.epoch }}"
+    
+    # Annotations pour la configuration
+    deployment.lions.dev/last-updated: "{{ ansible_date_time.iso8601 }}"
+    deployment.lions.dev/environment: "{{ lions_environment }}"
+    deployment.lions.dev/managed-by: "lions-infrastructure-ansible"
+    
+    # Annotations pour le rollback
+    deployment.kubernetes.io/revision: "{{ lions_quarkus_deployment_revision | default('1') }}"
+    
 spec:
-  replicas: {{ app_replicas }}
+  # =========================================================================
+  # CONFIGURATION DU DÉPLOIEMENT
+  # =========================================================================
+  
+  # Nombre de répliques selon l'environnement
+  replicas: |
+    {%- if lions_environment == 'production' -%}
+    {{ lions_quarkus_replicas_production | default(3) }}
+    {%- elif lions_environment == 'staging' -%}
+    {{ lions_quarkus_replicas_staging | default(2) }}
+    {%- else -%}
+    {{ lions_quarkus_replicas_development | default(1) }}
+    {%- endif -%}
+  
+  # Sélecteur pour identifier les pods
   selector:
     matchLabels:
-      app: "{{ app_name }}"
+      app.kubernetes.io/name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
+      app.kubernetes.io/instance: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-{{ lions_environment }}"
+  
+  # Stratégie de déploiement
   strategy:
-    type: RollingUpdate
+    type: "{{ lions_quarkus_deployment_strategy | default('RollingUpdate') }}"
+{% if lions_quarkus_deployment_strategy | default('RollingUpdate') == 'RollingUpdate' %}
     rollingUpdate:
-      maxSurge: 1
-      maxUnavailable: 0
+      maxSurge: "{{ lions_quarkus_max_surge | default('25%') }}"
+      maxUnavailable: "{{ lions_quarkus_max_unavailable | default('0') }}"
+{% endif %}
+  
+  # =========================================================================
+  # TEMPLATE DU POD
+  # =========================================================================
+  
   template:
     metadata:
       labels:
-        app: "{{ app_name }}"
-        version: "{{ app_version }}"
-        environment: "{{ app_environment }}"
-        technology: "quarkus"
+        # Labels identiques au déploiement
+        app.kubernetes.io/name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
+        app.kubernetes.io/instance: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-{{ lions_environment }}"
+        app.kubernetes.io/version: "{{ lions_quarkus_app_version | default('latest') }}"
+        app.kubernetes.io/component: "backend"
+        app.kubernetes.io/part-of: "lions-infrastructure"
+        
+        # Labels spécifiques LIONS
+        lions.dev/environment: "{{ lions_environment }}"
+        lions.dev/technology: "quarkus"
+        lions.dev/tier: "application"
+        lions.dev/pod-template-hash: "{{ ansible_date_time.epoch }}"
+        
       annotations:
-        prometheus.io/scrape: "{{ quarkus_prometheus_scrape | string | lower }}"
-        prometheus.io/path: "{{ quarkus_prometheus_path }}"
-        prometheus.io/port: "{{ quarkus_prometheus_port }}"
+        # Annotations pour le monitoring
+{% if lions_monitoring_enabled | bool %}
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "{{ lions_quarkus_port }}"
+        prometheus.io/scheme: "http"
+{% endif %}
+        
+        # Annotations pour la configuration
+        config.lions.dev/checksum: "{{ ansible_date_time.epoch }}"
+        config.lions.dev/source: "lions-infrastructure-ansible"
+        
+        # Annotations pour la sécurité
+        seccomp.security.alpha.kubernetes.io/pod: "runtime/default"
+        
+{% if lions_quarkus_custom_annotations is defined %}
+        # Annotations personnalisées
+{% for key, value in lions_quarkus_custom_annotations.items() %}
+        {{ key }}: "{{ value }}"
+{% endfor %}
+{% endif %}
+        
     spec:
-      serviceAccountName: "{{ app_name }}"
+      # =====================================================================
+      # CONFIGURATION DE SÉCURITÉ DU POD
+      # =====================================================================
+      
+      # Service Account
+      serviceAccountName: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
+      automountServiceAccountToken: {{ lions_quarkus_automount_token | default('false') }}
+      
+      # Contexte de sécurité global
       securityContext:
         runAsNonRoot: true
-        runAsUser: 1000
-        fsGroup: 1000
+        runAsUser: {{ lions_security_user_id | default('1000') }}
+        runAsGroup: {{ lions_security_group_id | default('1000') }}
+        fsGroup: {{ lions_security_fs_group | default('1000') }}
+        fsGroupChangePolicy: "OnRootMismatch"
+{% if lions_security_selinux_enabled | default(false) | bool %}
+        seLinuxOptions:
+          level: "s0:c123,c456"
+{% endif %}
+        seccompProfile:
+          type: RuntimeDefault
+      
+      # Configuration réseau
+{% if lions_security_network_policy_enabled | bool %}
+      dnsPolicy: ClusterFirst
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "2"
+          - name: edns0
+{% endif %}
+      
+      # Délai d'arrêt gracieux
+      terminationGracePeriodSeconds: {{ lions_quarkus_termination_grace_period | default('30') }}
+      
+      # =====================================================================
+      # CONFIGURATION DES CONTENEURS
+      # =====================================================================
+      
       containers:
-        - name: "{{ app_name }}"
-          image: "registry.{{ app_environment }}.lions.dev/{{ app_name }}:{{ app_version }}"
-          imagePullPolicy: IfNotPresent
+        - name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
+          
+          # Image du conteneur
+          image: "{{ lions_registry_url }}/{{ lions_quarkus_image_name | default(lions_quarkus_app_name | default(lions_quarkus_service_name)) }}:{{ lions_quarkus_app_version | default('latest') }}"
+          imagePullPolicy: "{{ lions_quarkus_image_pull_policy | default('IfNotPresent') }}"
+          
+          # Ports exposés
           ports:
             - name: http
-              containerPort: {{ quarkus_default_port }}
+              containerPort: {{ lions_quarkus_port }}
               protocol: TCP
+{% if lions_quarkus_management_port is defined %}
+            - name: management
+              containerPort: {{ lions_quarkus_management_port }}
+              protocol: TCP
+{% endif %}
+{% if lions_debug_mode | bool and lions_environment == 'development' %}
+            - name: debug
+              containerPort: {{ lions_quarkus_debug_port | default('5005') }}
+              protocol: TCP
+{% endif %}
+          
+          # ===============================================================
+          # VARIABLES D'ENVIRONNEMENT
+          # ===============================================================
+          
           env:
-            - name: QUARKUS_PROFILE
-              value: "{{ quarkus_profile }}"
+            # Variables Kubernetes natives
             - name: KUBERNETES_NAMESPACE
               valueFrom:
                 fieldRef:
@@ -64,53 +197,336 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            
+            # Variables LIONS spécifiques
+            - name: LIONS_POD_ID
+              value: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-$(POD_NAME)"
+            - name: LIONS_DEPLOYMENT_TIME
+              value: "{{ ansible_date_time.iso8601 }}"
+            
+            # Configuration JVM optimisée
             - name: JAVA_OPTS
-              value: "-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -Djava.net.preferIPv4Stack=true"
+              value: >
+                {{ lions_quarkus_java_opts | default('-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0') }}
+                -Djava.net.preferIPv4Stack=true
+                -Djava.awt.headless=true
+                -Dfile.encoding=UTF-8
+                -Duser.timezone={{ lions_timezone | default('UTC') }}
+{% if lions_debug_mode | bool and lions_environment == 'development' %}
+                -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:{{ lions_quarkus_debug_port | default('5005') }}
+{% endif %}
+{% if lions_environment != 'production' %}
+                -XX:+PrintGCDetails
+                -XX:+PrintGCTimeStamps
+{% endif %}
+            
+            # Profil Quarkus selon l'environnement
+            - name: QUARKUS_PROFILE
+              value: "{{ lions_environment }}"
+            
+{% if lions_vault_enabled | bool %}
+            # Variables pour Vault (si activé)
+            - name: VAULT_ADDR
+              value: "{{ lions_vault_addr }}"
+            - name: VAULT_NAMESPACE
+              value: "{{ lions_vault_namespace | default('') }}"
+{% endif %}
+            
+{% if lions_quarkus_custom_env is defined %}
+            # Variables d'environnement personnalisées
+{% for env_var in lions_quarkus_custom_env %}
+            - name: "{{ env_var.name }}"
+              value: "{{ env_var.value }}"
+{% endfor %}
+{% endif %}
+          
+          # Injection des ConfigMaps et Secrets
           envFrom:
             - configMapRef:
-                name: "{{ app_name }}-config"
+                name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-config"
+{% if lions_quarkus_secrets_enabled | default(true) | bool %}
             - secretRef:
-                name: "{{ app_name }}-secrets"
+                name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-secrets"
                 optional: true
+{% endif %}
+{% if lions_vault_enabled | bool %}
+            - secretRef:
+                name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-vault-secrets"
+                optional: true
+{% endif %}
+          
+          # ===============================================================
+          # GESTION DES RESSOURCES
+          # ===============================================================
+          
           resources:
             requests:
-              cpu: "{{ app_resources.requests.cpu }}"
-              memory: "{{ app_resources.requests.memory }}"
+              cpu: "{{ lions_quarkus_cpu_request }}"
+              memory: "{{ lions_quarkus_memory_request }}"
+{% if lions_quarkus_ephemeral_storage_request is defined %}
+              ephemeral-storage: "{{ lions_quarkus_ephemeral_storage_request }}"
+{% endif %}
             limits:
-              cpu: "{{ app_resources.limits.cpu }}"
-              memory: "{{ app_resources.limits.memory }}"
+              cpu: "{{ lions_quarkus_cpu_limit }}"
+              memory: "{{ lions_quarkus_memory_limit }}"
+{% if lions_quarkus_ephemeral_storage_limit is defined %}
+              ephemeral-storage: "{{ lions_quarkus_ephemeral_storage_limit }}"
+{% endif %}
+          
+          # ===============================================================
+          # HEALTH CHECKS
+          # ===============================================================
+          
+          # Sonde de démarrage
+          startupProbe:
+            httpGet:
+              path: "{{ lions_quarkus_health_startup_path | default('/q/health/started') }}"
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: {{ lions_quarkus_startup_initial_delay | default('30') }}
+            periodSeconds: {{ lions_quarkus_startup_period | default('10') }}
+            timeoutSeconds: {{ lions_quarkus_startup_timeout | default('5') }}
+            failureThreshold: {{ lions_quarkus_startup_failure_threshold | default('6') }}
+            successThreshold: 1
+          
+          # Sonde de disponibilité
           readinessProbe:
-            {{- quarkus_readiness_probe | to_nice_yaml(indent=2) | indent(12) }}
+            httpGet:
+              path: "{{ lions_quarkus_health_readiness_path | default('/q/health/ready') }}"
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: {{ lions_quarkus_readiness_initial_delay | default('10') }}
+            periodSeconds: {{ lions_quarkus_readiness_period | default('10') }}
+            timeoutSeconds: {{ lions_quarkus_readiness_timeout | default('5') }}
+            failureThreshold: {{ lions_quarkus_readiness_failure_threshold | default('3') }}
+            successThreshold: 1
+          
+          # Sonde de vitalité
           livenessProbe:
-            {{- quarkus_liveness_probe | to_nice_yaml(indent=2) | indent(12) }}
+            httpGet:
+              path: "{{ lions_quarkus_health_liveness_path | default('/q/health/live') }}"
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: {{ lions_quarkus_liveness_initial_delay | default('60') }}
+            periodSeconds: {{ lions_quarkus_liveness_period | default('30') }}
+            timeoutSeconds: {{ lions_quarkus_liveness_timeout | default('10') }}
+            failureThreshold: {{ lions_quarkus_liveness_failure_threshold | default('3') }}
+            successThreshold: 1
+          
+          # ===============================================================
+          # MONTAGE DES VOLUMES
+          # ===============================================================
+          
           volumeMounts:
+            # Volume temporaire
             - name: tmp-volume
               mountPath: /tmp
+            
+            # Volume pour les logs (si activé)
+{% if lions_quarkus_logs_volume_enabled | default(false) | bool %}
+            - name: logs-volume
+              mountPath: /app/logs
+{% endif %}
+            
+            # Volume de configuration
             - name: config-volume
-              mountPath: /deployments/config
+              mountPath: /app/config
               readOnly: true
+            
+{% if lions_vault_enabled | bool %}
+            # Volume pour les certificats Vault
+            - name: vault-certs
+              mountPath: /app/vault-certs
+              readOnly: true
+{% endif %}
+            
+{% if lions_quarkus_custom_volumes is defined %}
+            # Volumes personnalisés
+{% for volume_mount in lions_quarkus_custom_volumes %}
+            - name: "{{ volume_mount.name }}"
+              mountPath: "{{ volume_mount.mount_path }}"
+              readOnly: {{ volume_mount.read_only | default(true) }}
+{% if volume_mount.sub_path is defined %}
+              subPath: "{{ volume_mount.sub_path }}"
+{% endif %}
+{% endfor %}
+{% endif %}
+          
+          # ===============================================================
+          # CONTEXTE DE SÉCURITÉ DU CONTENEUR
+          # ===============================================================
+          
           securityContext:
             allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: {{ lions_security_user_id | default('1000') }}
+            runAsGroup: {{ lions_security_group_id | default('1000') }}
             capabilities:
               drop:
                 - ALL
-            readOnlyRootFilesystem: true
+              add: []
+            seccompProfile:
+              type: RuntimeDefault
+      
+      # =====================================================================
+      # VOLUMES
+      # =====================================================================
+      
       volumes:
+        # Volume temporaire en mémoire
         - name: tmp-volume
-          emptyDir: {}
+          emptyDir:
+            medium: Memory
+            sizeLimit: {{ lions_quarkus_tmp_size | default('128Mi') }}
+        
+        # Volume de configuration depuis la ConfigMap
         - name: config-volume
           configMap:
-            name: "{{ app_name }}-config"
+            name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-config"
+            defaultMode: 0444
+        
+{% if lions_quarkus_logs_volume_enabled | default(false) | bool %}
+        # Volume pour les logs
+        - name: logs-volume
+          emptyDir:
+            sizeLimit: {{ lions_quarkus_logs_size | default('1Gi') }}
+{% endif %}
+        
+{% if lions_vault_enabled | bool %}
+        # Volume pour les certificats Vault
+        - name: vault-certs
+          secret:
+            secretName: "{{ lions_vault_certs_secret_name | default('vault-certs') }}"
+            defaultMode: 0444
+{% endif %}
+        
+{% if lions_quarkus_custom_volumes is defined %}
+        # Volumes personnalisés
+{% for volume in lions_quarkus_custom_volumes %}
+        - name: "{{ volume.name }}"
+{% if volume.type == 'configMap' %}
+          configMap:
+            name: "{{ volume.config_map_name }}"
+            defaultMode: {{ volume.default_mode | default('0444') }}
+{% elif volume.type == 'secret' %}
+          secret:
+            secretName: "{{ volume.secret_name }}"
+            defaultMode: {{ volume.default_mode | default('0444') }}
+{% elif volume.type == 'emptyDir' %}
+          emptyDir:
+{% if volume.medium is defined %}
+            medium: "{{ volume.medium }}"
+{% endif %}
+{% if volume.size_limit is defined %}
+            sizeLimit: "{{ volume.size_limit }}"
+{% endif %}
+{% elif volume.type == 'persistentVolumeClaim' %}
+          persistentVolumeClaim:
+            claimName: "{{ volume.claim_name }}"
+{% endif %}
+{% endfor %}
+{% endif %}
+      
+      # =====================================================================
+      # RÈGLES D'AFFINITÉ ET TOLÉRANCE
+      # =====================================================================
+      
+{% if lions_quarkus_affinity_enabled | default(true) | bool %}
       affinity:
+        # Anti-affinité pour distribuer les pods
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
             - weight: 100
               podAffinityTerm:
                 labelSelector:
                   matchExpressions:
-                    - key: app
+                    - key: app.kubernetes.io/name
                       operator: In
                       values:
-                        - "{{ app_name }}"
+                        - "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
                 topologyKey: kubernetes.io/hostname
-      terminationGracePeriodSeconds: 30
+        
+{% if lions_environment == 'production' %}
+        # Affinité pour les nœuds de production
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: lions.dev/node-type
+                    operator: In
+                    values:
+                      - "application"
+{% endif %}
+{% endif %}
+      
+{% if lions_quarkus_tolerations is defined %}
+      # Tolérances pour les nœuds spécialisés
+      tolerations:
+{% for toleration in lions_quarkus_tolerations %}
+        - key: "{{ toleration.key }}"
+          operator: "{{ toleration.operator | default('Equal') }}"
+{% if toleration.value is defined %}
+          value: "{{ toleration.value }}"
+{% endif %}
+          effect: "{{ toleration.effect }}"
+{% if toleration.toleration_seconds is defined %}
+          tolerationSeconds: {{ toleration.toleration_seconds }}
+{% endif %}
+{% endfor %}
+{% endif %}
+      
+      # =====================================================================
+      # CONFIGURATION AVANCÉE
+      # =====================================================================
+      
+      # Priorité du pod
+{% if lions_quarkus_priority_class is defined %}
+      priorityClassName: "{{ lions_quarkus_priority_class }}"
+{% endif %}
+      
+      # Politique de redémarrage
+      restartPolicy: Always
+      
+      # Hostname et sous-domaine
+{% if lions_quarkus_hostname is defined %}
+      hostname: "{{ lions_quarkus_hostname }}"
+{% endif %}
+{% if lions_quarkus_subdomain is defined %}
+      subdomain: "{{ lions_quarkus_subdomain }}"
+{% endif %}
+      
+      # Configuration des conteneurs d'initialisation
+{% if lions_quarkus_init_containers is defined %}
+      initContainers:
+{% for init_container in lions_quarkus_init_containers %}
+        - name: "{{ init_container.name }}"
+          image: "{{ init_container.image }}"
+          command: {{ init_container.command | to_json }}
+{% if init_container.env is defined %}
+          env:
+{% for env_var in init_container.env %}
+            - name: "{{ env_var.name }}"
+              value: "{{ env_var.value }}"
+{% endfor %}
+{% endif %}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: {{ lions_security_user_id | default('1000') }}
+{% endfor %}
+{% endif %}

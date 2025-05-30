@@ -1,21 +1,424 @@
 ---
-# Titre: Tâches pour le déploiement d'applications PrimeReact
-# Description: Déploie une application PrimeReact sur Kubernetes
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - RÔLE PRIMEREACT
+# =========================================================================
+# Description: Orchestrateur principal pour le déploiement d'applications PrimeReact
+# Version: 5.0.0
+# Maintainer: DevOps Team <devops@lions.dev>
+# Documentation: https://docs.lions.dev/infrastructure/applications/primereact
+# =========================================================================
 
-- name: Vérification des prérequis pour PrimeReact
-  include_tasks: prerequisites.yml
+# =========================================================================
+# MÉTADONNÉES ET CONFIGURATION
+# =========================================================================
+- name: "PrimeReact | Initialisation des métadonnées de déploiement"
+  set_fact:
+    primereact_deployment_metadata:
+      role_name: "primereact"
+      role_version: "5.0.0"
+      deployment_id: "{{ ansible_date_time.epoch }}"
+      environment: "{{ lions_environment | default('development') }}"
+      namespace: "{{ lions_primereact_namespace | default('applications') }}"
+      started_at: "{{ ansible_date_time.iso8601 }}"
+      started_by: "{{ ansible_user_id | default('system') }}"
+    primereact_deployment_config:
+      dry_run: "{{ lions_dry_run | default(false) | bool }}"
+      debug_mode: "{{ lions_debug_mode | default(false) | bool }}"
+      skip_validation: "{{ primereact_skip_validation | default(false) | bool }}"
+      force_recreate: "{{ primereact_force_recreate | default(false) | bool }}"
+  tags:
+    - primereact
+    - metadata
+    - always
 
-- name: Préparation des ressources Kubernetes
-  include_tasks: prepare.yml
+- name: "PrimeReact | Affichage des informations de déploiement"
+  debug:
+    msg:
+      - "🚀 Démarrage du déploiement PrimeReact"
+      - "📊 Environnement: {{ primereact_deployment_metadata.environment }}"
+      - "🏷️  Namespace: {{ primereact_deployment_metadata.namespace }}"
+      - "🆔 ID de déploiement: {{ primereact_deployment_metadata.deployment_id }}"
+      - "⏰ Démarré le: {{ primereact_deployment_metadata.started_at }}"
+      - "👤 Initié par: {{ primereact_deployment_metadata.started_by }}"
+      - "🔧 Mode debug: {{ primereact_deployment_config.debug_mode }}"
+      - "🧪 Dry run: {{ primereact_deployment_config.dry_run }}"
+  when: primereact_deployment_config.debug_mode | bool
+  tags:
+    - primereact
+    - debug
+    - always
 
-- name: Déploiement de l'application PrimeReact
-  include_tasks: deploy.yml
+# =========================================================================
+# GESTION DES ERREURS ET ROLLBACK
+# =========================================================================
+- name: "PrimeReact | Configuration de la gestion d'erreurs"
+  set_fact:
+    primereact_error_handling:
+      max_retries: "{{ primereact_max_retries | default(3) }}"
+      retry_delay: "{{ primereact_retry_delay | default(10) }}"
+      rollback_on_failure: "{{ primereact_rollback_on_failure | default(true) | bool }}"
+      error_log_file: "/tmp/primereact-deployment-{{ primereact_deployment_metadata.deployment_id }}.log"
+  tags:
+    - primereact
+    - error-handling
+    - always
 
-- name: Configuration du monitoring pour PrimeReact
-  include_tasks: monitoring.yml
+# =========================================================================
+# VÉRIFICATIONS PRÉALABLES CRITIQUES
+# =========================================================================
+- name: "PrimeReact | Vérification de l'état de l'environnement"
+  block:
+    - name: "PrimeReact | Vérification de l'accessibilité du cluster Kubernetes"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Namespace
+        name: "{{ primereact_deployment_metadata.namespace }}"
+      register: primereact_namespace_check
+      failed_when: false
 
-- name: Validation post-déploiement
-  include_tasks: validate.yml
+    - name: "PrimeReact | Vérification des variables d'environnement critiques"
+      assert:
+        that:
+          - lions_primereact_enabled is defined
+          - lions_primereact_enabled | bool
+          - lions_primereact_version is defined
+          - lions_primereact_version | length > 0
+          - primereact_deployment_metadata.namespace is defined
+        fail_msg: "Variables d'environnement PrimeReact manquantes ou incorrectes"
+        success_msg: "Variables d'environnement PrimeReact validées"
+
+  rescue:
+    - name: "PrimeReact | Gestion d'erreur - Vérifications préalables"
+      fail:
+        msg: "❌ Échec des vérifications préalables PrimeReact: {{ ansible_failed_result.msg | default('Erreur inconnue') }}"
+
+  tags:
+    - primereact
+    - preflight
+    - validation
+
+# =========================================================================
+# PHASE 1: PRÉREQUIS ET DÉPENDANCES
+# =========================================================================
+- name: "PrimeReact | Phase 1 - Vérification des prérequis"
+  block:
+    - name: "PrimeReact | Inclusion des tâches de prérequis"
+      include_tasks: prerequisites.yml
+      vars:
+        current_phase: "prerequisites"
+        phase_description: "Vérification des prérequis système et Kubernetes"
+
+  rescue:
+    - name: "PrimeReact | Échec Phase 1 - Prérequis"
+      set_fact:
+        primereact_deployment_failed: true
+        primereact_failure_phase: "prerequisites"
+        primereact_failure_reason: "{{ ansible_failed_result.msg | default('Échec des prérequis') }}"
+
+    - name: "PrimeReact | Log d'erreur Phase 1"
+      lineinfile:
+        path: "{{ primereact_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] ERREUR Phase 1 (Prérequis): {{ primereact_failure_reason }}"
+        create: yes
+
+    - name: "PrimeReact | Arrêt du déploiement - Phase 1"
+      fail:
+        msg: "❌ Déploiement PrimeReact interrompu en Phase 1 (Prérequis): {{ primereact_failure_reason }}"
+
+  tags:
+    - primereact
+    - prerequisites
+    - phase-1
+
+# =========================================================================
+# PHASE 2: PRÉPARATION DES RESSOURCES
+# =========================================================================
+- name: "PrimeReact | Phase 2 - Préparation des ressources"
+  block:
+    - name: "PrimeReact | Inclusion des tâches de préparation"
+      include_tasks: prepare.yml
+      vars:
+        current_phase: "preparation"
+        phase_description: "Création des ressources Kubernetes de base"
+
+  rescue:
+    - name: "PrimeReact | Échec Phase 2 - Préparation"
+      set_fact:
+        primereact_deployment_failed: true
+        primereact_failure_phase: "preparation"
+        primereact_failure_reason: "{{ ansible_failed_result.msg | default('Échec de la préparation') }}"
+
+    - name: "PrimeReact | Log d'erreur Phase 2"
+      lineinfile:
+        path: "{{ primereact_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] ERREUR Phase 2 (Préparation): {{ primereact_failure_reason }}"
+        create: yes
+
+    - name: "PrimeReact | Nettoyage partiel après échec Phase 2"
+      include_tasks: cleanup.yml
+      vars:
+        cleanup_scope: "preparation"
+      when: primereact_error_handling.rollback_on_failure | bool
+
+    - name: "PrimeReact | Arrêt du déploiement - Phase 2"
+      fail:
+        msg: "❌ Déploiement PrimeReact interrompu en Phase 2 (Préparation): {{ primereact_failure_reason }}"
+
+  when: primereact_deployment_failed is not defined
+  tags:
+    - primereact
+    - preparation
+    - phase-2
+
+# =========================================================================
+# PHASE 3: DÉPLOIEMENT PRINCIPAL
+# =========================================================================
+- name: "PrimeReact | Phase 3 - Déploiement principal"
+  block:
+    - name: "PrimeReact | Inclusion des tâches de déploiement"
+      include_tasks: deploy.yml
+      vars:
+        current_phase: "deployment"
+        phase_description: "Déploiement des composants PrimeReact"
+
+  rescue:
+    - name: "PrimeReact | Échec Phase 3 - Déploiement"
+      set_fact:
+        primereact_deployment_failed: true
+        primereact_failure_phase: "deployment"
+        primereact_failure_reason: "{{ ansible_failed_result.msg | default('Échec du déploiement') }}"
+
+    - name: "PrimeReact | Log d'erreur Phase 3"
+      lineinfile:
+        path: "{{ primereact_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] ERREUR Phase 3 (Déploiement): {{ primereact_failure_reason }}"
+        create: yes
+
+    - name: "PrimeReact | Rollback complet après échec Phase 3"
+      include_tasks: rollback.yml
+      vars:
+        rollback_reason: "Échec du déploiement principal"
+      when: primereact_error_handling.rollback_on_failure | bool
+
+    - name: "PrimeReact | Arrêt du déploiement - Phase 3"
+      fail:
+        msg: "❌ Déploiement PrimeReact interrompu en Phase 3 (Déploiement): {{ primereact_failure_reason }}"
+
+  when: primereact_deployment_failed is not defined
+  tags:
+    - primereact
+    - deployment
+    - phase-3
+
+# =========================================================================
+# PHASE 4: CONFIGURATION DU MONITORING
+# =========================================================================
+- name: "PrimeReact | Phase 4 - Configuration du monitoring"
+  block:
+    - name: "PrimeReact | Inclusion des tâches de monitoring"
+      include_tasks: monitoring.yml
+      vars:
+        current_phase: "monitoring"
+        phase_description: "Configuration des métriques et alertes PrimeReact"
+
+  rescue:
+    - name: "PrimeReact | Avertissement Phase 4 - Monitoring"
+      debug:
+        msg:
+          - "⚠️  Échec de la configuration du monitoring PrimeReact"
+          - "ℹ️  Le déploiement principal a réussi, mais les métriques peuvent être indisponibles"
+          - "🔍 Erreur: {{ ansible_failed_result.msg | default('Erreur de monitoring inconnue') }}"
+
+    - name: "PrimeReact | Log d'avertissement Phase 4"
+      lineinfile:
+        path: "{{ primereact_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] AVERTISSEMENT Phase 4 (Monitoring): {{ ansible_failed_result.msg | default('Erreur de monitoring') }}"
+        create: yes
+
+    - name: "PrimeReact | Marquage du monitoring comme défaillant"
+      set_fact:
+        primereact_monitoring_failed: true
+
+  when:
+    - primereact_deployment_failed is not defined
+    - lions_monitoring_enabled | default(true) | bool
+  tags:
+    - primereact
+    - monitoring
+    - phase-4
+
+# =========================================================================
+# PHASE 5: VALIDATION POST-DÉPLOIEMENT
+# =========================================================================
+- name: "PrimeReact | Phase 5 - Validation post-déploiement"
+  block:
+    - name: "PrimeReact | Inclusion des tâches de validation"
+      include_tasks: validate.yml
+      vars:
+        current_phase: "validation"
+        phase_description: "Validation de l'état et des fonctionnalités PrimeReact"
+
+  rescue:
+    - name: "PrimeReact | Échec Phase 5 - Validation"
+      set_fact:
+        primereact_deployment_failed: true
+        primereact_failure_phase: "validation"
+        primereact_failure_reason: "{{ ansible_failed_result.msg | default('Échec de la validation') }}"
+
+    - name: "PrimeReact | Log d'erreur Phase 5"
+      lineinfile:
+        path: "{{ primereact_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] ERREUR Phase 5 (Validation): {{ primereact_failure_reason }}"
+        create: yes
+
+    - name: "PrimeReact | Décision sur le rollback après validation"
+      debug:
+        msg: "⚠️  Validation échouée mais PrimeReact peut être partiellement fonctionnel"
+
+    - name: "PrimeReact | Arrêt avec avertissement - Phase 5"
+      fail:
+        msg: "⚠️  Déploiement PrimeReact terminé avec des erreurs de validation: {{ primereact_failure_reason }}"
+
+  when:
+    - primereact_deployment_failed is not defined
+    - not primereact_deployment_config.skip_validation | bool
+  tags:
+    - primereact
+    - validation
+    - phase-5
+
+# =========================================================================
+# PHASE 6: CONFIGURATION DE LA SAUVEGARDE
+# =========================================================================
+- name: "PrimeReact | Phase 6 - Configuration de la sauvegarde"
+  block:
+    - name: "PrimeReact | Inclusion des tâches de sauvegarde"
+      include_tasks: backup.yml
+      vars:
+        current_phase: "backup"
+        phase_description: "Configuration des stratégies de sauvegarde PrimeReact"
+
+  rescue:
+    - name: "PrimeReact | Avertissement Phase 6 - Sauvegarde"
+      debug:
+        msg:
+          - "⚠️  Échec de la configuration de sauvegarde PrimeReact"
+          - "ℹ️  PrimeReact fonctionne mais les sauvegardes automatiques sont désactivées"
+          - "🔍 Erreur: {{ ansible_failed_result.msg | default('Erreur de sauvegarde inconnue') }}"
+
+    - name: "PrimeReact | Log d'avertissement Phase 6"
+      lineinfile:
+        path: "{{ primereact_error_handling.error_log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] AVERTISSEMENT Phase 6 (Sauvegarde): {{ ansible_failed_result.msg | default('Erreur de sauvegarde') }}"
+        create: yes
+
+    - name: "PrimeReact | Marquage de la sauvegarde comme défaillante"
+      set_fact:
+        primereact_backup_failed: true
+
+  when:
+    - primereact_deployment_failed is not defined
+    - lions_backup_enabled | default(true) | bool
+    - lions_primereact_backup_enabled | default(true) | bool
+  tags:
+    - primereact
+    - backup
+    - phase-6
+
+# =========================================================================
+# FINALISATION ET RAPPORT DE DÉPLOIEMENT
+# =========================================================================
+- name: "PrimeReact | Génération du rapport de déploiement"
+  set_fact:
+    primereact_deployment_report:
+      status: "{{ 'FAILED' if primereact_deployment_failed | default(false) else 'SUCCESS' }}"
+      environment: "{{ primereact_deployment_metadata.environment }}"
+      namespace: "{{ primereact_deployment_metadata.namespace }}"
+      deployment_id: "{{ primereact_deployment_metadata.deployment_id }}"
+      started_at: "{{ primereact_deployment_metadata.started_at }}"
+      completed_at: "{{ ansible_date_time.iso8601 }}"
+      duration: "{{ (ansible_date_time.epoch | int) - (primereact_deployment_metadata.deployment_id | int) }}"
+      failed_phase: "{{ primereact_failure_phase | default('N/A') }}"
+      failure_reason: "{{ primereact_failure_reason | default('N/A') }}"
+      monitoring_status: "{{ 'FAILED' if primereact_monitoring_failed | default(false) else 'OK' }}"
+      backup_status: "{{ 'FAILED' if primereact_backup_failed | default(false) else 'OK' }}"
+      primereact_version: "{{ lions_primereact_version }}"
+      primereact_service_name: "{{ lions_primereact_service_name | default('primereact-app') }}"
+      primereact_endpoint: "{{ lions_primereact_service_name | default('primereact-app') }}.{{ primereact_deployment_metadata.namespace }}.svc.cluster.local:{{ lions_primereact_port | default(3000) }}"
+  tags:
+    - primereact
+    - report
+    - always
+
+- name: "PrimeReact | Affichage du rapport de déploiement"
+  debug:
+    msg:
+      - "=============================================="
+      - "📊 RAPPORT DE DÉPLOIEMENT PRIMEREACT"
+      - "=============================================="
+      - "📈 Statut: {{ primereact_deployment_report.status }}"
+      - "🌍 Environnement: {{ primereact_deployment_report.environment }}"
+      - "🏷️  Namespace: {{ primereact_deployment_report.namespace }}"
+      - "🆔 ID de déploiement: {{ primereact_deployment_report.deployment_id }}"
+      - "⏰ Durée: {{ primereact_deployment_report.duration }}s"
+      - "🌐 Version PrimeReact: {{ primereact_deployment_report.primereact_version }}"
+      - "🔗 Point de connexion: {{ primereact_deployment_report.primereact_endpoint }}"
+      - "📊 Monitoring: {{ primereact_deployment_report.monitoring_status }}"
+      - "💾 Sauvegarde: {{ primereact_deployment_report.backup_status }}"
+      - "{{ '❌ Phase d\'échec: ' + primereact_deployment_report.failed_phase if primereact_deployment_report.status == 'FAILED' else '✅ Déploiement réussi' }}"
+      - "{{ '🔍 Raison: ' + primereact_deployment_report.failure_reason if primereact_deployment_report.status == 'FAILED' else '' }}"
+      - "=============================================="
+  tags:
+    - primereact
+    - report
+    - always
+
+- name: "PrimeReact | Sauvegarde du rapport de déploiement"
+  copy:
+    content: "{{ primereact_deployment_report | to_nice_json }}"
+    dest: "/tmp/primereact-deployment-report-{{ primereact_deployment_metadata.deployment_id }}.json"
+  delegate_to: localhost
+  tags:
+    - primereact
+    - report
+
+# =========================================================================
+# NETTOYAGE ET FINALISATION
+# =========================================================================
+- name: "PrimeReact | Nettoyage des fichiers temporaires"
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ primereact_error_handling.error_log_file }}"
+  when:
+    - primereact_deployment_report.status == "SUCCESS"
+    - not primereact_deployment_config.debug_mode | bool
+  ignore_errors: yes
+  tags:
+    - primereact
+    - cleanup
+
+- name: "PrimeReact | Message de finalisation"
+  debug:
+    msg: |
+      {% if primereact_deployment_report.status == 'SUCCESS' %}
+      🎉 Déploiement PrimeReact terminé avec succès !
+
+      📋 Informations de connexion:
+      - Hôte: {{ primereact_deployment_report.primereact_endpoint }}
+      - Port: {{ lions_primereact_port | default(3000) }}
+
+      📚 Documentation disponible à: https://docs.lions.dev/infrastructure/applications/primereact
+      {% else %}
+      💥 Déploiement PrimeReact échoué en phase {{ primereact_deployment_report.failed_phase }}
+
+      🔍 Consultez les logs d'erreur pour plus de détails:
+      - Fichier d'erreur: {{ primereact_error_handling.error_log_file }}
+      - Rapport JSON: /tmp/primereact-deployment-report-{{ primereact_deployment_metadata.deployment_id }}.json
+
+      🛠️  Guide de dépannage: https://docs.lions.dev/infrastructure/troubleshooting/primereact
+      {% endif %}
+  tags:
+    - primereact
+    - always

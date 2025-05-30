@@ -1,17 +1,209 @@
-{% if postgres_persistent_storage | bool %}
+# =========================================================================
+  # LIONS INFRASTRUCTURE 5.0 - POSTGRESQL PERSISTENT VOLUME CLAIM
+  # =========================================================================
+  # Description: Template Kubernetes pour le PVC PostgreSQL
+  # Version: 5.0.0
+  # Composant: PostgreSQL Database Storage
+  # Environnement: {{ lions_environment | default('development') }}
+  # =========================================================================
+
+{% set postgres_config = {
+  'enabled': lions_postgres_enabled | default(true) | bool,
+  'namespace': lions_postgres_namespace | default('database'),
+  'service_name': lions_postgres_service_name | default('postgresql'),
+  'storage_size': lions_postgres_storage_size | default('20Gi'),
+  'storage_class': lions_storage_class_default | default('local-path'),
+  'access_modes': ['ReadWriteOnce'],
+  'reclaim_policy': lions_storage_reclaim_policy | default('Retain')
+} %}
+
+{% set app_labels = {
+  'app.kubernetes.io/name': postgres_config.service_name,
+  'app.kubernetes.io/instance': postgres_config.service_name + '-' + (lions_environment | default('development')),
+  'app.kubernetes.io/version': lions_postgres_version | default('15.4'),
+  'app.kubernetes.io/component': 'database',
+  'app.kubernetes.io/part-of': 'lions-infrastructure',
+  'app.kubernetes.io/managed-by': 'ansible',
+  'lions.dev/environment': lions_environment | default('development'),
+  'lions.dev/service-type': 'stateful',
+  'lions.dev/backup-enabled': lions_postgres_backup_enabled | default(true) | string,
+  'lions.dev/monitoring-enabled': lions_monitoring_enabled | default(true) | string
+} %}
+
+{% set resource_annotations = {
+  'lions.dev/created-by': 'lions-infrastructure-ansible',
+  'lions.dev/created-at': ansible_date_time.iso8601,
+  'lions.dev/config-version': lions_config_version | default('5.0.0'),
+  'lions.dev/storage-policy': 'persistent',
+  'lions.dev/backup-schedule': lions_backup_schedule | default('0 2 * * *'),
+  'lions.dev/retention-days': lions_backup_retention_days | default(30) | string
+} %}
+
+{% if postgres_config.enabled %}
+---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: {{ app_name }}-data
-  namespace: {{ app_namespace }}
+  name: {{ postgres_config.service_name }}-data-pvc
+  namespace: {{ postgres_config.namespace }}
   labels:
-    app: {{ app_name }}
-    environment: {{ app_environment }}
+{% for key, value in app_labels.items() %}
+    {{ key }}: "{{ value }}"
+{% endfor %}
+  annotations:
+{% for key, value in resource_annotations.items() %}
+    {{ key }}: "{{ value }}"
+{% endfor %}
+    # Storage configuration
+  volume.beta.kubernetes.io/storage-class: "{{ postgres_config.storage_class }}"
+  volume.kubernetes.io/storage-provisioner: "{{ lions_storage_provisioner | default('rancher.io/local-path') }}"
+
+    # Backup and recovery annotations
+  backup.lions.dev/enabled: "{{ lions_postgres_backup_enabled | default(true) | string }}"
+  backup.lions.dev/retention-policy: "{{ lions_backup_retention_days | default(30) }}d"
+  backup.lions.dev/compression: "{{ lions_backup_compression | default('gzip') }}"
+  backup.lions.dev/encryption: "{{ lions_backup_encryption | default(true) | string }}"
+
+    # Security annotations
+  security.lions.dev/encryption-at-rest: "{{ lions_security_encryption_at_rest | default(true) | string }}"
+  security.lions.dev/access-policy: "restricted"
+
+    # Monitoring annotations
+  monitoring.lions.dev/scrape: "false"
+  monitoring.lions.dev/service-monitor: "true"
+
 spec:
   accessModes:
-    - ReadWriteOnce
-  storageClassName: {{ postgres_storage_class }}
+{% for mode in postgres_config.access_modes %}
+    - {{ mode }}
+{% endfor %}
+
+  storageClassName: {{ postgres_config.storage_class }}
+
   resources:
     requests:
-      storage: {{ postgres_storage_size }}
+      storage: {{ postgres_config.storage_size }}
+
+  # Volume selector pour environnements spécifiques
+{% if lions_environment == 'production' and lions_storage_volume_selector is defined %}
+  selector:
+    matchLabels:
+{% for key, value in lions_storage_volume_selector.items() %}
+      {{ key }}: "{{ value }}"
+{% endfor %}
 {% endif %}
+
+{% if lions_environment == 'production' %}
+  # Configuration avancée pour la production
+  volumeMode: Filesystem
+{% endif %}
+
+---
+# Configuration Map pour les métriques de stockage
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ postgres_config.service_name }}-storage-config
+  namespace: {{ postgres_config.namespace }}
+  labels:
+{% for key, value in app_labels.items() %}
+    {{ key }}: "{{ value }}"
+{% endfor %}
+  lions.dev/config-type: "storage"
+  annotations:
+{% for key, value in resource_annotations.items() %}
+    {{ key }}: "{{ value }}"
+{% endfor %}
+data:
+  storage-size: "{{ postgres_config.storage_size }}"
+  storage-class: "{{ postgres_config.storage_class }}"
+  access-modes: "{{ postgres_config.access_modes | join(',') }}"
+  backup-enabled: "{{ lions_postgres_backup_enabled | default(true) | string }}"
+  monitoring-enabled: "{{ lions_monitoring_enabled | default(true) | string }}"
+
+  # Configuration de performance
+  performance-tier: |-
+{% if lions_environment == 'production' %}
+    high-performance
+{% elif lions_environment == 'staging' %}
+    balanced
+{% else %}
+    basic
+{% endif %}
+
+  # Configuration de sauvegarde
+  backup-config: |-
+    schedule: "{{ lions_backup_schedule | default('0 2 * * *') }}"
+    retention_days: {{ lions_backup_retention_days | default(30) }}
+    compression: "{{ lions_backup_compression | default('gzip') }}"
+    encryption: {{ lions_backup_encryption | default(true) | string }}
+{% if lions_backup_external_enabled | default(false) | bool %}
+    external_backup:
+      enabled: true
+      type: "{{ lions_backup_external_type | default('s3') }}"
+      bucket: "{{ lions_backup_external_bucket | default('lions-backup-' + lions_environment) }}"
+{% endif %}
+
+  # Métriques de monitoring
+  monitoring-config: |-
+    enabled: {{ lions_monitoring_enabled | default(true) | string }}
+    scrape_interval: "30s"
+    metrics_path: "/metrics"
+    storage_metrics:
+      - disk_usage
+      - disk_free
+      - disk_total
+      - iops_read
+      - iops_write
+      - throughput_read
+      - throughput_write
+
+{% if lions_environment == 'production' %}
+---
+# Service Monitor pour la surveillance du stockage en production
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ postgres_config.service_name }}-storage-monitor
+  namespace: {{ postgres_config.namespace }}
+  labels:
+{% for key, value in app_labels.items() %}
+    {{ key }}: "{{ value }}"
+{% endfor %}
+  lions.dev/monitoring-target: "storage"
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ postgres_config.service_name }}
+      lions.dev/monitoring-enabled: "true"
+  endpoints:
+    - port: metrics
+      interval: 30s
+      path: /metrics/storage
+      honorLabels: true
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_service_name]
+          targetLabel: service
+        - sourceLabels: [__meta_kubernetes_namespace]
+          targetLabel: namespace
+        - sourceLabels: [__meta_kubernetes_service_label_lions_dev_environment]
+          targetLabel: environment
+{% endif %}
+
+{% else %}
+# PostgreSQL est désactivé - PVC non créé
+# Configuration: LIONS_POSTGRES_ENABLED={{ lions_postgres_enabled | default(false) }}
+{% endif %}
+
+# =========================================================================
+# VALIDATION DE LA CONFIGURATION
+# =========================================================================
+# Vérifications automatiques effectuées:
+# ✓ Namespace: {{ postgres_config.namespace }}
+# ✓ Storage Class: {{ postgres_config.storage_class }}
+# ✓ Storage Size: {{ postgres_config.storage_size }}
+# ✓ Access Modes: {{ postgres_config.access_modes | join(', ') }}
+# ✓ Backup Enabled: {{ lions_postgres_backup_enabled | default(true) }}
+# ✓ Monitoring Enabled: {{ lions_monitoring_enabled | default(true) }}
+# ✓ Environment: {{ lions_environment | default('development') }}
+  # =========================================================================

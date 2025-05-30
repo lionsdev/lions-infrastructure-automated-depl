@@ -1,29 +1,202 @@
 ---
-# Titre: Template de rôle RBAC pour la registry de conteneurs
-# Description: Définit le rôle RBAC pour la registry de conteneurs Docker
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-17
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - TEMPLATE RBAC ROLE REGISTRY
+# =========================================================================
+# Description: Template de rôle RBAC pour le service Registry de conteneurs
+# Composant: Container Registry Service
+# Version: 5.0.0
+# Maintainer: {{ lions_config_maintainer | default('devops@lions.dev') }}
+# Date: {{ ansible_date_time.date }}
+# Documentation: https://docs.lions.dev/infrastructure/registry/rbac
+# =========================================================================
 
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: "{{ app_name | default('registry') }}-role"
-  namespace: "{{ app_namespace | default('registry') }}"
+  name: "{{ lions_registry_service_name | default('registry') }}-role"
+  namespace: "{{ lions_registry_namespace | default('development') }}"
   labels:
-    app: "{{ app_name | default('registry') }}"
-    version: "{{ app_version | default('latest') }}"
-    environment: "{{ app_environment | default('development') }}"
-    technology: "registry"
+    # Labels standards LIONS Infrastructure
+    app.kubernetes.io/name: "{{ lions_registry_service_name | default('registry') }}"
+    app.kubernetes.io/instance: "{{ lions_registry_service_name | default('registry') }}-{{ lions_environment | default('development') }}"
+    app.kubernetes.io/version: "{{ lions_registry_version | default('2.8') }}"
+    app.kubernetes.io/component: "container-registry"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+
+    # Labels LIONS spécifiques
+    lions.dev/environment: "{{ lions_environment | default('development') }}"
+    lions.dev/service-type: "registry"
+    lions.dev/deployment-mode: "{{ lions_deployment_mode | default('single') }}"
+    lions.dev/config-version: "{{ lions_config_version | default('5.0.0') }}"
+    lions.dev/security-profile: "{{ lions_security_pod_security_standards | default('restricted') }}"
+
+    # Labels pour le monitoring
+    prometheus.io/scrape: "{{ lions_monitoring_enabled | default('true') | string }}"
+
   annotations:
-    description: "Rôle RBAC pour la registry {{ app_name | default('registry') }} ({{ app_version | default('latest') }}) en environnement {{ app_environment | default('development') }}"
+    # Annotations de description
+    description: "Rôle RBAC pour le service Registry {{ lions_registry_service_name | default('registry') }} version {{ lions_registry_version | default('2.8') }}"
+    lions.dev/purpose: "Gestion des permissions RBAC pour l'accès au service de registry de conteneurs"
+    lions.dev/security-context: "Permissions minimales requises pour le fonctionnement du service registry"
+
+    # Annotations de traçabilité
+    lions.dev/created-by: "ansible-playbook"
+    lions.dev/creation-date: "{{ ansible_date_time.iso8601 }}"
+    lions.dev/last-modified: "{{ ansible_date_time.iso8601 }}"
+
+    # Annotations de configuration
+    lions.dev/rbac-level: "service-specific"
+    lions.dev/security-review-required: "{{ 'true' if lions_environment == 'production' else 'false' }}"
+
 rules:
-- apiGroups: [""]
-  resources: ["pods", "services", "endpoints", "secrets"]
-  verbs: ["get", "list", "watch"]
-- apiGroups: [""]
-  resources: ["configmaps"]
-  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-- apiGroups: ["extensions", "networking.k8s.io"]
-  resources: ["ingresses"]
-  verbs: ["get", "list", "watch"]
+  # =========================================================================
+  # PERMISSIONS DE BASE - LECTURE SEULE
+  # =========================================================================
+  # Accès en lecture aux ressources essentielles
+  - apiGroups: [""]
+    resources:
+      - "pods"
+      - "services"
+      - "endpoints"
+    verbs: ["get", "list", "watch"]
+    resourceNames: []
+
+  # =========================================================================
+  # PERMISSIONS SECRETS - LECTURE SÉCURISÉE
+  # =========================================================================
+  # Accès aux secrets nécessaires au fonctionnement (lecture seule)
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch"]
+    resourceNames:
+{% if lions_registry_enabled | default(true) %}
+      - "{{ lions_registry_service_name | default('registry') }}-tls"
+      - "{{ lions_registry_service_name | default('registry') }}-auth"
+{% if lions_security_tls_enabled | default(true) %}
+      - "{{ lions_registry_service_name | default('registry') }}-cert"
+{% endif %}
+{% endif %}
+
+  # =========================================================================
+  # PERMISSIONS CONFIGMAPS - GESTION COMPLÈTE
+  # =========================================================================
+  # Gestion des ConfigMaps pour la configuration dynamique
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+    resourceNames:
+{% if lions_registry_enabled | default(true) %}
+      - "{{ lions_registry_service_name | default('registry') }}-config"
+      - "{{ lions_registry_service_name | default('registry') }}-htpasswd"
+{% endif %}
+
+  # =========================================================================
+  # PERMISSIONS RÉSEAU - INGRESS
+  # =========================================================================
+  # Accès aux ressources réseau (lecture seule pour sécurité)
+  - apiGroups:
+      - "extensions"
+      - "networking.k8s.io"
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch"]
+{% if lions_registry_enabled | default(true) %}
+    resourceNames:
+      - "{{ lions_registry_service_name | default('registry') }}-ingress"
+{% endif %}
+
+{% if lions_monitoring_enabled | default(true) %}
+  # =========================================================================
+  # PERMISSIONS MONITORING - MÉTRIQUES
+  # =========================================================================
+  # Accès aux ressources de monitoring pour ServiceMonitor
+  - apiGroups: ["monitoring.coreos.com"]
+    resources:
+      - "servicemonitors"
+      - "prometheusrules"
+    verbs: ["get", "list", "watch"]
+    resourceNames:
+      - "{{ lions_registry_service_name | default('registry') }}-servicemonitor"
+{% endif %}
+
+{% if lions_security_network_policies | default(true) %}
+  # =========================================================================
+  # PERMISSIONS SÉCURITÉ - POLITIQUES RÉSEAU
+  # =========================================================================
+  # Accès aux NetworkPolicies (lecture seule)
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "watch"]
+    resourceNames:
+      - "{{ lions_registry_service_name | default('registry') }}-netpol"
+{% endif %}
+
+{% if lions_environment == 'production' %}
+  # =========================================================================
+  # PERMISSIONS PRODUCTION - RESTRICTIONS SUPPLÉMENTAIRES
+  # =========================================================================
+  # En production, aucune permission de suppression n'est accordée
+  # Les permissions sont limitées au strict minimum
+{% endif %}
+
+{% if lions_backup_enabled | default(true) %}
+  # =========================================================================
+  # PERMISSIONS BACKUP - ACCÈS AUX VOLUMES
+  # =========================================================================
+  # Accès aux PersistentVolumeClaims pour les opérations de backup
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch"]
+    resourceNames:
+      - "{{ lions_registry_service_name | default('registry') }}-storage"
+{% endif %}
+
+  # =========================================================================
+  # PERMISSIONS CONDITIONNELLES - HAUTE DISPONIBILITÉ
+  # =========================================================================
+{% if lions_k8s_ha_enabled | default(false) %}
+  # Permissions supplémentaires pour le mode haute disponibilité
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch", "create"]
+
+  # Accès aux StatefulSets pour la gestion HA
+  - apiGroups: ["apps"]
+    resources: ["statefulsets"]
+    verbs: ["get", "list", "watch"]
+    resourceNames:
+      - "{{ lions_registry_service_name | default('registry') }}"
+{% endif %}
+
+  # =========================================================================
+  # PERMISSIONS DE DEBUG - ENVIRONNEMENT DE DÉVELOPPEMENT
+  # =========================================================================
+{% if lions_environment == 'development' and lions_debug_mode | default(false) %}
+  # Permissions étendues pour le debugging en développement uniquement
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch", "create"]
+
+  - apiGroups: [""]
+    resources: ["pods/log", "pods/exec"]
+    verbs: ["get", "list"]
+{% endif %}
+
+# =========================================================================
+# ANNOTATIONS DE SÉCURITÉ ET CONFORMITÉ
+# =========================================================================
+# Cette section documente les considérations de sécurité du rôle RBAC
+
+# Principe du moindre privilège: Ce rôle accorde uniquement les permissions
+# strictement nécessaires au fonctionnement du service Registry.
+
+# Permissions par environnement:
+# - Development: Permissions étendues pour le debugging
+# - Staging: Permissions standard avec monitoring complet
+# - Production: Permissions minimales, aucune suppression autorisée
+
+# Conformité de sécurité:
+# - Aucune permission cluster-wide accordée
+# - Accès aux secrets limité aux ressources nommées
+# - Permissions de suppression interdites en production
+  # - Audit trail complet via les annotations

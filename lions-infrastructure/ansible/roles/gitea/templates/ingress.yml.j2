@@ -1,39 +1,377 @@
 ---
-# Titre: Template d'ingress Kubernetes pour Gitea
-# Description: Définit l'ingress Kubernetes pour Gitea
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - TEMPLATE INGRESS GITEA
+# =========================================================================
+# Description: Template d'ingress Kubernetes pour Gitea avec configuration avancée
+# Version: 5.0.0
+# Auteur: DevOps Team LIONS
+# Date: {{ ansible_date_time.iso8601 }}
+# Documentation: https://docs.lions.dev/infrastructure/gitea/ingress
+# =========================================================================
 
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: "{{ app_name }}"
-  namespace: "{{ app_namespace }}"
+  name: "{{ lions_gitea.service_name }}-ingress"
+  namespace: "{{ lions_gitea.namespace }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "gitea"
+    # Labels standards Kubernetes
+    app.kubernetes.io/name: "{{ lions_gitea.service_name }}"
+    app.kubernetes.io/instance: "{{ lions_gitea.service_name }}-{{ lions_environment }}"
+    app.kubernetes.io/version: "{{ lions_gitea.version }}"
+    app.kubernetes.io/component: "ingress"
+    app.kubernetes.io/part-of: "gitea"
+    app.kubernetes.io/managed-by: "ansible"
+
+    # Labels personnalisés LIONS
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/deployment-mode: "{{ lions_deployment_mode }}"
+    lions.dev/service-type: "development"
+    lions.dev/backup-enabled: "{{ lions_gitea.backup_enabled | default('true') | string }}"
+    lions.dev/monitoring-enabled: "{{ lions_monitoring_enabled | string }}"
+    lions.dev/security-level: "{{ lions_gitea.security_level | default('standard') }}"
+    lions.dev/config-version: "{{ lions_config_version }}"
+
+    # Labels pour le monitoring et les alertes
+    prometheus.io/scrape: "true"
+    grafana.dashboard: "gitea"
+
   annotations:
-    description: "Ingress pour Gitea {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
-    {% for key, value in gitea_ingress_annotations.items() %}
+    # Annotations de documentation
+    description: "Ingress pour Gitea {{ lions_gitea.service_name }} v{{ lions_gitea.version }} en environnement {{ lions_environment }}"
+    lions.dev/documentation: "https://docs.lions.dev/infrastructure/gitea"
+    lions.dev/maintainer: "{{ lions_config_maintainer }}"
+    lions.dev/created-by: "ansible-lions-infrastructure"
+    lions.dev/last-updated: "{{ ansible_date_time.iso8601 }}"
+
+    # Configuration Traefik - Routage de base
+    traefik.ingress.kubernetes.io/router.entrypoints: "{{ 'websecure' if lions_security_tls_enabled else 'web' }}"
+    traefik.ingress.kubernetes.io/router.rule: "Host(`{{ lions_gitea.domain | default(lions_gitea.service_name + '.' + lions_dns_full_domain) }}`)"
+    traefik.ingress.kubernetes.io/router.priority: "{{ lions_gitea.ingress_priority | default('100') }}"
+
+    # Configuration Traefik - TLS et sécurité
+{% if lions_security_tls_enabled %}
+    traefik.ingress.kubernetes.io/router.tls: "true"
+{% if lions_security_tls_provider == 'letsencrypt' %}
+    traefik.ingress.kubernetes.io/router.tls.certresolver: "{{ 'letsencrypt-staging' if lions_security_tls_staging else 'letsencrypt-prod' }}"
+{% endif %}
+    traefik.ingress.kubernetes.io/router.middlewares: "{{ lions_gitea.namespace }}-{{ lions_gitea.service_name }}-security@kubernetescrd"
+{% endif %}
+
+    # Configuration Traefik - Timeouts et buffers
+    traefik.ingress.kubernetes.io/router.timeout: "{{ lions_gitea.timeout | default(lions_timeout_default) }}s"
+    traefik.ingress.kubernetes.io/service.sticky: "{{ lions_gitea.sticky_sessions | default('false') }}"
+
+    # Configuration Traefik - Headers de sécurité
+    traefik.ingress.kubernetes.io/router.middlewares: >-
+      {{ lions_gitea.namespace }}-security-headers@kubernetescrd,
+      {{ lions_gitea.namespace }}-rate-limit@kubernetescrd
+{% if lions_security_tls_enabled %}
+        ,{{ lions_gitea.namespace }}-redirect-https@kubernetescrd
+{% endif %}
+{% if lions_gitea.auth_enabled | default(false) %}
+        ,{{ lions_gitea.namespace }}-basic-auth@kubernetescrd
+{% endif %}
+
+    # Configuration pour le monitoring
+{% if lions_monitoring_enabled %}
+    prometheus.io/probe: "true"
+    prometheus.io/path: "/api/healthz"
+    prometheus.io/module: "http_2xx"
+{% endif %}
+
+    # Configuration spécifique Gitea
+    gitea.io/version: "{{ lions_gitea.version }}"
+    gitea.io/ssh-domain: "{{ lions_gitea.ssh_domain | default(lions_gitea.domain | default(lions_gitea.service_name + '.' + lions_dns_full_domain)) }}"
+    gitea.io/ssh-port: "{{ lions_gitea.ssh_port | default('2222') }}"
+
+    # Configuration du cache
+{% if lions_gitea.cache_enabled | default(true) %}
+    traefik.ingress.kubernetes.io/router.middlewares: "{{ lions_gitea.namespace }}-cache-headers@kubernetescrd"
+{% endif %}
+
+    # Configuration CORS pour les API
+{% if lions_gitea.cors_enabled | default(false) %}
+    traefik.ingress.kubernetes.io/router.middlewares: "{{ lions_gitea.namespace }}-cors@kubernetescrd"
+{% endif %}
+
+    # Annotations personnalisées supplémentaires
+{% for key, value in lions_gitea.ingress_annotations | default({}).items() %}
     {{ key }}: "{{ value }}"
-    {% endfor %}
+{% endfor %}
+
 spec:
-  ingressClassName: traefik
+  # Classe d'ingress
+  ingressClassName: "{{ lions_gitea.ingress_class | default('traefik') }}"
+
+  # Configuration TLS
+{% if lions_security_tls_enabled %}
   tls:
     - hosts:
-        - "{{ app_domain }}"
-      secretName: "{{ app_name }}-tls"
+        - "{{ lions_gitea.domain | default(lions_gitea.service_name + '.' + lions_dns_full_domain) }}"
+{% if lions_gitea.additional_domains is defined %}
+{% for domain in lions_gitea.additional_domains %}
+        - "{{ domain }}"
+{% endfor %}
+{% endif %}
+      secretName: "{{ lions_gitea.service_name }}-tls-{{ lions_environment }}"
+{% if lions_gitea.wildcard_cert_enabled | default(false) %}
+    - hosts:
+        - "*.{{ lions_dns_full_domain }}"
+      secretName: "wildcard-{{ lions_dns_full_domain | replace('.', '-') }}-tls"
+{% endif %}
+{% endif %}
+
+  # Règles de routage
   rules:
-    - host: "{{ app_domain }}"
+    # Domaine principal
+    - host: "{{ lions_gitea.domain | default(lions_gitea.service_name + '.' + lions_dns_full_domain) }}"
+      http:
+        paths:
+          # Interface web principale
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: "{{ lions_gitea.service_name }}-web"
+                port:
+                  name: http
+
+          # API Gitea
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: "{{ lions_gitea.service_name }}-api"
+                port:
+                  name: http
+
+          # Webhooks
+          - path: /hooks
+            pathType: Prefix
+            backend:
+              service:
+                name: "{{ lions_gitea.service_name }}-webhooks"
+                port:
+                  name: http
+
+          # Assets statiques avec cache optimisé
+          - path: /assets
+            pathType: Prefix
+            backend:
+              service:
+                name: "{{ lions_gitea.service_name }}-assets"
+                port:
+                  name: http
+
+{% if lions_gitea.additional_domains is defined %}
+{% for domain in lions_gitea.additional_domains %}
+    # Domaines supplémentaires
+    - host: "{{ domain }}"
       http:
         paths:
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: "{{ app_name }}"
+                name: "{{ lions_gitea.service_name }}-web"
                 port:
                   name: http
+{% endfor %}
+{% endif %}
+
+{% if lions_gitea.subdomain_routing_enabled | default(false) %}
+    # Routage par sous-domaines (ex: git.domain.com)
+    - host: "git.{{ lions_dns_full_domain }}"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: "{{ lions_gitea.service_name }}-web"
+                port:
+                  name: http
+{% endif %}
+
+---
+# =========================================================================
+# MIDDLEWARE TRAEFIK - HEADERS DE SÉCURITÉ
+# =========================================================================
+{% if lions_security_tls_enabled %}
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: "{{ lions_gitea.service_name }}-security-headers"
+  namespace: "{{ lions_gitea.namespace }}"
+  labels:
+    app.kubernetes.io/name: "{{ lions_gitea.service_name }}"
+    app.kubernetes.io/component: "middleware"
+    lions.dev/environment: "{{ lions_environment }}"
+spec:
+  headers:
+    # Headers de sécurité HTTPS
+    forceSTSHeader: true
+    stsSeconds: 31536000
+    stsIncludeSubdomains: true
+    stsPreload: true
+
+    # Protection XSS et clickjacking
+    frameDeny: false
+    customFrameOptionsValue: "SAMEORIGIN"
+    contentTypeNosniff: true
+    browserXssFilter: true
+
+    # Politique de contenu
+    contentSecurityPolicy: >-
+      default-src 'self';
+      script-src 'self' 'unsafe-inline' 'unsafe-eval';
+      style-src 'self' 'unsafe-inline';
+      img-src 'self' data: https:;
+      font-src 'self' data:;
+      connect-src 'self';
+      media-src 'self';
+      object-src 'none';
+      frame-ancestors 'self'
+
+    # Headers personnalisés
+    customRequestHeaders:
+      X-Forwarded-Proto: "https"
+      X-Forwarded-For: ""
+
+    customResponseHeaders:
+      X-Robots-Tag: "{{ lions_gitea.robots_tag | default('noindex, nofollow') }}"
+      X-Frame-Options: "SAMEORIGIN"
+      X-Content-Type-Options: "nosniff"
+      Referrer-Policy: "strict-origin-when-cross-origin"
+      Permissions-Policy: "{{ lions_gitea.permissions_policy | default('geolocation=(), microphone=(), camera=()') }}"
+
+---
+# =========================================================================
+# MIDDLEWARE TRAEFIK - RATE LIMITING
+# =========================================================================
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: "{{ lions_gitea.service_name }}-rate-limit"
+  namespace: "{{ lions_gitea.namespace }}"
+  labels:
+    app.kubernetes.io/name: "{{ lions_gitea.service_name }}"
+    app.kubernetes.io/component: "middleware"
+    lions.dev/environment: "{{ lions_environment }}"
+spec:
+  rateLimit:
+    # Limite globale
+    average: {{ lions_gitea.rate_limit_average | default('100') }}
+    period: "{{ lions_gitea.rate_limit_period | default('1m') }}"
+    burst: {{ lions_gitea.rate_limit_burst | default('200') }}
+
+    # Sources d'IP à exclure du rate limiting
+{% if lions_gitea.rate_limit_exclude_ips is defined %}
+    sourceCriterion:
+      excludedIPs:
+{% for ip in lions_gitea.rate_limit_exclude_ips %}
+        - "{{ ip }}"
+{% endfor %}
+{% endif %}
+
+---
+# =========================================================================
+# MIDDLEWARE TRAEFIK - REDIRECTION HTTPS
+# =========================================================================
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: "{{ lions_gitea.service_name }}-redirect-https"
+  namespace: "{{ lions_gitea.namespace }}"
+  labels:
+    app.kubernetes.io/name: "{{ lions_gitea.service_name }}"
+    app.kubernetes.io/component: "middleware"
+    lions.dev/environment: "{{ lions_environment }}"
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+    port: "{{ lions_gitea.https_port | default('443') }}"
+{% endif %}
+
+{% if lions_gitea.cache_enabled | default(true) %}
+---
+# =========================================================================
+# MIDDLEWARE TRAEFIK - CACHE HEADERS
+# =========================================================================
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: "{{ lions_gitea.service_name }}-cache-headers"
+  namespace: "{{ lions_gitea.namespace }}"
+  labels:
+    app.kubernetes.io/name: "{{ lions_gitea.service_name }}"
+    app.kubernetes.io/component: "middleware"
+    lions.dev/environment: "{{ lions_environment }}"
+spec:
+  headers:
+    customResponseHeaders:
+      # Cache pour les assets statiques
+      Cache-Control: >-
+        {% if lions_environment == 'production' %}
+        public, max-age=31536000, immutable
+        {% else %}
+        public, max-age=3600
+        {% endif %}
+      Vary: "Accept-Encoding"
+      ETag: ""
+{% endif %}
+
+{% if lions_gitea.cors_enabled | default(false) %}
+---
+# =========================================================================
+# MIDDLEWARE TRAEFIK - CORS
+# =========================================================================
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: "{{ lions_gitea.service_name }}-cors"
+  namespace: "{{ lions_gitea.namespace }}"
+  labels:
+    app.kubernetes.io/name: "{{ lions_gitea.service_name }}"
+    app.kubernetes.io/component: "middleware"
+    lions.dev/environment: "{{ lions_environment }}"
+spec:
+  headers:
+    accessControlAllowCredentials: {{ lions_gitea.cors_allow_credentials | default('false') }}
+    accessControlAllowHeaders:
+{% for header in lions_gitea.cors_allowed_headers | default(['Content-Type', 'Authorization', 'X-Requested-With']) %}
+      - "{{ header }}"
+{% endfor %}
+    accessControlAllowMethods:
+{% for method in lions_gitea.cors_allowed_methods | default(['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']) %}
+      - "{{ method }}"
+{% endfor %}
+    accessControlAllowOriginList:
+{% for origin in lions_gitea.cors_allowed_origins | default(['*']) %}
+      - "{{ origin }}"
+{% endfor %}
+    accessControlMaxAge: {{ lions_gitea.cors_max_age | default('86400') }}
+{% endif %}
+
+{% if lions_gitea.auth_enabled | default(false) %}
+---
+# =========================================================================
+# MIDDLEWARE TRAEFIK - BASIC AUTH
+# =========================================================================
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: "{{ lions_gitea.service_name }}-basic-auth"
+  namespace: "{{ lions_gitea.namespace }}"
+  labels:
+    app.kubernetes.io/name: "{{ lions_gitea.service_name }}"
+    app.kubernetes.io/component: "middleware"
+    lions.dev/environment: "{{ lions_environment }}"
+spec:
+  basicAuth:
+    secret: "{{ lions_gitea.service_name }}-basic-auth"
+    realm: "{{ lions_gitea.auth_realm | default('Gitea LIONS Infrastructure') }}"
+    removeHeader: {{ lions_gitea.auth_remove_header | default('true') }}
+{% endif %}

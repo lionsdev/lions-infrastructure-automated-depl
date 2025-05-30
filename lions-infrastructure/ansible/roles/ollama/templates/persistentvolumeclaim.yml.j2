@@ -1,26 +1,161 @@
 ---
-# Titre: Template de PersistentVolumeClaim pour Ollama
-# Description: Définit le stockage persistant pour Ollama
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-14
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - OLLAMA PERSISTENT VOLUME CLAIM
+# =========================================================================
+# Description: Template de PersistentVolumeClaim pour le service Ollama
+# Component: Ollama AI Service Storage
+# Version: 5.0.0
+# Maintainer: DevOps Team LIONS
+# Documentation: https://docs.lions.dev/infrastructure/storage/ollama
+# =========================================================================
 
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: "{{ app_name }}-pvc"
-  namespace: "{{ app_namespace }}"
+  name: "{{ lions_ollama_service_name }}-pvc"
+  namespace: "{{ lions_ollama_namespace }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "ollama"
+    # Labels LIONS standards
+    app.kubernetes.io/name: "{{ lions_ollama_service_name }}"
+    app.kubernetes.io/instance: "{{ lions_ollama_service_name }}-{{ lions_environment }}"
+    app.kubernetes.io/version: "{{ lions_ollama_version }}"
+    app.kubernetes.io/component: "ai-service"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+
+    # Labels LIONS personnalisés
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/service-type: "ai"
+    lions.dev/backup-enabled: "{{ lions_backup_enabled | lower }}"
+    lions.dev/monitoring-enabled: "{{ lions_monitoring_enabled | lower }}"
+    lions.dev/storage-tier: "{% if lions_ollama_storage_size | regex_replace('Gi', '') | int >= 100 %}large{% elif lions_ollama_storage_size | regex_replace('Gi', '') | int >= 50 %}medium{% else %}small{% endif %}"
+
+    # Labels techniques
+    storage.lions.dev/class: "{{ lions_ollama_storage_class | default(lions_storage_class_default) }}"
+    storage.lions.dev/size: "{{ lions_ollama_storage_size }}"
+    storage.lions.dev/reclaim-policy: "{{ lions_storage_reclaim_policy }}"
+
   annotations:
-    description: "PVC pour Ollama {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    # Annotations descriptives
+    description: "Stockage persistant pour Ollama {{ lions_ollama_version }} en environnement {{ lions_environment }}"
+    documentation: "https://docs.lions.dev/services/ollama/storage"
+    contact: "{{ lions_config_maintainer }}"
+
+    # Annotations techniques
+    volume.beta.kubernetes.io/mount-options: "{% if lions_environment == 'production' %}rw,relatime,discard{% else %}rw,relatime{% endif %}"
+    {% if lions_backup_enabled %}
+    backup.lions.dev/enabled: "true"
+    backup.lions.dev/schedule: "{{ lions_backup_schedule }}"
+    backup.lions.dev/retention: "{{ lions_backup_retention_days }}d"
+    {% endif %}
+
+    # Annotations de monitoring
+    {% if lions_monitoring_enabled %}
+    monitoring.lions.dev/enabled: "true"
+    monitoring.lions.dev/alerts: "storage-usage,storage-performance"
+    {% endif %}
+
+    # Annotations de sécurité
+    {% if lions_security_encryption_at_rest %}
+    security.lions.dev/encryption-at-rest: "true"
+    {% endif %}
+
+    # Annotations de déploiement
+    deployment.lions.dev/created-by: "ansible-{{ ansible_version }}"
+    deployment.lions.dev/created-at: "{{ ansible_date_time.iso8601 }}"
+    deployment.lions.dev/config-version: "{{ lions_config_version }}"
+
 spec:
   accessModes:
     - ReadWriteOnce
-  storageClassName: "{{ ollama_storage_class }}"
+    {% if lions_deployment_mode == 'ha' and lions_ollama_ha_enabled | default(false) %}
+    - ReadWriteMany  # Support HA si configuré
+    {% endif %}
+
+  storageClassName: "{{ lions_ollama_storage_class | default(lions_storage_class_default) }}"
+
   resources:
     requests:
-      storage: "{{ ollama_storage_size }}"
+      storage: "{{ lions_ollama_storage_size }}"
+    {% if lions_environment == 'production' %}
+    limits:
+      storage: "{{ (lions_ollama_storage_size | regex_replace('Gi', '') | int * 1.2) | round | int }}Gi"  # 20% de marge
+    {% endif %}
+
+  {% if lions_storage_provisioner == 'local-path' %}
+  # Configuration spécifique au provisioning local
+  selector:
+    matchLabels:
+      lions.dev/storage-type: "ai-optimized"
+      lions.dev/environment: "{{ lions_environment }}"
+  {% endif %}
+
+  {% if lions_environment == 'production' and lions_ollama_storage_performance_class is defined %}
+  # Configuration de performance pour la production
+  volumeMode: Filesystem
+  dataSource:
+    kind: VolumeSnapshot
+    name: "{{ lions_ollama_service_name }}-snapshot-template"
+    apiGroup: snapshot.storage.k8s.io
+  {% endif %}
+
+---
+{% if lions_monitoring_enabled and lions_prometheus_enabled %}
+# =========================================================================
+# SERVICE MONITOR POUR LE STOCKAGE OLLAMA
+# =========================================================================
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: "{{ lions_ollama_service_name }}-storage-monitor"
+  namespace: "{{ lions_monitoring_namespace }}"
+  labels:
+    app.kubernetes.io/name: "{{ lions_ollama_service_name }}-storage"
+    app.kubernetes.io/component: "storage-monitoring"
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/service-type: "storage"
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: "{{ lions_ollama_service_name }}"
+  endpoints:
+    - port: metrics
+      interval: 30s
+      path: /metrics
+      honorLabels: true
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: pod
+        - sourceLabels: [__meta_kubernetes_pod_container_name]
+          targetLabel: container
+        - replacement: "{{ lions_ollama_service_name }}-storage"
+          targetLabel: job
+{% endif %}
+
+---
+{% if lions_backup_enabled %}
+# =========================================================================
+# VOLUME SNAPSHOT CLASS POUR OLLAMA (SI BACKUP ACTIVÉ)
+# =========================================================================
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: "{{ lions_ollama_service_name }}-snapshot-class"
+  labels:
+    app.kubernetes.io/name: "{{ lions_ollama_service_name }}"
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/backup-class: "ai-service"
+  annotations:
+    description: "Classe de snapshot pour les volumes Ollama"
+    backup.lions.dev/retention: "{{ lions_backup_retention_days }}d"
+    backup.lions.dev/compression: "{{ lions_backup_compression }}"
+driver: "{{ lions_storage_provisioner }}"
+deletionPolicy: {% if lions_environment == 'production' %}Retain{% else %}Delete{% endif %}
+parameters:
+  {% if lions_backup_encryption %}
+  encryption: "true"
+  {% endif %}
+  {% if lions_environment == 'production' %}
+  replication: "true"
+  {% endif %}
+{% endif %}

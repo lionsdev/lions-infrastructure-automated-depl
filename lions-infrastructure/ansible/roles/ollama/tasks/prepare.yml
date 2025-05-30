@@ -1,35 +1,514 @@
 ---
-# Titre: Tâches de préparation pour Ollama
-# Description: Préparation de l'environnement pour Ollama
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-14
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - OLLAMA PREPARATION TASKS
+# =========================================================================
+# Description: Tâches avancées de préparation pour le déploiement d'Ollama
+# Version: 5.0.0
+# Date: 2025-05-29
+# Maintainer: DevOps Team LIONS
+# Documentation: https://docs.lions.dev/ansible/roles/ollama
+# =========================================================================
 
-- name: "[Ollama] Afficher les variables de déploiement"
+# =========================================================================
+# VALIDATION INITIALE ET AFFICHAGE DE CONFIGURATION
+# =========================================================================
+- name: "[Ollama/Prepare] Validation des variables obligatoires"
+  assert:
+    that:
+      - ollama_namespace is defined and ollama_namespace != ""
+      - ollama_version is defined and ollama_version != ""
+      - ollama_environment is defined and ollama_environment != ""
+      - ollama_domain is defined and ollama_domain != ""
+      - ollama_service_name is defined and ollama_service_name != ""
+    fail_msg: "Variables obligatoires manquantes pour Ollama"
+    success_msg: "Variables obligatoires validées pour Ollama"
+  tags:
+    - ollama
+    - validation
+
+- name: "[Ollama/Prepare] Affichage de la configuration de déploiement"
   debug:
     msg:
-      - "Application: {{ app_name }}"
-      - "Version: {{ app_version }}"
-      - "Environnement: {{ app_environment }}"
-      - "Namespace: {{ app_namespace }}"
-      - "Domaine: {{ app_domain }}"
+      - "=========================================="
+      - "🤖 CONFIGURATION OLLAMA AI SERVICE"
+      - "=========================================="
+      - "Service: {{ ollama_service_name }}"
+      - "Version: {{ ollama_version }}"
+      - "Environnement: {{ ollama_environment }}"
+      - "Namespace: {{ ollama_namespace }}"
+      - "Domaine: {{ ollama_domain }}"
+      - "Port: {{ ollama_port }}"
+      - "Stockage: {{ ollama_storage_size }}"
+      - "GPU activé: {{ ollama_gpu_enabled | default(false) }}"
+      - "Haute disponibilité: {{ ollama_ha_enabled | default(false) }}"
+      - "=========================================="
+  tags:
+    - ollama
+    - info
 
-- name: "[Ollama] Créer le namespace si nécessaire"
+# =========================================================================
+# PRÉPARATION DE L'ENVIRONNEMENT KUBERNETES
+# =========================================================================
+- name: "[Ollama/Prepare] Vérification de la disponibilité du cluster Kubernetes"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Node
+  register: k8s_nodes_info
+  failed_when: k8s_nodes_info.resources | length == 0
+  tags:
+    - ollama
+    - k8s
+    - validation
+
+- name: "[Ollama/Prepare] Création du namespace Ollama"
   kubernetes.core.k8s:
-    name: "{{ app_namespace }}"
+    name: "{{ ollama_namespace }}"
     api_version: v1
     kind: Namespace
     state: present
+    definition:
+      metadata:
+        labels:
+          name: "{{ ollama_namespace }}"
+          environment: "{{ ollama_environment }}"
+          component: "ai-services"
+          managed-by: "lions-ansible"
+          lions.dev/service: "ollama"
+          lions.dev/version: "{{ ollama_version }}"
+          lions.dev/environment: "{{ ollama_environment }}"
+        annotations:
+          lions.dev/description: "Namespace pour les services IA Ollama"
+          lions.dev/created-by: "ansible-role-ollama"
+          lions.dev/created-date: "{{ ansible_date_time.iso8601 }}"
+  register: namespace_creation
+  tags:
+    - ollama
+    - k8s
+    - namespace
 
-- name: "[Ollama] Définir les labels du namespace"
+- name: "[Ollama/Prepare] Vérification de la création du namespace"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: "{{ ollama_namespace }}"
+  register: namespace_info
+  failed_when: namespace_info.resources | length == 0
+  tags:
+    - ollama
+    - k8s
+    - validation
+
+# =========================================================================
+# PRÉPARATION DES RESSOURCES DE STOCKAGE
+# =========================================================================
+- name: "[Ollama/Prepare] Vérification des StorageClass disponibles"
+  kubernetes.core.k8s_info:
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+  register: storage_classes
+  tags:
+    - ollama
+    - storage
+
+- name: "[Ollama/Prepare] Validation de la StorageClass configurée"
+  assert:
+    that:
+      - storage_classes.resources | selectattr('metadata.name', 'equalto', ollama_storage_class) | list | length > 0
+    fail_msg: "StorageClass '{{ ollama_storage_class }}' non trouvée"
+    success_msg: "StorageClass '{{ ollama_storage_class }}' validée"
+  tags:
+    - ollama
+    - storage
+    - validation
+
+- name: "[Ollama/Prepare] Création du répertoire de stockage local (si nécessaire)"
+  file:
+    path: "{{ ollama_data_path | default('/opt/lions/ollama') }}"
+    state: directory
+    mode: '0755'
+    owner: "{{ ollama_user | default('1000') }}"
+    group: "{{ ollama_group | default('1000') }}"
+  when: ollama_storage_type | default('pvc') == 'local'
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags:
+    - ollama
+    - storage
+    - local
+
+# =========================================================================
+# PRÉPARATION DES RESSOURCES GPU (SI ACTIVÉ)
+# =========================================================================
+- name: "[Ollama/Prepare] Vérification des ressources GPU"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Node
+  register: nodes_info
+  when: ollama_gpu_enabled | default(false) | bool
+  tags:
+    - ollama
+    - gpu
+
+- name: "[Ollama/Prepare] Validation de la disponibilité GPU"
+  assert:
+    that:
+      - nodes_info.resources | selectattr('status.capacity', 'defined') |
+        selectattr('status.capacity', 'search', 'nvidia.com/gpu') | list | length > 0
+    fail_msg: "Aucune ressource GPU trouvée sur le cluster"
+    success_msg: "Ressources GPU détectées et disponibles"
+  when: ollama_gpu_enabled | default(false) | bool
+  tags:
+    - ollama
+    - gpu
+    - validation
+
+- name: "[Ollama/Prepare] Installation du plugin GPU Kubernetes (si nécessaire)"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: DaemonSet
+      metadata:
+        name: nvidia-device-plugin-daemonset
+        namespace: kube-system
+      spec:
+        selector:
+          matchLabels:
+            name: nvidia-device-plugin-ds
+        template:
+          metadata:
+            labels:
+              name: nvidia-device-plugin-ds
+          spec:
+            containers:
+              - name: nvidia-device-plugin-ctr
+                image: nvcr.io/nvidia/k8s-device-plugin:v0.14.1
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop: ["ALL"]
+                volumeMounts:
+                  - name: device-plugin
+                    mountPath: /var/lib/kubelet/device-plugins
+            volumes:
+              - name: device-plugin
+                hostPath:
+                  path: /var/lib/kubelet/device-plugins
+  when:
+    - ollama_gpu_enabled | default(false) | bool
+    - ollama_gpu_plugin_install | default(true) | bool
+  tags:
+    - ollama
+    - gpu
+    - plugin
+
+# =========================================================================
+# PRÉPARATION DE LA SÉCURITÉ ET RBAC
+# =========================================================================
+- name: "[Ollama/Prepare] Création du ServiceAccount pour Ollama"
   kubernetes.core.k8s:
     state: present
     definition:
       apiVersion: v1
-      kind: Namespace
+      kind: ServiceAccount
       metadata:
-        name: "{{ app_namespace }}"
+        name: "{{ ollama_service_account | default('ollama-sa') }}"
+        namespace: "{{ ollama_namespace }}"
         labels:
-          name: "{{ app_namespace }}"
-          environment: "{{ app_environment }}"
-          managed-by: "ansible"
+          app: "{{ ollama_service_name }}"
+          component: "ai-service"
+          managed-by: "lions-ansible"
+        annotations:
+          lions.dev/description: "ServiceAccount pour Ollama AI"
+          lions.dev/created-by: "ansible-role-ollama"
+  tags:
+    - ollama
+    - security
+    - rbac
+
+- name: "[Ollama/Prepare] Création du Role pour Ollama"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: "{{ ollama_service_name }}-role"
+        namespace: "{{ ollama_namespace }}"
+      rules:
+        - apiGroups: [""]
+          resources: ["pods", "services", "configmaps", "secrets"]
+          verbs: ["get", "list", "watch"]
+        - apiGroups: [""]
+          resources: ["events"]
+          verbs: ["create", "patch"]
+  tags:
+    - ollama
+    - security
+    - rbac
+
+- name: "[Ollama/Prepare] Création du RoleBinding pour Ollama"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: "{{ ollama_service_name }}-rolebinding"
+        namespace: "{{ ollama_namespace }}"
+      subjects:
+        - kind: ServiceAccount
+          name: "{{ ollama_service_account | default('ollama-sa') }}"
+          namespace: "{{ ollama_namespace }}"
+      roleRef:
+        kind: Role
+        name: "{{ ollama_service_name }}-role"
+        apiGroup: rbac.authorization.k8s.io
+  tags:
+    - ollama
+    - security
+    - rbac
+
+# =========================================================================
+# PRÉPARATION DES POLITIQUES DE SÉCURITÉ
+# =========================================================================
+- name: "[Ollama/Prepare] Création de la NetworkPolicy pour Ollama"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: "{{ ollama_service_name }}-netpol"
+        namespace: "{{ ollama_namespace }}"
+        labels:
+          app: "{{ ollama_service_name }}"
+      spec:
+        podSelector:
+          matchLabels:
+            app: "{{ ollama_service_name }}"
+        policyTypes:
+          - Ingress
+          - Egress
+        ingress:
+          - from:
+              - namespaceSelector:
+                  matchLabels:
+                    name: "{{ monitoring_namespace | default('monitoring') }}"
+              - namespaceSelector:
+                  matchLabels:
+                    name: "{{ applications_namespace | default('applications') }}"
+            ports:
+              - protocol: TCP
+                port: "{{ ollama_port }}"
+        egress:
+          - to: []
+            ports:
+              - protocol: TCP
+                port: 443
+              - protocol: TCP
+                port: 80
+              - protocol: UDP
+                port: 53
+  when: network_policies_enabled | default(true) | bool
+  tags:
+    - ollama
+    - security
+    - network
+
+# =========================================================================
+# PRÉPARATION DES CONFIGURATIONS AVANCÉES
+# =========================================================================
+- name: "[Ollama/Prepare] Création des ConfigMaps de configuration"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ ollama_service_name }}-config"
+        namespace: "{{ ollama_namespace }}"
+        labels:
+          app: "{{ ollama_service_name }}"
+          component: "configuration"
+      data:
+        OLLAMA_HOST: "0.0.0.0"
+        OLLAMA_PORT: "{{ ollama_port | string }}"
+        OLLAMA_MODELS_DIR: "/ollama/models"
+        OLLAMA_KEEP_ALIVE: "{{ ollama_keep_alive | default('5m') }}"
+        OLLAMA_MAX_LOADED_MODELS: "{{ ollama_max_loaded_models | default('1') | string }}"
+        OLLAMA_NUM_PARALLEL: "{{ ollama_num_parallel | default('1') | string }}"
+        OLLAMA_DEBUG: "{{ ollama_debug | default('false') | string }}"
+        ENVIRONMENT: "{{ ollama_environment }}"
+        LOG_LEVEL: "{{ log_level | default('INFO') }}"
+  tags:
+    - ollama
+    - config
+
+- name: "[Ollama/Prepare] Création des Secrets pour Ollama"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ ollama_service_name }}-secrets"
+        namespace: "{{ ollama_namespace }}"
+        labels:
+          app: "{{ ollama_service_name }}"
+          component: "secrets"
+      type: Opaque
+      data:
+        # Secrets seront injectés par Vault ou autre gestionnaire
+        ollama-api-key: "{{ ollama_api_key | default('') | b64encode }}"
+  when: ollama_api_key is defined and ollama_api_key != ""
+  tags:
+    - ollama
+    - security
+    - secrets
+
+# =========================================================================
+# PRÉPARATION DU MONITORING
+# =========================================================================
+- name: "[Ollama/Prepare] Vérification de Prometheus Operator"
+  kubernetes.core.k8s_info:
+    api_version: monitoring.coreos.com/v1
+    kind: ServiceMonitor
+    namespace: "{{ monitoring_namespace | default('monitoring') }}"
+  register: prometheus_operator
+  ignore_errors: true
+  tags:
+    - ollama
+    - monitoring
+
+- name: "[Ollama/Prepare] Information sur le monitoring"
+  debug:
+    msg: "Prometheus Operator {{ 'détecté' if prometheus_operator.resources else 'non détecté' }} - ServiceMonitor sera {{ 'créé' if prometheus_operator.resources else 'ignoré' }}"
+  tags:
+    - ollama
+    - monitoring
+
+# =========================================================================
+# PRÉPARATION DES RESSOURCES DE HAUTE DISPONIBILITÉ
+# =========================================================================
+- name: "[Ollama/Prepare] Configuration pour la haute disponibilité"
+  set_fact:
+    ollama_replicas: "{{ ollama_ha_replicas | default(3) }}"
+    ollama_affinity_enabled: true
+    ollama_pdb_enabled: true
+  when: ollama_ha_enabled | default(false) | bool
+  tags:
+    - ollama
+    - ha
+
+- name: "[Ollama/Prepare] Création de la politique de disruption (PDB)"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: policy/v1
+      kind: PodDisruptionBudget
+      metadata:
+        name: "{{ ollama_service_name }}-pdb"
+        namespace: "{{ ollama_namespace }}"
+      spec:
+        minAvailable: "{{ ollama_pdb_min_available | default(1) }}"
+        selector:
+          matchLabels:
+            app: "{{ ollama_service_name }}"
+  when: ollama_ha_enabled | default(false) | bool
+  tags:
+    - ollama
+    - ha
+    - pdb
+
+# =========================================================================
+# PRÉPARATION DES RESSOURCES DE BACKUP
+# =========================================================================
+- name: "[Ollama/Prepare] Création du namespace de backup"
+  kubernetes.core.k8s:
+    name: "{{ backup_namespace | default('backup') }}"
+    api_version: v1
+    kind: Namespace
+    state: present
+  when: ollama_backup_enabled | default(false) | bool
+  tags:
+    - ollama
+    - backup
+
+- name: "[Ollama/Prepare] Création du ServiceAccount de backup"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: "{{ ollama_service_name }}-backup-sa"
+        namespace: "{{ backup_namespace | default('backup') }}"
+  when: ollama_backup_enabled | default(false) | bool
+  tags:
+    - ollama
+    - backup
+
+# =========================================================================
+# VALIDATION FINALE DE LA PRÉPARATION
+# =========================================================================
+- name: "[Ollama/Prepare] Validation finale de l'environnement"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: "{{ ollama_namespace }}"
+  register: final_namespace_check
+  failed_when: final_namespace_check.resources | length == 0
+  tags:
+    - ollama
+    - validation
+
+- name: "[Ollama/Prepare] Récapitulatif de la préparation"
+  debug:
+    msg:
+      - "=========================================="
+      - "✅ PRÉPARATION OLLAMA TERMINÉE"
+      - "=========================================="
+      - "Namespace: {{ ollama_namespace }} ✓"
+      - "StorageClass: {{ ollama_storage_class }} ✓"
+      - "ServiceAccount: {{ ollama_service_account | default('ollama-sa') }} ✓"
+      - "RBAC: Configuré ✓"
+      - "NetworkPolicy: {{ 'Configuré' if network_policies_enabled | default(true) else 'Désactivé' }}"
+      - "GPU Support: {{ 'Activé' if ollama_gpu_enabled | default(false) else 'Désactivé' }}"
+      - "Haute Disponibilité: {{ 'Activé' if ollama_ha_enabled | default(false) else 'Désactivé' }}"
+      - "Monitoring: {{ 'Prêt' if prometheus_operator.resources else 'Basique' }}"
+      - "Backup: {{ 'Configuré' if ollama_backup_enabled | default(false) else 'Désactivé' }}"
+      - "=========================================="
+  tags:
+    - ollama
+    - summary
+
+# =========================================================================
+# ENREGISTREMENT DES MÉTADONNÉES
+# =========================================================================
+- name: "[Ollama/Prepare] Enregistrement des métadonnées de préparation"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ ollama_service_name }}-preparation-metadata"
+        namespace: "{{ ollama_namespace }}"
+        labels:
+          app: "{{ ollama_service_name }}"
+          component: "metadata"
+          lions.dev/preparation-status: "completed"
+      data:
+        preparation-date: "{{ ansible_date_time.iso8601 }}"
+        preparation-version: "5.0.0"
+        ansible-user: "{{ ansible_user_id }}"
+        ansible-host: "{{ inventory_hostname }}"
+        ollama-version: "{{ ollama_version }}"
+        environment: "{{ ollama_environment }}"
+        gpu-enabled: "{{ ollama_gpu_enabled | default(false) | string }}"
+        ha-enabled: "{{ ollama_ha_enabled | default(false) | string }}"
+        backup-enabled: "{{ ollama_backup_enabled | default(false) | string }}"
+  tags:
+    - ollama
+    - metadata

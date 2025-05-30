@@ -1,116 +1,407 @@
 ---
-# Titre: Configuration du monitoring pour Keycloak
-# Description: Configure le monitoring pour Keycloak
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - KEYCLOAK MONITORING CONFIGURATION
+# =========================================================================
+# Description: Configuration avancée du monitoring pour Keycloak
+# Version: 5.0.0
+# Maintainer: DevOps Team LIONS
+# Date: {{ ansible_date_time.iso8601 }}
+# Dependencies: Prometheus Operator, Grafana, AlertManager
+# =========================================================================
 
-- name: Vérification de l'existence de Prometheus Operator
-  k8s_info:
-    api_version: apiextensions.k8s.io/v1
-    kind: CustomResourceDefinition
-    name: servicemonitors.monitoring.coreos.com
-  register: prometheus_operator_check
-  ignore_errors: yes
+# =========================================================================
+# VALIDATION DES PRÉREQUIS MONITORING
+# =========================================================================
+- name: "🔍 Validation des prérequis monitoring Keycloak"
+  block:
+    - name: "Vérification de l'état du monitoring global"
+      ansible.builtin.assert:
+        that:
+          - lions_monitoring_enabled | bool
+          - keycloak_monitoring_enabled | default(true) | bool
+        fail_msg: "❌ Le monitoring doit être activé pour configurer le monitoring Keycloak"
+        success_msg: "✅ Monitoring global activé pour Keycloak"
 
-- name: Création du ServiceMonitor pour Prometheus
-  k8s:
+    - name: "Vérification de l'existence de Prometheus Operator CRDs"
+      kubernetes.core.k8s_info:
+        api_version: apiextensions.k8s.io/v1
+        kind: CustomResourceDefinition
+        name: "{{ item }}"
+      register: prometheus_operator_crds
+      loop:
+        - servicemonitors.monitoring.coreos.com
+        - prometheusrules.monitoring.coreos.com
+        - podmonitors.monitoring.coreos.com
+      failed_when: false
+      changed_when: false
+
+    - name: "Évaluation de la disponibilité de Prometheus Operator"
+      ansible.builtin.set_fact:
+        prometheus_operator_available: >-
+          {{
+            prometheus_operator_crds.results |
+            selectattr('resources', 'defined') |
+            selectattr('resources', '>', []) |
+            list | length == 3
+          }}
+
+    - name: "Information sur l'état de Prometheus Operator"
+      ansible.builtin.debug:
+        msg: >-
+          {{
+            '✅ Prometheus Operator détecté - Configuration complète du monitoring'
+            if prometheus_operator_available else
+            '⚠️  Prometheus Operator non détecté - Monitoring limité'
+          }}
+
+  tags:
+    - keycloak
+    - monitoring
+    - validation
+
+# =========================================================================
+# CONFIGURATION SERVICEMONITOR PROMETHEUS
+# =========================================================================
+- name: "📊 Configuration ServiceMonitor Prometheus pour Keycloak"
+  block:
+    - name: "Création du ServiceMonitor Keycloak"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: monitoring.coreos.com/v1
+          kind: ServiceMonitor
+          metadata:
+            name: "{{ keycloak_service_name }}-servicemonitor"
+            namespace: "{{ keycloak_namespace }}"
+            labels:
+              app.kubernetes.io/name: "{{ keycloak_service_name }}"
+              app.kubernetes.io/component: monitoring
+              app.kubernetes.io/part-of: "{{ lions_project_name | default('lions-infrastructure') }}"
+              app.kubernetes.io/managed-by: ansible
+              app.kubernetes.io/version: "{{ keycloak_version }}"
+              environment: "{{ lions_environment }}"
+              monitoring.lions.dev/enabled: "true"
+            annotations:
+              description: "ServiceMonitor pour le monitoring Prometheus de Keycloak"
+              documentation: "https://docs.lions.dev/monitoring/keycloak"
+              contact: "{{ lions_config_maintainer | default('devops@lions.dev') }}"
+          spec:
+            selector:
+              matchLabels:
+                app.kubernetes.io/name: "{{ keycloak_service_name }}"
+            endpoints:
+              - port: http
+                path: "{{ keycloak_metrics_path | default('/auth/realms/master/metrics') }}"
+                interval: "{{ keycloak_scrape_interval | default('30s') }}"
+                scrapeTimeout: "{{ keycloak_scrape_timeout | default('10s') }}"
+                scheme: "{{ 'https' if lions_security_tls_enabled else 'http' }}"
+                tlsConfig: "{{ keycloak_tls_config if lions_security_tls_enabled else omit }}"
+                metricRelabelings:
+                  - sourceLabels: [__name__]
+                    regex: "keycloak_.*"
+                    targetLabel: service
+                    replacement: "{{ keycloak_service_name }}"
+                  - sourceLabels: [__name__]
+                    regex: "keycloak_.*"
+                    targetLabel: environment
+                    replacement: "{{ lions_environment }}"
+            namespaceSelector:
+              matchNames:
+                - "{{ keycloak_namespace }}"
+      register: servicemonitor_result
+      when: prometheus_operator_available
+
+    - name: "Vérification du déploiement ServiceMonitor"
+      ansible.builtin.debug:
+        msg: "✅ ServiceMonitor Keycloak créé avec succès"
+      when:
+        - prometheus_operator_available
+        - servicemonitor_result is succeeded
+
+  when:
+    - prometheus_operator_available
+    - keycloak_prometheus_scrape | default(true) | bool
+  tags:
+    - keycloak
+    - monitoring
+    - prometheus
+
+# =========================================================================
+# CONFIGURATION PODMONITOR (MONITORING DÉTAILLÉ)
+# =========================================================================
+- name: "📈 Configuration PodMonitor pour monitoring détaillé"
+  kubernetes.core.k8s:
     state: present
-    src: "{{ temp_dir.path }}/servicemonitor.yml"
-  register: servicemonitor_result
-  when: 
-    - prometheus_operator_check is succeeded
-    - prometheus_operator_check.resources | length > 0
-    - keycloak_prometheus_scrape | bool
+    definition:
+      apiVersion: monitoring.coreos.com/v1
+      kind: PodMonitor
+      metadata:
+        name: "{{ keycloak_service_name }}-podmonitor"
+        namespace: "{{ keycloak_namespace }}"
+        labels:
+          app.kubernetes.io/name: "{{ keycloak_service_name }}"
+          app.kubernetes.io/component: monitoring
+          app.kubernetes.io/part-of: "{{ lions_project_name | default('lions-infrastructure') }}"
+          environment: "{{ lions_environment }}"
+      spec:
+        selector:
+          matchLabels:
+            app.kubernetes.io/name: "{{ keycloak_service_name }}"
+        podMetricsEndpoints:
+          - port: http-management
+            path: "/q/metrics"
+            interval: "{{ keycloak_detailed_scrape_interval | default('15s') }}"
+            scrapeTimeout: "{{ keycloak_detailed_scrape_timeout | default('10s') }}"
+  when:
+    - prometheus_operator_available
+    - keycloak_detailed_monitoring | default(false) | bool
+  tags:
+    - keycloak
+    - monitoring
+    - detailed
 
-- name: Avertissement si Prometheus Operator n'est pas installé
-  debug:
-    msg: "AVERTISSEMENT: Prometheus Operator n'est pas installé. Le monitoring automatique ne sera pas configuré."
-  when: prometheus_operator_check is failed or prometheus_operator_check.resources | length == 0
-
-- name: Configuration des règles d'alerte pour Keycloak
-  k8s:
+# =========================================================================
+# CONFIGURATION RÈGLES D'ALERTE PROMETHEUS
+# =========================================================================
+- name: "🚨 Configuration des règles d'alerte Keycloak"
+  kubernetes.core.k8s:
     state: present
     definition:
       apiVersion: monitoring.coreos.com/v1
       kind: PrometheusRule
       metadata:
-        name: "{{ app_name }}-alerts"
-        namespace: "{{ app_namespace }}"
+        name: "{{ keycloak_service_name }}-alerts"
+        namespace: "{{ keycloak_namespace }}"
         labels:
-          app: "{{ app_name }}"
-          prometheus: k8s
+          app.kubernetes.io/name: "{{ keycloak_service_name }}"
+          app.kubernetes.io/component: alerting
+          app.kubernetes.io/part-of: "{{ lions_project_name | default('lions-infrastructure') }}"
+          app.kubernetes.io/managed-by: ansible
+          environment: "{{ lions_environment }}"
+          prometheus: kube-prometheus
           role: alert-rules
+          tier: "{{ lions_environment }}"
+        annotations:
+          description: "Règles d'alerte Prometheus pour Keycloak"
+          runbook_url: "https://docs.lions.dev/runbooks/keycloak-alerts"
       spec:
         groups:
-          - name: "{{ app_name }}.rules"
+          # ===== ALERTES CRITIQUES =====
+          - name: "keycloak.critical"
+            interval: "{{ keycloak_alert_evaluation_interval | default('30s') }}"
             rules:
               - alert: KeycloakInstanceDown
-                expr: up{job="{{ app_name }}"} == 0
-                for: 5m
+                expr: >
+                  up{
+                    job=~".*{{ keycloak_service_name }}.*",
+                    namespace="{{ keycloak_namespace }}"
+                  } == 0
+                for: "{{ keycloak_alert_down_duration | default('5m') }}"
                 labels:
                   severity: critical
+                  service: "{{ keycloak_service_name }}"
+                  environment: "{{ lions_environment }}"
+                  tier: auth
+                  team: platform
+                  runbook_url: "https://docs.lions.dev/runbooks/keycloak-down"
                 annotations:
-                  summary: "Instance Keycloak {{ app_name }} down"
-                  description: "L'instance Keycloak {{ app_name }} est indisponible depuis plus de 5 minutes."
-              - alert: KeycloakHighMemoryUsage
-                expr: container_memory_usage_bytes{pod=~"{{ app_name }}.*"} / container_spec_memory_limit_bytes{pod=~"{{ app_name }}.*"} > 0.85
-                for: 10m
-                labels:
-                  severity: warning
-                annotations:
-                  summary: "Utilisation mémoire élevée pour Keycloak {{ app_name }}"
-                  description: "Keycloak {{ app_name }} utilise plus de 85% de sa limite mémoire depuis plus de 10 minutes."
-              - alert: KeycloakHighCPUUsage
-                expr: container_cpu_usage_seconds_total{pod=~"{{ app_name }}.*"} / container_spec_cpu_quota{pod=~"{{ app_name }}.*"} > 0.85
-                for: 10m
-                labels:
-                  severity: warning
-                annotations:
-                  summary: "Utilisation CPU élevée pour Keycloak {{ app_name }}"
-                  description: "Keycloak {{ app_name }} utilise plus de 85% de sa limite CPU depuis plus de 10 minutes."
-              - alert: KeycloakHighResponseTime
-                expr: http_request_duration_seconds{service="{{ app_name }}"} > 2
-                for: 5m
-                labels:
-                  severity: warning
-                annotations:
-                  summary: "Temps de réponse élevé pour Keycloak {{ app_name }}"
-                  description: "Keycloak {{ app_name }} a un temps de réponse élevé (>2s) depuis plus de 5 minutes."
-              - alert: KeycloakHighLoginFailureRate
-                expr: sum(rate(keycloak_failed_login_attempts[5m])) / sum(rate(keycloak_login_attempts[5m])) > 0.1
-                for: 5m
-                labels:
-                  severity: warning
-                annotations:
-                  summary: "Taux d'échec de connexion élevé pour Keycloak {{ app_name }}"
-                  description: "Keycloak {{ app_name }} a un taux d'échec de connexion supérieur à 10% depuis plus de 5 minutes."
-              - alert: KeycloakDatabaseConnectionFailure
-                expr: keycloak_database_connections_active == 0
-                for: 5m
-                labels:
-                  severity: critical
-                annotations:
-                  summary: "Échec de connexion à la base de données pour Keycloak {{ app_name }}"
-                  description: "Keycloak {{ app_name }} ne peut pas se connecter à la base de données depuis plus de 5 minutes."
-  when: 
-    - prometheus_operator_check is succeeded
-    - prometheus_operator_check.resources | length > 0
-    - keycloak_prometheus_scrape | bool
+                  summary: "🔴 Instance Keycloak indisponible"
+                  description: >
+                    L'instance Keycloak {{ keycloak_service_name }} dans le namespace 
+                    {{ keycloak_namespace }} est indisponible depuis {{ keycloak_alert_down_duration | default('5m') }}.
+                    Cela impacte l'authentification sur la plateforme LIONS.
+                  action: "Vérifier l'état des pods Keycloak et les logs d'erreur"
+                  dashboard: "https://grafana.{{ lions_dns_full_domain }}/d/keycloak/keycloak-dashboard"
 
-- name: Configuration de Grafana Dashboard pour Keycloak
-  k8s:
+              - alert: KeycloakDatabaseConnectionFailure
+                expr: >
+                  keycloak_connections_db{
+                    namespace="{{ keycloak_namespace }}"
+                  } == 0
+                for: "{{ keycloak_alert_db_duration | default('3m') }}"
+                labels:
+                  severity: critical
+                  service: "{{ keycloak_service_name }}"
+                  environment: "{{ lions_environment }}"
+                  component: database
+                annotations:
+                  summary: "🔴 Échec connexion base de données Keycloak"
+                  description: >
+                    Keycloak ne peut pas se connecter à sa base de données depuis 
+                    {{ keycloak_alert_db_duration | default('3m') }}. Service d'authentification compromis.
+                  action: "Vérifier l'état de PostgreSQL et la connectivité réseau"
+
+          # ===== ALERTES WARNING =====
+          - name: "keycloak.warning"
+            interval: "{{ keycloak_alert_evaluation_interval | default('30s') }}"
+            rules:
+              - alert: KeycloakHighMemoryUsage
+                expr: >
+                  (
+                    container_memory_working_set_bytes{
+                      pod=~"{{ keycloak_service_name }}.*",
+                      namespace="{{ keycloak_namespace }}",
+                      container!="POD"
+                    } / 
+                    container_spec_memory_limit_bytes{
+                      pod=~"{{ keycloak_service_name }}.*",
+                      namespace="{{ keycloak_namespace }}",
+                      container!="POD"
+                    }
+                  ) * 100 > {{ keycloak_memory_threshold | default('85') }}
+                for: "{{ keycloak_alert_memory_duration | default('10m') }}"
+                labels:
+                  severity: warning
+                  service: "{{ keycloak_service_name }}"
+                  environment: "{{ lions_environment }}"
+                  resource: memory
+                annotations:
+                  summary: "⚠️ Utilisation mémoire élevée Keycloak"
+                  description: >
+                    Keycloak {{ keycloak_service_name }} utilise plus de 
+                    {{ keycloak_memory_threshold | default('85') }}% de sa limite mémoire 
+                    depuis {{ keycloak_alert_memory_duration | default('10m') }}.
+                  action: "Considérer l'augmentation des limites mémoire ou l'optimisation"
+
+              - alert: KeycloakHighCPUUsage
+                expr: >
+                  (
+                    rate(container_cpu_usage_seconds_total{
+                      pod=~"{{ keycloak_service_name }}.*",
+                      namespace="{{ keycloak_namespace }}",
+                      container!="POD"
+                    }[5m]) * 100
+                  ) > {{ keycloak_cpu_threshold | default('80') }}
+                for: "{{ keycloak_alert_cpu_duration | default('15m') }}"
+                labels:
+                  severity: warning
+                  service: "{{ keycloak_service_name }}"
+                  environment: "{{ lions_environment }}"
+                  resource: cpu
+                annotations:
+                  summary: "⚠️ Utilisation CPU élevée Keycloak"
+                  description: >
+                    Keycloak {{ keycloak_service_name }} utilise plus de 
+                    {{ keycloak_cpu_threshold | default('80') }}% CPU 
+                    depuis {{ keycloak_alert_cpu_duration | default('15m') }}.
+
+              - alert: KeycloakHighResponseTime
+                expr: >
+                  histogram_quantile(0.95,
+                    rate(http_request_duration_seconds_bucket{
+                      job=~".*{{ keycloak_service_name }}.*",
+                      namespace="{{ keycloak_namespace }}"
+                    }[5m])
+                  ) > {{ keycloak_response_time_threshold | default('2') }}
+                for: "{{ keycloak_alert_response_duration | default('5m') }}"
+                labels:
+                  severity: warning
+                  service: "{{ keycloak_service_name }}"
+                  environment: "{{ lions_environment }}"
+                  performance: latency
+                annotations:
+                  summary: "⚠️ Temps de réponse élevé Keycloak"
+                  description: >
+                    Le 95e percentile du temps de réponse de Keycloak est supérieur à 
+                    {{ keycloak_response_time_threshold | default('2') }}s depuis 
+                    {{ keycloak_alert_response_duration | default('5m') }}.
+
+              - alert: KeycloakHighLoginFailureRate
+                expr: >
+                  (
+                    sum(rate(keycloak_failed_login_attempts_total{
+                      namespace="{{ keycloak_namespace }}"
+                    }[5m])) /
+                    sum(rate(keycloak_login_attempts_total{
+                      namespace="{{ keycloak_namespace }}"
+                    }[5m]))
+                  ) * 100 > {{ keycloak_failure_rate_threshold | default('10') }}
+                for: "{{ keycloak_alert_failure_duration | default('5m') }}"
+                labels:
+                  severity: warning
+                  service: "{{ keycloak_service_name }}"
+                  environment: "{{ lions_environment }}"
+                  security: authentication
+                annotations:
+                  summary: "⚠️ Taux d'échec de connexion élevé"
+                  description: >
+                    Le taux d'échec de connexion Keycloak est supérieur à 
+                    {{ keycloak_failure_rate_threshold | default('10') }}% depuis 
+                    {{ keycloak_alert_failure_duration | default('5m') }}. 
+                    Possible attaque ou problème de configuration.
+                  action: "Vérifier les logs de sécurité et les tentatives de connexion"
+
+          # ===== ALERTES INFO/BUSINESS =====
+          - name: "keycloak.business"
+            interval: "{{ keycloak_alert_evaluation_interval | default('30s') }}"
+            rules:
+              - alert: KeycloakHighActiveUsers
+                expr: >
+                  keycloak_user_sessions_total{
+                    namespace="{{ keycloak_namespace }}"
+                  } > {{ keycloak_max_sessions_threshold | default('1000') }}
+                for: "{{ keycloak_alert_sessions_duration | default('10m') }}"
+                labels:
+                  severity: info
+                  service: "{{ keycloak_service_name }}"
+                  environment: "{{ lions_environment }}"
+                  business: capacity
+                annotations:
+                  summary: "ℹ️ Nombre élevé d'utilisateurs actifs"
+                  description: >
+                    Plus de {{ keycloak_max_sessions_threshold | default('1000') }} 
+                    sessions utilisateur actives détectées.
+                  action: "Monitorer les performances et préparer la montée en charge"
+
+              - alert: KeycloakRealmConfigurationChange
+                expr: >
+                  increase(keycloak_realm_configuration_changes_total{
+                    namespace="{{ keycloak_namespace }}"
+                  }[1h]) > 0
+                for: "1m"
+                labels:
+                  severity: info
+                  service: "{{ keycloak_service_name }}"
+                  environment: "{{ lions_environment }}"
+                  audit: configuration
+                annotations:
+                  summary: "ℹ️ Modification configuration realm Keycloak"
+                  description: "Configuration d'un realm Keycloak modifiée dans la dernière heure"
+                  action: "Vérifier les logs d'audit pour les changements de configuration"
+
+  when:
+    - prometheus_operator_available
+    - keycloak_alerts_enabled | default(true) | bool
+  tags:
+    - keycloak
+    - monitoring
+    - alerts
+
+# =========================================================================
+# CONFIGURATION DASHBOARD GRAFANA
+# =========================================================================
+- name: "📊 Configuration Dashboard Grafana Keycloak"
+  kubernetes.core.k8s:
     state: present
     definition:
       apiVersion: v1
       kind: ConfigMap
       metadata:
-        name: "{{ app_name }}-dashboard"
-        namespace: monitoring
+        name: "{{ keycloak_service_name }}-dashboard"
+        namespace: "{{ lions_monitoring_namespace }}"
         labels:
           grafana_dashboard: "1"
+          app.kubernetes.io/name: "{{ keycloak_service_name }}"
+          app.kubernetes.io/component: dashboard
+          app.kubernetes.io/part-of: "{{ lions_project_name | default('lions-infrastructure') }}"
+          environment: "{{ lions_environment }}"
+          dashboard.grafana.com/load: "true"
+        annotations:
+          description: "Dashboard Grafana pour le monitoring Keycloak"
+          version: "5.0.0"
+          maintainer: "{{ lions_config_maintainer | default('devops@lions.dev') }}"
       data:
-        "{{ app_name }}-dashboard.json": |
+        "{{ keycloak_service_name }}-dashboard.json": |
           {
             "annotations": {
               "list": [
@@ -125,274 +416,346 @@
                 }
               ]
             },
+            "description": "Dashboard de monitoring pour Keycloak - LIONS Infrastructure 5.0",
             "editable": true,
             "gnetId": null,
-            "graphTooltip": 0,
+            "graphTooltip": 1,
             "id": null,
-            "links": [],
+            "links": [
+              {
+                "asDropdown": false,
+                "icon": "external link",
+                "includeVars": false,
+                "keepTime": false,
+                "tags": ["keycloak"],
+                "targetBlank": true,
+                "title": "Keycloak Admin Console",
+                "tooltip": "Accéder à la console d'administration Keycloak",
+                "type": "link",
+                "url": "https://keycloak.{{ lions_dns_full_domain }}/auth/admin/"
+              }
+            ],
             "panels": [
               {
-                "aliasColors": {},
-                "bars": false,
-                "dashLength": 10,
-                "dashes": false,
                 "datasource": "Prometheus",
-                "fill": 1,
-                "fillGradient": 0,
+                "fieldConfig": {
+                  "defaults": {
+                    "color": {
+                      "mode": "palette-classic"
+                    },
+                    "custom": {
+                      "axisLabel": "",
+                      "axisPlacement": "auto",
+                      "barAlignment": 0,
+                      "drawStyle": "line",
+                      "fillOpacity": 10,
+                      "gradientMode": "none",
+                      "hideFrom": {
+                        "legend": false,
+                        "tooltip": false,
+                        "vis": false
+                      },
+                      "lineInterpolation": "linear",
+                      "lineWidth": 2,
+                      "pointSize": 5,
+                      "scaleDistribution": {
+                        "type": "linear"
+                      },
+                      "showPoints": "never",
+                      "spanNulls": false,
+                      "stacking": {
+                        "group": "A",
+                        "mode": "none"
+                      },
+                      "thresholdsStyle": {
+                        "mode": "off"
+                      }
+                    },
+                    "mappings": [],
+                    "thresholds": {
+                      "mode": "absolute",
+                      "steps": [
+                        {
+                          "color": "green",
+                          "value": null
+                        },
+                        {
+                          "color": "red",
+                          "value": 80
+                        }
+                      ]
+                    },
+                    "unit": "bytes"
+                  },
+                  "overrides": []
+                },
                 "gridPos": {
                   "h": 8,
                   "w": 12,
                   "x": 0,
                   "y": 0
                 },
-                "hiddenSeries": false,
                 "id": 2,
-                "legend": {
-                  "avg": false,
-                  "current": true,
-                  "max": false,
-                  "min": false,
-                  "show": true,
-                  "total": false,
-                  "values": true
-                },
-                "lines": true,
-                "linewidth": 1,
-                "nullPointMode": "null",
                 "options": {
-                  "dataLinks": []
+                  "legend": {
+                    "calcs": ["lastNotNull", "max"],
+                    "displayMode": "table",
+                    "placement": "right"
+                  },
+                  "tooltip": {
+                    "mode": "multi",
+                    "sort": "desc"
+                  }
                 },
-                "percentage": false,
-                "pointradius": 2,
-                "points": false,
-                "renderer": "flot",
-                "seriesOverrides": [],
-                "spaceLength": 10,
-                "stack": false,
-                "steppedLine": false,
                 "targets": [
                   {
-                    "expr": "container_memory_usage_bytes{pod=~\"{{ app_name }}.*\"}",
+                    "expr": "container_memory_working_set_bytes{pod=~\"{{ keycloak_service_name }}.*\", namespace=\"{{ keycloak_namespace }}\", container!=\"POD\"}",
+                    "interval": "",
+                    "legendFormat": "Mémoire utilisée - {{pod}}",
                     "refId": "A"
-                  }
-                ],
-                "thresholds": [],
-                "timeFrom": null,
-                "timeRegions": [],
-                "timeShift": null,
-                "title": "Utilisation Mémoire",
-                "tooltip": {
-                  "shared": true,
-                  "sort": 0,
-                  "value_type": "individual"
-                },
-                "type": "graph",
-                "xaxis": {
-                  "buckets": null,
-                  "mode": "time",
-                  "name": null,
-                  "show": true,
-                  "values": []
-                },
-                "yaxes": [
-                  {
-                    "format": "bytes",
-                    "label": null,
-                    "logBase": 1,
-                    "max": null,
-                    "min": null,
-                    "show": true
                   },
                   {
-                    "format": "short",
-                    "label": null,
-                    "logBase": 1,
-                    "max": null,
-                    "min": null,
-                    "show": true
+                    "expr": "container_spec_memory_limit_bytes{pod=~\"{{ keycloak_service_name }}.*\", namespace=\"{{ keycloak_namespace }}\", container!=\"POD\"}",
+                    "interval": "",
+                    "legendFormat": "Limite mémoire - {{pod}}",
+                    "refId": "B"
                   }
                 ],
-                "yaxis": {
-                  "align": false,
-                  "alignLevel": null
-                }
+                "title": "💾 Utilisation Mémoire Keycloak",
+                "type": "timeseries"
               },
               {
-                "aliasColors": {},
-                "bars": false,
-                "dashLength": 10,
-                "dashes": false,
                 "datasource": "Prometheus",
-                "fill": 1,
-                "fillGradient": 0,
+                "fieldConfig": {
+                  "defaults": {
+                    "color": {
+                      "mode": "palette-classic"
+                    },
+                    "custom": {
+                      "axisLabel": "",
+                      "axisPlacement": "auto",
+                      "barAlignment": 0,
+                      "drawStyle": "line",
+                      "fillOpacity": 10,
+                      "gradientMode": "none",
+                      "hideFrom": {
+                        "legend": false,
+                        "tooltip": false,
+                        "vis": false
+                      },
+                      "lineInterpolation": "linear",
+                      "lineWidth": 2,
+                      "pointSize": 5,
+                      "scaleDistribution": {
+                        "type": "linear"
+                      },
+                      "showPoints": "never",
+                      "spanNulls": false,
+                      "stacking": {
+                        "group": "A",
+                        "mode": "none"
+                      },
+                      "thresholdsStyle": {
+                        "mode": "off"
+                      }
+                    },
+                    "mappings": [],
+                    "thresholds": {
+                      "mode": "absolute",
+                      "steps": [
+                        {
+                          "color": "green",
+                          "value": null
+                        },
+                        {
+                          "color": "red",
+                          "value": 80
+                        }
+                      ]
+                    },
+                    "unit": "percent"
+                  },
+                  "overrides": []
+                },
                 "gridPos": {
                   "h": 8,
                   "w": 12,
                   "x": 12,
                   "y": 0
                 },
-                "hiddenSeries": false,
                 "id": 3,
-                "legend": {
-                  "avg": false,
-                  "current": true,
-                  "max": false,
-                  "min": false,
-                  "show": true,
-                  "total": false,
-                  "values": true
-                },
-                "lines": true,
-                "linewidth": 1,
-                "nullPointMode": "null",
                 "options": {
-                  "dataLinks": []
+                  "legend": {
+                    "calcs": ["lastNotNull", "max"],
+                    "displayMode": "table",
+                    "placement": "right"
+                  },
+                  "tooltip": {
+                    "mode": "multi",
+                    "sort": "desc"
+                  }
                 },
-                "percentage": false,
-                "pointradius": 2,
-                "points": false,
-                "renderer": "flot",
-                "seriesOverrides": [],
-                "spaceLength": 10,
-                "stack": false,
-                "steppedLine": false,
                 "targets": [
                   {
-                    "expr": "rate(container_cpu_usage_seconds_total{pod=~\"{{ app_name }}.*\"}[5m])",
+                    "expr": "rate(container_cpu_usage_seconds_total{pod=~\"{{ keycloak_service_name }}.*\", namespace=\"{{ keycloak_namespace }}\", container!=\"POD\"}[5m]) * 100",
+                    "interval": "",
+                    "legendFormat": "CPU utilisé - {{pod}}",
                     "refId": "A"
                   }
                 ],
-                "thresholds": [],
-                "timeFrom": null,
-                "timeRegions": [],
-                "timeShift": null,
-                "title": "Utilisation CPU",
-                "tooltip": {
-                  "shared": true,
-                  "sort": 0,
-                  "value_type": "individual"
-                },
-                "type": "graph",
-                "xaxis": {
-                  "buckets": null,
-                  "mode": "time",
-                  "name": null,
-                  "show": true,
-                  "values": []
-                },
-                "yaxes": [
-                  {
-                    "format": "short",
-                    "label": null,
-                    "logBase": 1,
-                    "max": null,
-                    "min": null,
-                    "show": true
-                  },
-                  {
-                    "format": "short",
-                    "label": null,
-                    "logBase": 1,
-                    "max": null,
-                    "min": null,
-                    "show": true
-                  }
-                ],
-                "yaxis": {
-                  "align": false,
-                  "alignLevel": null
-                }
+                "title": "🖥️ Utilisation CPU Keycloak",
+                "type": "timeseries"
               },
               {
-                "aliasColors": {},
-                "bars": false,
-                "dashLength": 10,
-                "dashes": false,
                 "datasource": "Prometheus",
-                "fill": 1,
-                "fillGradient": 0,
+                "fieldConfig": {
+                  "defaults": {
+                    "color": {
+                      "mode": "palette-classic"
+                    },
+                    "custom": {
+                      "axisLabel": "",
+                      "axisPlacement": "auto",
+                      "barAlignment": 0,
+                      "drawStyle": "line",
+                      "fillOpacity": 10,
+                      "gradientMode": "none",
+                      "hideFrom": {
+                        "legend": false,
+                        "tooltip": false,
+                        "vis": false
+                      },
+                      "lineInterpolation": "linear",
+                      "lineWidth": 2,
+                      "pointSize": 5,
+                      "scaleDistribution": {
+                        "type": "linear"
+                      },
+                      "showPoints": "never",
+                      "spanNulls": false,
+                      "stacking": {
+                        "group": "A",
+                        "mode": "none"
+                      },
+                      "thresholdsStyle": {
+                        "mode": "off"
+                      }
+                    },
+                    "mappings": [],
+                    "thresholds": {
+                      "mode": "absolute",
+                      "steps": [
+                        {
+                          "color": "green",
+                          "value": null
+                        },
+                        {
+                          "color": "red",
+                          "value": 80
+                        }
+                      ]
+                    },
+                    "unit": "reqps"
+                  },
+                  "overrides": []
+                },
                 "gridPos": {
                   "h": 8,
                   "w": 12,
                   "x": 0,
                   "y": 8
                 },
-                "hiddenSeries": false,
                 "id": 4,
-                "legend": {
-                  "avg": false,
-                  "current": true,
-                  "max": false,
-                  "min": false,
-                  "show": true,
-                  "total": false,
-                  "values": true
-                },
-                "lines": true,
-                "linewidth": 1,
-                "nullPointMode": "null",
                 "options": {
-                  "dataLinks": []
+                  "legend": {
+                    "calcs": ["lastNotNull", "max"],
+                    "displayMode": "table",
+                    "placement": "right"
+                  },
+                  "tooltip": {
+                    "mode": "multi",
+                    "sort": "desc"
+                  }
                 },
-                "percentage": false,
-                "pointradius": 2,
-                "points": false,
-                "renderer": "flot",
-                "seriesOverrides": [],
-                "spaceLength": 10,
-                "stack": false,
-                "steppedLine": false,
                 "targets": [
                   {
-                    "expr": "rate(keycloak_login_attempts[5m])",
+                    "expr": "rate(keycloak_login_attempts_total{namespace=\"{{ keycloak_namespace }}\"}[5m])",
+                    "interval": "",
+                    "legendFormat": "Tentatives de connexion",
+                    "refId": "A"
+                  },
+                  {
+                    "expr": "rate(keycloak_failed_login_attempts_total{namespace=\"{{ keycloak_namespace }}\"}[5m])",
+                    "interval": "",
+                    "legendFormat": "Échecs de connexion",
+                    "refId": "B"
+                  }
+                ],
+                "title": "🔐 Activité d'Authentification",
+                "type": "timeseries"
+              },
+              {
+                "datasource": "Prometheus",
+                "fieldConfig": {
+                  "defaults": {
+                    "color": {
+                      "mode": "thresholds"
+                    },
+                    "mappings": [],
+                    "thresholds": {
+                      "mode": "absolute",
+                      "steps": [
+                        {
+                          "color": "red",
+                          "value": null
+                        },
+                        {
+                          "color": "green",
+                          "value": 1
+                        }
+                      ]
+                    },
+                    "unit": "none"
+                  },
+                  "overrides": []
+                },
+                "gridPos": {
+                  "h": 8,
+                  "w": 12,
+                  "x": 12,
+                  "y": 8
+                },
+                "id": 5,
+                "options": {
+                  "colorMode": "background",
+                  "graphMode": "area",
+                  "justifyMode": "center",
+                  "orientation": "horizontal",
+                  "reduceOptions": {
+                    "calcs": ["lastNotNull"],
+                    "fields": "",
+                    "values": false
+                  },
+                  "text": {},
+                  "textMode": "auto"
+                },
+                "pluginVersion": "8.0.0",
+                "targets": [
+                  {
+                    "expr": "up{job=~\".*{{ keycloak_service_name }}.*\", namespace=\"{{ keycloak_namespace }}\"}",
+                    "interval": "",
+                    "legendFormat": "État Keycloak",
                     "refId": "A"
                   }
                 ],
-                "thresholds": [],
-                "timeFrom": null,
-                "timeRegions": [],
-                "timeShift": null,
-                "title": "Tentatives de connexion",
-                "tooltip": {
-                  "shared": true,
-                  "sort": 0,
-                  "value_type": "individual"
-                },
-                "type": "graph",
-                "xaxis": {
-                  "buckets": null,
-                  "mode": "time",
-                  "name": null,
-                  "show": true,
-                  "values": []
-                },
-                "yaxes": [
-                  {
-                    "format": "short",
-                    "label": null,
-                    "logBase": 1,
-                    "max": null,
-                    "min": null,
-                    "show": true
-                  },
-                  {
-                    "format": "short",
-                    "label": null,
-                    "logBase": 1,
-                    "max": null,
-                    "min": null,
-                    "show": true
-                  }
-                ],
-                "yaxis": {
-                  "align": false,
-                  "alignLevel": null
-                }
+                "title": "🟢 État du Service Keycloak",
+                "type": "stat"
               }
             ],
-            "schemaVersion": 22,
+            "refresh": "30s",
+            "schemaVersion": 27,
             "style": "dark",
-            "tags": ["keycloak", "auth"],
+            "tags": ["keycloak", "auth", "lions", "{{ lions_environment }}"],
             "templating": {
               "list": []
             },
@@ -401,13 +764,146 @@
               "to": "now"
             },
             "timepicker": {},
-            "timezone": "",
-            "title": "Keycloak - {{ app_name }} Dashboard",
-            "uid": "{{ app_name }}-keycloak-dashboard",
-            "version": 1
+            "timezone": "{{ lions_timezone | default('UTC') }}",
+            "title": "🔐 Keycloak - {{ keycloak_service_name | title }} [{{ lions_environment | upper }}]",
+            "uid": "keycloak-{{ keycloak_service_name }}-{{ lions_environment }}",
+            "version": 1,
+            "weekStart": ""
           }
-  when: 
-    - prometheus_operator_check is succeeded
-    - prometheus_operator_check.resources | length > 0
-    - keycloak_prometheus_scrape | bool
-  ignore_errors: yes
+  when:
+    - prometheus_operator_available
+    - keycloak_grafana_dashboard | default(true) | bool
+  tags:
+    - keycloak
+    - monitoring
+    - grafana
+    - dashboard
+
+# =========================================================================
+# CONFIGURATION ALERTES SLACK/TEAMS (OPTIONNEL)
+# =========================================================================
+- name: "📢 Configuration notifications AlertManager"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ keycloak_service_name }}-alertmanager-config"
+        namespace: "{{ lions_monitoring_namespace }}"
+        labels:
+          app.kubernetes.io/name: alertmanager
+          app.kubernetes.io/component: notification
+          environment: "{{ lions_environment }}"
+      type: Opaque
+      stringData:
+        notification-config.yml: |
+          route:
+            group_by: ['alertname', 'cluster', 'service']
+            group_wait: 10s
+            group_interval: 10s
+            repeat_interval: 1h
+            receiver: 'keycloak-notifications'
+            routes:
+            - match:
+                service: "{{ keycloak_service_name }}"
+              receiver: 'keycloak-critical'
+              routes:
+              - match:
+                  severity: critical
+                receiver: 'keycloak-critical'
+              - match:
+                  severity: warning  
+                receiver: 'keycloak-warning'
+          receivers:
+          - name: 'keycloak-notifications'
+            slack_configs:
+            - api_url: "{{ keycloak_slack_webhook_url | default('') }}"
+              channel: '#{{ keycloak_slack_channel | default("lions-alerts") }}'
+              title: '🔐 Alerte Keycloak - {{ lions_environment | upper }}'
+              text: >
+                {{ "{{ range .Alerts }}" }}
+                *Alerte:* {{ "{{ .Annotations.summary }}" }}
+                *Description:* {{ "{{ .Annotations.description }}" }}
+                *Service:* {{ keycloak_service_name }}
+                *Environnement:* {{ lions_environment }}
+                *Sévérité:* {{ "{{ .Labels.severity }}" }}
+                {{ "{{ end }}" }}
+          - name: 'keycloak-critical'
+            slack_configs:
+            - api_url: "{{ keycloak_slack_webhook_url | default('') }}"
+              channel: '#{{ keycloak_critical_slack_channel | default("lions-critical") }}'
+              title: '🚨 ALERTE CRITIQUE - Keycloak {{ lions_environment | upper }}'
+              text: >
+                @channel ALERTE CRITIQUE Keycloak
+                {{ "{{ range .Alerts }}" }}
+                *Service:* {{ keycloak_service_name }}
+                *Problème:* {{ "{{ .Annotations.summary }}" }}
+                *Action requise:* {{ "{{ .Annotations.action | default('Intervention immédiate requise') }}" }}
+                *Dashboard:* {{ "{{ .Annotations.dashboard | default('Non disponible') }}" }}
+                {{ "{{ end }}" }}
+          - name: 'keycloak-warning'
+            slack_configs:
+            - api_url: "{{ keycloak_slack_webhook_url | default('') }}"
+              channel: '#{{ keycloak_slack_channel | default("lions-alerts") }}'
+              title: '⚠️ Alerte Warning - Keycloak {{ lions_environment | upper }}'
+  when:
+    - keycloak_notifications_enabled | default(false) | bool
+    - keycloak_slack_webhook_url is defined
+    - keycloak_slack_webhook_url | length > 0
+  tags:
+    - keycloak
+    - monitoring
+    - notifications
+
+# =========================================================================
+# VALIDATION FINALE ET REPORTING
+# =========================================================================
+- name: "✅ Validation finale configuration monitoring Keycloak"
+  block:
+    - name: "Vérification déploiement ServiceMonitor"
+      kubernetes.core.k8s_info:
+        api_version: monitoring.coreos.com/v1
+        kind: ServiceMonitor
+        name: "{{ keycloak_service_name }}-servicemonitor"
+        namespace: "{{ keycloak_namespace }}"
+      register: servicemonitor_check
+      when: prometheus_operator_available
+
+    - name: "Vérification déploiement PrometheusRule"
+      kubernetes.core.k8s_info:
+        api_version: monitoring.coreos.com/v1
+        kind: PrometheusRule
+        name: "{{ keycloak_service_name }}-alerts"
+        namespace: "{{ keycloak_namespace }}"
+      register: prometheusrule_check
+      when: prometheus_operator_available
+
+    - name: "Rapport de configuration monitoring"
+      ansible.builtin.debug:
+        msg:
+          - "🔐 Configuration monitoring Keycloak terminée"
+          - "📊 ServiceMonitor: {{ '✅ Configuré' if (prometheus_operator_available and servicemonitor_check.resources | length > 0) else '❌ Non configuré' }}"
+          - "🚨 AlertRules: {{ '✅ Configurées' if (prometheus_operator_available and prometheusrule_check.resources | length > 0) else '❌ Non configurées' }}"
+          - "📈 Dashboard Grafana: {{ '✅ Déployé' if keycloak_grafana_dashboard | default(true) else '❌ Désactivé' }}"
+          - "📢 Notifications: {{ '✅ Configurées' if (keycloak_notifications_enabled | default(false) and keycloak_slack_webhook_url is defined) else '❌ Non configurées' }}"
+          - "🌐 Environnement: {{ lions_environment }}"
+          - "🏷️ Namespace: {{ keycloak_namespace }}"
+
+  always:
+    - name: "Journalisation configuration monitoring"
+      ansible.builtin.lineinfile:
+        path: "{{ lions_log_file | default('/var/log/lions-infrastructure.log') }}"
+        line: >
+          {{ ansible_date_time.iso8601 }} - MONITORING - Keycloak {{ keycloak_service_name }} 
+          configuré dans {{ keycloak_namespace }} ({{ lions_environment }})
+        create: yes
+      delegate_to: localhost
+      run_once: true
+
+  tags:
+    - keycloak
+    - monitoring
+    - validation
+
+# =========================================================================

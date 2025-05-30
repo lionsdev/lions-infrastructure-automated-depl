@@ -1,32 +1,185 @@
 ---
-# Titre: Template de service Kubernetes pour pgAdmin
-# Description: Définit le service Kubernetes pour pgAdmin
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-10
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - TEMPLATE SERVICE KUBERNETES PGADMIN
+# =========================================================================
+# Description: Template de service Kubernetes pour pgAdmin avec configuration avancée
+# Composant: pgAdmin Database Administration Interface
+# Version: 5.0.0
+# Maintainer: LIONS DevOps Team
+# Documentation: https://docs.lions.dev/infrastructure/pgadmin
+# =========================================================================
 
 apiVersion: v1
 kind: Service
 metadata:
-  name: "{{ app_name }}"
-  namespace: "{{ app_namespace }}"
+  name: "{{ lions_pgadmin_service_name | default('pgadmin') }}"
+  namespace: "{{ lions_pgadmin_namespace | default('database') }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "pgadmin"
+    # Labels obligatoires LIONS
+    app.kubernetes.io/name: "{{ lions_pgadmin_service_name | default('pgadmin') }}"
+    app.kubernetes.io/instance: "{{ lions_pgadmin_instance_name | default(lions_pgladmin_service_name) }}"
+    app.kubernetes.io/version: "{{ lions_pgadmin_version | default('7.8') }}"
+    app.kubernetes.io/component: "database-admin"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+
+    # Labels spécifiques LIONS
+    lions.dev/environment: "{{ lions_environment | default('development') }}"
+    lions.dev/tier: "database"
+    lions.dev/technology: "pgadmin"
+    lions.dev/service-type: "admin-interface"
+    lions.dev/backup-policy: "{{ lions_pgladmin_backup_policy | default('standard') }}"
+    lions.dev/monitoring-enabled: "{{ lions_pgladmin_monitoring_enabled | default(true) | string | lower }}"
+
+    # Labels de déploiement
+    deployment.lions.dev/strategy: "{{ lions_pgladmin_deployment_strategy | default('RollingUpdate') }}"
+    deployment.lions.dev/cluster-role: "{{ lions_pgladmin_cluster_role | default('standalone') }}"
+
+    # Labels de gouvernance
+    governance.lions.dev/owner: "{{ lions_pgladmin_owner | default('database-team') }}"
+    governance.lions.dev/cost-center: "{{ lions_pgladmin_cost_center | default('infrastructure') }}"
+    governance.lions.dev/data-classification: "{{ lions_pgladmin_data_classification | default('internal') }}"
+
   annotations:
-    description: "Service pour pgAdmin {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
-    prometheus.io/scrape: "{{ pgadmin_prometheus_scrape | default(true) | string | lower }}"
-    prometheus.io/path: "{{ pgadmin_prometheus_path | default('/metrics') }}"
-    prometheus.io/port: "{{ pgadmin_prometheus_port | default(80) | string }}"
+    # Annotations de documentation
+    description: "Service pgAdmin pour l'administration des bases de données PostgreSQL - Environnement {{ lions_environment }}"
+    documentation: "https://docs.lions.dev/infrastructure/pgadmin"
+    support-contact: "{{ lions_pgladmin_support_contact | default('devops@lions.dev') }}"
+
+    # Annotations de déploiement
+    deployment.lions.dev/version: "{{ lions_config_version | default('5.0.0') }}"
+    deployment.lions.dev/deployed-by: "{{ ansible_user | default('ansible') }}"
+    deployment.lions.dev/deployed-at: "{{ ansible_date_time.iso8601 }}"
+    deployment.lions.dev/config-hash: "{{ (lions_pgladmin_config | default({}) | to_json | hash('sha256'))[:8] }}"
+
+    # Annotations de monitoring Prometheus
+    prometheus.io/scrape: "{{ lions_pgladmin_prometheus_scrape | default(lions_monitoring_enabled) | string | lower }}"
+    prometheus.io/path: "{{ lions_pgladmin_prometheus_path | default('/metrics') }}"
+    prometheus.io/port: "{{ lions_pgladmin_prometheus_port | default(lions_pgladmin_port) | string }}"
+    prometheus.io/interval: "{{ lions_pgladmin_prometheus_interval | default('30s') }}"
+    prometheus.io/timeout: "{{ lions_pgladmin_prometheus_timeout | default('10s') }}"
+
+    # Annotations de réseau et sécurité
+    networking.lions.dev/ingress-class: "{{ lions_pgladmin_ingress_class | default('traefik') }}"
+    networking.lions.dev/external-access: "{{ lions_pgladmin_external_access | default(true) | string | lower }}"
+    security.lions.dev/tls-required: "{{ lions_security_tls_enabled | default(true) | string | lower }}"
+    security.lions.dev/authentication-required: "{{ lions_pgladmin_auth_required | default(true) | string | lower }}"
+
+    # Annotations de performance
+    performance.lions.dev/connection-pool-size: "{{ lions_pgladmin_connection_pool_size | default('10') }}"
+    performance.lions.dev/timeout: "{{ lions_pgladmin_timeout | default('60s') }}"
+
+    # Annotations de backup et haute disponibilité
+    backup.lions.dev/enabled: "{{ lions_pgladmin_backup_enabled | default(lions_backup_enabled) | string | lower }}"
+    backup.lions.dev/schedule: "{{ lions_pgladmin_backup_schedule | default('0 2 * * *') }}"
+    ha.lions.dev/enabled: "{{ lions_pgladmin_ha_enabled | default(false) | string | lower }}"
+
+    # Annotations de compliance et audit
+    compliance.lions.dev/data-retention: "{{ lions_pgladmin_data_retention | default('90d') }}"
+    audit.lions.dev/logging-enabled: "{{ lions_audit_enabled | default(true) | string | lower }}"
+
+spec:
+  type: "{{ lions_pgladmin_service_type | default('ClusterIP') }}"
+
+  # Configuration des ports
+  ports:
+    - name: http
+      port: {{ lions_pgladmin_service_port | default(80) }}
+      targetPort: http
+      protocol: TCP
+{% if lions_pgladmin_service_type | default('ClusterIP') == 'NodePort' %}
+      nodePort: {{ lions_pgladmin_nodeport | default(30080) }}
+{% endif %}
+{% if lions_pgladmin_metrics_enabled | default(false) %}
+    - name: metrics
+      port: {{ lions_pgladmin_metrics_port | default(9090) }}
+      targetPort: metrics
+      protocol: TCP
+{% endif %}
+{% if lions_pgladmin_health_check_enabled | default(true) %}
+    - name: health
+      port: {{ lions_pgladmin_health_port | default(8080) }}
+      targetPort: health
+      protocol: TCP
+{% endif %}
+
+  # Sélecteur de pods
+  selector:
+    app.kubernetes.io/name: "{{ lions_pgladmin_service_name | default('pgadmin') }}"
+    app.kubernetes.io/instance: "{{ lions_pgladmin_instance_name | default(lions_pgladmin_service_name) }}"
+    lions.dev/technology: "pgadmin"
+
+  # Configuration de session d'affinité (si activée)
+{% if lions_pgladmin_session_affinity_enabled | default(false) %}
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: {{ lions_pgladmin_session_timeout | default(10800) }}
+{% endif %}
+
+  # Configuration des External IPs (si spécifiées)
+{% if lions_pgladmin_external_ips is defined and lions_pgladmin_external_ips | length > 0 %}
+  externalIPs:
+{% for ip in lions_pgladmin_external_ips %}
+    - "{{ ip }}"
+{% endfor %}
+{% endif %}
+
+  # Configuration Load Balancer (si service type est LoadBalancer)
+{% if lions_pgladmin_service_type | default('ClusterIP') == 'LoadBalancer' %}
+{% if lions_pgladmin_load_balancer_ip is defined %}
+  loadBalancerIP: "{{ lions_pgladmin_load_balancer_ip }}"
+{% endif %}
+{% if lions_pgladmin_load_balancer_source_ranges is defined %}
+  loadBalancerSourceRanges:
+{% for range in lions_pgladmin_load_balancer_source_ranges %}
+    - "{{ range }}"
+{% endfor %}
+{% endif %}
+{% endif %}
+
+  # Configuration du trafic externe (si applicable)
+{% if lions_pgladmin_external_traffic_policy is defined %}
+  externalTrafficPolicy: "{{ lions_pgladmin_external_traffic_policy }}"
+{% endif %}
+
+  # Configuration de l'allocation des IPs (si activée)
+{% if lions_pgladmin_allocate_load_balancer_node_ports is defined %}
+  allocateLoadBalancerNodePorts: {{ lions_pgladmin_allocate_load_balancer_node_ports | bool }}
+{% endif %}
+
+---
+# =========================================================================
+# SERVICE HEADLESS POUR DISCOVERY (SI HA ACTIVÉ)
+# =========================================================================
+{% if lions_pgladmin_ha_enabled | default(false) %}
+apiVersion: v1
+kind: Service
+metadata:
+  name: "{{ lions_pgladmin_service_name | default('pgadmin') }}-headless"
+  namespace: "{{ lions_pgladmin_namespace | default('database') }}"
+  labels:
+    app.kubernetes.io/name: "{{ lions_pgladmin_service_name | default('pgadmin') }}"
+    app.kubernetes.io/instance: "{{ lions_pgladmin_instance_name | default(lions_pgladmin_service_name) }}"
+    app.kubernetes.io/version: "{{ lions_pgladmin_version | default('7.8') }}"
+    app.kubernetes.io/component: "database-admin"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    lions.dev/environment: "{{ lions_environment | default('development') }}"
+    lions.dev/service-type: "headless"
+  annotations:
+    description: "Service headless pour la découverte des instances pgAdmin en mode HA"
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
 spec:
   type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
   ports:
-  - name: http
-    port: {{ pgadmin_default_port | default(80) }}
-    targetPort: http
-    protocol: TCP
+    - name: http
+      port: {{ lions_pgladmin_service_port | default(80) }}
+      targetPort: http
+      protocol: TCP
   selector:
-    app: "{{ app_name }}"
-    technology: "pgadmin"
+    app.kubernetes.io/name: "{{ lions_pgladmin_service_name | default('pgadmin') }}"
+    app.kubernetes.io/instance: "{{ lions_pgladmin_instance_name | default(lions_pgladmin_service_name) }}"
+    lions.dev/technology: "pgadmin"
+{% endif %}

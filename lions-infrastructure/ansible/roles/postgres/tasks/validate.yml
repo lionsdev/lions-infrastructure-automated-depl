@@ -1,163 +1,577 @@
 ---
-# Titre: Validation post-déploiement pour PostgreSQL
-# Description: Valide le déploiement de PostgreSQL
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - VALIDATION POSTGRESQL
+# =========================================================================
+# Description: Validation complète post-déploiement pour PostgreSQL
+# Version: 5.0.0
+# Maintainer: DevOps Team LIONS Infrastructure
+# Documentation: https://docs.lions.dev/infrastructure/postgres/validation
+# =========================================================================
 
-- name: Attente que PostgreSQL soit prêt
-  shell: "kubectl exec -n {{ app_namespace }} {{ pods_info_after_init.resources[0].metadata.name }} -- pg_isready -U {{ postgres_admin_user }} -h localhost -p {{ postgres_default_port }}"
-  register: pg_ready_check
-  until: pg_ready_check.rc == 0
-  retries: 30
-  delay: 10
-  ignore_errors: yes
-  changed_when: false
-
-- name: Vérification de l'état de santé de PostgreSQL
-  debug:
-    msg: "PostgreSQL {{ app_name }} est en bonne santé et prêt à recevoir des requêtes."
-  when: pg_ready_check is succeeded
-
-- name: Avertissement si PostgreSQL n'est pas en bonne santé
-  debug:
-    msg: "AVERTISSEMENT: PostgreSQL {{ app_name }} n'est pas en bonne santé. Vérifiez les logs pour plus d'informations."
-  when: pg_ready_check is failed
-
-- name: Récupération de l'URL d'accès au service
+# =========================================================================
+# INITIALISATION ET VARIABLES DE VALIDATION
+# =========================================================================
+- name: "PostgreSQL Validation | Initialize validation context"
   set_fact:
-    service_url: "{{ app_name }}.{{ app_namespace }}.svc.cluster.local:{{ postgres_default_port }}"
+    postgres_validation_start_time: "{{ ansible_date_time.epoch }}"
+    postgres_validation_results: {}
+    postgres_validation_errors: []
+    postgres_validation_warnings: []
+    postgres_service_fqdn: "{{ lions_postgres_service_name }}.{{ lions_postgres_namespace }}.svc.{{ lions_k8s_dns_domain | default('cluster.local') }}"
+    postgres_external_url: "{% if lions_security_tls_enabled | bool %}https://{% else %}http://{% endif %}{{ lions_postgres_service_name }}.{{ lions_dns_full_domain }}"
 
-- name: Affichage de l'URL d'accès au service
+- name: "PostgreSQL Validation | Display validation parameters"
   debug:
-    msg: "PostgreSQL {{ app_name }} est accessible à l'adresse: {{ service_url }}"
+    msg:
+      - "🔍 Starting PostgreSQL validation for {{ lions_postgres_service_name }}"
+      - "📍 Environment: {{ lions_environment }}"
+      - "🏷️  Namespace: {{ lions_postgres_namespace }}"
+      - "🔗 Service FQDN: {{ postgres_service_fqdn }}"
+      - "⏱️  Timeout: {{ lions_timeout_default }}s"
+  when: lions_debug_mode | bool
 
-- name: Vérification de la version de PostgreSQL
-  shell: "kubectl exec -n {{ app_namespace }} {{ pods_info_after_init.resources[0].metadata.name }} -- psql -U {{ postgres_admin_user }} -c 'SELECT version();'"
-  register: pg_version_check
-  ignore_errors: yes
-  changed_when: false
-  when: pg_ready_check is succeeded
+# =========================================================================
+# VALIDATION DE L'INFRASTRUCTURE KUBERNETES
+# =========================================================================
+- name: "PostgreSQL Validation | Check namespace existence"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: "{{ lions_postgres_namespace }}"
+  register: postgres_namespace_check
+  failed_when: false
 
-- name: Affichage de la version de PostgreSQL
-  debug:
-    msg: "Version de PostgreSQL: {{ pg_version_check.stdout }}"
-  when: pg_version_check is succeeded
+- name: "PostgreSQL Validation | Validate namespace"
+  assert:
+    that:
+      - postgres_namespace_check.resources | length > 0
+      - postgres_namespace_check.resources[0].status.phase == "Active"
+    fail_msg: "Namespace {{ lions_postgres_namespace }} is not available or not in Active state"
+    success_msg: "✅ Namespace {{ lions_postgres_namespace }} is active"
 
-- name: Vérification des bases de données
-  shell: "kubectl exec -n {{ app_namespace }} {{ pods_info_after_init.resources[0].metadata.name }} -- psql -U {{ postgres_admin_user }} -c '\\l'"
-  register: pg_databases_check
-  ignore_errors: yes
-  changed_when: false
-  when: pg_ready_check is succeeded
+- name: "PostgreSQL Validation | Get StatefulSet information"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: StatefulSet
+    name: "{{ lions_postgres_service_name }}"
+    namespace: "{{ lions_postgres_namespace }}"
+  register: postgres_statefulset_info
+  failed_when: false
 
-- name: Affichage des bases de données
-  debug:
-    msg: "Bases de données disponibles: {{ pg_databases_check.stdout }}"
-  when: pg_databases_check is succeeded
+- name: "PostgreSQL Validation | Validate StatefulSet"
+  assert:
+    that:
+      - postgres_statefulset_info.resources | length > 0
+      - postgres_statefulset_info.resources[0].status.readyReplicas is defined
+      - postgres_statefulset_info.resources[0].status.readyReplicas >= 1
+    fail_msg: "PostgreSQL StatefulSet is not ready or has no ready replicas"
+    success_msg: "✅ PostgreSQL StatefulSet has {{ postgres_statefulset_info.resources[0].status.readyReplicas }} ready replica(s)"
 
-- name: Vérification des métriques Prometheus
+- name: "PostgreSQL Validation | Get Pod information"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: "{{ lions_postgres_namespace }}"
+    label_selectors:
+      - "app={{ lions_postgres_service_name }}"
+    field_selectors:
+      - "status.phase=Running"
+  register: postgres_pods_info
+  failed_when: false
+
+- name: "PostgreSQL Validation | Validate Pod availability"
+  assert:
+    that:
+      - postgres_pods_info.resources | length > 0
+      - postgres_pods_info.resources | selectattr('status.phase', 'equalto', 'Running') | list | length > 0
+    fail_msg: "No running PostgreSQL pods found"
+    success_msg: "✅ Found {{ postgres_pods_info.resources | length }} running PostgreSQL pod(s)"
+
+- name: "PostgreSQL Validation | Set primary pod reference"
+  set_fact:
+    postgres_primary_pod: "{{ postgres_pods_info.resources[0].metadata.name }}"
+
+# =========================================================================
+# VALIDATION DE LA CONNECTIVITÉ ET SANTÉ DE POSTGRESQL
+# =========================================================================
+- name: "PostgreSQL Validation | Check PostgreSQL readiness"
+  kubernetes.core.k8s_exec:
+    namespace: "{{ lions_postgres_namespace }}"
+    pod: "{{ postgres_primary_pod }}"
+    command: |
+      pg_isready -U {{ lions_postgres_admin_user | default('postgres') }} 
+                 -h localhost 
+                 -p {{ lions_postgres_port }}
+                 -t {{ lions_timeout_default }}
+  register: postgres_readiness_check
+  until: postgres_readiness_check.rc == 0
+  retries: "{{ (lions_timeout_deployment | int / 30) | int }}"
+  delay: 30
+  failed_when: false
+
+- name: "PostgreSQL Validation | Validate PostgreSQL readiness"
+  assert:
+    that:
+      - postgres_readiness_check.rc == 0
+    fail_msg: "❌ PostgreSQL is not ready after {{ lions_timeout_deployment }}s timeout"
+    success_msg: "✅ PostgreSQL is ready and accepting connections"
+
+- name: "PostgreSQL Validation | Test database connection"
+  kubernetes.core.k8s_exec:
+    namespace: "{{ lions_postgres_namespace }}"
+    pod: "{{ postgres_primary_pod }}"
+    command: |
+      psql -U {{ lions_postgres_admin_user | default('postgres') }} 
+           -d {{ lions_postgres_database }} 
+           -c "SELECT 1 as connection_test;" 
+           -t -A
+  register: postgres_connection_test
+  failed_when: false
+
+- name: "PostgreSQL Validation | Validate database connection"
+  assert:
+    that:
+      - postgres_connection_test.rc == 0
+      - "'1' in postgres_connection_test.stdout"
+    fail_msg: "❌ Cannot connect to PostgreSQL database {{ lions_postgres_database }}"
+    success_msg: "✅ Successfully connected to database {{ lions_postgres_database }}"
+
+# =========================================================================
+# VALIDATION DES INFORMATIONS SYSTÈME
+# =========================================================================
+- name: "PostgreSQL Validation | Get PostgreSQL version"
+  kubernetes.core.k8s_exec:
+    namespace: "{{ lions_postgres_namespace }}"
+    pod: "{{ postgres_primary_pod }}"
+    command: |
+      psql -U {{ lions_postgres_admin_user | default('postgres') }} 
+           -c "SELECT version();" 
+           -t -A
+  register: postgres_version_info
+  failed_when: false
+
+- name: "PostgreSQL Validation | Get database list"
+  kubernetes.core.k8s_exec:
+    namespace: "{{ lions_postgres_namespace }}"
+    pod: "{{ postgres_primary_pod }}"
+    command: |
+      psql -U {{ lions_postgres_admin_user | default('postgres') }} 
+           -c "SELECT datname FROM pg_database WHERE datistemplate = false;" 
+           -t -A
+  register: postgres_databases_list
+  failed_when: false
+
+- name: "PostgreSQL Validation | Get active connections count"
+  kubernetes.core.k8s_exec:
+    namespace: "{{ lions_postgres_namespace }}"
+    pod: "{{ postgres_primary_pod }}"
+    command: |
+      psql -U {{ lions_postgres_admin_user | default('postgres') }} 
+           -c "SELECT count(*) FROM pg_stat_activity WHERE state = 'active';" 
+           -t -A
+  register: postgres_active_connections
+  failed_when: false
+
+# =========================================================================
+# VALIDATION DE LA CONFIGURATION
+# =========================================================================
+- name: "PostgreSQL Validation | Get critical configuration parameters"
+  kubernetes.core.k8s_exec:
+    namespace: "{{ lions_postgres_namespace }}"
+    pod: "{{ postgres_primary_pod }}"
+    command: |
+      psql -U {{ lions_postgres_admin_user | default('postgres') }} 
+           -c "SELECT name, setting, unit FROM pg_settings 
+               WHERE name IN ('max_connections', 'shared_buffers', 'effective_cache_size', 
+                            'work_mem', 'maintenance_work_mem', 'checkpoint_completion_target',
+                            'wal_buffers', 'default_statistics_target');" 
+           -A -t
+  register: postgres_config_check
+  failed_when: false
+
+- name: "PostgreSQL Validation | Validate max_connections setting"
+  kubernetes.core.k8s_exec:
+    namespace: "{{ lions_postgres_namespace }}"
+    pod: "{{ postgres_primary_pod }}"
+    command: |
+      psql -U {{ lions_postgres_admin_user | default('postgres') }} 
+           -c "SELECT setting FROM pg_settings WHERE name = 'max_connections';" 
+           -t -A
+  register: postgres_max_conn_check
+  failed_when: false
+
+- name: "PostgreSQL Validation | Check max_connections is adequate"
+  set_fact:
+    postgres_max_conn_warning: true
+  when:
+    - postgres_max_conn_check.rc == 0
+    - postgres_max_conn_check.stdout | int < 100
+  failed_when: false
+
+# =========================================================================
+# VALIDATION DE LA HAUTE DISPONIBILITÉ (SI ACTIVÉE)
+# =========================================================================
+- name: "PostgreSQL Validation | Check replication status (HA mode)"
+  kubernetes.core.k8s_exec:
+    namespace: "{{ lions_postgres_namespace }}"
+    pod: "{{ postgres_primary_pod }}"
+    command: |
+      psql -U {{ lions_postgres_admin_user | default('postgres') }} 
+           -c "SELECT client_addr, state, sent_lsn, write_lsn, flush_lsn, replay_lsn 
+               FROM pg_stat_replication;" 
+           -A -t
+  register: postgres_replication_status
+  failed_when: false
+  when:
+    - lions_postgres_ha_enabled | default(false) | bool
+    - postgres_pods_info.resources | length > 1
+
+- name: "PostgreSQL Validation | Validate replication (HA mode)"
+  assert:
+    that:
+      - postgres_replication_status.rc == 0
+      - postgres_replication_status.stdout | length > 0
+    fail_msg: "❌ PostgreSQL replication is not working in HA mode"
+    success_msg: "✅ PostgreSQL replication is active"
+  when:
+    - lions_postgres_ha_enabled | default(false) | bool
+    - postgres_pods_info.resources | length > 1
+
+# =========================================================================
+# VALIDATION DU MONITORING ET MÉTRIQUES
+# =========================================================================
+- name: "PostgreSQL Validation | Check Prometheus metrics endpoint"
   uri:
-    url: "http://{{ app_name }}.{{ app_namespace }}.svc.cluster.local:{{ postgres_prometheus_port }}{{ postgres_metrics_path }}"
+    url: "http://{{ postgres_service_fqdn }}:{{ lions_postgres_metrics_port | default('9187') }}/metrics"
+    method: GET
     status_code: 200
-    validate_certs: no
-  register: metrics_check
-  ignore_errors: yes
-  when: postgres_prometheus_scrape | bool
+    timeout: 30
+  register: postgres_metrics_check
+  failed_when: false
+  when: lions_monitoring_enabled | bool
 
-- name: Affichage du résultat de la vérification des métriques
+- name: "PostgreSQL Validation | Validate metrics availability"
+  set_fact:
+    postgres_metrics_available: "{{ postgres_metrics_check.status == 200 }}"
+  when: lions_monitoring_enabled | bool
+
+- name: "PostgreSQL Validation | Check ServiceMonitor exists"
+  kubernetes.core.k8s_info:
+    api_version: monitoring.coreos.com/v1
+    kind: ServiceMonitor
+    name: "{{ lions_postgres_service_name }}"
+    namespace: "{{ lions_postgres_namespace }}"
+  register: postgres_servicemonitor_check
+  failed_when: false
+  when: lions_monitoring_enabled | bool
+
+# =========================================================================
+# VALIDATION DES PERFORMANCES
+# =========================================================================
+- name: "PostgreSQL Validation | Run performance baseline test"
+  kubernetes.core.k8s_exec:
+    namespace: "{{ lions_postgres_namespace }}"
+    pod: "{{ postgres_primary_pod }}"
+    command: |
+      psql -U {{ lions_postgres_admin_user | default('postgres') }} 
+           -d {{ lions_postgres_database }}
+           -c "SELECT pg_stat_reset(); 
+               SELECT pg_sleep(1); 
+               CREATE TABLE IF NOT EXISTS validation_test (id SERIAL PRIMARY KEY, data TEXT);
+               INSERT INTO validation_test (data) VALUES ('performance_test');
+               SELECT COUNT(*) FROM validation_test;
+               DROP TABLE validation_test;"
+           -t -A
+  register: postgres_performance_test
+  failed_when: false
+  timeout: 60
+
+- name: "PostgreSQL Validation | Validate performance test"
+  assert:
+    that:
+      - postgres_performance_test.rc == 0
+    fail_msg: "❌ PostgreSQL performance test failed"
+    success_msg: "✅ PostgreSQL performance test completed successfully"
+
+# =========================================================================
+# VALIDATION DE LA SÉCURITÉ
+# =========================================================================
+- name: "PostgreSQL Validation | Check security settings"
+  kubernetes.core.k8s_exec:
+    namespace: "{{ lions_postgres_namespace }}"
+    pod: "{{ postgres_primary_pod }}"
+    command: |
+      psql -U {{ lions_postgres_admin_user | default('postgres') }} 
+           -c "SELECT name, setting FROM pg_settings 
+               WHERE name IN ('ssl', 'log_connections', 'log_disconnections', 
+                            'log_statement', 'password_encryption');" 
+           -A -t
+  register: postgres_security_settings
+  failed_when: false
+
+- name: "PostgreSQL Validation | Check user privileges"
+  kubernetes.core.k8s_exec:
+    namespace: "{{ lions_postgres_namespace }}"
+    pod: "{{ postgres_primary_pod }}"
+    command: |
+      psql -U {{ lions_postgres_admin_user | default('postgres') }} 
+           -c "SELECT rolname, rolsuper, rolcreaterole, rolcreatedb 
+               FROM pg_roles WHERE rolname != 'postgres';" 
+           -A -t
+  register: postgres_user_privileges
+  failed_when: false
+
+# =========================================================================
+# VALIDATION DU STOCKAGE
+# =========================================================================
+- name: "PostgreSQL Validation | Check persistent volume claims"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: PersistentVolumeClaim
+    namespace: "{{ lions_postgres_namespace }}"
+    label_selectors:
+      - "app={{ lions_postgres_service_name }}"
+  register: postgres_pvc_info
+  failed_when: false
+
+- name: "PostgreSQL Validation | Validate storage"
+  assert:
+    that:
+      - postgres_pvc_info.resources | length > 0
+      - postgres_pvc_info.resources | selectattr('status.phase', 'equalto', 'Bound') | list | length > 0
+    fail_msg: "❌ PostgreSQL persistent volumes are not properly bound"
+    success_msg: "✅ PostgreSQL storage is properly configured"
+
+- name: "PostgreSQL Validation | Check disk usage"
+  kubernetes.core.k8s_exec:
+    namespace: "{{ lions_postgres_namespace }}"
+    pod: "{{ postgres_primary_pod }}"
+    command: |
+      df -h /var/lib/postgresql/data | tail -1 | awk '{print $5}' | sed 's/%//'
+  register: postgres_disk_usage
+  failed_when: false
+
+- name: "PostgreSQL Validation | Validate disk usage"
+  set_fact:
+    postgres_disk_warning: true
+  when:
+    - postgres_disk_usage.rc == 0
+    - postgres_disk_usage.stdout | int > 80
+  failed_when: false
+
+# =========================================================================
+# VALIDATION DES SAUVEGARDES
+# =========================================================================
+- name: "PostgreSQL Validation | Check backup configuration"
+  kubernetes.core.k8s_info:
+    api_version: batch/v1
+    kind: CronJob
+    name: "{{ lions_postgres_service_name }}-backup"
+    namespace: "{{ lions_postgres_namespace }}"
+  register: postgres_backup_cronjob
+  failed_when: false
+  when: lions_backup_enabled | bool
+
+- name: "PostgreSQL Validation | Validate backup setup"
+  assert:
+    that:
+      - postgres_backup_cronjob.resources | length > 0
+      - postgres_backup_cronjob.resources[0].spec.schedule is defined
+    fail_msg: "❌ PostgreSQL backup CronJob is not configured"
+    success_msg: "✅ PostgreSQL backup is configured"
+  when: lions_backup_enabled | bool
+
+# =========================================================================
+# COMPILATION DES RÉSULTATS DE VALIDATION
+# =========================================================================
+- name: "PostgreSQL Validation | Compile validation results"
+  set_fact:
+    postgres_validation_results:
+      timestamp: "{{ ansible_date_time.iso8601 }}"
+      environment: "{{ lions_environment }}"
+      service_name: "{{ lions_postgres_service_name }}"
+      namespace: "{{ lions_postgres_namespace }}"
+      version: "{{ postgres_version_info.stdout | default('Unknown') }}"
+      status: "{{ 'HEALTHY' if postgres_readiness_check.rc == 0 and postgres_connection_test.rc == 0 else 'UNHEALTHY' }}"
+
+      connectivity:
+        readiness: "{{ postgres_readiness_check.rc == 0 }}"
+        connection_test: "{{ postgres_connection_test.rc == 0 }}"
+        service_fqdn: "{{ postgres_service_fqdn }}"
+        external_url: "{{ postgres_external_url }}"
+
+      infrastructure:
+        namespace_active: "{{ postgres_namespace_check.resources[0].status.phase == 'Active' }}"
+        statefulset_ready: "{{ postgres_statefulset_info.resources[0].status.readyReplicas >= 1 }}"
+        pods_running: "{{ postgres_pods_info.resources | length }}"
+        storage_bound: "{{ postgres_pvc_info.resources | selectattr('status.phase', 'equalto', 'Bound') | list | length > 0 }}"
+
+      configuration:
+        databases: "{{ postgres_databases_list.stdout_lines | default([]) }}"
+        active_connections: "{{ postgres_active_connections.stdout | default('0') }}"
+        max_connections: "{{ postgres_max_conn_check.stdout | default('Unknown') }}"
+        disk_usage_percent: "{{ postgres_disk_usage.stdout | default('Unknown') }}"
+
+      high_availability:
+        enabled: "{{ lions_postgres_ha_enabled | default(false) }}"
+        replication_active: "{{ postgres_replication_status.rc == 0 if postgres_replication_status is defined else false }}"
+        replica_count: "{{ postgres_pods_info.resources | length }}"
+
+      monitoring:
+        enabled: "{{ lions_monitoring_enabled }}"
+        metrics_available: "{{ postgres_metrics_available | default(false) }}"
+        servicemonitor_exists: "{{ postgres_servicemonitor_check.resources | length > 0 if postgres_servicemonitor_check is defined else false }}"
+
+      backup:
+        enabled: "{{ lions_backup_enabled }}"
+        cronjob_configured: "{{ postgres_backup_cronjob.resources | length > 0 if postgres_backup_cronjob is defined else false }}"
+
+      security:
+        tls_enabled: "{{ lions_security_tls_enabled }}"
+        network_policies: "{{ lions_security_network_policies }}"
+        rbac_enabled: "{{ lions_security_rbac_enabled }}"
+
+      performance:
+        baseline_test: "{{ postgres_performance_test.rc == 0 }}"
+
+      warnings:
+        - "{{ 'Max connections is low (' + postgres_max_conn_check.stdout + ')' if postgres_max_conn_warning | default(false) else '' }}"
+        - "{{ 'Disk usage is high (' + postgres_disk_usage.stdout + '%)' if postgres_disk_warning | default(false) else '' }}"
+        - "{{ 'Metrics endpoint not accessible' if lions_monitoring_enabled and not postgres_metrics_available | default(false) else '' }}"
+
+      validation_duration: "{{ ansible_date_time.epoch | int - postgres_validation_start_time | int }}"
+
+# =========================================================================
+# GÉNÉRATION DU RAPPORT DE VALIDATION
+# =========================================================================
+- name: "PostgreSQL Validation | Display validation summary"
   debug:
-    msg: "Les métriques Prometheus sont disponibles pour PostgreSQL {{ app_name }}."
-  when: metrics_check is defined and metrics_check is succeeded
+    msg:
+      - "🎯 PostgreSQL Validation Summary"
+      - "=================================="
+      - "Service: {{ postgres_validation_results.service_name }}"
+      - "Status: {{ postgres_validation_results.status }}"
+      - "Version: {{ postgres_validation_results.version }}"
+      - "Environment: {{ postgres_validation_results.environment }}"
+      - "Namespace: {{ postgres_validation_results.namespace }}"
+      - ""
+      - "✅ Connectivity: {{ 'OK' if postgres_validation_results.connectivity.readiness else 'FAILED' }}"
+      - "✅ Infrastructure: {{ 'OK' if postgres_validation_results.infrastructure.statefulset_ready else 'FAILED' }}"
+      - "✅ Storage: {{ 'OK' if postgres_validation_results.infrastructure.storage_bound else 'FAILED' }}"
+      - "✅ Performance: {{ 'OK' if postgres_validation_results.performance.baseline_test else 'FAILED' }}"
+      - "📊 Monitoring: {{ 'ENABLED' if postgres_validation_results.monitoring.enabled else 'DISABLED' }}"
+      - "🔒 Security: {{ 'CONFIGURED' if postgres_validation_results.security.tls_enabled else 'BASIC' }}"
+      - "💾 Backup: {{ 'CONFIGURED' if postgres_validation_results.backup.enabled else 'DISABLED' }}"
+      - "⚡ HA: {{ 'ENABLED' if postgres_validation_results.high_availability.enabled else 'DISABLED' }}"
+      - ""
+      - "Active Connections: {{ postgres_validation_results.configuration.active_connections }}"
+      - "Max Connections: {{ postgres_validation_results.configuration.max_connections }}"
+      - "Disk Usage: {{ postgres_validation_results.configuration.disk_usage_percent }}%"
+      - "Validation Duration: {{ postgres_validation_results.validation_duration }}s"
 
-- name: Avertissement si les métriques ne sont pas disponibles
+- name: "PostgreSQL Validation | Display warnings"
   debug:
-    msg: "AVERTISSEMENT: Les métriques Prometheus ne sont pas disponibles pour PostgreSQL {{ app_name }}."
-  when: metrics_check is defined and metrics_check is failed
+    msg: "⚠️  WARNING: {{ item }}"
+  loop: "{{ postgres_validation_results.warnings }}"
+  when:
+    - item != ""
+    - item is defined
 
-- name: Vérification de la réplication (si HA activé)
-  shell: "kubectl exec -n {{ app_namespace }} {{ pods_info_after_init.resources[0].metadata.name }} -- psql -U {{ postgres_admin_user }} -c 'SELECT * FROM pg_stat_replication;'"
-  register: replication_check
-  ignore_errors: yes
-  changed_when: false
-  when: postgres_ha_enabled | bool and pods_info_after_init.resources | length > 1 and pg_ready_check is succeeded
-
-- name: Affichage du statut de la réplication
-  debug:
-    msg: "Statut de la réplication PostgreSQL: {{ replication_check.stdout | default('Non disponible') }}"
-  when: replication_check is defined and replication_check is succeeded and replication_check.stdout is defined
-
-- name: Avertissement si la réplication n'est pas configurée correctement
-  debug:
-    msg: "AVERTISSEMENT: La réplication PostgreSQL n'est pas configurée correctement. Vérifiez les logs pour plus d'informations."
-  when: postgres_ha_enabled | bool and pods_info_after_init.resources | length > 1 and (replication_check is failed or replication_check.stdout == '')
-
-- name: Vérification des performances
-  shell: "kubectl exec -n {{ app_namespace }} {{ pods_info_after_init.resources[0].metadata.name }} -- psql -U {{ postgres_admin_user }} -c 'SELECT pg_stat_reset(); SELECT pg_sleep(5); SELECT * FROM pg_stat_database WHERE datname = ''postgres'';'"
-  register: performance_check
-  ignore_errors: yes
-  changed_when: false
-  when: pg_ready_check is succeeded
-
-- name: Affichage des statistiques de performance
-  debug:
-    msg: "Statistiques de performance PostgreSQL: {{ performance_check.stdout }}"
-  when: performance_check is defined and performance_check is succeeded
-
-- name: Vérification de la configuration
-  shell: "kubectl exec -n {{ app_namespace }} {{ pods_info_after_init.resources[0].metadata.name }} -- psql -U {{ postgres_admin_user }} -c 'SELECT name, setting FROM pg_settings WHERE name IN (''max_connections'', ''shared_buffers'', ''effective_cache_size'', ''work_mem'', ''maintenance_work_mem'');'"
-  register: config_check
-  ignore_errors: yes
-  changed_when: false
-  when: pg_ready_check is succeeded
-
-- name: Affichage de la configuration
-  debug:
-    msg: "Configuration PostgreSQL: {{ config_check.stdout }}"
-  when: config_check is defined and config_check is succeeded
-
-- name: Enregistrement des informations de déploiement
+- name: "PostgreSQL Validation | Save validation report"
   copy:
     content: |
-      Application: {{ app_name }}
-      Version: {{ app_version }}
-      Environnement: {{ app_environment }}
-      Namespace: {{ app_namespace }}
-      Service URL: {{ service_url }}
-      Date de déploiement: {{ ansible_date_time.iso8601 }}
-      Statut: {{ 'Succès' if pg_ready_check is succeeded else 'Avertissement' }}
-
-      Ressources:
-        Replicas: {{ postgres_replicas[app_environment] }}
-        CPU Requests: {{ postgres_resources[app_environment].requests.cpu }}
-        Memory Requests: {{ postgres_resources[app_environment].requests.memory }}
-        CPU Limits: {{ postgres_resources[app_environment].limits.cpu }}
-        Memory Limits: {{ postgres_resources[app_environment].limits.memory }}
-
-      Monitoring:
-        Prometheus: {{ 'Activé' if postgres_prometheus_scrape | bool else 'Désactivé' }}
-        Métriques: {{ 'Disponibles' if metrics_check is defined and metrics_check is succeeded else 'Non disponibles' }}
-
-      Haute disponibilité:
-        Activée: {{ 'Oui' if postgres_ha_enabled | bool else 'Non' }}
-        Réplication: {{ 'Fonctionnelle' if replication_check is defined and replication_check is succeeded else 'Non configurée ou non fonctionnelle' if postgres_ha_enabled | bool else 'N/A' }}
-
-      Configuration:
-        Max Connections: {{ postgres_max_connections }}
-        Shared Buffers: {{ postgres_shared_buffers }}
-        Effective Cache Size: {{ postgres_effective_cache_size }}
-        Work Mem: {{ postgres_work_mem }}
-
-      Notes:
-      - Vérifiez les logs de PostgreSQL pour plus d'informations.
-      - Pour les problèmes, contactez l'équipe d'infrastructure.
-    dest: "/var/log/lions/deployments/{{ app_name }}-{{ app_environment }}-{{ ansible_date_time.date }}.log"
+      # PostgreSQL Validation Report
+      ## Generated: {{ postgres_validation_results.timestamp }}
+      
+      ### Service Information
+      - **Service Name**: {{ postgres_validation_results.service_name }}
+      - **Environment**: {{ postgres_validation_results.environment }}
+      - **Namespace**: {{ postgres_validation_results.namespace }}
+      - **Version**: {{ postgres_validation_results.version }}
+      - **Overall Status**: {{ postgres_validation_results.status }}
+      
+      ### Connectivity
+      - **Service FQDN**: {{ postgres_validation_results.connectivity.service_fqdn }}
+      - **External URL**: {{ postgres_validation_results.connectivity.external_url }}
+      - **Readiness Check**: {{ 'PASS' if postgres_validation_results.connectivity.readiness else 'FAIL' }}
+      - **Connection Test**: {{ 'PASS' if postgres_validation_results.connectivity.connection_test else 'FAIL' }}
+      
+      ### Infrastructure
+      - **Namespace Status**: {{ 'Active' if postgres_validation_results.infrastructure.namespace_active else 'Inactive' }}
+      - **StatefulSet Status**: {{ 'Ready' if postgres_validation_results.infrastructure.statefulset_ready else 'Not Ready' }}
+      - **Running Pods**: {{ postgres_validation_results.infrastructure.pods_running }}
+      - **Storage Status**: {{ 'Bound' if postgres_validation_results.infrastructure.storage_bound else 'Not Bound' }}
+      
+      ### Configuration
+      - **Databases**: {{ postgres_validation_results.configuration.databases | join(', ') }}
+      - **Active Connections**: {{ postgres_validation_results.configuration.active_connections }}
+      - **Max Connections**: {{ postgres_validation_results.configuration.max_connections }}
+      - **Disk Usage**: {{ postgres_validation_results.configuration.disk_usage_percent }}%
+      
+      ### High Availability
+      - **HA Enabled**: {{ postgres_validation_results.high_availability.enabled }}
+      - **Replication Active**: {{ postgres_validation_results.high_availability.replication_active }}
+      - **Replica Count**: {{ postgres_validation_results.high_availability.replica_count }}
+      
+      ### Monitoring
+      - **Monitoring Enabled**: {{ postgres_validation_results.monitoring.enabled }}
+      - **Metrics Available**: {{ postgres_validation_results.monitoring.metrics_available }}
+      - **ServiceMonitor Exists**: {{ postgres_validation_results.monitoring.servicemonitor_exists }}
+      
+      ### Backup
+      - **Backup Enabled**: {{ postgres_validation_results.backup.enabled }}
+      - **CronJob Configured**: {{ postgres_validation_results.backup.cronjob_configured }}
+      
+      ### Security
+      - **TLS Enabled**: {{ postgres_validation_results.security.tls_enabled }}
+      - **Network Policies**: {{ postgres_validation_results.security.network_policies }}
+      - **RBAC Enabled**: {{ postgres_validation_results.security.rbac_enabled }}
+      
+      ### Performance
+      - **Baseline Test**: {{ 'PASS' if postgres_validation_results.performance.baseline_test else 'FAIL' }}
+      
+      ### Warnings
+      {% for warning in postgres_validation_results.warnings %}
+      {% if warning != "" %}
+      - ⚠️  {{ warning }}
+      {% endif %}
+      {% endfor %}
+      
+      ### Validation Metadata
+      - **Duration**: {{ postgres_validation_results.validation_duration }} seconds
+      - **Report Generated**: {{ postgres_validation_results.timestamp }}
+      - **LIONS Infrastructure Version**: 5.0.0
+      
+      ---
+      *This report was generated automatically by LIONS Infrastructure validation system.*
+    dest: "{{ lions_log_base_path | default('/var/log/lions') }}/validation/postgres-{{ lions_environment }}-{{ ansible_date_time.date }}-{{ ansible_date_time.time }}.md"
     mode: '0644'
-  ignore_errors: yes
+  delegate_to: localhost
+  run_once: true
 
-- name: Nettoyage des fichiers temporaires
-  file:
-    path: "{{ temp_dir.path }}"
-    state: absent
-  changed_when: false
-  ignore_errors: yes
+# =========================================================================
+# VALIDATION FINALE ET SORTIE
+# =========================================================================
+- name: "PostgreSQL Validation | Final assertion"
+  assert:
+    that:
+      - postgres_validation_results.status == "HEALTHY"
+      - postgres_validation_results.connectivity.readiness
+      - postgres_validation_results.connectivity.connection_test
+      - postgres_validation_results.infrastructure.statefulset_ready
+      - postgres_validation_results.infrastructure.storage_bound
+    fail_msg: |
+      ❌ PostgreSQL validation failed. Check the validation report for details.
+      Service Status: {{ postgres_validation_results.status }}
+    success_msg: |
+      ✅ PostgreSQL validation completed successfully!
+      
+      🎯 Service {{ postgres_validation_results.service_name }} is HEALTHY
+      📍 Environment: {{ postgres_validation_results.environment }}
+      🔗 Access URL: {{ postgres_validation_results.connectivity.external_url }}
+      ⏱️  Validation completed in {{ postgres_validation_results.validation_duration }}s
+
+- name: "PostgreSQL Validation | Set validation completion flag"
+  set_fact:
+    postgres_validation_completed: true
+    postgres_validation_success: "{{ postgres_validation_results.status == 'HEALTHY' }}"

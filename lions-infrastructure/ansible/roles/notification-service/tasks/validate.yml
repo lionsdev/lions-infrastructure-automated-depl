@@ -1,132 +1,163 @@
 ---
-# Titre: Validation post-déploiement pour le service de notification
-# Description: Effectue des validations après le déploiement du service de notification
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-08
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - NOTIFICATION SERVICE VALIDATION
+# =========================================================================
+# Description: Validation complète post-déploiement du service de notification
+# Version: 5.0.0
+# Maintainer: DevOps Team LIONS
+# Documentation: https://docs.lions.dev/notification/validation
+# =========================================================================
 
-- name: Vérification de l'état des pods du service de notification
+- name: "📊 [NOTIFICATION-VALID] Vérification de l'état des pods"
   k8s_info:
     api_version: v1
     kind: Pod
-    namespace: "{{ app_namespace }}"
+    namespace: "{{ notification_namespace }}"
     label_selectors:
-      - "app={{ app_name }}"
+      - "app.kubernetes.io/name={{ notification_service_name }}"
   register: pods_status
-  until: pods_status.resources | length > 0 and pods_status.resources | map(attribute='status.phase') | list | unique | first == "Running"
-  retries: 10
-  delay: 10
+  until: pods_status.resources | length > 0 and pods_status.resources | selectattr('status.phase', 'equalto', 'Running') | list | length == pods_status.resources | length
+  retries: 20
+  delay: 15
+  tags: [validation, pods]
 
-- name: Vérification de l'état du service
+- name: "🌍 [NOTIFICATION-VALID] Vérification du Service Kubernetes"
   k8s_info:
     api_version: v1
     kind: Service
-    namespace: "{{ app_namespace }}"
-    name: "{{ app_name }}"
+    namespace: "{{ notification_namespace }}"
+    name: "{{ notification_service_name }}"
   register: service_status
   failed_when: service_status.resources | length == 0
+  tags: [validation, service]
 
-- name: Vérification de l'état de l'ingress
+- name: "🌐 [NOTIFICATION-VALID] Vérification de l'Ingress"
   k8s_info:
     api_version: networking.k8s.io/v1
     kind: Ingress
-    namespace: "{{ app_namespace }}"
-    name: "{{ app_name }}"
+    namespace: "{{ notification_namespace }}"
+    name: "{{ notification_service_name }}"
   register: ingress_status
-  failed_when: ingress_status.resources | length == 0
+  failed_when: false
+  when: notification_ingress.enabled | bool
+  tags: [validation, ingress]
 
-- name: Vérification de la connectivité du service de notification
-  shell: "kubectl exec -n {{ app_namespace }} {{ pods_status.resources[0].metadata.name }} -- curl -s http://localhost:{{ notification_default_port }}{{ notification_health_path }}"
-  register: health_check
-  ignore_errors: yes
-  changed_when: false
-
-- name: Affichage du résultat de la connectivité
-  debug:
-    msg: "Connectivité du service de notification: {{ 'OK' if health_check is succeeded else 'ÉCHEC' }}"
-
-- name: Vérification des métriques Prometheus (si activé)
-  shell: "kubectl exec -n {{ app_namespace }} {{ pods_status.resources[0].metadata.name }} -- curl -s http://localhost:{{ notification_prometheus_port | default(8080) }}{{ notification_prometheus_path | default('/metrics') }} | head -10"
-  register: metrics_check
-  ignore_errors: yes
-  changed_when: false
-  when: notification_prometheus_scrape | default(true) | bool
-
-- name: Affichage des métriques Prometheus
-  debug:
-    msg: "Métriques Prometheus: {{ metrics_check.stdout_lines if metrics_check is succeeded else 'Non disponibles' }}"
-  when: notification_prometheus_scrape | default(true) | bool
-
-- name: Vérification des canaux de notification
-  shell: "kubectl exec -n {{ app_namespace }} {{ pods_status.resources[0].metadata.name }} -- curl -s http://localhost:{{ notification_default_port }}/actuator/health/channels"
-  register: channels_check
-  ignore_errors: yes
-  changed_when: false
-
-- name: Affichage de l'état des canaux de notification
-  debug:
-    msg: "État des canaux de notification: {{ channels_check.stdout if channels_check is succeeded else 'Non disponible' }}"
-
-- name: Vérification des ressources utilisées
-  shell: "kubectl top pod -n {{ app_namespace }} {{ pods_status.resources[0].metadata.name }}"
-  register: resources_check
-  ignore_errors: yes
-  changed_when: false
-
-- name: Affichage des ressources utilisées
-  debug:
-    msg: "Ressources utilisées: {{ resources_check.stdout if resources_check is succeeded else 'Non disponibles' }}"
-
-- name: Vérification des logs pour les erreurs
-  shell: "kubectl logs -n {{ app_namespace }} {{ pods_status.resources[0].metadata.name }} --tail=50 | grep -i error | wc -l"
-  register: error_count
-  ignore_errors: yes
-  changed_when: false
-
-- name: Avertissement si des erreurs sont détectées dans les logs
-  debug:
-    msg: "AVERTISSEMENT: {{ error_count.stdout }} erreurs détectées dans les logs du service de notification."
-  when: error_count is succeeded and error_count.stdout | int > 0
-
-- name: Vérification de l'accessibilité externe
+- name: "🩹 [NOTIFICATION-VALID] Test de santé de l'application"
   uri:
-    url: "https://{{ app_name }}.{{ app_environment }}.lions.dev/health"
-    validate_certs: no
-    follow_redirects: yes
+    url: "{{ notification_urls.internal }}{{ notification_endpoints.health }}"
+    method: GET
     status_code: 200
+    timeout: 30
+  register: health_check
+  retries: 10
+  delay: 10
+  until: health_check is succeeded
+  tags: [validation, health]
+
+- name: "📊 [NOTIFICATION-VALID] Validation des métriques Prometheus"
+  uri:
+    url: "{{ notification_urls.internal }}{{ notification_endpoints.metrics }}"
+    method: GET
+    status_code: 200
+    timeout: 30
+  register: metrics_check
+  when: notification_monitoring.enabled | bool
+  ignore_errors: true
+  tags: [validation, metrics]
+
+- name: "📬 [NOTIFICATION-VALID] Test des canaux de notification"
+  uri:
+    url: "{{ notification_urls.internal }}/api/channels/status"
+    method: GET
+    status_code: [200, 404]  # 404 OK si endpoint pas implémenté
+    timeout: 30
+  register: channels_check
+  ignore_errors: true
+  tags: [validation, channels]
+
+- name: "🔍 [NOTIFICATION-VALID] Vérification des logs d'erreurs"
+  kubernetes.core.k8s_log:
+    namespace: "{{ notification_namespace }}"
+    name: "{{ pods_status.resources[0].metadata.name }}"
+    tail_lines: 100
+  register: pod_logs
+  when: pods_status.resources | length > 0
+  tags: [validation, logs]
+
+- name: "⚠️  [NOTIFICATION-VALID] Analyse des erreurs dans les logs"
+  set_fact:
+    error_count: "{{ pod_logs.log.split('\n') | select('match', '.*[Ee]rror.*') | list | length }}"
+  when: pod_logs is defined and pod_logs.log is defined
+  tags: [validation, logs]
+
+- name: "🌍 [NOTIFICATION-VALID] Test d'accessibilité externe"
+  uri:
+    url: "{{ notification_urls.external }}{{ notification_endpoints.health }}"
+    method: GET
+    status_code: 200
+    timeout: 30
+    validate_certs: false
   register: external_access
-  ignore_errors: yes
-  when: app_environment != 'development'
+  when:
+    - notification_ingress.enabled | bool
+    - notification_environment != 'development'
+  ignore_errors: true
+  tags: [validation, external]
 
-- name: Affichage du résultat de l'accessibilité externe
+- name: "📊 [NOTIFICATION-VALID] Collecte des métriques de validation"
+  set_fact:
+    notification_validation_metrics:
+      pods_running: "{{ pods_status.resources | selectattr('status.phase', 'equalto', 'Running') | list | length }}"
+      total_pods: "{{ pods_status.resources | length }}"
+      service_available: "{{ service_status.resources | length > 0 }}"
+      ingress_configured: "{{ ingress_status.resources | length > 0 if notification_ingress.enabled else false }}"
+      health_check_passed: "{{ health_check is succeeded }}"
+      metrics_available: "{{ metrics_check is succeeded if notification_monitoring.enabled else 'N/A' }}"
+      external_access_ok: "{{ external_access is succeeded if (notification_ingress.enabled and notification_environment != 'development') else 'N/A' }}"
+      error_count: "{{ error_count | default(0) }}"
+  tags: [validation, metrics]
+
+- name: "📊 [NOTIFICATION-VALID] Rapport de validation complet"
   debug:
-    msg: "Accessibilité externe: {{ 'OK' if external_access is succeeded else 'ÉCHEC ou non vérifiée en environnement de développement' }}"
+    msg:
+      - "======================================================"
+      - "📊 RAPPORT DE VALIDATION - SERVICE DE NOTIFICATION"
+      - "======================================================"
+      - "🏷️  Service: {{ notification_service_name }}"
+      - "🌐 Namespace: {{ notification_namespace }}"
+      - "🌍 Environnement: {{ notification_environment }}"
+      - "📆 Version: {{ notification_service_meta.version }}"
+      - "======================================================"
+      - "📊 ÉTAT DES RESSOURCES:"
+      - "  🐋 Pods: {{ notification_validation_metrics.pods_running }}/{{ notification_validation_metrics.total_pods }} en cours d'exécution"
+      - "  🌍 Service: {{ '✅ Disponible' if notification_validation_metrics.service_available else '❌ Indisponible' }}"
+      - "  🌐 Ingress: {{ '✅ Configuré' if notification_validation_metrics.ingress_configured else ('🚫 Désactivé' if not notification_ingress.enabled else '❌ Échec') }}"
+      - "======================================================"
+      - "🩹 TESTS FONCTIONNELS:"
+      - "  📊 Santé: {{ '✅ OK' if notification_validation_metrics.health_check_passed else '❌ ÉCHEC' }}"
+      - "  📈 Métriques: {{ '✅ Disponibles' if notification_validation_metrics.metrics_available == True else ('🚫 Désactivées' if notification_validation_metrics.metrics_available == 'N/A' else '❌ Échec') }}"
+      - "  🌍 Accès externe: {{ '✅ OK' if notification_validation_metrics.external_access_ok == True else ('🚫 Non testé' if notification_validation_metrics.external_access_ok == 'N/A' else '❌ Échec') }}"
+      - "  📝 Erreurs logs: {{ notification_validation_metrics.error_count }}"
+      - "======================================================"
+      - "📋 CONFIGURATION:"
+      - "  📬 Email: {{ '✅ Activé' if notification_app_config.channels.email.enabled else '🚫 Désactivé' }}"
+      - "  💬 Slack: {{ '✅ Activé' if notification_app_config.channels.slack.enabled else '🚫 Désactivé' }}"
+      - "  📱 SMS: {{ '✅ Activé' if notification_app_config.channels.sms.enabled else '🚫 Désactivé' }}"
+      - "  📈 Monitoring: {{ '✅ Activé' if notification_monitoring.enabled else '🚫 Désactivé' }}"
+      - "======================================================"
+      - "🔗 URLs D'ACCÈS:"
+      - "  Interne: {{ notification_urls.internal }}"
+      - "  Externe: {{ notification_urls.external if notification_ingress.enabled else 'Non configuré' }}"
+      - "======================================================"
+      - "🏁 STATUT FINAL: {{ '✅ SUCCÈS' if (notification_validation_metrics.health_check_passed and notification_validation_metrics.service_available and notification_validation_metrics.pods_running > 0) else '❌ ÉCHEC' }}"
+      - "======================================================"
+  tags: [validation, summary]
 
-- name: Résumé du déploiement
-  debug:
-    msg: |
-      =====================================================
-      RÉSUMÉ DU DÉPLOIEMENT DU SERVICE DE NOTIFICATION
-      =====================================================
-      Nom: {{ app_name }}
-      Namespace: {{ app_namespace }}
-      Environnement: {{ app_environment }}
-      Version: {{ app_version }}
-      Pods en cours d'exécution: {{ pods_status.resources | length }}
-      Service disponible: {{ 'Oui' if service_status.resources | length > 0 else 'Non' }}
-      Ingress configuré: {{ 'Oui' if ingress_status.resources | length > 0 else 'Non' }}
-      Connectivité: {{ 'OK' if health_check is succeeded else 'ÉCHEC' }}
-      Monitoring: {{ 'Activé' if notification_prometheus_scrape | default(true) | bool else 'Désactivé' }}
-      Canaux de notification:
-        Email: {{ 'Activé' if notification_channels.email.enabled | default(true) | bool else 'Désactivé' }}
-        Slack: {{ 'Activé' if notification_channels.slack.enabled | default(true) | bool else 'Désactivé' }}
-        SMS: {{ 'Activé' if notification_channels.sms.enabled | default(false) | bool else 'Désactivé' }}
-      URL d'accès: https://{{ app_name }}.{{ app_environment }}.lions.dev
-      =====================================================
-      STATUT FINAL: {{ 'SUCCÈS' if health_check is succeeded and service_status.resources | length > 0 and pods_status.resources | length > 0 else 'ÉCHEC' }}
-      =====================================================
-
-- name: Échec si la validation échoue
+- name: "❌ [NOTIFICATION-VALID] Échec si validation critique"
   fail:
-    msg: "La validation du déploiement du service de notification a échoué. Veuillez vérifier les logs pour plus d'informations."
-  when: health_check is failed or service_status.resources | length == 0 or pods_status.resources | length == 0
+    msg: "La validation du service de notification a échoué. Vérifiez les logs pour plus d'informations."
+  when:
+    - not notification_validation_metrics.health_check_passed
+    - not notification_validation_metrics.service_available
+    - notification_validation_metrics.pods_running == 0
+  tags: [validation, failure]

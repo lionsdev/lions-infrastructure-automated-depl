@@ -1,69 +1,394 @@
----
-# Titre: Template de ConfigMap Kubernetes pour PrimeFaces
-# Description: Définit la ConfigMap Kubernetes pour une application PrimeFaces
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - PRIMEFACES CONFIGMAP TEMPLATE
+# =========================================================================
+# Description: Template Jinja2 pour la ConfigMap Kubernetes des applications PrimeFaces
+# Composant: PrimeFaces Application Configuration
+# Version: 5.0.0
+# Maintainer: DevOps LIONS Team
+# Documentation: https://docs.lions.dev/infrastructure/primefaces/configuration
+# =========================================================================
 
+---
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: "{{ app_name }}-config"
-  namespace: "{{ app_namespace }}"
+  name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-config"
+  namespace: "{{ lions_primefaces_namespace }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "primefaces"
-  annotations:
-    description: "ConfigMap pour l'application {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
-data:
-  # Variables d'environnement pour l'application
-  SPRING_PROFILES_ACTIVE: "{{ app_environment }}"
-  SERVER_PORT: "{{ primefaces_default_port }}"
-  APPLICATION_NAME: "{{ app_name }}"
-  APPLICATION_VERSION: "{{ app_version }}"
-  
-  # Variables spécifiques à l'environnement
-  LOGGING_LEVEL_ROOT: "{% if app_environment == 'production' %}WARN{% elif app_environment == 'staging' %}INFO{% else %}DEBUG{% endif %}"
-  MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: "health,info,metrics,prometheus"
-  
-  # Variables pour la base de données
-  SPRING_DATASOURCE_URL: "jdbc:postgresql://{{ primefaces_database_service }}:{{ primefaces_database_port }}/{{ primefaces_database_name }}"
-  SPRING_DATASOURCE_USERNAME: "{{ primefaces_database_user }}"
-  
-  # Variables pour PrimeFaces
-  PRIMEFACES_THEME: "{{ primefaces_theme }}"
-  PRIMEFACES_FONT_AWESOME: "{{ primefaces_fontawesome | string | lower }}"
-  PRIMEFACES_RESPONSIVE: "{{ primefaces_responsive | string | lower }}"
-  
-  # Configuration application.properties
-  application.properties: |
-    # Configuration de l'application
-    spring.application.name={{ app_name }}
-    server.port={{ primefaces_default_port }}
+    # Labels standards Kubernetes
+    app.kubernetes.io/name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+    app.kubernetes.io/instance: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-{{ lions_environment }}"
+    app.kubernetes.io/version: "{{ lions_primefaces_app_version | default('latest') }}"
+    app.kubernetes.io/component: "frontend"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
     
-    # Configuration de la base de données
-    spring.datasource.url=jdbc:postgresql://{{ primefaces_database_service }}:{{ primefaces_database_port }}/{{ primefaces_database_name }}
-    spring.datasource.username={{ primefaces_database_user }}
+    # Labels spécifiques LIONS
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/technology: "primefaces"
+    lions.dev/tier: "frontend"
+    lions.dev/monitoring: "{{ lions_monitoring_enabled | lower }}"
+    
+    # Labels pour le déploiement
+    deployment.lions.dev/strategy: "{{ lions_primefaces_deployment_strategy | default('RollingUpdate') }}"
+    deployment.lions.dev/config-version: "{{ lions_config_version }}"
+    
+  annotations:
+    # Annotations de documentation
+    description: "ConfigMap pour l'application PrimeFaces {{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+    lions.dev/documentation: "https://docs.lions.dev/infrastructure/primefaces"
+    lions.dev/config-checksum: "{{ ansible_date_time.epoch }}"
+    
+    # Annotations pour la configuration
+    config.lions.dev/last-updated: "{{ ansible_date_time.iso8601 }}"
+    config.lions.dev/environment: "{{ lions_environment }}"
+    config.lions.dev/managed-by: "lions-infrastructure-ansible"
+    
+data:
+  # =========================================================================
+  # CONFIGURATION SPRING BOOT - APPLICATION DE BASE
+  # =========================================================================
+  
+  # Configuration du profil Spring
+  SPRING_PROFILES_ACTIVE: "{{ lions_environment }}"
+  
+  # Configuration de l'application
+  SPRING_APPLICATION_NAME: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+  APPLICATION_NAME: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+  APPLICATION_VERSION: "{{ lions_primefaces_app_version | default('1.0.0') }}"
+  APPLICATION_DESCRIPTION: "{{ lions_primefaces_app_description | default('LIONS PrimeFaces Application') }}"
+  
+  # Configuration du serveur
+  SERVER_PORT: "{{ lions_primefaces_port }}"
+  SERVER_SERVLET_CONTEXT_PATH: "{{ lions_primefaces_context_path | default('/') }}"
+  
+  # Configuration HTTPS (si activé)
+{% if lions_security_tls_enabled | bool %}
+  SERVER_SSL_ENABLED: "true"
+  SERVER_SSL_PORT: "{{ lions_primefaces_ssl_port | default('8443') }}"
+  SERVER_SERVLET_SESSION_COOKIE_SECURE: "true"
+{% endif %}
+
+  # =========================================================================
+  # CONFIGURATION LOGGING
+  # =========================================================================
+  
+  # Niveau de log selon l'environnement
+  LOGGING_LEVEL_ROOT: "{{ lions_log_level }}"
+  LOGGING_LEVEL_ORG_SPRINGFRAMEWORK: "{{ 'DEBUG' if lions_environment == 'development' else 'INFO' }}"
+  LOGGING_LEVEL_ORG_HIBERNATE: "{{ 'DEBUG' if lions_environment == 'development' else 'WARN' }}"
+  LOGGING_LEVEL_LIQUIBASE: "{{ 'DEBUG' if lions_environment == 'development' else 'INFO' }}"
+  
+  # Configuration du format de log
+  LOGGING_PATTERN_CONSOLE: "{% if lions_log_format == 'json' %}%d{yyyy-MM-dd HH:mm:ss} %-5p [%c{2.}] (%t) %X{traceId} %X{spanId} %s%e%n{% else %}%d{HH:mm:ss} %-5p [%c{2.}] (%t) %s%e%n{% endif %}"
+  
+  # Configuration des loggers spécifiques
+  LOGGING_LEVEL_{{ (lions_primefaces_app_name | default(lions_primefaces_service_name) | upper | replace('-', '_')) }}: "{{ 'DEBUG' if lions_environment == 'development' else 'INFO' }}"
+  
+  # Configuration des logs d'audit (si activé)
+{% if lions_audit_enabled | bool %}
+  LOGGING_LEVEL_LIONS_AUDIT: "{{ lions_audit_log_level }}"
+  LIONS_AUDIT_ENABLED: "true"
+  LIONS_AUDIT_LOG_REQUESTS: "{{ lions_primefaces_audit_requests | default('true') }}"
+{% endif %}
+
+  # =========================================================================
+  # CONFIGURATION BASE DE DONNÉES
+  # =========================================================================
+  
+{% if lions_postgres_enabled | bool %}
+  # Configuration PostgreSQL
+  SPRING_DATASOURCE_URL: "jdbc:postgresql://{{ lions_postgres_service_name }}.{{ lions_postgres_namespace }}.svc.cluster.local:{{ lions_postgres_port }}/{{ lions_postgres_database }}"
+  SPRING_DATASOURCE_USERNAME: "{{ lions_primefaces_db_username | default('primefaces_user') }}"
+  SPRING_DATASOURCE_DRIVER_CLASS_NAME: "org.postgresql.Driver"
+  
+  # Configuration du pool de connexions
+  SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: "{{ lions_primefaces_db_pool_min | default('5') }}"
+  SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: "{{ lions_primefaces_db_pool_max | default('20') }}"
+  SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT: "{{ lions_primefaces_db_timeout | default('30000') }}"
+  SPRING_DATASOURCE_HIKARI_IDLE_TIMEOUT: "{{ lions_primefaces_db_idle_timeout | default('600000') }}"
+  SPRING_DATASOURCE_HIKARI_MAX_LIFETIME: "{{ lions_primefaces_db_max_lifetime | default('1800000') }}"
+  
+  # Configuration JPA/Hibernate
+  SPRING_JPA_HIBERNATE_DDL_AUTO: "{{ 'create-drop' if lions_environment == 'development' else 'validate' }}"
+  SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT: "org.hibernate.dialect.PostgreSQLDialect"
+  SPRING_JPA_PROPERTIES_HIBERNATE_FORMAT_SQL: "{{ (lions_environment == 'development') | lower }}"
+  SPRING_JPA_SHOW_SQL: "{{ (lions_environment == 'development') | lower }}"
+  SPRING_JPA_PROPERTIES_HIBERNATE_JDBC_BATCH_SIZE: "{{ lions_primefaces_hibernate_batch_size | default('20') }}"
+  SPRING_JPA_PROPERTIES_HIBERNATE_ORDER_INSERTS: "true"
+  SPRING_JPA_PROPERTIES_HIBERNATE_ORDER_UPDATES: "true"
+  SPRING_JPA_PROPERTIES_HIBERNATE_JDBC_BATCH_VERSIONED_DATA: "true"
+{% endif %}
+
+{% if lions_redis_enabled | bool %}
+  # Configuration Redis
+  SPRING_REDIS_HOST: "{{ lions_redis_service_name }}.{{ lions_redis_namespace }}.svc.cluster.local"
+  SPRING_REDIS_PORT: "{{ lions_redis_port }}"
+  SPRING_REDIS_TIMEOUT: "{{ lions_primefaces_redis_timeout | default('10000') }}"
+  SPRING_REDIS_LETTUCE_POOL_MIN_IDLE: "{{ lions_primefaces_redis_pool_min | default('0') }}"
+  SPRING_REDIS_LETTUCE_POOL_MAX_IDLE: "{{ lions_primefaces_redis_pool_max_idle | default('8') }}"
+  SPRING_REDIS_LETTUCE_POOL_MAX_ACTIVE: "{{ lions_primefaces_redis_pool_max_active | default('8') }}"
+{% endif %}
+
+  # =========================================================================
+  # CONFIGURATION SÉCURITÉ
+  # =========================================================================
+  
+{% if lions_keycloak_enabled | bool %}
+  # Configuration Spring Security avec Keycloak
+  SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_KEYCLOAK_CLIENT_ID: "{{ lions_primefaces_oidc_client_id | default(lions_primefaces_app_name | default(lions_primefaces_service_name)) }}"
+  SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_KEYCLOAK_AUTHORIZATION_GRANT_TYPE: "authorization_code"
+  SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_KEYCLOAK_SCOPE: "openid,profile,email,roles"
+  SPRING_SECURITY_OAUTH2_CLIENT_PROVIDER_KEYCLOAK_ISSUER_URI: "https://{{ lions_keycloak_service_name }}.{{ lions_dns_full_domain }}/realms/{{ lions_keycloak_realm }}"
+  SPRING_SECURITY_OAUTH2_CLIENT_PROVIDER_KEYCLOAK_USER_NAME_ATTRIBUTE: "preferred_username"
+  
+  # Configuration des redirections
+  SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_KEYCLOAK_REDIRECT_URI: "https://{{ lions_primefaces_hostname }}.{{ lions_dns_full_domain }}/login/oauth2/code/keycloak"
+{% endif %}
+
+  # Configuration CORS
+  LIONS_CORS_ENABLED: "{{ lions_primefaces_cors_enabled | default('true') }}"
+{% if lions_primefaces_cors_enabled | default(true) | bool %}
+  LIONS_CORS_ALLOWED_ORIGINS: "{{ lions_primefaces_cors_origins | default('*') }}"
+  LIONS_CORS_ALLOWED_METHODS: "{{ lions_primefaces_cors_methods | default('GET,POST,PUT,DELETE,OPTIONS') }}"
+  LIONS_CORS_ALLOWED_HEADERS: "{{ lions_primefaces_cors_headers | default('*') }}"
+  LIONS_CORS_ALLOW_CREDENTIALS: "{{ lions_primefaces_cors_credentials | default('true') }}"
+{% endif %}
+
+  # Configuration CSRF
+  SPRING_SECURITY_REQUIRE_SSL: "{{ lions_security_tls_enabled | lower }}"
+  SPRING_SESSION_STORE_TYPE: "{{ 'redis' if lions_redis_enabled | bool else 'none' }}"
+
+  # =========================================================================
+  # CONFIGURATION PRIMEFACES
+  # =========================================================================
+  
+  # Configuration du thème
+  PRIMEFACES_THEME: "{{ lions_primefaces_theme | default('nova-light') }}"
+  PRIMEFACES_FONT_AWESOME: "{{ lions_primefaces_fontawesome | default('true') | lower }}"
+  PRIMEFACES_RESPONSIVE: "{{ lions_primefaces_responsive | default('true') | lower }}"
+  PRIMEFACES_LEGACY_WIDGET_NAMESPACE: "{{ lions_primefaces_legacy_namespace | default('false') | lower }}"
+  
+  # Configuration de l'upload de fichiers
+  PRIMEFACES_UPLOADER: "{{ lions_primefaces_uploader | default('auto') }}"
+  SPRING_SERVLET_MULTIPART_MAX_FILE_SIZE: "{{ lions_primefaces_max_file_size | default('10MB') }}"
+  SPRING_SERVLET_MULTIPART_MAX_REQUEST_SIZE: "{{ lions_primefaces_max_request_size | default('100MB') }}"
+  
+  # Configuration des ressources statiques
+  PRIMEFACES_CACHE_PROVIDER: "{{ lions_primefaces_cache_provider | default('org.primefaces.cache.DefaultCacheProvider') }}"
+  PRIMEFACES_RESOURCE_CACHE_ENABLED: "{{ lions_primefaces_resource_cache | default('true') | lower }}"
+  
+  # Configuration client-side
+  PRIMEFACES_CLIENT_SIDE_VALIDATION: "{{ lions_primefaces_client_validation | default('false') | lower }}"
+  PRIMEFACES_TRANSFORM_METADATA: "{{ lions_primefaces_transform_metadata | default('false') | lower }}"
+
+  # =========================================================================
+  # CONFIGURATION MONITORING ET OBSERVABILITÉ
+  # =========================================================================
+  
+{% if lions_monitoring_enabled | bool %}
+  # Configuration Spring Boot Actuator
+  MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: "health,info,metrics,prometheus,env,configprops"
+  MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: "{{ 'always' if lions_environment != 'production' else 'when_authorized' }}"
+  MANAGEMENT_ENDPOINT_HEALTH_SHOW_COMPONENTS: "{{ 'always' if lions_environment != 'production' else 'when_authorized' }}"
+  MANAGEMENT_ENDPOINTS_WEB_BASE_PATH: "/actuator"
+  
+  # Configuration Micrometer/Prometheus
+  MANAGEMENT_METRICS_EXPORT_PROMETHEUS_ENABLED: "true"
+  MANAGEMENT_METRICS_DISTRIBUTION_PERCENTILES_HISTOGRAM_HTTP_SERVER_REQUESTS: "true"
+  MANAGEMENT_METRICS_TAGS_APPLICATION: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+  MANAGEMENT_METRICS_TAGS_ENVIRONMENT: "{{ lions_environment }}"
+  MANAGEMENT_METRICS_TAGS_VERSION: "{{ lions_primefaces_app_version | default('latest') }}"
+  
+  # Configuration des métriques personnalisées
+  LIONS_METRICS_ENABLED: "true"
+  LIONS_METRICS_DATABASE_ENABLED: "{{ lions_postgres_enabled | lower }}"
+  LIONS_METRICS_CACHE_ENABLED: "{{ lions_redis_enabled | lower }}"
+  LIONS_METRICS_CUSTOM_LABELS: "environment={{ lions_environment }},application={{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+{% endif %}
+
+  # Configuration Tracing (si activé)
+{% if lions_primefaces_tracing_enabled | default(false) | bool %}
+  SPRING_SLEUTH_ENABLED: "true"
+  SPRING_SLEUTH_SAMPLER_PROBABILITY: "{{ lions_primefaces_tracing_sample_rate | default('0.1') }}"
+  SPRING_ZIPKIN_BASE_URL: "{{ lions_zipkin_url | default('http://zipkin:9411') }}"
+  SPRING_SLEUTH_ZIPKIN_ENABLED: "true"
+{% endif %}
+
+  # =========================================================================
+  # CONFIGURATION DÉVELOPPEMENT
+  # =========================================================================
+  
+{% if lions_environment == 'development' %}
+  # Configuration spécifique au développement
+  SPRING_DEVTOOLS_RESTART_ENABLED: "false"  # Désactivé en conteneur
+  SPRING_DEVTOOLS_LIVERELOAD_ENABLED: "false"
+  
+  # Configuration des ressources statiques
+  SPRING_WEB_RESOURCES_STATIC_LOCATIONS: "classpath:/META-INF/resources/,classpath:/resources/,classpath:/static/,classpath:/public/"
+  SPRING_WEB_RESOURCES_CACHE_CACHECONTROL_MAX_AGE: "0"
+  
+  # Configuration de débogage
+  SPRING_JPA_PROPERTIES_HIBERNATE_SHOW_SQL: "true"
+  SPRING_JPA_PROPERTIES_HIBERNATE_USE_SQL_COMMENTS: "true"
+  
+{% else %}
+  # Configuration pour staging/production
+  SPRING_WEB_RESOURCES_CACHE_CACHECONTROL_MAX_AGE: "{{ lions_primefaces_static_cache_age | default('3600') }}"
+  SPRING_WEB_RESOURCES_CACHE_CACHECONTROL_CACHE_PUBLIC: "true"
+{% endif %}
+
+  # =========================================================================
+  # CONFIGURATION PERFORMANCE
+  # =========================================================================
+  
+  # Configuration de la JVM
+  JAVA_OPTS: "{{ lions_primefaces_java_opts | default('-Xmx512m -Xms256m') }}"
+  JAVA_ENABLE_DEBUG: "{{ (lions_environment == 'development') | lower }}"
+  
+  # Configuration Tomcat
+  SERVER_TOMCAT_MAX_THREADS: "{{ lions_primefaces_tomcat_max_threads | default('200') }}"
+  SERVER_TOMCAT_MIN_SPARE_THREADS: "{{ lions_primefaces_tomcat_min_threads | default('10') }}"
+  SERVER_TOMCAT_CONNECTION_TIMEOUT: "{{ lions_timeout_default }}000"
+  SERVER_TOMCAT_MAX_CONNECTIONS: "{{ lions_primefaces_tomcat_max_connections | default('8192') }}"
+  
+  # Configuration des timeouts
+  SPRING_TRANSACTION_DEFAULT_TIMEOUT: "{{ lions_timeout_default }}"
+  SERVER_SERVLET_SESSION_TIMEOUT: "{{ lions_primefaces_session_timeout | default('30m') }}"
+
+  # =========================================================================
+  # INTÉGRATIONS EXTERNES
+  # =========================================================================
+  
+  # Configuration des clients REST
+  SPRING_HTTP_CLIENT_TIMEOUT: "{{ lions_timeout_default }}s"
+  
+  # Configuration spécifique à l'application
+{% if lions_primefaces_custom_config is defined %}
+{% for key, value in lions_primefaces_custom_config.items() %}
+  {{ key }}: "{{ value }}"
+{% endfor %}
+{% endif %}
+
+  # =========================================================================
+  # VARIABLES D'ENVIRONNEMENT LIONS SPÉCIFIQUES
+  # =========================================================================
+  
+  # Informations sur l'infrastructure LIONS
+  LIONS_INFRASTRUCTURE_VERSION: "{{ lions_config_version }}"
+  LIONS_ENVIRONMENT: "{{ lions_environment }}"
+  LIONS_DEPLOYMENT_MODE: "{{ lions_deployment_mode }}"
+  LIONS_DNS_DOMAIN: "{{ lions_dns_full_domain }}"
+  
+  # Configuration des services LIONS
+  LIONS_POSTGRES_ENABLED: "{{ lions_postgres_enabled | lower }}"
+  LIONS_REDIS_ENABLED: "{{ lions_redis_enabled | lower }}"
+  LIONS_KEYCLOAK_ENABLED: "{{ lions_keycloak_enabled | lower }}"
+  LIONS_MONITORING_ENABLED: "{{ lions_monitoring_enabled | lower }}"
+  LIONS_VAULT_ENABLED: "{{ lions_vault_enabled | lower }}"
+  
+  # URLs des services internes
+{% if lions_vault_enabled | bool %}
+  LIONS_VAULT_URL: "{{ lions_vault_addr }}"
+{% endif %}
+{% if lions_keycloak_enabled | bool %}
+  LIONS_KEYCLOAK_URL: "https://{{ lions_keycloak_service_name }}.{{ lions_dns_full_domain }}"
+{% endif %}
+{% if lions_gitea_enabled | bool %}
+  LIONS_GITEA_URL: "https://{{ lions_gitea_service_name }}.{{ lions_dns_full_domain }}"
+{% endif %}
+{% if lions_registry_enabled | bool %}
+  LIONS_REGISTRY_URL: "https://{{ lions_registry_service_name }}.{{ lions_dns_full_domain }}"
+{% endif %}
+
+  # =========================================================================
+  # CONFIGURATION DE DÉBOGAGE
+  # =========================================================================
+  
+{% if lions_debug_mode | bool %}
+  # Variables de débogage
+  LIONS_DEBUG_MODE: "true"
+  SPRING_OUTPUT_ANSI_ENABLED: "always"
+  
+  # Informations sur la configuration
+  LIONS_CONFIG_LOADED_AT: "{{ ansible_date_time.iso8601 }}"
+  LIONS_CONFIG_SOURCE: "ansible-template"
+  LIONS_CONFIG_TEMPLATE_VERSION: "5.0.0"
+{% endif %}
+
+  # =========================================================================
+  # FICHIER DE CONFIGURATION APPLICATION.PROPERTIES
+  # =========================================================================
+  
+  application.properties: |
+    # =====================================================================
+    # CONFIGURATION SPRING BOOT APPLICATION
+    # =====================================================================
+    spring.application.name={{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}
+    spring.profiles.active={{ lions_environment }}
+    
+    # Configuration serveur
+    server.port={{ lions_primefaces_port }}
+    server.servlet.context-path={{ lions_primefaces_context_path | default('/') }}
+    {% if lions_security_tls_enabled | bool %}
+    server.ssl.enabled=true
+    server.ssl.port={{ lions_primefaces_ssl_port | default('8443') }}
+    {% endif %}
+    
+    # =====================================================================
+    # CONFIGURATION BASE DE DONNÉES
+    # =====================================================================
+    {% if lions_postgres_enabled | bool %}
+    spring.datasource.url=jdbc:postgresql://{{ lions_postgres_service_name }}.{{ lions_postgres_namespace }}.svc.cluster.local:{{ lions_postgres_port }}/{{ lions_postgres_database }}
+    spring.datasource.username={{ lions_primefaces_db_username | default('primefaces_user') }}
     spring.datasource.driver-class-name=org.postgresql.Driver
     
     # Configuration JPA
-    spring.jpa.hibernate.ddl-auto=validate
+    spring.jpa.hibernate.ddl-auto={{ 'create-drop' if lions_environment == 'development' else 'validate' }}
     spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.PostgreSQLDialect
-    spring.jpa.properties.hibernate.format_sql=true
-    spring.jpa.show-sql={% if app_environment == 'production' %}false{% else %}true{% endif %}
+    spring.jpa.properties.hibernate.format_sql={{ (lions_environment == 'development') | lower }}
+    spring.jpa.show-sql={{ (lions_environment == 'development') | lower }}
+    {% endif %}
     
-    # Configuration PrimeFaces
-    primefaces.THEME={{ primefaces_theme }}
-    primefaces.FONT_AWESOME={{ primefaces_fontawesome | string | lower }}
-    primefaces.RESPONSIVE={{ primefaces_responsive | string | lower }}
+    # =====================================================================
+    # CONFIGURATION PRIMEFACES
+    # =====================================================================
+    primefaces.THEME={{ lions_primefaces_theme | default('nova-light') }}
+    primefaces.FONT_AWESOME={{ lions_primefaces_fontawesome | default('true') | lower }}
+    primefaces.RESPONSIVE={{ lions_primefaces_responsive | default('true') | lower }}
+    primefaces.UPLOADER={{ lions_primefaces_uploader | default('auto') }}
+    primefaces.CACHE_PROVIDER={{ lions_primefaces_cache_provider | default('org.primefaces.cache.DefaultCacheProvider') }}
     
-    # Configuration du monitoring
+    # =====================================================================
+    # CONFIGURATION MONITORING
+    # =====================================================================
+    {% if lions_monitoring_enabled | bool %}
     management.endpoints.web.exposure.include=health,info,metrics,prometheus
-    management.endpoint.health.show-details=always
+    management.endpoint.health.show-details={{ 'always' if lions_environment != 'production' else 'when_authorized' }}
+    management.metrics.export.prometheus.enabled=true
+    {% endif %}
     
-    # Configuration spécifique à l'environnement
-    logging.level.root={% if app_environment == 'production' %}WARN{% elif app_environment == 'staging' %}INFO{% else %}DEBUG{% endif %}
-    logging.level.org.springframework={% if app_environment == 'production' %}WARN{% elif app_environment == 'staging' %}INFO{% else %}DEBUG{% endif %}
-    logging.level.{{ app_name }}={% if app_environment == 'production' %}INFO{% else %}DEBUG{% endif %}
+    # =====================================================================
+    # CONFIGURATION LOGGING
+    # =====================================================================
+    logging.level.root={{ lions_log_level }}
+    logging.level.org.springframework={{ 'DEBUG' if lions_environment == 'development' else 'INFO' }}
+    logging.level.{{ lions_primefaces_app_name | default(lions_primefaces_service_name) | replace('-', '.') }}={{ 'DEBUG' if lions_environment == 'development' else 'INFO' }}
+    
+    # =====================================================================
+    # CONFIGURATION SPÉCIFIQUE À L'ENVIRONNEMENT
+    # =====================================================================
+    {% if lions_environment == 'development' %}
+    spring.devtools.restart.enabled=false
+    spring.web.resources.cache.cachecontrol.max-age=0
+    {% else %}
+    spring.web.resources.cache.cachecontrol.max-age={{ lions_primefaces_static_cache_age | default('3600') }}
+    spring.web.resources.cache.cachecontrol.cache-public=true
+    {% endif %}
+    
+    # Configuration personnalisée
+    {% if lions_primefaces_custom_properties is defined %}
+    {% for key, value in lions_primefaces_custom_properties.items() %}
+    {{ key }}={{ value }}
+    {% endfor %}
+    {% endif %}

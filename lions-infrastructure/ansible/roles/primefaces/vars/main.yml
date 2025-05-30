@@ -1,95 +1,447 @@
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - PRIMEFACES VARIABLES
+# =========================================================================
+# Description: Variables enterprise pour le rôle PrimeFaces avec 10 ans d'expérience DevOps
+# Composant: PrimeFaces Application Variables
+# Version: 5.0.0
+# Maintainer: DevOps LIONS Team
+# Documentation: https://docs.lions.dev/infrastructure/primefaces/variables
+# =========================================================================
+
 ---
-# Titre: Variables pour le déploiement d'applications PrimeFaces
-# Description: Variables spécifiques aux applications PrimeFaces
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# VARIABLES DE BASE LIONS PRIMEFACES
+# =========================================================================
 
-# Configuration par défaut pour PrimeFaces
-primefaces_default_port: 8080
-primefaces_health_path: "/health"
-primefaces_profile: "{{ app_environment }}"
-primefaces_persistent_storage: true
+# Nom et identification de base
+lions_primefaces_service_name: "{{ lions_service_name | default('primefaces') }}"
+lions_primefaces_app_name: "{{ lions_app_name | default(lions_primefaces_service_name) }}"
+lions_primefaces_app_version: "{{ lions_app_version | default('latest') }}"
+lions_primefaces_app_description: "{{ lions_app_description | default('LIONS Enterprise PrimeFaces Application') }}"
 
-# Configuration des sondes de santé
-primefaces_readiness_probe:
-  httpGet:
-    path: "{{ primefaces_health_path }}"
-    port: http
-  initialDelaySeconds: 30
-  periodSeconds: 10
-  timeoutSeconds: 5
-  failureThreshold: 3
+# Configuration du namespace
+lions_primefaces_namespace: "{{ lions_namespace | default(lions_environment) }}"
 
-primefaces_liveness_probe:
-  httpGet:
-    path: "{{ primefaces_health_path }}"
-    port: http
-  initialDelaySeconds: 60
-  periodSeconds: 20
-  timeoutSeconds: 5
-  failureThreshold: 3
+# Configuration de l'image Docker
+lions_primefaces_image_registry: "{{ lions_registry_url | default('registry.lions.dev') }}"
+lions_primefaces_image_repository: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+lions_primefaces_image_pull_policy: "{{ lions_image_pull_policy | default('IfNotPresent') }}"
 
-# Configuration du monitoring
-primefaces_prometheus_port: 8080
-primefaces_prometheus_path: "/metrics"
-primefaces_prometheus_scrape: true
-primefaces_init_delay: 45
+# Configuration des ports et endpoints
+lions_primefaces_port: 8080
+lions_primefaces_service_port: 80
+lions_primefaces_ssl_port: 8443
+lions_primefaces_https_service_port: 443
+lions_primefaces_management_port: 8081
+lions_primefaces_metrics_port: "{{ lions_primefaces_port }}"
+lions_primefaces_debug_port: 5005
 
-# Configuration des ressources par environnement
-primefaces_resources:
-  development:
-    requests:
-      cpu: "200m"
-      memory: "512Mi"
-    limits:
-      cpu: "500m"
-      memory: "1Gi"
-  staging:
-    requests:
-      cpu: "500m"
-      memory: "1Gi"
-    limits:
-      cpu: "1000m"
-      memory: "2Gi"
-  production:
-    requests:
-      cpu: "1000m"
-      memory: "2Gi"
-    limits:
-      cpu: "2000m"
-      memory: "4Gi"
+# Configuration des chemins
+lions_primefaces_context_path: "/"
+lions_primefaces_metrics_path: "/actuator/prometheus"
+lions_primefaces_health_path: "/actuator/health"
+lions_primefaces_readiness_path: "/actuator/health/readiness"
+lions_primefaces_liveness_path: "/actuator/health/liveness"
+lions_primefaces_info_path: "/actuator/info"
+
+# Configuration réseau
+lions_primefaces_hostname: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+lions_primefaces_service_type: "ClusterIP"
+lions_primefaces_service_port_name: "http"
+
+# =========================================================================
+# CONFIGURATION DES RESSOURCES KUBERNETES
+# =========================================================================
 
 # Configuration des réplicas par environnement
-primefaces_replicas:
-  development: 1
-  staging: 2
-  production: 3
+lions_primefaces_replicas: >
+  {%- if lions_environment == 'production' -%}3
+  {%- elif lions_environment == 'staging' -%}2
+  {%- else -%}1
+  {%- endif -%}
 
-# Configuration de l'ingress
-primefaces_ingress_annotations:
-  kubernetes.io/ingress.class: "nginx"
-  cert-manager.io/cluster-issuer: "letsencrypt-prod"
-  nginx.ingress.kubernetes.io/ssl-redirect: "true"
-  nginx.ingress.kubernetes.io/proxy-body-size: "50m"
-  nginx.ingress.kubernetes.io/proxy-connect-timeout: "300"
-  nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
-  nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+# Configuration des ressources par environnement
+lions_primefaces_cpu_request: >
+  {%- if lions_environment == 'production' -%}1000m
+  {%- elif lions_environment == 'staging' -%}500m
+  {%- else -%}200m
+  {%- endif -%}
 
-# Configuration de la base de données
-primefaces_database_service: "{{ app_name }}-db"
-primefaces_database_port: 5432
-primefaces_database_name: "{{ app_name }}"
-primefaces_database_user: "{{ app_name }}"
+lions_primefaces_cpu_limit: >
+  {%- if lions_environment == 'production' -%}2000m
+  {%- elif lions_environment == 'staging' -%}1000m
+  {%- else -%}500m
+  {%- endif -%}
 
-# Configuration du stockage persistant
-primefaces_storage_size: "10Gi"
-primefaces_storage_class: "local-path"
+lions_primefaces_memory_request: >
+  {%- if lions_environment == 'production' -%}2Gi
+  {%- elif lions_environment == 'staging' -%}1Gi
+  {%- else -%}512Mi
+  {%- endif -%}
 
-# Configuration JVM
-primefaces_java_opts: "-Xms512m -Xmx1024m -XX:+UseG1GC -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0"
+lions_primefaces_memory_limit: >
+  {%- if lions_environment == 'production' -%}4Gi
+  {%- elif lions_environment == 'staging' -%}2Gi
+  {%- else -%}1Gi
+  {%- endif -%}
 
-# Configuration spécifique à PrimeFaces
-primefaces_theme: "saga"
-primefaces_fontawesome: true
-primefaces_responsive: true
+# Configuration du stockage
+lions_primefaces_storage_enabled: false
+lions_primefaces_storage_size: >
+  {%- if lions_environment == 'production' -%}50Gi
+  {%- elif lions_environment == 'staging' -%}20Gi
+  {%- else -%}10Gi
+  {%- endif -%}
+
+lions_primefaces_storage_class: "{{ lions_storage_class | default('standard') }}"
+lions_primefaces_access_modes:
+  - ReadWriteOnce
+lions_primefaces_storage_tier: "standard"
+
+# =========================================================================
+# CONFIGURATION PRIMEFACES SPÉCIFIQUE
+# =========================================================================
+
+# Configuration du thème et interface
+lions_primefaces_theme: "{{ lions_primefaces_ui_theme | default('nova-light') }}"
+lions_primefaces_fontawesome: true
+lions_primefaces_responsive: true
+lions_primefaces_legacy_namespace: false
+lions_primefaces_client_validation: false
+lions_primefaces_transform_metadata: false
+
+# Configuration de l'upload de fichiers
+lions_primefaces_uploader: "auto"
+lions_primefaces_max_file_size: "10MB"
+lions_primefaces_max_request_size: "100MB"
+
+# Configuration des ressources statiques
+lions_primefaces_cache_provider: "org.primefaces.cache.DefaultCacheProvider"
+lions_primefaces_resource_cache: true
+lions_primefaces_static_cache_age: >
+  {%- if lions_environment == 'development' -%}0
+  {%- else -%}3600
+  {%- endif -%}
+
+# =========================================================================
+# CONFIGURATION SPRING BOOT
+# =========================================================================
+
+# Profils Spring Boot
+lions_primefaces_spring_profiles: "{{ lions_environment }}"
+lions_primefaces_spring_config_location: "classpath:/application.yml,/config/"
+
+# Configuration JVM optimisée
+lions_primefaces_java_opts: >
+  {%- if lions_environment == 'production' -%}-Xms2g -Xmx4g -XX:+UseG1GC -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -XX:+UnlockExperimentalVMOptions -XX:+UseJVMCICompiler -XX:+UseCGroupMemoryLimitForHeap
+  {%- elif lions_environment == 'staging' -%}-Xms1g -Xmx2g -XX:+UseG1GC -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0
+  {%- else -%}-Xms512m -Xmx1g -XX:+UseG1GC -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -Dspring.devtools.restart.enabled=false
+  {%- endif -%}
+
+# Configuration Tomcat
+lions_primefaces_tomcat_max_threads: >
+  {%- if lions_environment == 'production' -%}400
+  {%- elif lions_environment == 'staging' -%}200
+  {%- else -%}100
+  {%- endif -%}
+
+lions_primefaces_tomcat_min_threads: >
+  {%- if lions_environment == 'production' -%}20
+  {%- elif lions_environment == 'staging' -%}15
+  {%- else -%}10
+  {%- endif -%}
+
+lions_primefaces_tomcat_max_connections: >
+  {%- if lions_environment == 'production' -%}16384
+  {%- elif lions_environment == 'staging' -%}8192
+  {%- else -%}4096
+  {%- endif -%}
+
+# Configuration des timeouts
+lions_primefaces_session_timeout: "30m"
+lions_primefaces_shutdown_type: "graceful"
+lions_primefaces_termination_grace_period: 30
+
+# =========================================================================
+# CONFIGURATION BASE DE DONNÉES
+# =========================================================================
+
+# Configuration PostgreSQL
+lions_primefaces_db_name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+lions_primefaces_db_username: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}_user"
+lions_primefaces_db_secret_name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-db-secret"
+
+# Configuration du pool de connexions HikariCP
+lions_primefaces_db_pool_min: >
+  {%- if lions_environment == 'production' -%}10
+  {%- elif lions_environment == 'staging' -%}5
+  {%- else -%}2
+  {%- endif -%}
+
+lions_primefaces_db_pool_max: >
+  {%- if lions_environment == 'production' -%}50
+  {%- elif lions_environment == 'staging' -%}30
+  {%- else -%}10
+  {%- endif -%}
+
+lions_primefaces_db_timeout: 30000
+lions_primefaces_db_idle_timeout: 600000
+lions_primefaces_db_max_lifetime: 1800000
+
+# Configuration Hibernate
+lions_primefaces_hibernate_batch_size: 20
+lions_primefaces_hibernate_cache_enabled: true
+
+# =========================================================================
+# CONFIGURATION REDIS/CACHE
+# =========================================================================
+
+# Configuration Redis
+lions_primefaces_redis_timeout: 10000
+lions_primefaces_redis_pool_min: 0
+lions_primefaces_redis_pool_max_idle: 8
+lions_primefaces_redis_pool_max_active: 20
+lions_primefaces_redis_secret_name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-redis-secret"
+
+# =========================================================================
+# CONFIGURATION SÉCURITÉ
+# =========================================================================
+
+# Configuration RBAC et Service Account
+lions_primefaces_service_account: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+lions_primefaces_automount_sa_token: false
+lions_primefaces_rbac_profile: "restricted"
+lions_primefaces_security_level: "standard"
+
+# Configuration du contexte de sécurité
+lions_primefaces_security_user_id: 10001
+lions_primefaces_security_group_id: 10001
+lions_primefaces_security_fs_group: 10001
+lions_primefaces_security_supplemental_group: 10001
+lions_primefaces_readonly_root_filesystem: false
+
+# Configuration OIDC/Keycloak
+lions_primefaces_oidc_client_id: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+lions_primefaces_oidc_secret_name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-oidc-secret"
+
+# Configuration CORS
+lions_primefaces_cors_enabled: true
+lions_primefaces_cors_origins: "*"
+lions_primefaces_cors_methods: "GET,POST,PUT,DELETE,OPTIONS"
+lions_primefaces_cors_headers: "*"
+lions_primefaces_cors_credentials: true
+
+# =========================================================================
+# CONFIGURATION MONITORING ET OBSERVABILITÉ
+# =========================================================================
+
+# Configuration Prometheus
+lions_primefaces_scrape_interval: "30s"
+lions_primefaces_scrape_timeout: "10s"
+lions_primefaces_metrics_scheme: "http"
+lions_primefaces_metrics_retention: "15d"
+lions_primefaces_monitoring_profile: "standard"
+
+# Configuration des endpoints Actuator
+lions_primefaces_actuator_endpoints: "health,info,metrics,prometheus,env,configprops"
+lions_primefaces_health_details: >
+  {%- if lions_environment == 'production' -%}when_authorized
+  {%- else -%}always
+  {%- endif -%}
+
+# Configuration des métriques personnalisées
+lions_primefaces_custom_metrics_enabled: true
+lions_primefaces_custom_metrics_prefix: "lions"
+
+# Configuration de tracing (Jaeger/Zipkin)
+lions_primefaces_tracing_enabled: false
+lions_primefaces_tracing_sample_rate: "0.1"
+
+# Configuration JMX
+lions_primefaces_jmx_metrics_enabled: false
+lions_primefaces_jmx_port_name: "jmx"
+lions_primefaces_jmx_scrape_interval: "60s"
+
+# =========================================================================
+# CONFIGURATION SONDES DE SANTÉ
+# =========================================================================
+
+# Configuration startup probe
+lions_primefaces_startup_initial_delay: 30
+lions_primefaces_startup_period: 10
+lions_primefaces_startup_timeout: 5
+lions_primefaces_startup_failure_threshold: 30
+lions_primefaces_startup_success_threshold: 1
+
+# Configuration readiness probe
+lions_primefaces_readiness_initial_delay: 10
+lions_primefaces_readiness_period: 10
+lions_primefaces_readiness_timeout: 5
+lions_primefaces_readiness_failure_threshold: 3
+lions_primefaces_readiness_success_threshold: 1
+
+# Configuration liveness probe
+lions_primefaces_liveness_initial_delay: 60
+lions_primefaces_liveness_period: 30
+lions_primefaces_liveness_timeout: 5
+lions_primefaces_liveness_failure_threshold: 3
+lions_primefaces_liveness_success_threshold: 1
+
+# =========================================================================
+# CONFIGURATION INGRESS ET RÉSEAU
+# =========================================================================
+
+# Configuration Ingress
+lions_primefaces_ingress_path: "/"
+lions_primefaces_path_type: "Prefix"
+lions_primefaces_tls_secret_name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-tls"
+
+# Configuration NGINX Ingress
+lions_primefaces_nginx_rewrite_target: "/$1"
+lions_primefaces_nginx_use_regex: true
+lions_primefaces_nginx_max_body_size: "64m"
+lions_primefaces_nginx_read_timeout: 60
+lions_primefaces_nginx_send_timeout: 60
+lions_primefaces_nginx_connect_timeout: 60
+
+# Configuration SSL/TLS
+lions_primefaces_nginx_ssl_redirect: true
+lions_primefaces_nginx_force_ssl_redirect: true
+lions_primefaces_nginx_ssl_protocols: "TLSv1.2 TLSv1.3"
+
+# Configuration des headers de sécurité
+lions_primefaces_security_headers_enabled: true
+lions_primefaces_x_frame_options: "SAMEORIGIN"
+lions_primefaces_x_content_type_options: "nosniff"
+lions_primefaces_x_xss_protection: "1; mode=block"
+lions_primefaces_referrer_policy: "strict-origin-when-cross-origin"
+lions_primefaces_csp_policy: "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';"
+lions_primefaces_hsts_enabled: true
+lions_primefaces_hsts_header: "max-age=31536000; includeSubDomains; preload"
+
+# Configuration rate limiting
+lions_primefaces_rate_limiting_enabled: false
+lions_primefaces_rate_limit: 100
+lions_primefaces_rate_limit_window: "1m"
+lions_primefaces_rate_limit_connections: 10
+
+# =========================================================================
+# CONFIGURATION DÉPLOIEMENT
+# =========================================================================
+
+# Stratégie de déploiement
+lions_primefaces_deployment_strategy: "RollingUpdate"
+lions_primefaces_max_surge: "25%"
+lions_primefaces_max_unavailable: "0%"
+lions_primefaces_revision_history_limit: 3
+
+# Configuration d'affinité
+lions_primefaces_affinity_enabled: true
+lions_primefaces_node_affinity_enabled: false
+
+# Configuration des init containers
+lions_primefaces_init_containers_enabled: true
+lions_primefaces_init_image: "busybox:1.35"
+
+# Configuration DNS
+lions_primefaces_dns_policy: "ClusterFirst"
+lions_primefaces_custom_hostname: false
+
+# =========================================================================
+# CONFIGURATION CLOUD PROVIDER
+# =========================================================================
+
+# Configuration AWS spécifique
+lions_primefaces_aws_storage_class: "gp3"
+lions_primefaces_aws_ebs_encrypted: true
+lions_primefaces_aws_irsa_enabled: false
+
+# Configuration Azure spécifique
+lions_primefaces_azure_storage_class: "managed-premium"
+lions_primefaces_azure_workload_identity_enabled: false
+
+# Configuration GCP spécifique
+lions_primefaces_gcp_storage_class: "standard-rwo"
+lions_primefaces_gcp_workload_identity_enabled: false
+
+# =========================================================================
+# CONFIGURATION LOGGING
+# =========================================================================
+
+# Configuration des logs
+lions_primefaces_log_level: >
+  {%- if lions_environment == 'development' -%}DEBUG
+  {%- elif lions_environment == 'staging' -%}INFO
+  {%- else -%}WARN
+  {%- endif -%}
+
+lions_primefaces_primefaces_log_level: "INFO"
+lions_primefaces_logs_volume_enabled: false
+lions_primefaces_log_sidecar_enabled: false
+
+# =========================================================================
+# CONFIGURATION BACKUP ET MAINTENANCE
+# =========================================================================
+
+# Configuration backup
+lions_primefaces_backup_required: false
+lions_primefaces_backup_schedule: "0 2 * * *"
+lions_primefaces_snapshot_policy: "daily"
+lions_primefaces_retention_policy: "30d"
+
+# Configuration maintenance
+lions_primefaces_maintenance_window: "02:00-04:00 UTC"
+
+# =========================================================================
+# CLASSIFICATION ET GOUVERNANCE
+# =========================================================================
+
+# Classification des données
+lions_primefaces_data_classification: "internal"
+lions_primefaces_business_unit: "{{ lions_business_unit | default('infrastructure') }}"
+lions_primefaces_cost_center: "{{ lions_cost_center | default('devops') }}"
+lions_primefaces_environment: "{{ lions_environment }}"
+
+# Contact et support
+lions_primefaces_support_contact: "{{ lions_support_contact | default('devops@lions.dev') }}"
+lions_primefaces_documentation_url: "https://docs.lions.dev/infrastructure/primefaces"
+
+# =========================================================================
+# VARIABLES AVANCÉES
+# =========================================================================
+
+# Configuration session affinity
+lions_primefaces_session_affinity_enabled: false
+lions_primefaces_session_affinity: "ClientIP"
+lions_primefaces_session_timeout: 10800
+
+# Configuration circuit breaker
+lions_primefaces_circuit_breaker_enabled: false
+lions_primefaces_custom_http_errors: "500,502,503,504"
+
+# Configuration Istio
+lions_primefaces_istio_injection: true
+lions_primefaces_istio_metrics_merging: true
+
+# Configuration Vault
+lions_primefaces_vault_agent_inject: true
+lions_primefaces_vault_role: "primefaces-{{ lions_environment }}"
+
+# Configuration d'audit
+lions_primefaces_audit_required: true
+lions_primefaces_audit_requests: true
+
+# Configuration des volumes temporaires
+lions_primefaces_tmp_volume_size_limit: "1Gi"
+lions_primefaces_logs_volume_size_limit: "5Gi"
+
+# Configuration priorité
+lions_primefaces_priority_class: ""
+
+# Configuration des limites
+lions_primefaces_target_limit: ""
+lions_primefaces_label_limit: ""
+lions_primefaces_sample_limit: ""
+
+# Configuration environnement de débogage
+lions_primefaces_debug_enabled: "{{ (lions_environment == 'development') | bool }}"

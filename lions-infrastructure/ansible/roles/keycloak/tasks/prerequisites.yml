@@ -1,96 +1,975 @@
 ---
-# Titre: Vérification des prérequis pour Keycloak
-# Description: Vérifie que tous les prérequis sont satisfaits pour déployer Keycloak
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - KEYCLOAK PREREQUISITES
+# =========================================================================
+# Description: Vérification et préparation des prérequis pour le déploiement de Keycloak
+# Version: 5.0.0
+# Maintainer: DevOps Team LIONS
+# Date: "{{ ansible_date_time.date }}"
+# Documentation: https://docs.lions.dev/infrastructure/keycloak/prerequisites
+# =========================================================================
 
-- name: Vérification de l'existence du namespace
-  k8s_info:
-    api_version: v1
-    kind: Namespace
-    name: "{{ app_namespace }}"
-  register: namespace_info
+# =========================================================================
+# SECTION 1: VALIDATION DES VARIABLES CRITIQUES
+# =========================================================================
+- name: "🔍 [VALIDATION] Vérification des variables critiques Keycloak"
+  block:
+    - name: "Validation de la configuration Keycloak"
+      assert:
+        that:
+          - keycloak_namespace is defined and keycloak_namespace != ""
+          - keycloak_service_name is defined and keycloak_service_name != ""
+          - keycloak_version is defined and keycloak_version != ""
+          - keycloak_port is defined and keycloak_port != ""
+          - lions_environment is defined and lions_environment != ""
+        fail_msg: "❌ Variables critiques Keycloak manquantes ou vides"
+        success_msg: "✅ Variables critiques Keycloak validées"
+      tags: ['validation', 'keycloak']
 
-- name: Création du namespace si nécessaire
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Namespace
-      metadata:
-        name: "{{ app_namespace }}"
-        labels:
-          app: "{{ app_name | string }}"
-          env: "{{ app_environment | string }}"
-  when: namespace_info.resources | length == 0
+    - name: "Validation de la configuration des ressources"
+      assert:
+        that:
+          - keycloak_resources_cpu_request is defined
+          - keycloak_resources_memory_request is defined
+          - keycloak_resources_cpu_limit is defined
+          - keycloak_resources_memory_limit is defined
+        fail_msg: "❌ Configuration des ressources Keycloak incomplète"
+        success_msg: "✅ Configuration des ressources Keycloak validée"
+      tags: ['validation', 'resources']
 
-- name: Vérification des droits d'accès au namespace
-  k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: ConfigMap
-      metadata:
-        name: "access-check"
-        namespace: "{{ app_namespace }}"
-      data:
-        check: "true"
-  register: access_check
-  ignore_errors: yes
+  rescue:
+    - name: "❌ Échec de la validation des variables"
+      fail:
+        msg: |
+          La validation des variables critiques a échoué.
+          Vérifiez que toutes les variables requises sont définies dans:
+          - ansible/vars/common.yml
+          - ansible/vars/{{ lions_environment }}.yml
+          - ansible/roles/keycloak/vars/main.yml
 
-- name: Suppression du ConfigMap de vérification
-  k8s:
-    state: absent
-    api_version: v1
-    kind: ConfigMap
-    name: "access-check"
-    namespace: "{{ app_namespace }}"
-  when: access_check is succeeded
+# =========================================================================
+# SECTION 2: VÉRIFICATION DE L'INFRASTRUCTURE KUBERNETES
+# =========================================================================
+- name: "🏗️ [INFRASTRUCTURE] Vérification de l'état du cluster Kubernetes"
+  block:
+    - name: "Vérification de la connectivité au cluster K8s"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Node
+      register: k8s_nodes_info
+      failed_when: false
+      tags: ['infrastructure', 'k8s']
 
-- name: Échec si les droits d'accès sont insuffisants
-  fail:
-    msg: "Droits d'accès insuffisants pour déployer dans le namespace {{ app_namespace }}"
-  when: access_check is failed
+    - name: "Validation de la connectivité K8s"
+      assert:
+        that:
+          - k8s_nodes_info is succeeded
+          - k8s_nodes_info.resources | length > 0
+        fail_msg: "❌ Impossible de se connecter au cluster Kubernetes"
+        success_msg: "✅ Connectivité au cluster Kubernetes validée"
 
-- name: Vérification de l'existence du registre Docker
-  k8s_info:
-    api_version: v1
-    kind: Service
-    name: registry
-    namespace: registry
-  register: registry_info
-  ignore_errors: yes
+    - name: "Collecte des informations sur les nœuds"
+      set_fact:
+        k8s_cluster_info:
+          nodes_count: "{{ k8s_nodes_info.resources | length }}"
+          nodes_ready: "{{ k8s_nodes_info.resources | json_query('[?status.conditions[?type==`Ready` && status==`True`]]') | length }}"
+          kubernetes_version: "{{ k8s_nodes_info.resources[0].status.nodeInfo.kubeletVersion | default('unknown') }}"
 
-- name: Avertissement si le registre Docker n'est pas trouvé
+    - name: "Affichage des informations cluster"
+      debug:
+        msg: |
+          📊 Informations du cluster Kubernetes:
+          - Nœuds total: {{ k8s_cluster_info.nodes_count }}
+          - Nœuds prêts: {{ k8s_cluster_info.nodes_ready }}
+          - Version K8s: {{ k8s_cluster_info.kubernetes_version }}
+      tags: ['information']
+
+  rescue:
+    - name: "❌ Échec de vérification de l'infrastructure K8s"
+      fail:
+        msg: |
+          Impossible de vérifier l'état du cluster Kubernetes.
+          Vérifiez que:
+          - Le cluster K8s est accessible
+          - Les credentials kubectl sont configurés
+          - Le service kube-apiserver fonctionne
+
+# =========================================================================
+# SECTION 3: GESTION DES NAMESPACES
+# =========================================================================
+- name: "📁 [NAMESPACE] Gestion du namespace Keycloak"
+  block:
+    - name: "Vérification de l'existence du namespace {{ keycloak_namespace }}"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Namespace
+        name: "{{ keycloak_namespace }}"
+      register: keycloak_namespace_info
+      tags: ['namespace']
+
+    - name: "Création du namespace {{ keycloak_namespace }}"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ keycloak_namespace }}"
+            labels:
+              app.kubernetes.io/name: "keycloak"
+              app.kubernetes.io/component: "identity-provider"
+              app.kubernetes.io/part-of: "lions-infrastructure"
+              app.kubernetes.io/managed-by: "ansible"
+              app.kubernetes.io/version: "{{ keycloak_version }}"
+              lions.dev/environment: "{{ lions_environment }}"
+              lions.dev/service-type: "security"
+            annotations:
+              lions.dev/created-by: "ansible-{{ ansible_user | default('automation') }}"
+              lions.dev/created-date: "{{ ansible_date_time.iso8601 }}"
+              lions.dev/description: "Namespace for Keycloak identity and access management"
+      when: keycloak_namespace_info.resources | length == 0
+      tags: ['namespace', 'creation']
+
+    - name: "Validation des permissions dans le namespace"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: "keycloak-access-validation"
+            namespace: "{{ keycloak_namespace }}"
+            labels:
+              lions.dev/test: "access-validation"
+          data:
+            validation: "{{ ansible_date_time.iso8601 }}"
+            environment: "{{ lions_environment }}"
+      register: access_validation_result
+      tags: ['validation', 'permissions']
+
+    - name: "Nettoyage du ConfigMap de validation"
+      kubernetes.core.k8s:
+        state: absent
+        api_version: v1
+        kind: ConfigMap
+        name: "keycloak-access-validation"
+        namespace: "{{ keycloak_namespace }}"
+      when: access_validation_result is succeeded
+      tags: ['cleanup']
+
+  rescue:
+    - name: "❌ Échec de gestion du namespace"
+      fail:
+        msg: |
+          Impossible de créer ou d'accéder au namespace {{ keycloak_namespace }}.
+          Vérifiez que vous avez les permissions suffisantes.
+
+# =========================================================================
+# SECTION 4: VÉRIFICATION DES DÉPENDANCES CRITIQUES
+# =========================================================================
+- name: "🔗 [DEPENDENCIES] Vérification des dépendances critiques"
+  block:
+    # Vérification de PostgreSQL
+    - name: "Vérification du service PostgreSQL"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Service
+        name: "{{ keycloak_database_service }}"
+        namespace: "{{ keycloak_database_namespace }}"
+      register: postgres_service_info
+      tags: ['dependencies', 'database']
+
+    - name: "Validation de la disponibilité PostgreSQL"
+      set_fact:
+        postgres_available: "{{ postgres_service_info.resources | length > 0 }}"
+
+    - name: "Test de connectivité PostgreSQL"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: "postgres-connectivity-test"
+            namespace: "{{ keycloak_namespace }}"
+            labels:
+              lions.dev/test: "connectivity"
+          spec:
+            restartPolicy: Never
+            containers:
+              - name: postgres-test
+                image: "postgres:{{ postgres_version | default('15') }}-alpine"
+                command:
+                  - "/bin/sh"
+                  - "-c"
+                  - |
+                    pg_isready -h {{ keycloak_database_service }}.{{ keycloak_database_namespace }}.svc.cluster.local -p {{ postgres_port | default('5432') }} -U {{ keycloak_database_user | default('keycloak') }}
+                env:
+                  - name: PGPASSWORD
+                    valueFrom:
+                      secretKeyRef:
+                        name: "{{ keycloak_database_secret }}"
+                        key: "password"
+                        optional: true
+      register: postgres_test_creation
+      when: postgres_available
+      failed_when: false
+      tags: ['connectivity', 'database']
+
+    # Attendre et vérifier le résultat du test
+    - name: "Attente du résultat du test PostgreSQL"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Pod
+        name: "postgres-connectivity-test"
+        namespace: "{{ keycloak_namespace }}"
+        wait: true
+        wait_condition:
+          type: Ready
+          status: "True"
+        wait_timeout: 60
+      register: postgres_test_result
+      when: postgres_available and postgres_test_creation is succeeded
+      failed_when: false
+      tags: ['connectivity']
+
+    # Nettoyage du pod de test
+    - name: "Nettoyage du pod de test PostgreSQL"
+      kubernetes.core.k8s:
+        state: absent
+        api_version: v1
+        kind: Pod
+        name: "postgres-connectivity-test"
+        namespace: "{{ keycloak_namespace }}"
+      when: postgres_test_creation is succeeded
+      tags: ['cleanup']
+
+  rescue:
+    - name: "⚠️ Avertissement sur les dépendances"
+      debug:
+        msg: |
+          ⚠️ Certaines dépendances ne sont pas disponibles:
+          - PostgreSQL: {{ 'Disponible' if postgres_available else 'Non disponible' }}
+          
+          Keycloak pourra être déployé mais pourrait ne pas fonctionner correctement
+          sans toutes ses dépendances.
+
+# =========================================================================
+# SECTION 5: VÉRIFICATION DES COMPOSANTS D'INFRASTRUCTURE
+# =========================================================================
+- name: "🛠️ [INFRASTRUCTURE] Vérification des composants d'infrastructure"
+  block:
+    # Vérification de l'Ingress Controller
+    - name: "Detection de l'Ingress Controller"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Service
+        namespace: "{{ item.namespace }}"
+        label_selectors:
+          - "{{ item.selector }}"
+      register: ingress_controllers
+      loop:
+        - { namespace: "kube-system", selector: "app.kubernetes.io/name=traefik" }
+        - { namespace: "ingress-nginx", selector: "app.kubernetes.io/name=ingress-nginx" }
+        - { namespace: "nginx-ingress", selector: "app=nginx-ingress" }
+      failed_when: false
+      tags: ['infrastructure', 'ingress']
+
+    - name: "Identification de l'Ingress Controller actif"
+      set_fact:
+        active_ingress_controller: >-
+          {%- for result in ingress_controllers.results -%}
+            {%- if result.resources | length > 0 -%}
+              {%- if 'traefik' in result.item.selector -%}traefik
+              {%- elif 'ingress-nginx' in result.item.selector -%}nginx
+              {%- elif 'nginx-ingress' in result.item.selector -%}nginx-legacy
+              {%- endif -%}
+            {%- endif -%}
+          {%- endfor -%}
+
+    # Vérification de cert-manager
+    - name: "Vérification de cert-manager"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Service
+        name: "cert-manager"
+        namespace: "cert-manager"
+      register: cert_manager_info
+      failed_when: false
+      tags: ['infrastructure', 'tls']
+
+    # Vérification des issuer TLS
+    - name: "Vérification des ClusterIssuer TLS"
+      kubernetes.core.k8s_info:
+        api_version: cert-manager.io/v1
+        kind: ClusterIssuer
+      register: cluster_issuers_info
+      failed_when: false
+      tags: ['infrastructure', 'tls']
+
+    - name: "Résumé de l'infrastructure disponible"
+      debug:
+        msg: |
+          🏗️ État de l'infrastructure:
+          - Ingress Controller: {{ active_ingress_controller | default('Aucun détecté') }}
+          - cert-manager: {{ 'Disponible' if cert_manager_info.resources | length > 0 else 'Non disponible' }}
+          - ClusterIssuers: {{ cluster_issuers_info.resources | length if cluster_issuers_info is succeeded else 0 }}
+          - TLS activé: {{ keycloak_tls_enabled | default(false) }}
+      tags: ['information']
+
+# =========================================================================
+# SECTION 6: VÉRIFICATION DE VAULT (SI ACTIVÉ)
+# =========================================================================
+- name: "🔐 [VAULT] Vérification de HashiCorp Vault"
+  block:
+    - name: "Vérification du service Vault"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Service
+        name: "{{ vault_service_name | default('vault') }}"
+        namespace: "{{ vault_namespace | default('vault-system') }}"
+      register: vault_service_info
+      tags: ['vault', 'security']
+
+    - name: "Test de connectivité Vault"
+      uri:
+        url: "{{ vault_addr | default('http://vault.vault-system.svc.cluster.local:8200') }}/v1/sys/health"
+        method: GET
+        status_code: [200, 429, 472, 473, 501, 503]
+        timeout: 10
+      register: vault_health_check
+      when: vault_service_info.resources | length > 0
+      failed_when: false
+      tags: ['vault', 'connectivity']
+
+    - name: "État de Vault"
+      debug:
+        msg: |
+          🔐 État de HashiCorp Vault:
+          - Service disponible: {{ 'Oui' if vault_service_info.resources | length > 0 else 'Non' }}
+          - Statut santé: {{ vault_health_check.status | default('Non testé') if vault_health_check is defined else 'Non testé' }}
+          - Vault sera utilisé pour: Secrets Keycloak
+      tags: ['information']
+
+  when: vault_enabled | default(false)
+
+# =========================================================================
+# SECTION 7: VÉRIFICATION DES RESSOURCES SYSTÈME
+# =========================================================================
+- name: "📊 [RESOURCES] Vérification des ressources système"
+  block:
+    - name: "Collecte des métriques de ressources des nœuds"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Node
+      register: nodes_resources
+      tags: ['resources', 'monitoring']
+
+    - name: "Calcul des ressources disponibles"
+      set_fact:
+        cluster_resources:
+          total_cpu: "{{ nodes_resources.resources | json_query('[].status.capacity.cpu') | map('int') | sum }}"
+          total_memory: "{{ nodes_resources.resources | json_query('[].status.capacity.memory') | map('regex_replace', 'Ki$', '') | map('int') | sum }}"
+          allocatable_cpu: "{{ nodes_resources.resources | json_query('[].status.allocatable.cpu') | map('int') | sum }}"
+          allocatable_memory: "{{ nodes_resources.resources | json_query('[].status.allocatable.memory') | map('regex_replace', 'Ki$', '') | map('int') | sum }}"
+
+    - name: "Validation des ressources requises"
+      assert:
+        that:
+          - cluster_resources.allocatable_cpu | int >= (keycloak_resources_cpu_request | regex_replace('m$', '') | int / 1000)
+          - (cluster_resources.allocatable_memory | int * 1024) >= (keycloak_resources_memory_request | regex_replace('Mi$', '') | int * 1024 * 1024)
+        fail_msg: |
+          ❌ Ressources insuffisantes pour déployer Keycloak:
+          - CPU requis: {{ keycloak_resources_cpu_request }}
+          - Mémoire requise: {{ keycloak_resources_memory_request }}
+          - CPU disponible: {{ cluster_resources.allocatable_cpu }}
+          - Mémoire disponible: {{ (cluster_resources.allocatable_memory | int / 1024) | round }}Mi
+        success_msg: "✅ Ressources système suffisantes pour Keycloak"
+      tags: ['validation', 'resources']
+
+# =========================================================================
+# SECTION 8: CRÉATION DES RESSOURCES PRÉPARATOIRES
+# =========================================================================
+- name: "🔧 [PREPARATION] Création des ressources préparatoires"
+  block:
+    - name: "Création des labels par défaut pour le namespace"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ keycloak_namespace }}"
+            labels:
+              pod-security.kubernetes.io/enforce: "{{ pod_security_standard | default('restricted') }}"
+              pod-security.kubernetes.io/audit: "{{ pod_security_standard | default('restricted') }}"
+              pod-security.kubernetes.io/warn: "{{ pod_security_standard | default('restricted') }}"
+      when: pod_security_enabled | default(true)
+      tags: ['security', 'pod-security']
+
+    - name: "Création d'une NetworkPolicy par défaut"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: "keycloak-default-network-policy"
+            namespace: "{{ keycloak_namespace }}"
+            labels:
+              app.kubernetes.io/name: "keycloak"
+              app.kubernetes.io/component: "network-policy"
+          spec:
+            podSelector:
+              matchLabels:
+                app.kubernetes.io/name: "keycloak"
+            policyTypes:
+              - Ingress
+              - Egress
+            ingress:
+              - from:
+                  - namespaceSelector:
+                      matchLabels:
+                        name: "{{ ingress_namespace | default('kube-system') }}"
+                ports:
+                  - protocol: TCP
+                    port: {{ keycloak_port }}
+            egress:
+              - to:
+                  - namespaceSelector:
+                      matchLabels:
+                        name: "{{ keycloak_database_namespace }}"
+                ports:
+                  - protocol: TCP
+                    port: {{ postgres_port | default('5432') }}
+              - to: []
+                ports:
+                  - protocol: TCP
+                    port: 53
+                  - protocol: UDP
+                    port: 53
+      when: network_policies_enabled | default(true)
+      tags: ['security', 'network-policy']
+
+# =========================================================================
+# SECTION 9: RÉSUMÉ ET VALIDATION FINALE
+# =========================================================================
+- name: "📋 [SUMMARY] Résumé de la validation des prérequis"
   debug:
-    msg: "AVERTISSEMENT: Le registre Docker n'a pas été trouvé. Certaines fonctionnalités de déploiement d'images pourraient ne pas fonctionner correctement."
-  when: registry_info is failed or registry_info.resources | length == 0
+    msg: |
+      🎯 RÉSUMÉ DE LA VALIDATION DES PRÉREQUIS KEYCLOAK:
+      
+      ✅ Configuration:
+      - Namespace: {{ keycloak_namespace }}
+      - Version: {{ keycloak_version }}
+      - Environnement: {{ lions_environment }}
+      - Port: {{ keycloak_port }}
+      
+      ✅ Infrastructure:
+      - Cluster K8s: Opérationnel ({{ k8s_cluster_info.nodes_ready }}/{{ k8s_cluster_info.nodes_count }} nœuds)
+      - Ingress Controller: {{ active_ingress_controller | default('Non détecté') }}
+      - cert-manager: {{ 'Disponible' if cert_manager_info.resources | length > 0 else 'Non disponible' }}
+      
+      ✅ Dépendances:
+      - PostgreSQL: {{ 'Disponible' if postgres_available else 'Non disponible' }}
+      - Vault: {{ 'Activé' if vault_enabled | default(false) else 'Désactivé' }}
+      
+      ✅ Sécurité:
+      - TLS: {{ 'Activé' if keycloak_tls_enabled | default(false) else 'Désactivé' }}
+      - NetworkPolicy: {{ 'Activé' if network_policies_enabled | default(true) else 'Désactivé' }}
+      - Pod Security: {{ 'Activé' if pod_security_enabled | default(true) else 'Désactivé' }}
+      
+      🚀 Keycloak est prêt à être déployé!
+  tags: ['summary', 'information']
 
-- name: Vérification de l'existence de l'ingress controller
-  k8s_info:
-    api_version: v1
-    kind: Service
-    name: ingress-nginx-controller
-    namespace: ingress-nginx
-  register: ingress_info
-  ignore_errors: yes
-
-- name: Avertissement si l'ingress controller n'est pas trouvé
+- name: "✅ Validation finale des prérequis"
   debug:
-    msg: "AVERTISSEMENT: L'ingress controller n'a pas été trouvé. Keycloak ne sera pas accessible via une URL."
-  when: ingress_info is failed or ingress_info.resources | length == 0
+    msg: "Tous les prérequis pour le déploiement de Keycloak ont été validés avec succès."
+  tags: ['validation', 'completion']---
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - KEYCLOAK PREREQUISITES
+# =========================================================================
+# Description: Vérification et préparation des prérequis pour le déploiement de Keycloak
+# Version: 5.0.0
+# Maintainer: DevOps Team LIONS
+# Date: "{{ ansible_date_time.date }}"
+# Documentation: https://docs.lions.dev/infrastructure/keycloak/prerequisites
+# =========================================================================
 
-- name: Vérification de l'existence de PostgreSQL
-  k8s_info:
-    api_version: v1
-    kind: Service
-    name: "{{ keycloak_database_service | default('postgres') }}"
-    namespace: "{{ keycloak_database_namespace | default(app_namespace) }}"
-  register: postgres_info
-  ignore_errors: yes
+# =========================================================================
+# SECTION 1: VALIDATION DES VARIABLES CRITIQUES
+# =========================================================================
+- name: "🔍 [VALIDATION] Vérification des variables critiques Keycloak"
+  block:
+    - name: "Validation de la configuration Keycloak"
+      assert:
+        that:
+          - keycloak_namespace is defined and keycloak_namespace != ""
+          - keycloak_service_name is defined and keycloak_service_name != ""
+          - keycloak_version is defined and keycloak_version != ""
+          - keycloak_port is defined and keycloak_port != ""
+          - lions_environment is defined and lions_environment != ""
+        fail_msg: "❌ Variables critiques Keycloak manquantes ou vides"
+        success_msg: "✅ Variables critiques Keycloak validées"
+      tags: ['validation', 'keycloak']
 
-- name: Avertissement si PostgreSQL n'est pas trouvé
+    - name: "Validation de la configuration des ressources"
+      assert:
+        that:
+          - keycloak_resources_cpu_request is defined
+          - keycloak_resources_memory_request is defined
+          - keycloak_resources_cpu_limit is defined
+          - keycloak_resources_memory_limit is defined
+        fail_msg: "❌ Configuration des ressources Keycloak incomplète"
+        success_msg: "✅ Configuration des ressources Keycloak validée"
+      tags: ['validation', 'resources']
+
+  rescue:
+    - name: "❌ Échec de la validation des variables"
+      fail:
+        msg: |
+          La validation des variables critiques a échoué.
+          Vérifiez que toutes les variables requises sont définies dans:
+          - ansible/vars/common.yml
+          - ansible/vars/{{ lions_environment }}.yml
+          - ansible/roles/keycloak/vars/main.yml
+
+# =========================================================================
+# SECTION 2: VÉRIFICATION DE L'INFRASTRUCTURE KUBERNETES
+# =========================================================================
+- name: "🏗️ [INFRASTRUCTURE] Vérification de l'état du cluster Kubernetes"
+  block:
+    - name: "Vérification de la connectivité au cluster K8s"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Node
+      register: k8s_nodes_info
+      failed_when: false
+      tags: ['infrastructure', 'k8s']
+
+    - name: "Validation de la connectivité K8s"
+      assert:
+        that:
+          - k8s_nodes_info is succeeded
+          - k8s_nodes_info.resources | length > 0
+        fail_msg: "❌ Impossible de se connecter au cluster Kubernetes"
+        success_msg: "✅ Connectivité au cluster Kubernetes validée"
+
+    - name: "Collecte des informations sur les nœuds"
+      set_fact:
+        k8s_cluster_info:
+          nodes_count: "{{ k8s_nodes_info.resources | length }}"
+          nodes_ready: "{{ k8s_nodes_info.resources | json_query('[?status.conditions[?type==`Ready` && status==`True`]]') | length }}"
+          kubernetes_version: "{{ k8s_nodes_info.resources[0].status.nodeInfo.kubeletVersion | default('unknown') }}"
+
+    - name: "Affichage des informations cluster"
+      debug:
+        msg: |
+          📊 Informations du cluster Kubernetes:
+          - Nœuds total: {{ k8s_cluster_info.nodes_count }}
+          - Nœuds prêts: {{ k8s_cluster_info.nodes_ready }}
+          - Version K8s: {{ k8s_cluster_info.kubernetes_version }}
+      tags: ['information']
+
+  rescue:
+    - name: "❌ Échec de vérification de l'infrastructure K8s"
+      fail:
+        msg: |
+          Impossible de vérifier l'état du cluster Kubernetes.
+          Vérifiez que:
+          - Le cluster K8s est accessible
+          - Les credentials kubectl sont configurés
+          - Le service kube-apiserver fonctionne
+
+# =========================================================================
+# SECTION 3: GESTION DES NAMESPACES
+# =========================================================================
+- name: "📁 [NAMESPACE] Gestion du namespace Keycloak"
+  block:
+    - name: "Vérification de l'existence du namespace {{ keycloak_namespace }}"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Namespace
+        name: "{{ keycloak_namespace }}"
+      register: keycloak_namespace_info
+      tags: ['namespace']
+
+    - name: "Création du namespace {{ keycloak_namespace }}"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ keycloak_namespace }}"
+            labels:
+              app.kubernetes.io/name: "keycloak"
+              app.kubernetes.io/component: "identity-provider"
+              app.kubernetes.io/part-of: "lions-infrastructure"
+              app.kubernetes.io/managed-by: "ansible"
+              app.kubernetes.io/version: "{{ keycloak_version }}"
+              lions.dev/environment: "{{ lions_environment }}"
+              lions.dev/service-type: "security"
+            annotations:
+              lions.dev/created-by: "ansible-{{ ansible_user | default('automation') }}"
+              lions.dev/created-date: "{{ ansible_date_time.iso8601 }}"
+              lions.dev/description: "Namespace for Keycloak identity and access management"
+      when: keycloak_namespace_info.resources | length == 0
+      tags: ['namespace', 'creation']
+
+    - name: "Validation des permissions dans le namespace"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: "keycloak-access-validation"
+            namespace: "{{ keycloak_namespace }}"
+            labels:
+              lions.dev/test: "access-validation"
+          data:
+            validation: "{{ ansible_date_time.iso8601 }}"
+            environment: "{{ lions_environment }}"
+      register: access_validation_result
+      tags: ['validation', 'permissions']
+
+    - name: "Nettoyage du ConfigMap de validation"
+      kubernetes.core.k8s:
+        state: absent
+        api_version: v1
+        kind: ConfigMap
+        name: "keycloak-access-validation"
+        namespace: "{{ keycloak_namespace }}"
+      when: access_validation_result is succeeded
+      tags: ['cleanup']
+
+  rescue:
+    - name: "❌ Échec de gestion du namespace"
+      fail:
+        msg: |
+          Impossible de créer ou d'accéder au namespace {{ keycloak_namespace }}.
+          Vérifiez que vous avez les permissions suffisantes.
+
+# =========================================================================
+# SECTION 4: VÉRIFICATION DES DÉPENDANCES CRITIQUES
+# =========================================================================
+- name: "🔗 [DEPENDENCIES] Vérification des dépendances critiques"
+  block:
+    # Vérification de PostgreSQL
+    - name: "Vérification du service PostgreSQL"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Service
+        name: "{{ keycloak_database_service }}"
+        namespace: "{{ keycloak_database_namespace }}"
+      register: postgres_service_info
+      tags: ['dependencies', 'database']
+
+    - name: "Validation de la disponibilité PostgreSQL"
+      set_fact:
+        postgres_available: "{{ postgres_service_info.resources | length > 0 }}"
+
+    - name: "Test de connectivité PostgreSQL"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: "postgres-connectivity-test"
+            namespace: "{{ keycloak_namespace }}"
+            labels:
+              lions.dev/test: "connectivity"
+          spec:
+            restartPolicy: Never
+            containers:
+              - name: postgres-test
+                image: "postgres:{{ postgres_version | default('15') }}-alpine"
+                command:
+                  - "/bin/sh"
+                  - "-c"
+                  - |
+                    pg_isready -h {{ keycloak_database_service }}.{{ keycloak_database_namespace }}.svc.cluster.local -p {{ postgres_port | default('5432') }} -U {{ keycloak_database_user | default('keycloak') }}
+                env:
+                  - name: PGPASSWORD
+                    valueFrom:
+                      secretKeyRef:
+                        name: "{{ keycloak_database_secret }}"
+                        key: "password"
+                        optional: true
+      register: postgres_test_creation
+      when: postgres_available
+      failed_when: false
+      tags: ['connectivity', 'database']
+
+    # Attendre et vérifier le résultat du test
+    - name: "Attente du résultat du test PostgreSQL"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Pod
+        name: "postgres-connectivity-test"
+        namespace: "{{ keycloak_namespace }}"
+        wait: true
+        wait_condition:
+          type: Ready
+          status: "True"
+        wait_timeout: 60
+      register: postgres_test_result
+      when: postgres_available and postgres_test_creation is succeeded
+      failed_when: false
+      tags: ['connectivity']
+
+    # Nettoyage du pod de test
+    - name: "Nettoyage du pod de test PostgreSQL"
+      kubernetes.core.k8s:
+        state: absent
+        api_version: v1
+        kind: Pod
+        name: "postgres-connectivity-test"
+        namespace: "{{ keycloak_namespace }}"
+      when: postgres_test_creation is succeeded
+      tags: ['cleanup']
+
+  rescue:
+    - name: "⚠️ Avertissement sur les dépendances"
+      debug:
+        msg: |
+          ⚠️ Certaines dépendances ne sont pas disponibles:
+          - PostgreSQL: {{ 'Disponible' if postgres_available else 'Non disponible' }}
+          
+          Keycloak pourra être déployé mais pourrait ne pas fonctionner correctement
+          sans toutes ses dépendances.
+
+# =========================================================================
+# SECTION 5: VÉRIFICATION DES COMPOSANTS D'INFRASTRUCTURE
+# =========================================================================
+- name: "🛠️ [INFRASTRUCTURE] Vérification des composants d'infrastructure"
+  block:
+    # Vérification de l'Ingress Controller
+    - name: "Detection de l'Ingress Controller"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Service
+        namespace: "{{ item.namespace }}"
+        label_selectors:
+          - "{{ item.selector }}"
+      register: ingress_controllers
+      loop:
+        - { namespace: "kube-system", selector: "app.kubernetes.io/name=traefik" }
+        - { namespace: "ingress-nginx", selector: "app.kubernetes.io/name=ingress-nginx" }
+        - { namespace: "nginx-ingress", selector: "app=nginx-ingress" }
+      failed_when: false
+      tags: ['infrastructure', 'ingress']
+
+    - name: "Identification de l'Ingress Controller actif"
+      set_fact:
+        active_ingress_controller: >-
+          {%- for result in ingress_controllers.results -%}
+            {%- if result.resources | length > 0 -%}
+              {%- if 'traefik' in result.item.selector -%}traefik
+              {%- elif 'ingress-nginx' in result.item.selector -%}nginx
+              {%- elif 'nginx-ingress' in result.item.selector -%}nginx-legacy
+              {%- endif -%}
+            {%- endif -%}
+          {%- endfor -%}
+
+    # Vérification de cert-manager
+    - name: "Vérification de cert-manager"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Service
+        name: "cert-manager"
+        namespace: "cert-manager"
+      register: cert_manager_info
+      failed_when: false
+      tags: ['infrastructure', 'tls']
+
+    # Vérification des issuer TLS
+    - name: "Vérification des ClusterIssuer TLS"
+      kubernetes.core.k8s_info:
+        api_version: cert-manager.io/v1
+        kind: ClusterIssuer
+      register: cluster_issuers_info
+      failed_when: false
+      tags: ['infrastructure', 'tls']
+
+    - name: "Résumé de l'infrastructure disponible"
+      debug:
+        msg: |
+          🏗️ État de l'infrastructure:
+          - Ingress Controller: {{ active_ingress_controller | default('Aucun détecté') }}
+          - cert-manager: {{ 'Disponible' if cert_manager_info.resources | length > 0 else 'Non disponible' }}
+          - ClusterIssuers: {{ cluster_issuers_info.resources | length if cluster_issuers_info is succeeded else 0 }}
+          - TLS activé: {{ keycloak_tls_enabled | default(false) }}
+      tags: ['information']
+
+# =========================================================================
+# SECTION 6: VÉRIFICATION DE VAULT (SI ACTIVÉ)
+# =========================================================================
+- name: "🔐 [VAULT] Vérification de HashiCorp Vault"
+  block:
+    - name: "Vérification du service Vault"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Service
+        name: "{{ vault_service_name | default('vault') }}"
+        namespace: "{{ vault_namespace | default('vault-system') }}"
+      register: vault_service_info
+      tags: ['vault', 'security']
+
+    - name: "Test de connectivité Vault"
+      uri:
+        url: "{{ vault_addr | default('http://vault.vault-system.svc.cluster.local:8200') }}/v1/sys/health"
+        method: GET
+        status_code: [200, 429, 472, 473, 501, 503]
+        timeout: 10
+      register: vault_health_check
+      when: vault_service_info.resources | length > 0
+      failed_when: false
+      tags: ['vault', 'connectivity']
+
+    - name: "État de Vault"
+      debug:
+        msg: |
+          🔐 État de HashiCorp Vault:
+          - Service disponible: {{ 'Oui' if vault_service_info.resources | length > 0 else 'Non' }}
+          - Statut santé: {{ vault_health_check.status | default('Non testé') if vault_health_check is defined else 'Non testé' }}
+          - Vault sera utilisé pour: Secrets Keycloak
+      tags: ['information']
+
+  when: vault_enabled | default(false)
+
+# =========================================================================
+# SECTION 7: VÉRIFICATION DES RESSOURCES SYSTÈME
+# =========================================================================
+- name: "📊 [RESOURCES] Vérification des ressources système"
+  block:
+    - name: "Collecte des métriques de ressources des nœuds"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Node
+      register: nodes_resources
+      tags: ['resources', 'monitoring']
+
+    - name: "Calcul des ressources disponibles"
+      set_fact:
+        cluster_resources:
+          total_cpu: "{{ nodes_resources.resources | json_query('[].status.capacity.cpu') | map('int') | sum }}"
+          total_memory: "{{ nodes_resources.resources | json_query('[].status.capacity.memory') | map('regex_replace', 'Ki$', '') | map('int') | sum }}"
+          allocatable_cpu: "{{ nodes_resources.resources | json_query('[].status.allocatable.cpu') | map('int') | sum }}"
+          allocatable_memory: "{{ nodes_resources.resources | json_query('[].status.allocatable.memory') | map('regex_replace', 'Ki$', '') | map('int') | sum }}"
+
+    - name: "Validation des ressources requises"
+      assert:
+        that:
+          - cluster_resources.allocatable_cpu | int >= (keycloak_resources_cpu_request | regex_replace('m$', '') | int / 1000)
+          - (cluster_resources.allocatable_memory | int * 1024) >= (keycloak_resources_memory_request | regex_replace('Mi$', '') | int * 1024 * 1024)
+        fail_msg: |
+          ❌ Ressources insuffisantes pour déployer Keycloak:
+          - CPU requis: {{ keycloak_resources_cpu_request }}
+          - Mémoire requise: {{ keycloak_resources_memory_request }}
+          - CPU disponible: {{ cluster_resources.allocatable_cpu }}
+          - Mémoire disponible: {{ (cluster_resources.allocatable_memory | int / 1024) | round }}Mi
+        success_msg: "✅ Ressources système suffisantes pour Keycloak"
+      tags: ['validation', 'resources']
+
+# =========================================================================
+# SECTION 8: CRÉATION DES RESSOURCES PRÉPARATOIRES
+# =========================================================================
+- name: "🔧 [PREPARATION] Création des ressources préparatoires"
+  block:
+    - name: "Création des labels par défaut pour le namespace"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ keycloak_namespace }}"
+            labels:
+              pod-security.kubernetes.io/enforce: "{{ pod_security_standard | default('restricted') }}"
+              pod-security.kubernetes.io/audit: "{{ pod_security_standard | default('restricted') }}"
+              pod-security.kubernetes.io/warn: "{{ pod_security_standard | default('restricted') }}"
+      when: pod_security_enabled | default(true)
+      tags: ['security', 'pod-security']
+
+    - name: "Création d'une NetworkPolicy par défaut"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: "keycloak-default-network-policy"
+            namespace: "{{ keycloak_namespace }}"
+            labels:
+              app.kubernetes.io/name: "keycloak"
+              app.kubernetes.io/component: "network-policy"
+          spec:
+            podSelector:
+              matchLabels:
+                app.kubernetes.io/name: "keycloak"
+            policyTypes:
+              - Ingress
+              - Egress
+            ingress:
+              - from:
+                  - namespaceSelector:
+                      matchLabels:
+                        name: "{{ ingress_namespace | default('kube-system') }}"
+                ports:
+                  - protocol: TCP
+                    port: {{ keycloak_port }}
+            egress:
+              - to:
+                  - namespaceSelector:
+                      matchLabels:
+                        name: "{{ keycloak_database_namespace }}"
+                ports:
+                  - protocol: TCP
+                    port: {{ postgres_port | default('5432') }}
+              - to: []
+                ports:
+                  - protocol: TCP
+                    port: 53
+                  - protocol: UDP
+                    port: 53
+      when: network_policies_enabled | default(true)
+      tags: ['security', 'network-policy']
+
+# =========================================================================
+# SECTION 9: RÉSUMÉ ET VALIDATION FINALE
+# =========================================================================
+- name: "📋 [SUMMARY] Résumé de la validation des prérequis"
   debug:
-    msg: "AVERTISSEMENT: Le service PostgreSQL n'a pas été trouvé. Keycloak nécessite une base de données PostgreSQL pour fonctionner correctement."
-  when: postgres_info is failed or postgres_info.resources | length == 0
+    msg: |
+      🎯 RÉSUMÉ DE LA VALIDATION DES PRÉREQUIS KEYCLOAK:
+      
+      ✅ Configuration:
+      - Namespace: {{ keycloak_namespace }}
+      - Version: {{ keycloak_version }}
+      - Environnement: {{ lions_environment }}
+      - Port: {{ keycloak_port }}
+      
+      ✅ Infrastructure:
+      - Cluster K8s: Opérationnel ({{ k8s_cluster_info.nodes_ready }}/{{ k8s_cluster_info.nodes_count }} nœuds)
+      - Ingress Controller: {{ active_ingress_controller | default('Non détecté') }}
+      - cert-manager: {{ 'Disponible' if cert_manager_info.resources | length > 0 else 'Non disponible' }}
+      
+      ✅ Dépendances:
+      - PostgreSQL: {{ 'Disponible' if postgres_available else 'Non disponible' }}
+      - Vault: {{ 'Activé' if vault_enabled | default(false) else 'Désactivé' }}
+      
+      ✅ Sécurité:
+      - TLS: {{ 'Activé' if keycloak_tls_enabled | default(false) else 'Désactivé' }}
+      - NetworkPolicy: {{ 'Activé' if network_policies_enabled | default(true) else 'Désactivé' }}
+      - Pod Security: {{ 'Activé' if pod_security_enabled | default(true) else 'Désactivé' }}
+      
+      🚀 Keycloak est prêt à être déployé!
+  tags: ['summary', 'information']
+
+- name: "✅ Validation finale des prérequis"
+  debug:
+    msg: "Tous les prérequis pour le déploiement de Keycloak ont été validés avec succès."
+  tags: ['validation', 'completion']

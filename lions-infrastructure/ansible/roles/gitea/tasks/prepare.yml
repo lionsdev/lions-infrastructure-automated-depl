@@ -1,117 +1,419 @@
 ---
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - GITEA PREPARATION TASKS
+# =========================================================================
 # Titre: Préparation des ressources pour Gitea
-# Description: Prépare les ressources nécessaires pour déployer Gitea
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# Description: Prépare et valide toutes les ressources nécessaires pour le déploiement de Gitea
+# Équipe: LIONS DevOps Team
+# Version: 5.0.0
+# Date: "{{ ansible_date_time.iso8601 }}"
+# Documentation: https://docs.lions.dev/gitea/preparation
+# =========================================================================
 
-- name: Création du répertoire temporaire pour les templates
+# =========================================================================
+# VARIABLES ET VALIDATION INITIALE
+# =========================================================================
+- name: "🔍 [GITEA-PREP] Validation des variables d'environnement critiques"
+  assert:
+    that:
+      - lions_gitea_enabled is defined
+      - lions_gitea_namespace is defined
+      - lions_dns_full_domain is defined
+      - lions_gitea_version is defined
+      - lions_environment is defined
+    fail_msg: "❌ Variables d'environnement LIONS critiques manquantes pour Gitea"
+    success_msg: "✅ Variables d'environnement validées"
+  tags: [validation, environment]
+
+- name: "📊 [GITEA-PREP] Affichage de la configuration Gitea"
+  debug:
+    msg:
+      - "🏗️  Environnement: {{ lions_environment }}"
+      - "📦 Version Gitea: {{ lions_gitea_version }}"
+      - "🌐 Namespace: {{ lions_gitea_namespace }}"
+      - "🔗 Domaine: gitea.{{ lions_dns_full_domain }}"
+      - "💾 Stockage: {{ lions_gitea_storage_size }}"
+      - "🔐 TLS activé: {{ lions_security_tls_enabled }}"
+  when: lions_debug_mode | default(false) | bool
+  tags: [debug, info]
+
+# =========================================================================
+# PRÉPARATION DE L'ENVIRONNEMENT
+# =========================================================================
+- name: "📁 [GITEA-PREP] Création du répertoire temporaire pour les templates"
   tempfile:
     state: directory
-    suffix: gitea-deploy
-  register: temp_dir
+    suffix: "gitea-deploy-{{ ansible_date_time.epoch }}"
+    prefix: "lions-"
+  register: lions_gitea_temp_dir
   changed_when: false
+  failed_when: lions_gitea_temp_dir.path is not defined
+  tags: [preparation, filesystem]
 
-- name: Génération des fichiers de configuration Kubernetes
+- name: "📂 [GITEA-PREP] Vérification des permissions du répertoire temporaire"
+  file:
+    path: "{{ lions_gitea_temp_dir.path }}"
+    mode: '0750'
+    state: directory
+  tags: [preparation, security]
+
+- name: "🧹 [GITEA-PREP] Nettoyage préventif des anciennes ressources temporaires"
+  find:
+    paths: "/tmp"
+    patterns: "lions-gitea-deploy-*"
+    file_type: directory
+    age: "1h"
+  register: old_temp_dirs
+  tags: [preparation, cleanup]
+
+- name: "🗑️  [GITEA-PREP] Suppression des répertoires temporaires obsolètes"
+  file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ old_temp_dirs.files }}"
+  when: old_temp_dirs.files | length > 0
+  tags: [preparation, cleanup]
+
+# =========================================================================
+# GÉNÉRATION DES TEMPLATES KUBERNETES
+# =========================================================================
+- name: "🏗️  [GITEA-PREP] Génération des manifestes Kubernetes depuis les templates"
   template:
     src: "{{ item.src }}"
-    dest: "{{ temp_dir.path }}/{{ item.dest }}"
+    dest: "{{ lions_gitea_temp_dir.path }}/{{ item.dest }}"
+    mode: '0640'
+    backup: false
   loop:
-    - { src: "deployment.yml.j2", dest: "deployment.yml" }
-    - { src: "service.yml.j2", dest: "service.yml" }
-    - { src: "ingress.yml.j2", dest: "ingress.yml" }
-    - { src: "configmap.yml.j2", dest: "configmap.yml" }
-    - { src: "serviceaccount.yml.j2", dest: "serviceaccount.yml" }
-    - { src: "servicemonitor.yml.j2", dest: "servicemonitor.yml" }
-    - { src: "persistentvolumeclaim.yml.j2", dest: "persistentvolumeclaim.yml" }
-  register: templates_generated
+    - { src: "serviceaccount.yml.j2", dest: "01-serviceaccount.yml", priority: 1 }
+    - { src: "configmap.yml.j2", dest: "02-configmap.yml", priority: 2 }
+    - { src: "persistentvolumeclaim.yml.j2", dest: "03-pvc.yml", priority: 3 }
+    - { src: "service.yml.j2", dest: "04-service.yml", priority: 4 }
+    - { src: "deployment.yml.j2", dest: "05-deployment.yml", priority: 5 }
+    - { src: "ingress.yml.j2", dest: "06-ingress.yml", priority: 6 }
+    - { src: "servicemonitor.yml.j2", dest: "07-servicemonitor.yml", priority: 7 }
+  register: lions_gitea_templates_generated
+  notify:
+    - validate gitea configuration
+    - cleanup temporary files
+  tags: [templates, kubernetes]
 
-- name: Vérification des fichiers générés
+- name: "✅ [GITEA-PREP] Validation de la génération des templates"
   stat:
-    path: "{{ temp_dir.path }}/{{ item }}"
+    path: "{{ lions_gitea_temp_dir.path }}/{{ item.dest }}"
+    get_checksum: true
+  loop: "{{ lions_gitea_templates_generated.results }}"
+  register: lions_gitea_files_validation
+  failed_when: not lions_gitea_files_validation.results[item.0].stat.exists
+  loop_control:
+    index_var: item_index
+    label: "{{ item.dest }}"
+  tags: [validation, templates]
+
+- name: "📋 [GITEA-PREP] Validation syntaxique des manifestes YAML"
+  shell: |
+    if command -v yamllint >/dev/null 2>&1; then
+      yamllint "{{ item.invocation.dest }}" || echo "WARN: yamllint validation failed for {{ item.invocation.dest }}"
+    else
+      python3 -c "import yaml; yaml.safe_load(open('{{ item.invocation.dest }}', 'r'))" && echo "✅ YAML syntax valid"
+    fi
+  loop: "{{ lions_gitea_templates_generated.results }}"
+  register: lions_gitea_yaml_validation
+  failed_when:
+    - lions_gitea_yaml_validation.rc != 0
+    - "'WARN:' not in lions_gitea_yaml_validation.stdout"
+  changed_when: false
+  tags: [validation, yaml]
+
+# =========================================================================
+# PRÉPARATION DES SECRETS ET SÉCURITÉ
+# =========================================================================
+- name: "🔍 [GITEA-PREP] Vérification de l'existence du namespace cible"
+  k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: "{{ lions_gitea_namespace }}"
+  register: lions_gitea_namespace_info
+  tags: [validation, namespace]
+
+- name: "📛 [GITEA-PREP] Création du namespace si nécessaire"
+  k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ lions_gitea_namespace }}"
+        labels:
+          app.kubernetes.io/name: gitea
+          app.kubernetes.io/component: git-server
+          app.kubernetes.io/part-of: lions-infrastructure
+          lions.dev/environment: "{{ lions_environment }}"
+          lions.dev/managed-by: ansible
+          pod-security.kubernetes.io/enforce: restricted
+          pod-security.kubernetes.io/audit: restricted
+          pod-security.kubernetes.io/warn: restricted
+  when: lions_gitea_namespace_info.resources | length == 0
+  tags: [namespace, security]
+
+- name: "🔐 [GITEA-PREP] Vérification des secrets critiques pour Gitea"
+  k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: "{{ lions_gitea_namespace }}"
+    name: "{{ item.name }}"
+  register: lions_gitea_secrets_check
   loop:
-    - "deployment.yml"
-    - "service.yml"
-    - "ingress.yml"
-    - "configmap.yml"
-    - "serviceaccount.yml"
-    - "servicemonitor.yml"
-    - "persistentvolumeclaim.yml"
-  register: files_check
-  failed_when: not item.stat.exists
+    - name: "{{ lions_gitea_admin_secret_name | default('gitea-admin-credentials') }}"
+      description: "Identifiants administrateur Gitea"
+      required: true
+    - name: "{{ lions_gitea_database_secret_name | default('gitea-db-credentials') }}"
+      description: "Identifiants base de données"
+      required: true
+    - name: "{{ lions_gitea_jwt_secret_name | default('gitea-jwt-secret') }}"
+      description: "Secret JWT pour Gitea"
+      required: false
+  loop_control:
+    label: "{{ item.description }}"
+  failed_when: false
+  tags: [validation, secrets]
 
-- name: Création du compte de service
-  k8s:
-    state: present
-    src: "{{ temp_dir.path }}/serviceaccount.yml"
-  register: serviceaccount_result
-
-- name: Création du ConfigMap pour la configuration de Gitea
-  k8s:
-    state: present
-    src: "{{ temp_dir.path }}/configmap.yml"
-  register: configmap_result
-
-- name: Création du PersistentVolumeClaim pour Gitea
-  k8s:
-    state: present
-    src: "{{ temp_dir.path }}/persistentvolumeclaim.yml"
-  register: pvc_result
-  when: gitea_persistent_storage | bool
-
-- name: Vérification de l'existence des secrets pour l'administrateur Gitea
-  k8s_info:
-    api_version: v1
-    kind: Secret
-    namespace: "{{ app_namespace }}"
-    name: "{{ gitea_admin_password_secret }}"
-  register: admin_secret_info
-  ignore_errors: yes
-
-- name: Avertissement si le secret administrateur n'existe pas
+- name: "⚠️  [GITEA-PREP] Rapport des secrets manquants"
   debug:
-    msg: "AVERTISSEMENT: Le secret pour l'administrateur Gitea n'existe pas. Utilisez kubectl pour créer le secret {{ gitea_admin_password_secret }}."
-  when: admin_secret_info is failed or admin_secret_info.resources | length == 0
+    msg: "❌ Secret manquant: {{ item.item.name }} ({{ item.item.description }})"
+  loop: "{{ lions_gitea_secrets_check.results }}"
+  when:
+    - item.resources | length == 0
+    - item.item.required | default(false)
+  loop_control:
+    label: "{{ item.item.name }}"
+  tags: [validation, secrets]
 
-- name: Vérification de l'existence des secrets pour la base de données
-  k8s_info:
-    api_version: v1
-    kind: Secret
-    namespace: "{{ app_namespace }}"
-    name: "{{ gitea_database_password_secret }}"
-  register: db_secret_info
-  ignore_errors: yes
-
-- name: Avertissement si le secret de base de données n'existe pas
-  debug:
-    msg: "AVERTISSEMENT: Le secret pour la base de données Gitea n'existe pas. Utilisez kubectl pour créer le secret {{ gitea_database_password_secret }}."
-  when: db_secret_info is failed or db_secret_info.resources | length == 0
-
-- name: Création d'un secret SSH pour Gitea si nécessaire
+- name: "🔑 [GITEA-PREP] Génération du secret JWT s'il n'existe pas"
   k8s:
     state: present
     definition:
       apiVersion: v1
       kind: Secret
       metadata:
-        name: "{{ app_name }}-ssh-keys"
-        namespace: "{{ app_namespace }}"
+        name: "{{ lions_gitea_jwt_secret_name | default('gitea-jwt-secret') }}"
+        namespace: "{{ lions_gitea_namespace }}"
         labels:
-          app: "{{ app_name }}"
-          environment: "{{ app_environment }}"
+          app.kubernetes.io/name: gitea
+          app.kubernetes.io/component: jwt-secret
+          lions.dev/environment: "{{ lions_environment }}"
+          lions.dev/managed-by: ansible
       type: Opaque
       data:
-        ssh_host_rsa_key: ""
-        ssh_host_rsa_key.pub: ""
-        ssh_host_ecdsa_key: ""
-        ssh_host_ecdsa_key.pub: ""
-        ssh_host_ed25519_key: ""
-        ssh_host_ed25519_key.pub: ""
-  register: ssh_secret_result
-  when: not (db_secret_info is succeeded and db_secret_info.resources | length > 0)
-  ignore_errors: yes
+        jwt-secret: "{{ (ansible_date_time.epoch + ansible_hostname) | hash('sha256') | b64encode }}"
+  when:
+    - lions_gitea_secrets_check.results | selectattr('item.name', 'equalto', lions_gitea_jwt_secret_name | default('gitea-jwt-secret')) | map(attribute='resources') | first | length == 0
+  tags: [secrets, security]
 
-- name: Avertissement pour la génération des clés SSH
+- name: "🔐 [GITEA-PREP] Génération des clés SSH pour Gitea"
+  shell: |
+    # Génération des clés SSH si elles n'existent pas
+    TEMP_DIR="{{ lions_gitea_temp_dir.path }}/ssh-keys"
+    mkdir -p "$TEMP_DIR"
+    
+    # Génération des différents types de clés
+    if [ ! -f "$TEMP_DIR/ssh_host_rsa_key" ]; then
+      ssh-keygen -t rsa -b 4096 -f "$TEMP_DIR/ssh_host_rsa_key" -N "" -C "gitea@{{ lions_dns_full_domain }}"
+    fi
+    
+    if [ ! -f "$TEMP_DIR/ssh_host_ecdsa_key" ]; then
+      ssh-keygen -t ecdsa -b 521 -f "$TEMP_DIR/ssh_host_ecdsa_key" -N "" -C "gitea@{{ lions_dns_full_domain }}"
+    fi
+    
+    if [ ! -f "$TEMP_DIR/ssh_host_ed25519_key" ]; then
+      ssh-keygen -t ed25519 -f "$TEMP_DIR/ssh_host_ed25519_key" -N "" -C "gitea@{{ lions_dns_full_domain }}"
+    fi
+    
+    echo "SSH keys generated successfully"
+  args:
+    creates: "{{ lions_gitea_temp_dir.path }}/ssh-keys/ssh_host_rsa_key"
+  register: lions_gitea_ssh_generation
+  tags: [security, ssh]
+
+- name: "🔑 [GITEA-PREP] Création du secret SSH pour Gitea"
+  k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ lions_gitea_ssh_secret_name | default('gitea-ssh-keys') }}"
+        namespace: "{{ lions_gitea_namespace }}"
+        labels:
+          app.kubernetes.io/name: gitea
+          app.kubernetes.io/component: ssh-keys
+          lions.dev/environment: "{{ lions_environment }}"
+          lions.dev/managed-by: ansible
+      type: Opaque
+      data:
+        ssh_host_rsa_key: "{{ lookup('file', lions_gitea_temp_dir.path + '/ssh-keys/ssh_host_rsa_key') | b64encode }}"
+        ssh_host_rsa_key.pub: "{{ lookup('file', lions_gitea_temp_dir.path + '/ssh-keys/ssh_host_rsa_key.pub') | b64encode }}"
+        ssh_host_ecdsa_key: "{{ lookup('file', lions_gitea_temp_dir.path + '/ssh-keys/ssh_host_ecdsa_key') | b64encode }}"
+        ssh_host_ecdsa_key.pub: "{{ lookup('file', lions_gitea_temp_dir.path + '/ssh-keys/ssh_host_ecdsa_key.pub') | b64encode }}"
+        ssh_host_ed25519_key: "{{ lookup('file', lions_gitea_temp_dir.path + '/ssh-keys/ssh_host_ed25519_key') | b64encode }}"
+        ssh_host_ed25519_key.pub: "{{ lookup('file', lions_gitea_temp_dir.path + '/ssh-keys/ssh_host_ed25519_key.pub') | b64encode }}"
+  when: lions_gitea_ssh_generation is succeeded
+  tags: [secrets, ssh]
+
+# =========================================================================
+# CRÉATION DES RESSOURCES KUBERNETES PRÉPARATOIRES
+# =========================================================================
+- name: "🏗️  [GITEA-PREP] Création du compte de service Gitea"
+  k8s:
+    state: present
+    src: "{{ lions_gitea_temp_dir.path }}/01-serviceaccount.yml"
+    wait: true
+    wait_timeout: "{{ lions_timeout_default | default(300) }}"
+    wait_condition:
+      type: Ready
+      status: "True"
+  register: lions_gitea_serviceaccount_result
+  tags: [kubernetes, serviceaccount]
+
+- name: "🗃️  [GITEA-PREP] Création du ConfigMap de configuration Gitea"
+  k8s:
+    state: present
+    src: "{{ lions_gitea_temp_dir.path }}/02-configmap.yml"
+    wait: true
+    wait_timeout: "{{ lions_timeout_default | default(300) }}"
+  register: lions_gitea_configmap_result
+  tags: [kubernetes, configmap]
+
+- name: "💾 [GITEA-PREP] Création du PersistentVolumeClaim pour Gitea"
+  k8s:
+    state: present
+    src: "{{ lions_gitea_temp_dir.path }}/03-pvc.yml"
+    wait: true
+    wait_timeout: "{{ lions_timeout_default | default(300) }}"
+    wait_condition:
+      type: Bound
+      status: "True"
+  register: lions_gitea_pvc_result
+  when: lions_gitea_persistent_storage | default(true) | bool
+  tags: [kubernetes, storage]
+
+# =========================================================================
+# VALIDATION ET VÉRIFICATIONS FINALES
+# =========================================================================
+- name: "🔍 [GITEA-PREP] Vérification de l'état des ressources créées"
+  k8s_info:
+    api_version: "{{ item.api_version }}"
+    kind: "{{ item.kind }}"
+    namespace: "{{ lions_gitea_namespace }}"
+    name: "{{ item.name }}"
+  register: lions_gitea_resources_check
+  loop:
+    - api_version: v1
+      kind: ServiceAccount
+      name: "{{ lions_gitea_service_account_name | default('gitea') }}"
+    - api_version: v1
+      kind: ConfigMap
+      name: "{{ lions_gitea_configmap_name | default('gitea-config') }}"
+    - api_version: v1
+      kind: PersistentVolumeClaim
+      name: "{{ lions_gitea_pvc_name | default('gitea-data') }}"
+  failed_when: item.resources | length == 0
+  loop_control:
+    label: "{{ item.kind }}/{{ item.name }}"
+  tags: [validation, resources]
+
+- name: "📊 [GITEA-PREP] Collecte des métriques de préparation"
+  set_fact:
+    lions_gitea_preparation_metrics:
+      namespace_created: "{{ lions_gitea_namespace_info.resources | length == 0 }}"
+      secrets_validated: "{{ lions_gitea_secrets_check.results | length }}"
+      templates_generated: "{{ lions_gitea_templates_generated.results | length }}"
+      ssh_keys_generated: "{{ lions_gitea_ssh_generation is succeeded }}"
+      resources_created: "{{ lions_gitea_resources_check.results | length }}"
+      preparation_duration: "{{ ansible_date_time.epoch | int - (lions_gitea_temp_dir.stat.mtime | default(ansible_date_time.epoch)) | int }}"
+  tags: [metrics, reporting]
+
+- name: "📈 [GITEA-PREP] Rapport de préparation Gitea"
   debug:
-    msg: "AVERTISSEMENT: Les clés SSH pour Gitea ont été créées avec des valeurs vides. Vous devriez générer des clés SSH réelles et les stocker dans le secret {{ app_name }}-ssh-keys."
-  when: ssh_secret_result is succeeded
+    msg:
+      - "✅ Préparation Gitea terminée avec succès"
+      - "📊 Métriques:"
+      - "  - Namespace créé: {{ lions_gitea_preparation_metrics.namespace_created }}"
+      - "  - Secrets validés: {{ lions_gitea_preparation_metrics.secrets_validated }}"
+      - "  - Templates générés: {{ lions_gitea_preparation_metrics.templates_generated }}"
+      - "  - Clés SSH générées: {{ lions_gitea_preparation_metrics.ssh_keys_generated }}"
+      - "  - Ressources créées: {{ lions_gitea_preparation_metrics.resources_created }}"
+      - "  - Durée: {{ lions_gitea_preparation_metrics.preparation_duration }}s"
+      - "🚀 Prêt pour le déploiement"
+  tags: [reporting, summary]
+
+# =========================================================================
+# HANDLERS ET NETTOYAGE
+# =========================================================================
+- name: "🧹 [GITEA-PREP] Nettoyage conditionnel des clés SSH temporaires"
+  file:
+    path: "{{ lions_gitea_temp_dir.path }}/ssh-keys"
+    state: absent
+  when:
+    - lions_gitea_ssh_generation is succeeded
+    - lions_environment != 'development'
+  tags: [cleanup, security]
+
+- name: "📝 [GITEA-PREP] Enregistrement des chemins des templates pour les étapes suivantes"
+  set_fact:
+    lions_gitea_templates_path: "{{ lions_gitea_temp_dir.path }}"
+    lions_gitea_deployment_ready: true
+  tags: [state, handoff]
+
+# =========================================================================
+# HOOKS DE SURVEILLANCE
+# =========================================================================
+- name: "📡 [GITEA-PREP] Envoi de métriques de préparation au monitoring"
+  uri:
+    url: "http://{{ lions_monitoring_pushgateway_host | default('localhost') }}:{{ lions_monitoring_pushgateway_port | default(9091) }}/metrics/job/ansible-gitea-prep"
+    method: POST
+    body: |
+      # TYPE gitea_preparation_duration_seconds gauge
+      gitea_preparation_duration_seconds{environment="{{ lions_environment }}",component="gitea"} {{ lions_gitea_preparation_metrics.preparation_duration }}
+      # TYPE gitea_preparation_resources_total counter
+      gitea_preparation_resources_total{environment="{{ lions_environment }}",component="gitea"} {{ lions_gitea_preparation_metrics.resources_created }}
+    body_format: raw
+    headers:
+      Content-Type: "text/plain"
+  when:
+    - lions_monitoring_enabled | default(true) | bool
+    - lions_monitoring_pushgateway_enabled | default(false) | bool
+  ignore_errors: true
+  tags: [monitoring, metrics]
+
+# =========================================================================
+# POINTS DE CONTRÔLE POUR AUDIT
+# =========================================================================
+- name: "📋 [GITEA-PREP] Création du rapport d'audit de préparation"
+  copy:
+    content: |
+      # Rapport d'Audit - Préparation Gitea
+      Date: {{ ansible_date_time.iso8601 }}
+      Environnement: {{ lions_environment }}
+      Version Gitea: {{ lions_gitea_version }}
+      Namespace: {{ lions_gitea_namespace }}
+      Utilisateur Ansible: {{ ansible_user | default('unknown') }}
+      Hôte de contrôle: {{ inventory_hostname }}
+      
+      ## Ressources créées
+      {% for result in lions_gitea_resources_check.results %}
+      - {{ result.item.kind }}/{{ result.item.name }}: ✅ Créé
+      {% endfor %}
+      
+      ## Secrets validés
+      {% for secret in lions_gitea_secrets_check.results %}
+      - {{ secret.item.name }}: {{ '✅ Présent' if secret.resources | length > 0 else '❌ Manquant' }}
+      {% endfor %}
+      
+      ## Métriques
+      - Durée de préparation: {{ lions_gitea_preparation_metrics.preparation_duration }}s
+      - Templates générés: {{ lions_gitea_preparation_metrics.templates_generated }}
+      - Clés SSH générées: {{ lions_gitea_preparation_metrics.ssh_keys_generated }}
+    dest: "{{ lions_gitea_temp_dir.path }}/preparation-audit.md"
+    mode: '0640'
+  when: lions_audit_enabled | default(true) | bool
+  tags: [audit, documentation]

@@ -1,24 +1,460 @@
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - OLLAMA PREREQUISITES
+# =========================================================================
+# Description: Vérification complète des prérequis pour le déploiement Ollama
+# Version: 5.0.0
+# Date: 2025-05-29
+# Maintainer: DevOps Team LIONS
+# Documentation: https://docs.lions.dev/infrastructure/ollama/prerequisites
+# =========================================================================
+
 ---
-# Titre: Tâches de prérequis pour Ollama
-# Description: Vérifie les prérequis avant le déploiement
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-14
-# Version: 1.0.0
+- name: "[{{ lions_component_name | upper }}] 🔍 Début de la vérification des prérequis"
+  ansible.builtin.debug:
+    msg: |
+      ========================================
+      VÉRIFICATION DES PRÉREQUIS OLLAMA
+      ========================================
+      Environnement: {{ lions_environment | upper }}
+      Namespace: {{ lions_ollama_namespace }}
+      Version cible: {{ lions_ollama_version }}
+      ========================================
+  tags:
+    - prerequisites
+    - ollama
+    - validation
 
-- name: "[Ollama] Vérifier la connectivité du cluster"
+# =========================================================================
+# VÉRIFICATION DE L'INFRASTRUCTURE KUBERNETES
+# =========================================================================
+
+- name: "[{{ lions_component_name | upper }}] 🏗️ Vérification de la connectivité du cluster Kubernetes"
   kubernetes.core.k8s_info:
     api_version: v1
     kind: Node
-  register: nodes_info
-  failed_when: nodes_info.resources | length == 0
+    kubeconfig: "{{ lions_k8s_config_file }}"
+  register: lions_k8s_nodes_info
+  failed_when: lions_k8s_nodes_info.resources | length == 0
+  tags:
+    - prerequisites
+    - cluster
+    - connectivity
 
-- name: "[Ollama] Vérifier l'espace disque disponible"
+- name: "[{{ lions_component_name | upper }}] 📊 Collecte des informations sur les nœuds"
   kubernetes.core.k8s_info:
     api_version: v1
     kind: Node
-  register: node_status
+    kubeconfig: "{{ lions_k8s_config_file }}"
+  register: lions_k8s_nodes_status
+  tags:
+    - prerequisites
+    - cluster
+    - resources
 
-- name: "[Ollama] Vérifier les ressources disponibles"
-  debug:
-    msg: "Node {{ item.metadata.name }} - CPU: {{ item.status.capacity.cpu }}, Memory: {{ item.status.capacity.memory }}"
-  loop: "{{ node_status.resources }}"
+- name: "[{{ lions_component_name | upper }}] 🖥️ Analyse des ressources disponibles par nœud"
+  ansible.builtin.debug:
+    msg: |
+      Nœud: {{ item.metadata.name }}
+      CPU Disponible: {{ item.status.capacity.cpu }}
+      Mémoire Disponible: {{ item.status.capacity.memory }}
+      Stockage Disponible: {{ item.status.capacity['ephemeral-storage'] | default('N/A') }}
+      GPU Disponible: {{ item.status.capacity['nvidia.com/gpu'] | default('0') }}
+      Statut: {{ item.status.conditions | selectattr('type', 'equalto', 'Ready') | map(attribute='status') | first }}
+  loop: "{{ lions_k8s_nodes_status.resources }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+  tags:
+    - prerequisites
+    - cluster
+    - resources
+
+# =========================================================================
+# VÉRIFICATION DES RESSOURCES SYSTÈME
+# =========================================================================
+
+- name: "[{{ lions_component_name | upper }}] 💾 Vérification des exigences mémoire"
+  ansible.builtin.assert:
+    that:
+      - item.status.capacity.memory | regex_replace('Ki$', '') | int >= lions_ollama_memory_min_required
+    fail_msg: |
+      ❌ ERREUR: Mémoire insuffisante sur le nœud {{ item.metadata.name }}
+      Requis: {{ lions_ollama_memory_min_required }}Ki
+      Disponible: {{ item.status.capacity.memory }}
+    success_msg: |
+      ✅ Mémoire suffisante sur le nœud {{ item.metadata.name }}
+  loop: "{{ lions_k8s_nodes_status.resources }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+  when: lions_ollama_enabled | bool
+  tags:
+    - prerequisites
+    - resources
+    - memory
+
+- name: "[{{ lions_component_name | upper }}] 🚀 Vérification des exigences CPU"
+  ansible.builtin.assert:
+    that:
+      - item.status.capacity.cpu | int >= lions_ollama_cpu_min_required
+    fail_msg: |
+      ❌ ERREUR: CPU insuffisant sur le nœud {{ item.metadata.name }}
+      Requis: {{ lions_ollama_cpu_min_required }} cores
+      Disponible: {{ item.status.capacity.cpu }}
+    success_msg: |
+      ✅ CPU suffisant sur le nœud {{ item.metadata.name }}
+  loop: "{{ lions_k8s_nodes_status.resources }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+  when: lions_ollama_enabled | bool
+  tags:
+    - prerequisites
+    - resources
+    - cpu
+
+- name: "[{{ lions_component_name | upper }}] 🎮 Vérification de la disponibilité GPU (si activé)"
+  ansible.builtin.debug:
+    msg: |
+      GPU détecté sur le nœud {{ item.metadata.name }}: {{ item.status.capacity['nvidia.com/gpu'] | default('0') }}
+  loop: "{{ lions_k8s_nodes_status.resources }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+  when:
+    - lions_ollama_gpu_enabled | bool
+    - item.status.capacity['nvidia.com/gpu'] is defined
+  tags:
+    - prerequisites
+    - resources
+    - gpu
+
+- name: "[{{ lions_component_name | upper }}] ⚠️ Vérification des exigences GPU"
+  ansible.builtin.assert:
+    that:
+      - lions_k8s_nodes_status.resources | selectattr('status.capacity.nvidia.com/gpu', 'defined') | list | length > 0
+    fail_msg: |
+      ❌ ERREUR: GPU requis mais aucun GPU détecté dans le cluster
+      Configuration: GPU activé ({{ lions_ollama_gpu_enabled }})
+    success_msg: |
+      ✅ GPU disponible dans le cluster
+  when: lions_ollama_gpu_enabled | bool
+  tags:
+    - prerequisites
+    - resources
+    - gpu
+
+# =========================================================================
+# VÉRIFICATION DU STOCKAGE
+# =========================================================================
+
+- name: "[{{ lions_component_name | upper }}] 💽 Vérification de la classe de stockage"
+  kubernetes.core.k8s_info:
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+    name: "{{ lions_storage_class_default }}"
+    kubeconfig: "{{ lions_k8s_config_file }}"
+  register: lions_storage_class_info
+  tags:
+    - prerequisites
+    - storage
+    - validation
+
+- name: "[{{ lions_component_name | upper }}] 📦 Validation de la classe de stockage"
+  ansible.builtin.assert:
+    that:
+      - lions_storage_class_info.resources | length > 0
+    fail_msg: |
+      ❌ ERREUR: Classe de stockage '{{ lions_storage_class_default }}' non trouvée
+      Vérifiez la configuration du stockage dans le cluster
+    success_msg: |
+      ✅ Classe de stockage '{{ lions_storage_class_default }}' disponible
+  tags:
+    - prerequisites
+    - storage
+    - validation
+
+- name: "[{{ lions_component_name | upper }}] 📁 Vérification de l'espace de stockage requis"
+  ansible.builtin.debug:
+    msg: |
+      Stockage requis pour Ollama: {{ lions_ollama_storage_size }}
+      Classe de stockage: {{ lions_storage_class_default }}
+      Politique de récupération: {{ lions_storage_reclaim_policy }}
+  tags:
+    - prerequisites
+    - storage
+    - planning
+
+# =========================================================================
+# VÉRIFICATION DU NAMESPACE
+# =========================================================================
+
+- name: "[{{ lions_component_name | upper }}] 📋 Vérification du namespace cible"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: "{{ lions_ollama_namespace }}"
+    kubeconfig: "{{ lions_k8s_config_file }}"
+  register: lions_namespace_info
+  tags:
+    - prerequisites
+    - namespace
+    - validation
+
+- name: "[{{ lions_component_name | upper }}] 🏷️ Validation du namespace"
+  ansible.builtin.assert:
+    that:
+      - lions_namespace_info.resources | length > 0
+      - lions_namespace_info.resources[0].status.phase == "Active"
+    fail_msg: |
+      ❌ ERREUR: Namespace '{{ lions_ollama_namespace }}' non disponible
+      Statut: {{ lions_namespace_info.resources[0].status.phase | default('N/A') }}
+    success_msg: |
+      ✅ Namespace '{{ lions_ollama_namespace }}' disponible et actif
+  tags:
+    - prerequisites
+    - namespace
+    - validation
+
+# =========================================================================
+# VÉRIFICATION DES DÉPENDANCES RÉSEAU
+# =========================================================================
+
+- name: "[{{ lions_component_name | upper }}] 🌐 Vérification de la connectivité réseau"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Service
+    namespace: kube-system
+    name: kube-dns
+    kubeconfig: "{{ lions_k8s_config_file }}"
+  register: lions_dns_service_info
+  tags:
+    - prerequisites
+    - network
+    - dns
+
+- name: "[{{ lions_component_name | upper }}] 🔍 Validation du service DNS"
+  ansible.builtin.assert:
+    that:
+      - lions_dns_service_info.resources | length > 0
+    fail_msg: |
+      ❌ ERREUR: Service DNS Kubernetes non disponible
+      Vérifiez la configuration réseau du cluster
+    success_msg: |
+      ✅ Service DNS Kubernetes opérationnel
+  tags:
+    - prerequisites
+    - network
+    - dns
+
+# =========================================================================
+# VÉRIFICATION DES POLITIQUES DE SÉCURITÉ
+# =========================================================================
+
+- name: "[{{ lions_component_name | upper }}] 🔒 Vérification des politiques de sécurité du namespace"
+  kubernetes.core.k8s_info:
+    api_version: networking.k8s.io/v1
+    kind: NetworkPolicy
+    namespace: "{{ lions_ollama_namespace }}"
+    kubeconfig: "{{ lions_k8s_config_file }}"
+  register: lions_network_policies_info
+  when: lions_security_network_policies | bool
+  tags:
+    - prerequisites
+    - security
+    - network-policies
+
+- name: "[{{ lions_component_name | upper }}] 🛡️ Analyse des politiques réseau"
+  ansible.builtin.debug:
+    msg: |
+      Politiques réseau dans {{ lions_ollama_namespace }}: {{ lions_network_policies_info.resources | length }}
+      Politiques de sécurité activées: {{ lions_security_network_policies }}
+  when: lions_security_network_policies | bool
+  tags:
+    - prerequisites
+    - security
+    - network-policies
+
+# =========================================================================
+# VÉRIFICATION DES CERTIFICATS TLS
+# =========================================================================
+
+- name: "[{{ lions_component_name | upper }}] 🔐 Vérification de la configuration TLS"
+  kubernetes.core.k8s_info:
+    api_version: cert-manager.io/v1
+    kind: ClusterIssuer
+    kubeconfig: "{{ lions_k8s_config_file }}"
+  register: lions_cert_issuers_info
+  when: lions_security_tls_enabled | bool
+  tags:
+    - prerequisites
+    - security
+    - tls
+
+- name: "[{{ lions_component_name | upper }}] 📜 Validation des émetteurs de certificats"
+  ansible.builtin.assert:
+    that:
+      - lions_cert_issuers_info.resources | length > 0
+    fail_msg: |
+      ❌ ERREUR: Aucun ClusterIssuer cert-manager trouvé
+      TLS activé mais cert-manager non configuré
+    success_msg: |
+      ✅ Émetteurs de certificats disponibles: {{ lions_cert_issuers_info.resources | map(attribute='metadata.name') | join(', ') }}
+  when: lions_security_tls_enabled | bool
+  tags:
+    - prerequisites
+    - security
+    - tls
+
+# =========================================================================
+# VÉRIFICATION DU MONITORING
+# =========================================================================
+
+- name: "[{{ lions_component_name | upper }}] 📊 Vérification des composants de monitoring"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Service
+    namespace: "{{ lions_monitoring_namespace }}"
+    name: prometheus-server
+    kubeconfig: "{{ lions_k8s_config_file }}"
+  register: lions_prometheus_service_info
+  when: lions_monitoring_enabled | bool
+  tags:
+    - prerequisites
+    - monitoring
+    - prometheus
+
+- name: "[{{ lions_component_name | upper }}] 📈 Validation du service Prometheus"
+  ansible.builtin.debug:
+    msg: |
+      Service Prometheus: {{ 'Disponible' if lions_prometheus_service_info.resources | length > 0 else 'Non disponible' }}
+      Monitoring activé: {{ lions_monitoring_enabled }}
+  when: lions_monitoring_enabled | bool
+  tags:
+    - prerequisites
+    - monitoring
+    - prometheus
+
+# =========================================================================
+# VÉRIFICATION DES CONFIGURATIONS SPÉCIALES
+# =========================================================================
+
+- name: "[{{ lions_component_name | upper }}] ⚙️ Vérification de la configuration des modèles IA"
+  ansible.builtin.debug:
+    msg: |
+      Modèles par défaut à déployer: {{ lions_ollama_default_models | join(', ') }}
+      Taille de stockage allouée: {{ lions_ollama_storage_size }}
+      GPU activé: {{ lions_ollama_gpu_enabled }}
+  tags:
+    - prerequisites
+    - configuration
+    - models
+
+- name: "[{{ lions_component_name | upper }}] 🎯 Validation des limites de ressources"
+  ansible.builtin.debug:
+    msg: |
+      Ressources CPU - Request: {{ lions_ollama_cpu_request }} | Limit: {{ lions_ollama_cpu_limit }}
+      Ressources Mémoire - Request: {{ lions_ollama_memory_request }} | Limit: {{ lions_ollama_memory_limit }}
+  tags:
+    - prerequisites
+    - resources
+    - limits
+
+# =========================================================================
+# VÉRIFICATION DE LA COMPATIBILITÉ DE VERSION
+# =========================================================================
+
+- name: "[{{ lions_component_name | upper }}] 🔄 Vérification de la compatibilité des versions"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Node
+    kubeconfig: "{{ lions_k8s_config_file }}"
+  register: lions_k8s_version_info
+  tags:
+    - prerequisites
+    - compatibility
+    - version
+
+- name: "[{{ lions_component_name | upper }}] ✅ Validation des versions Kubernetes"
+  ansible.builtin.debug:
+    msg: |
+      Version Kubernetes cluster: {{ lions_k8s_version_info.resources[0].status.nodeInfo.kubeletVersion }}
+      Version K3s cible: {{ lions_k8s_version }}
+      Version Ollama cible: {{ lions_ollama_version }}
+  tags:
+    - prerequisites
+    - compatibility
+    - version
+
+# =========================================================================
+# RÉSUMÉ DE LA VÉRIFICATION
+# =========================================================================
+
+- name: "[{{ lions_component_name | upper }}] 📋 Génération du rapport de prérequis"
+  ansible.builtin.set_fact:
+    lions_ollama_prerequisites_report:
+      cluster_status: "{{ 'OK' if lions_k8s_nodes_info.resources | length > 0 else 'FAILED' }}"
+      storage_status: "{{ 'OK' if lions_storage_class_info.resources | length > 0 else 'FAILED' }}"
+      namespace_status: "{{ 'OK' if lions_namespace_info.resources | length > 0 else 'FAILED' }}"
+      dns_status: "{{ 'OK' if lions_dns_service_info.resources | length > 0 else 'FAILED' }}"
+      tls_status: "{{ 'OK' if not lions_security_tls_enabled or lions_cert_issuers_info.resources | length > 0 else 'FAILED' }}"
+      monitoring_status: "{{ 'OK' if not lions_monitoring_enabled or lions_prometheus_service_info.resources | length > 0 else 'FAILED' }}"
+      total_checks: 6
+      passed_checks: "{{ [cluster_status, storage_status, namespace_status, dns_status, tls_status, monitoring_status] | select('equalto', 'OK') | list | length }}"
+  tags:
+    - prerequisites
+    - report
+    - summary
+
+- name: "[{{ lions_component_name | upper }}] 🎯 Affichage du rapport final"
+  ansible.builtin.debug:
+    msg: |
+      =========================================
+      RAPPORT DE VÉRIFICATION DES PRÉREQUIS
+      =========================================
+      Composant: {{ lions_component_name | upper }}
+      Environnement: {{ lions_environment | upper }}
+      
+      📊 RÉSULTATS:
+      - Cluster Kubernetes: {{ lions_ollama_prerequisites_report.cluster_status }}
+      - Stockage: {{ lions_ollama_prerequisites_report.storage_status }}
+      - Namespace: {{ lions_ollama_prerequisites_report.namespace_status }}
+      - DNS: {{ lions_ollama_prerequisites_report.dns_status }}
+      - TLS/Certificats: {{ lions_ollama_prerequisites_report.tls_status }}
+      - Monitoring: {{ lions_ollama_prerequisites_report.monitoring_status }}
+      
+      ✅ Vérifications réussies: {{ lions_ollama_prerequisites_report.passed_checks }}/{{ lions_ollama_prerequisites_report.total_checks }}
+      
+      {% if lions_ollama_prerequisites_report.passed_checks == lions_ollama_prerequisites_report.total_checks %}
+      🚀 STATUT: PRÊT POUR LE DÉPLOIEMENT
+      {% else %}
+      ⚠️  STATUT: PRÉREQUIS INCOMPLETS
+      {% endif %}
+      =========================================
+  tags:
+    - prerequisites
+    - report
+    - summary
+
+- name: "[{{ lions_component_name | upper }}] ❌ Échec si prérequis incomplets"
+  ansible.builtin.fail:
+    msg: |
+      ❌ ÉCHEC DE LA VÉRIFICATION DES PRÉREQUIS
+      
+      Veuillez corriger les problèmes identifiés avant de procéder au déploiement.
+      Consultez la documentation: https://docs.lions.dev/infrastructure/ollama/troubleshooting
+  when: lions_ollama_prerequisites_report.passed_checks != lions_ollama_prerequisites_report.total_checks
+  tags:
+    - prerequisites
+    - validation
+    - failure
+
+- name: "[{{ lions_component_name | upper }}] ✅ Fin de la vérification des prérequis"
+  ansible.builtin.debug:
+    msg: |
+      ========================================
+      PRÉREQUIS VALIDÉS AVEC SUCCÈS
+      ========================================
+      Le déploiement peut maintenant procéder.
+      Timestamp: {{ ansible_date_time.iso8601 }}
+      ========================================
+  tags:
+    - prerequisites
+    - success
+    - completion

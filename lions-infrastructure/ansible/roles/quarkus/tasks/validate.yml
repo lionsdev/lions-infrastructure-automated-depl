@@ -1,113 +1,488 @@
 ---
-# Titre: Validation post-déploiement pour Quarkus
-# Description: Valide le déploiement d'une application Quarkus
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - VALIDATION QUARKUS
+# =========================================================================
+# Description: Validation post-déploiement pour applications Quarkus
+# Version: 5.0.0
+# Auteur: DevOps Team LIONS Infrastructure
+# Date: 2025-05-28
+# Documentation: https://docs.lions.dev/infrastructure/roles/quarkus/validation
+# =========================================================================
 
-- name: Attente que l'application soit prête
-  uri:
-    url: "http://{{ app_name }}.{{ app_namespace }}.svc.cluster.local:{{ quarkus_default_port }}{{ quarkus_health_path }}/ready"
-    status_code: 200
-    validate_certs: no
-  register: health_check
-  until: health_check.status == 200
-  retries: 30
-  delay: 10
-  ignore_errors: yes
+# =========================================================================
+# PRÉPARATION ET CONFIGURATION
+# =========================================================================
 
-- name: Vérification de l'état de santé de l'application
-  debug:
-    msg: "L'application {{ app_name }} est en bonne santé et prête à recevoir des requêtes."
-  when: health_check is succeeded
+- name: "📋 Initialisation de la validation pour {{ app_name }}"
+  ansible.builtin.set_fact:
+    validation_start_time: "{{ ansible_date_time.epoch }}"
+    validation_results: {}
+    validation_errors: []
+    validation_warnings: []
+  tags:
+    - validation
+    - quarkus
 
-- name: Avertissement si l'application n'est pas en bonne santé
-  debug:
-    msg: "AVERTISSEMENT: L'application {{ app_name }} n'est pas en bonne santé. Vérifiez les logs pour plus d'informations."
-  when: health_check is failed
+- name: "🔍 Configuration des endpoints de validation"
+  ansible.builtin.set_fact:
+    quarkus_internal_url: "http://{{ app_name }}.{{ app_namespace }}.svc.cluster.local:{{ quarkus_service_port | default(8080) }}"
+    quarkus_health_endpoint: "{{ quarkus_internal_url }}{{ quarkus_health_path | default('/q/health') }}"
+    quarkus_ready_endpoint: "{{ quarkus_internal_url }}{{ quarkus_health_path | default('/q/health') }}/ready"
+    quarkus_live_endpoint: "{{ quarkus_internal_url }}{{ quarkus_health_path | default('/q/health') }}/live"
+    quarkus_metrics_endpoint: "{{ quarkus_internal_url }}{{ quarkus_metrics_path | default('/q/metrics') }}"
+    quarkus_external_url: "{{ 'https://' + app_domain if app_domain is defined else '' }}"
+    validation_timeout: "{{ lookup('env', 'LIONS_TIMEOUT_DEFAULT') | default(300) | int }}"
+    max_retries: "{{ (validation_timeout | int / 10) | int }}"
+  tags:
+    - validation
+    - configuration
 
-- name: Récupération de l'URL d'accès
-  set_fact:
-    app_url: "https://{{ app_domain }}"
-  when: app_environment != 'development' or (extra_params.create_ingress | default(true) | bool)
+- name: "📝 Logging du début de validation"
+  ansible.builtin.debug:
+    msg: |
+      🚀 Début de validation pour l'application Quarkus
+      📦 Application: {{ app_name }}
+      🏷️  Version: {{ app_version | default('latest') }}
+      🌍 Environnement: {{ app_environment }}
+      📁 Namespace: {{ app_namespace }}
+      ⏱️  Timeout: {{ validation_timeout }}s
+      🔄 Tentatives max: {{ max_retries }}
+  when: lookup('env', 'LIONS_DEBUG_MODE') | default('false') | bool
+  tags:
+    - validation
+    - debug
 
-- name: Affichage de l'URL d'accès
-  debug:
-    msg: "L'application {{ app_name }} est accessible à l'adresse: {{ app_url }}"
-  when: app_url is defined
+# =========================================================================
+# VALIDATION DE L'ÉTAT DE SANTÉ INTERNE
+# =========================================================================
 
-- name: Vérification de l'accessibilité externe (si ingress est configuré)
-  uri:
-    url: "{{ app_url }}"
+- name: "🏥 Validation de l'endpoint de santé (readiness)"
+  ansible.builtin.uri:
+    url: "{{ quarkus_ready_endpoint }}"
     method: GET
-    status_code: 200, 301, 302, 307, 308
-    validate_certs: no
-    follow_redirects: no
-  register: external_check
-  ignore_errors: yes
-  when: app_url is defined
-
-- name: Affichage du résultat de la vérification externe
-  debug:
-    msg: "L'application {{ app_name }} est accessible depuis l'extérieur."
-  when: external_check is defined and external_check is succeeded
-
-- name: Avertissement si l'application n'est pas accessible depuis l'extérieur
-  debug:
-    msg: "AVERTISSEMENT: L'application {{ app_name }} n'est pas accessible depuis l'extérieur. Vérifiez la configuration de l'ingress."
-  when: external_check is defined and external_check is failed
-
-- name: Vérification des métriques Prometheus
-  uri:
-    url: "http://{{ app_name }}.{{ app_namespace }}.svc.cluster.local:{{ quarkus_prometheus_port }}{{ quarkus_prometheus_path }}"
     status_code: 200
-    validate_certs: no
-  register: metrics_check
-  ignore_errors: yes
-  when: quarkus_prometheus_scrape | bool
+    validate_certs: "{{ lookup('env', 'LIONS_SECURITY_TLS_ENABLED') | default('true') | bool }}"
+    timeout: 30
+    return_content: yes
+  register: readiness_check
+  until: readiness_check.status == 200
+  retries: "{{ max_retries }}"
+  delay: 10
+  failed_when: false
+  tags:
+    - validation
+    - health
+    - readiness
 
-- name: Affichage du résultat de la vérification des métriques
-  debug:
-    msg: "Les métriques Prometheus sont disponibles pour l'application {{ app_name }}."
-  when: metrics_check is defined and metrics_check is succeeded
+- name: "❤️ Validation de l'endpoint de santé (liveness)"
+  ansible.builtin.uri:
+    url: "{{ quarkus_live_endpoint }}"
+    method: GET
+    status_code: 200
+    validate_certs: "{{ lookup('env', 'LIONS_SECURITY_TLS_ENABLED') | default('true') | bool }}"
+    timeout: 30
+    return_content: yes
+  register: liveness_check
+  until: liveness_check.status == 200
+  retries: 5
+  delay: 5
+  failed_when: false
+  tags:
+    - validation
+    - health
+    - liveness
 
-- name: Avertissement si les métriques ne sont pas disponibles
-  debug:
-    msg: "AVERTISSEMENT: Les métriques Prometheus ne sont pas disponibles pour l'application {{ app_name }}."
-  when: metrics_check is defined and metrics_check is failed
+- name: "📊 Enregistrement des résultats de santé"
+  ansible.builtin.set_fact:
+    validation_results: "{{ validation_results | combine({
+      'readiness': {
+        'status': readiness_check.status | default('unknown'),
+        'success': readiness_check.status | default(0) == 200,
+        'response_time': readiness_check.elapsed | default(0),
+        'attempts': readiness_check.attempts | default(1)
+      },
+      'liveness': {
+        'status': liveness_check.status | default('unknown'),
+        'success': liveness_check.status | default(0) == 200,
+        'response_time': liveness_check.elapsed | default(0),
+        'attempts': liveness_check.attempts | default(1)
+      }
+    }) }}"
+  tags:
+    - validation
+    - results
 
-- name: Enregistrement des informations de déploiement
-  copy:
+# =========================================================================
+# VALIDATION DE L'ACCESSIBILITÉ EXTERNE
+# =========================================================================
+
+- name: "🌐 Validation de l'accessibilité externe"
+  block:
+    - name: "🔗 Test de l'endpoint externe"
+      ansible.builtin.uri:
+        url: "{{ quarkus_external_url }}"
+        method: GET
+        status_code: [200, 301, 302, 307, 308, 401, 403]
+        validate_certs: "{{ lookup('env', 'LIONS_SECURITY_TLS_ENABLED') | default('true') | bool }}"
+        timeout: 30
+        follow_redirects: no
+        return_content: yes
+      register: external_accessibility
+      failed_when: false
+
+    - name: "📝 Enregistrement de l'accessibilité externe"
+      ansible.builtin.set_fact:
+        validation_results: "{{ validation_results | combine({
+          'external_access': {
+            'url': quarkus_external_url,
+            'status': external_accessibility.status | default('unreachable'),
+            'success': external_accessibility.status | default(0) in [200, 301, 302, 307, 308],
+            'response_time': external_accessibility.elapsed | default(0),
+            'ssl_valid': external_accessibility.get('server_certificate_issuer', '') != ''
+          }
+        }) }}"
+
+  when:
+    - quarkus_external_url != ""
+    - app_domain is defined
+    - lookup('env', 'LIONS_SECURITY_TLS_ENABLED') | default('true') | bool
+  tags:
+    - validation
+    - external
+    - ingress
+
+# =========================================================================
+# VALIDATION DU MONITORING
+# =========================================================================
+
+- name: "📈 Validation des métriques Prometheus"
+  block:
+    - name: "🎯 Test de l'endpoint des métriques"
+      ansible.builtin.uri:
+        url: "{{ quarkus_metrics_endpoint }}"
+        method: GET
+        status_code: 200
+        validate_certs: "{{ lookup('env', 'LIONS_SECURITY_TLS_ENABLED') | default('true') | bool }}"
+        timeout: 15
+        return_content: yes
+      register: metrics_check
+      failed_when: false
+
+    - name: "📊 Analyse des métriques disponibles"
+      ansible.builtin.set_fact:
+        metrics_content: "{{ metrics_check.content | default('') }}"
+        metrics_lines: "{{ metrics_check.content.split('\n') | length if metrics_check.content is defined else 0 }}"
+      when: metrics_check.status | default(0) == 200
+
+    - name: "📝 Enregistrement des résultats métriques"
+      ansible.builtin.set_fact:
+        validation_results: "{{ validation_results | combine({
+          'metrics': {
+            'endpoint': quarkus_metrics_endpoint,
+            'status': metrics_check.status | default('unreachable'),
+            'success': metrics_check.status | default(0) == 200,
+            'response_time': metrics_check.elapsed | default(0),
+            'metrics_count': metrics_lines | default(0),
+            'content_length': metrics_content | length if metrics_content is defined else 0
+          }
+        }) }}"
+
+  when:
+    - lookup('env', 'LIONS_PROMETHEUS_ENABLED') | default('true') | bool
+    - quarkus_metrics_enabled | default(true) | bool
+  tags:
+    - validation
+    - monitoring
+    - metrics
+
+# =========================================================================
+# VALIDATION DES RESSOURCES KUBERNETES
+# =========================================================================
+
+- name: "☸️ Validation des ressources Kubernetes"
+  block:
+    - name: "🔍 Vérification du statut du déploiement"
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: "{{ app_name }}"
+        namespace: "{{ app_namespace }}"
+      register: deployment_status
+
+    - name: "🏃 Vérification du statut des pods"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Pod
+        namespace: "{{ app_namespace }}"
+        label_selectors:
+          - "app={{ app_name }}"
+      register: pods_status
+
+    - name: "🌐 Vérification du service"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Service
+        name: "{{ app_name }}"
+        namespace: "{{ app_namespace }}"
+      register: service_status
+
+    - name: "📝 Analyse des ressources Kubernetes"
+      ansible.builtin.set_fact:
+        deployment_ready: "{{ deployment_status.resources[0].status.readyReplicas | default(0) >= deployment_status.resources[0].spec.replicas | default(1) if deployment_status.resources else false }}"
+        pods_running: "{{ pods_status.resources | selectattr('status.phase', 'equalto', 'Running') | list | length }}"
+        pods_total: "{{ pods_status.resources | length }}"
+        service_ready: "{{ service_status.resources | length > 0 }}"
+
+    - name: "📊 Enregistrement des résultats Kubernetes"
+      ansible.builtin.set_fact:
+        validation_results: "{{ validation_results | combine({
+          'kubernetes': {
+            'deployment_ready': deployment_ready,
+            'pods_running': pods_running,
+            'pods_total': pods_total,
+            'pods_healthy': pods_running == pods_total,
+            'service_ready': service_ready,
+            'replicas_target': deployment_status.resources[0].spec.replicas | default(1) if deployment_status.resources else 0,
+            'replicas_ready': deployment_status.resources[0].status.readyReplicas | default(0) if deployment_status.resources else 0
+          }
+        }) }}"
+
+  tags:
+    - validation
+    - kubernetes
+    - resources
+
+# =========================================================================
+# VALIDATION DE LA PERFORMANCE
+# =========================================================================
+
+- name: "⚡ Test de performance basique"
+  block:
+    - name: "🚀 Test de latence de l'application"
+      ansible.builtin.uri:
+        url: "{{ quarkus_ready_endpoint }}"
+        method: GET
+        status_code: 200
+        validate_certs: "{{ lookup('env', 'LIONS_SECURITY_TLS_ENABLED') | default('true') | bool }}"
+        timeout: 10
+      register: performance_test
+      failed_when: false
+      loop: "{{ range(3) | list }}"
+      loop_control:
+        loop_var: test_iteration
+
+    - name: "📊 Calcul des métriques de performance"
+      ansible.builtin.set_fact:
+        response_times: "{{ performance_test.results | map(attribute='elapsed') | list }}"
+        avg_response_time: "{{ (response_times | sum) / (response_times | length) }}"
+        max_response_time: "{{ response_times | max }}"
+        min_response_time: "{{ response_times | min }}"
+
+    - name: "📝 Enregistrement des résultats de performance"
+      ansible.builtin.set_fact:
+        validation_results: "{{ validation_results | combine({
+          'performance': {
+            'avg_response_time': avg_response_time | float | round(3),
+            'max_response_time': max_response_time | float | round(3),
+            'min_response_time': min_response_time | float | round(3),
+            'response_time_threshold': 2.0,
+            'performance_ok': avg_response_time | float < 2.0
+          }
+        }) }}"
+
+  when:
+    - validation_results.readiness.success | default(false)
+    - lookup('env', 'LIONS_ENVIRONMENT') != 'production'  # Éviter les tests de charge en production
+  tags:
+    - validation
+    - performance
+
+# =========================================================================
+# ANALYSE ET RAPPORT FINAL
+# =========================================================================
+
+- name: "🔍 Analyse globale des résultats"
+  ansible.builtin.set_fact:
+    validation_success: >-
+      {{
+        (validation_results.readiness.success | default(false)) and
+        (validation_results.liveness.success | default(false)) and
+        (validation_results.kubernetes.deployment_ready | default(false)) and
+        (validation_results.kubernetes.pods_healthy | default(false))
+      }}
+    validation_warnings: >-
+      {{
+        validation_warnings +
+        (['Accessibilité externe échouée'] if validation_results.external_access.success | default(true) == false else []) +
+        (['Métriques indisponibles'] if validation_results.metrics.success | default(true) == false else []) +
+        (['Performance dégradée'] if validation_results.performance.performance_ok | default(true) == false else [])
+      }}
+    validation_duration: "{{ ansible_date_time.epoch | int - validation_start_time | int }}"
+  tags:
+    - validation
+    - analysis
+
+- name: "✅ Affichage du rapport de validation - SUCCÈS"
+  ansible.builtin.debug:
+    msg: |
+      
+      🎉 ====== VALIDATION RÉUSSIE ======
+      📦 Application: {{ app_name }}
+      🏷️  Version: {{ app_version | default('latest') }}
+      🌍 Environnement: {{ app_environment }}
+      ⏱️  Durée: {{ validation_duration }}s
+      
+      📊 Résultats détaillés:
+      ├─ ❤️  Santé: {{ '✅ OK' if validation_results.readiness.success and validation_results.liveness.success else '❌ ERREUR' }}
+      ├─ ☸️  Kubernetes: {{ '✅ OK' if validation_results.kubernetes.deployment_ready and validation_results.kubernetes.pods_healthy else '❌ ERREUR' }}
+      ├─ 🌐 Accès externe: {{ '✅ OK' if validation_results.external_access.success | default(true) else '⚠️  ATTENTION' }}
+      ├─ 📈 Métriques: {{ '✅ OK' if validation_results.metrics.success | default(true) else '⚠️  ATTENTION' }}
+      └─ ⚡ Performance: {{ '✅ OK' if validation_results.performance.performance_ok | default(true) else '⚠️  ATTENTION' }}
+      
+      🔗 URLs d'accès:
+      {{ '├─ 🌐 Externe: ' + quarkus_external_url if quarkus_external_url != '' else '├─ 🌐 Externe: Non configuré' }}
+      └─ 🏠 Interne: {{ quarkus_internal_url }}
+      
+      {{ ('⚠️  Avertissements: ' + (validation_warnings | join(', '))) if validation_warnings | length > 0 else '✨ Aucun avertissement' }}
+
+  when: validation_success | bool
+  tags:
+    - validation
+    - report
+
+- name: "❌ Affichage du rapport de validation - ÉCHEC"
+  ansible.builtin.debug:
+    msg: |
+      
+      💥 ====== VALIDATION ÉCHOUÉE ======
+      📦 Application: {{ app_name }}
+      🏷️  Version: {{ app_version | default('latest') }}
+      🌍 Environnement: {{ app_environment }}
+      ⏱️  Durée: {{ validation_duration }}s
+      
+      ❌ Erreurs critiques détectées:
+      {{ '├─ ❤️  Santé: ERREUR' if not (validation_results.readiness.success and validation_results.liveness.success) else '├─ ❤️  Santé: OK' }}
+      {{ '├─ ☸️  Kubernetes: ERREUR' if not (validation_results.kubernetes.deployment_ready and validation_results.kubernetes.pods_healthy) else '├─ ☸️  Kubernetes: OK' }}
+      {{ '├─ 🌐 Accès externe: ATTENTION' if not validation_results.external_access.success | default(true) else '├─ 🌐 Accès externe: OK' }}
+      {{ '├─ 📈 Métriques: ATTENTION' if not validation_results.metrics.success | default(true) else '├─ 📈 Métriques: OK' }}
+      {{ '└─ ⚡ Performance: ATTENTION' if not validation_results.performance.performance_ok | default(true) else '└─ ⚡ Performance: OK' }}
+      
+      🔧 Actions recommandées:
+      ├─ Vérifiez les logs: kubectl logs -n {{ app_namespace }} -l app={{ app_name }}
+      ├─ Vérifiez les événements: kubectl get events -n {{ app_namespace }}
+      └─ Contactez l'équipe DevOps si le problème persiste
+
+  when: not validation_success | bool
+  tags:
+    - validation
+    - report
+    - error
+
+# =========================================================================
+# SAUVEGARDE DU RAPPORT DE VALIDATION
+# =========================================================================
+
+- name: "💾 Sauvegarde du rapport de validation détaillé"
+  ansible.builtin.copy:
     content: |
-      Application: {{ app_name }}
-      Version: {{ app_version }}
-      Environnement: {{ app_environment }}
-      Namespace: {{ app_namespace }}
-      URL: {{ app_url | default('Non disponible') }}
-      Date de déploiement: {{ ansible_date_time.iso8601 }}
-      Statut: {{ 'Succès' if health_check is succeeded else 'Avertissement' }}
+      # Rapport de Validation - {{ app_name }}
       
-      Ressources:
-        Replicas: {{ app_replicas }}
-        CPU Requests: {{ app_resources.requests.cpu }}
-        Memory Requests: {{ app_resources.requests.memory }}
-        CPU Limits: {{ app_resources.limits.cpu }}
-        Memory Limits: {{ app_resources.limits.memory }}
+      ## Informations générales
+      - **Application**: {{ app_name }}
+      - **Version**: {{ app_version | default('latest') }}
+      - **Environnement**: {{ app_environment }}
+      - **Namespace**: {{ app_namespace }}
+      - **Date**: {{ ansible_date_time.iso8601 }}
+      - **Durée**: {{ validation_duration }}s
+      - **Statut global**: {{ 'SUCCÈS' if validation_success else 'ÉCHEC' }}
       
-      Monitoring:
-        Prometheus: {{ 'Activé' if quarkus_prometheus_scrape | bool else 'Désactivé' }}
-        Métriques: {{ 'Disponibles' if metrics_check is defined and metrics_check is succeeded else 'Non disponibles' }}
+      ## Résultats détaillés
       
-      Notes:
-      - Vérifiez les logs de l'application pour plus d'informations.
-      - Pour les problèmes, contactez l'équipe d'infrastructure.
-    dest: "/var/log/lions/deployments/{{ app_name }}-{{ app_environment }}-{{ ansible_date_time.date }}.log"
+      ### Santé de l'application
+      ```json
+      {{ validation_results.readiness | to_nice_json }}
+      ```
+      
+      ### État Kubernetes
+      ```json
+      {{ validation_results.kubernetes | to_nice_json }}
+      ```
+      
+      {% if validation_results.external_access is defined %}
+      ### Accessibilité externe
+      ```json
+      {{ validation_results.external_access | to_nice_json }}
+      ```
+      {% endif %}
+      
+      {% if validation_results.metrics is defined %}
+      ### Métriques
+      ```json
+      {{ validation_results.metrics | to_nice_json }}
+      ```
+      {% endif %}
+      
+      {% if validation_results.performance is defined %}
+      ### Performance
+      ```json
+      {{ validation_results.performance | to_nice_json }}
+      ```
+      {% endif %}
+      
+      ## Configuration de déploiement
+      - **Replicas**: {{ validation_results.kubernetes.replicas_target | default('N/A') }}
+      - **CPU Requests**: {{ app_resources.requests.cpu | default('N/A') }}
+      - **Memory Requests**: {{ app_resources.requests.memory | default('N/A') }}
+      - **CPU Limits**: {{ app_resources.limits.cpu | default('N/A') }}
+      - **Memory Limits**: {{ app_resources.limits.memory | default('N/A') }}
+      
+      {% if validation_warnings | length > 0 %}
+      ## Avertissements
+      {% for warning in validation_warnings %}
+      - {{ warning }}
+      {% endfor %}
+      {% endif %}
+      
+      ## URLs d'accès
+      {% if quarkus_external_url != '' %}
+      - **Externe**: {{ quarkus_external_url }}
+      {% endif %}
+      - **Interne**: {{ quarkus_internal_url }}
+      
+      ---
+      Rapport généré automatiquement par LIONS Infrastructure 5.0
+    dest: "/var/log/lions/validations/{{ app_name }}-{{ app_environment }}-{{ ansible_date_time.date }}-{{ ansible_date_time.time | replace(':', '') }}.md"
     mode: '0644'
-  ignore_errors: yes
+  delegate_to: localhost
+  run_once: true
+  when: lookup('env', 'LIONS_AUDIT_ENABLED') | default('true') | bool
+  tags:
+    - validation
+    - audit
+    - reporting
 
-- name: Nettoyage des fichiers temporaires
-  file:
-    path: "{{ temp_dir.path }}"
-    state: absent
-  changed_when: false
-  ignore_errors: yes
+# =========================================================================
+# GESTION DES ÉCHECS
+# =========================================================================
+
+- name: "💥 Échec de la validation - Arrêt du déploiement"
+  ansible.builtin.fail:
+    msg: |
+      La validation de l'application {{ app_name }} a échoué.
+      
+      Erreurs critiques:
+      {{ '- Santé de l\'application défaillante' if not (validation_results.readiness.success and validation_results.liveness.success) else '' }}
+      {{ '- Ressources Kubernetes défaillantes' if not (validation_results.kubernetes.deployment_ready and validation_results.kubernetes.pods_healthy) else '' }}
+      
+      Consultez les logs pour plus d'informations:
+      kubectl logs -n {{ app_namespace }} -l app={{ app_name }}
+      
+      Contact: {{ lookup('env', 'LIONS_CONFIG_MAINTAINER') | default('devops@lions.dev') }}
+  when:
+    - not validation_success | bool
+    - lookup('env', 'LIONS_DRY_RUN') | default('false') | bool == false
+    - app_environment == 'production'  # Échec critique uniquement en production
+  tags:
+    - validation
+    - failure
+    - critical

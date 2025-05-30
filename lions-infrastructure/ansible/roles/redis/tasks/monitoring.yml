@@ -1,226 +1,401 @@
 ---
-# Titre: Configuration du monitoring pour Redis
-# Description: Configure le monitoring pour Redis avec Prometheus
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-08
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - REDIS MONITORING CONFIGURATION
+# =========================================================================
+# Description: Configuration du monitoring pour Redis avec Prometheus/Grafana
+# Version: 5.0.0
+# Maintainer: DevOps Team LIONS
+# Documentation: https://docs.lions.dev/infrastructure/monitoring/redis
+# =========================================================================
 
-- name: Vérification de l'existence de Prometheus Operator
-  k8s_info:
+# =========================================================================
+# INITIALISATION ET VALIDATION
+# =========================================================================
+- name: "🔍 [MONITORING] Validation de la configuration du monitoring Redis"
+  assert:
+    that:
+      - lions_monitoring_enabled is defined
+      - lions_redis_monitoring_enabled is defined
+      - app_namespace is defined
+      - app_name is defined
+    fail_msg: "❌ Variables de monitoring Redis manquantes. Vérifiez la configuration."
+    success_msg: "✅ Configuration du monitoring Redis validée"
+  tags:
+    - monitoring
+    - validation
+
+- name: "📊 [MONITORING] Affichage de la configuration du monitoring Redis"
+  debug:
+    msg:
+      - "🔧 Monitoring global: {{ lions_monitoring_enabled | default('false') }}"
+      - "📈 Monitoring Redis: {{ lions_redis_monitoring_enabled | default('true') }}"
+      - "🏷️  Namespace: {{ app_namespace }}"
+      - "📛 Service: {{ app_name }}"
+      - "🎯 Prometheus scraping: {{ lions_redis_prometheus_scrape | default('true') }}"
+  when: lions_debug_mode | default(false) | bool
+  tags:
+    - monitoring
+    - debug
+
+# =========================================================================
+# VÉRIFICATION DES PRÉREQUIS PROMETHEUS
+# =========================================================================
+- name: "🔍 [PROMETHEUS] Vérification de l'installation de Prometheus Operator"
+  kubernetes.core.k8s_info:
     api_version: apiextensions.k8s.io/v1
     kind: CustomResourceDefinition
     name: servicemonitors.monitoring.coreos.com
-  register: prometheus_operator_check
-  ignore_errors: yes
+  register: lions_prometheus_operator_check
+  failed_when: false
+  tags:
+    - monitoring
+    - prometheus
+    - validation
 
-- name: Avertissement si Prometheus Operator n'est pas installé
+- name: "📊 [PROMETHEUS] Statut de Prometheus Operator"
+  set_fact:
+    lions_prometheus_available: "{{ lions_prometheus_operator_check.resources | default([]) | length > 0 }}"
+  tags:
+    - monitoring
+    - prometheus
+
+- name: "⚠️  [PROMETHEUS] Avertissement - Prometheus Operator non disponible"
   debug:
-    msg: "AVERTISSEMENT: Prometheus Operator n'est pas installé. Le monitoring ne sera pas configuré."
-  when: prometheus_operator_check is failed or prometheus_operator_check.resources | length == 0
+    msg:
+      - "❌ Prometheus Operator n'est pas installé ou inaccessible"
+      - "🔧 Le monitoring Redis via ServiceMonitor ne sera pas configuré"
+      - "💡 Installez Prometheus Operator pour activer le monitoring"
+  when: not lions_prometheus_available
+  tags:
+    - monitoring
+    - prometheus
 
-- name: Déploiement du ServiceMonitor pour Redis
-  k8s:
+- name: "✅ [PROMETHEUS] Prometheus Operator détecté"
+  debug:
+    msg: "🎯 Prometheus Operator disponible - Configuration du monitoring Redis"
+  when:
+    - lions_prometheus_available
+    - lions_debug_mode | default(false) | bool
+  tags:
+    - monitoring
+    - prometheus
+
+# =========================================================================
+# VÉRIFICATION DES PRÉREQUIS GRAFANA
+# =========================================================================
+- name: "🔍 [GRAFANA] Vérification de l'installation de Grafana"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Service
+    namespace: "{{ lions_monitoring_namespace | default('monitoring') }}"
+    name: "{{ lions_grafana_service_name | default('grafana') }}"
+  register: lions_grafana_check
+  failed_when: false
+  tags:
+    - monitoring
+    - grafana
+    - validation
+
+- name: "📊 [GRAFANA] Statut de Grafana"
+  set_fact:
+    lions_grafana_available: "{{ lions_grafana_check.resources | default([]) | length > 0 }}"
+  tags:
+    - monitoring
+    - grafana
+
+- name: "⚠️  [GRAFANA] Avertissement - Grafana non disponible"
+  debug:
+    msg:
+      - "❌ Grafana n'est pas installé ou inaccessible"
+      - "📊 Les dashboards Redis ne seront pas configurés"
+      - "💡 Installez Grafana pour activer les dashboards"
+  when: not lions_grafana_available
+  tags:
+    - monitoring
+    - grafana
+
+# =========================================================================
+# CONFIGURATION DU SERVICEMONITOR PROMETHEUS
+# =========================================================================
+- name: "🎯 [SERVICEMONITOR] Génération du ServiceMonitor Redis"
+  template:
+    src: servicemonitor.yml.j2
+    dest: "{{ temp_dir.path }}/redis-servicemonitor.yml"
+    mode: '0644'
+  when:
+    - lions_monitoring_enabled | default(true) | bool
+    - lions_redis_monitoring_enabled | default(true) | bool
+    - lions_prometheus_available
+    - lions_redis_prometheus_scrape | default(true) | bool
+  tags:
+    - monitoring
+    - prometheus
+    - servicemonitor
+
+- name: "🚀 [SERVICEMONITOR] Déploiement du ServiceMonitor Redis"
+  kubernetes.core.k8s:
     state: present
-    src: "{{ temp_dir.path }}/servicemonitor.yml"
-  register: servicemonitor_result
-  when: prometheus_operator_check is succeeded and prometheus_operator_check.resources | length > 0 and redis_prometheus_scrape | default(true) | bool
+    src: "{{ temp_dir.path }}/redis-servicemonitor.yml"
+    wait: true
+    wait_condition:
+      type: Ready
+      status: "True"
+    wait_timeout: "{{ lions_timeout_default | default(300) }}"
+  register: lions_redis_servicemonitor_result
+  when:
+    - lions_monitoring_enabled | default(true) | bool
+    - lions_redis_monitoring_enabled | default(true) | bool
+    - lions_prometheus_available
+    - lions_redis_prometheus_scrape | default(true) | bool
+  tags:
+    - monitoring
+    - prometheus
+    - servicemonitor
 
-- name: Vérification de l'existence du ServiceMonitor
-  k8s_info:
+- name: "✅ [SERVICEMONITOR] Vérification du déploiement du ServiceMonitor"
+  kubernetes.core.k8s_info:
     api_version: monitoring.coreos.com/v1
     kind: ServiceMonitor
     namespace: "{{ app_namespace }}"
-    name: "{{ app_name }}"
-  register: servicemonitor_check
-  ignore_errors: yes
-  when: prometheus_operator_check is succeeded and prometheus_operator_check.resources | length > 0 and redis_prometheus_scrape | default(true) | bool
+    name: "{{ app_name }}-{{ lions_redis_service_name | default('redis') }}"
+  register: lions_redis_servicemonitor_check
+  failed_when: false
+  when:
+    - lions_monitoring_enabled | default(true) | bool
+    - lions_redis_monitoring_enabled | default(true) | bool
+    - lions_prometheus_available
+    - lions_redis_prometheus_scrape | default(true) | bool
+  tags:
+    - monitoring
+    - prometheus
+    - validation
 
-- name: Avertissement si le ServiceMonitor n'a pas été créé
+- name: "🎉 [SERVICEMONITOR] ServiceMonitor Redis configuré avec succès"
   debug:
-    msg: "AVERTISSEMENT: Le ServiceMonitor pour Redis n'a pas été créé. Vérifiez les logs pour plus d'informations."
-  when: prometheus_operator_check is succeeded and prometheus_operator_check.resources | length > 0 and redis_prometheus_scrape | default(true) | bool and (servicemonitor_check is failed or servicemonitor_check.resources | length == 0)
+    msg:
+      - "✅ ServiceMonitor '{{ app_name }}-{{ lions_redis_service_name | default('redis') }}' créé"
+      - "📍 Namespace: {{ app_namespace }}"
+      - "🎯 Prometheus va scraper les métriques Redis"
+  when:
+    - lions_monitoring_enabled | default(true) | bool
+    - lions_redis_monitoring_enabled | default(true) | bool
+    - lions_prometheus_available
+    - lions_redis_prometheus_scrape | default(true) | bool
+    - lions_redis_servicemonitor_check.resources | default([]) | length > 0
+  tags:
+    - monitoring
+    - prometheus
 
-- name: Vérification de l'existence de Grafana
-  k8s_info:
-    api_version: v1
-    kind: Service
-    namespace: monitoring
-    name: grafana
-  register: grafana_check
-  ignore_errors: yes
-
-- name: Avertissement si Grafana n'est pas installé
+- name: "❌ [SERVICEMONITOR] Erreur lors de la création du ServiceMonitor"
   debug:
-    msg: "AVERTISSEMENT: Grafana n'est pas installé. Les dashboards ne seront pas configurés."
-  when: grafana_check is failed or grafana_check.resources | length == 0
+    msg:
+      - "⚠️  Le ServiceMonitor Redis n'a pas pu être créé"
+      - "🔍 Vérifiez les logs et les permissions RBAC"
+      - "📝 Namespace: {{ app_namespace }}"
+      - "🏷️  Nom: {{ app_name }}-{{ lions_redis_service_name | default('redis') }}"
+  when:
+    - lions_monitoring_enabled | default(true) | bool
+    - lions_redis_monitoring_enabled | default(true) | bool
+    - lions_prometheus_available
+    - lions_redis_prometheus_scrape | default(true) | bool
+    - lions_redis_servicemonitor_check.resources | default([]) | length == 0
+  tags:
+    - monitoring
+    - prometheus
 
-- name: Création du ConfigMap pour le dashboard Redis
-  k8s:
+# =========================================================================
+# CONFIGURATION DES DASHBOARDS GRAFANA
+# =========================================================================
+- name: "📊 [DASHBOARD] Génération du dashboard Grafana Redis"
+  template:
+    src: grafana-dashboard.json.j2
+    dest: "{{ temp_dir.path }}/redis-dashboard.json"
+    mode: '0644'
+  when:
+    - lions_monitoring_enabled | default(true) | bool
+    - lions_redis_monitoring_enabled | default(true) | bool
+    - lions_grafana_available
+    - lions_redis_dashboard_enabled | default(true) | bool
+  tags:
+    - monitoring
+    - grafana
+    - dashboard
+
+- name: "🎨 [DASHBOARD] Création du ConfigMap pour le dashboard Redis"
+  kubernetes.core.k8s:
     state: present
     definition:
       apiVersion: v1
       kind: ConfigMap
       metadata:
-        name: "{{ app_name }}-dashboard"
-        namespace: monitoring
+        name: "{{ app_name }}-{{ lions_redis_service_name | default('redis') }}-dashboard"
+        namespace: "{{ lions_monitoring_namespace | default('monitoring') }}"
         labels:
           app: "{{ app_name }}"
+          component: "{{ lions_redis_service_name | default('redis') }}"
+          app.kubernetes.io/name: "{{ app_name }}"
+          app.kubernetes.io/component: monitoring
+          app.kubernetes.io/part-of: lions-infrastructure
+          app.kubernetes.io/version: "{{ lions_config_version | default('5.0.0') }}"
           grafana_dashboard: "1"
+          lions.dev/service: redis
+          lions.dev/monitoring: enabled
+          lions.dev/environment: "{{ lions_environment | default('development') }}"
+        annotations:
+          lions.dev/description: "Dashboard Grafana pour le monitoring Redis"
+          lions.dev/documentation: "https://docs.lions.dev/monitoring/redis"
       data:
-        redis-dashboard.json: |
-          {
-            "annotations": {
-              "list": []
-            },
-            "editable": true,
-            "fiscalYearStartMonth": 0,
-            "graphTooltip": 0,
-            "id": null,
-            "links": [],
-            "liveNow": false,
-            "panels": [
-              {
-                "datasource": {
-                  "type": "prometheus",
-                  "uid": "prometheus"
-                },
-                "fieldConfig": {
-                  "defaults": {
-                    "color": {
-                      "mode": "palette-classic"
-                    },
-                    "custom": {
-                      "axisCenteredZero": false,
-                      "axisColorMode": "text",
-                      "axisLabel": "",
-                      "axisPlacement": "auto",
-                      "barAlignment": 0,
-                      "drawStyle": "line",
-                      "fillOpacity": 10,
-                      "gradientMode": "none",
-                      "hideFrom": {
-                        "legend": false,
-                        "tooltip": false,
-                        "viz": false
-                      },
-                      "lineInterpolation": "linear",
-                      "lineWidth": 1,
-                      "pointSize": 5,
-                      "scaleDistribution": {
-                        "type": "linear"
-                      },
-                      "showPoints": "never",
-                      "spanNulls": false,
-                      "stacking": {
-                        "group": "A",
-                        "mode": "none"
-                      },
-                      "thresholdsStyle": {
-                        "mode": "off"
-                      }
-                    },
-                    "mappings": [],
-                    "thresholds": {
-                      "mode": "absolute",
-                      "steps": [
-                        {
-                          "color": "green",
-                          "value": null
-                        },
-                        {
-                          "color": "red",
-                          "value": 80
-                        }
-                      ]
-                    },
-                    "unit": "short"
-                  },
-                  "overrides": []
-                },
-                "gridPos": {
-                  "h": 8,
-                  "w": 12,
-                  "x": 0,
-                  "y": 0
-                },
-                "id": 1,
-                "options": {
-                  "legend": {
-                    "calcs": [],
-                    "displayMode": "list",
-                    "placement": "bottom",
-                    "showLegend": true
-                  },
-                  "tooltip": {
-                    "mode": "single",
-                    "sort": "none"
-                  }
-                },
-                "targets": [
-                  {
-                    "datasource": {
-                      "type": "prometheus",
-                      "uid": "prometheus"
-                    },
-                    "expr": "redis_connected_clients{instance=~\"$instance\"}",
-                    "refId": "A"
-                  }
-                ],
-                "title": "Redis Connected Clients",
-                "type": "timeseries"
-              }
-            ],
-            "refresh": "",
-            "schemaVersion": 38,
-            "style": "dark",
-            "tags": ["redis"],
-            "templating": {
-              "list": [
-                {
-                  "current": {
-                    "selected": false,
-                    "text": "All",
-                    "value": "$__all"
-                  },
-                  "datasource": {
-                    "type": "prometheus",
-                    "uid": "prometheus"
-                  },
-                  "definition": "label_values(redis_connected_clients, instance)",
-                  "hide": 0,
-                  "includeAll": true,
-                  "label": "Instance",
-                  "multi": false,
-                  "name": "instance",
-                  "options": [],
-                  "query": {
-                    "query": "label_values(redis_connected_clients, instance)",
-                    "refId": "StandardVariableQuery"
-                  },
-                  "refresh": 1,
-                  "regex": "",
-                  "skipUrlSync": false,
-                  "sort": 0,
-                  "type": "query"
-                }
-              ]
-            },
-            "time": {
-              "from": "now-6h",
-              "to": "now"
-            },
-            "timepicker": {},
-            "timezone": "",
-            "title": "Redis Overview",
-            "uid": "redis-overview",
-            "version": 1,
-            "weekStart": ""
-          }
-  register: dashboard_result
-  ignore_errors: yes
-  when: grafana_check is succeeded and grafana_check.resources | length > 0
+        redis-dashboard.json: "{{ lookup('file', temp_dir.path + '/redis-dashboard.json') }}"
+    wait: true
+    wait_timeout: "{{ lions_timeout_default | default(300) }}"
+  register: lions_redis_dashboard_result
+  when:
+    - lions_monitoring_enabled | default(true) | bool
+    - lions_redis_monitoring_enabled | default(true) | bool
+    - lions_grafana_available
+    - lions_redis_dashboard_enabled | default(true) | bool
+  tags:
+    - monitoring
+    - grafana
+    - dashboard
 
-- name: Avertissement si le dashboard n'a pas été créé
+- name: "✅ [DASHBOARD] Vérification du dashboard Grafana"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    namespace: "{{ lions_monitoring_namespace | default('monitoring') }}"
+    name: "{{ app_name }}-{{ lions_redis_service_name | default('redis') }}-dashboard"
+  register: lions_redis_dashboard_check
+  failed_when: false
+  when:
+    - lions_monitoring_enabled | default(true) | bool
+    - lions_redis_monitoring_enabled | default(true) | bool
+    - lions_grafana_available
+    - lions_redis_dashboard_enabled | default(true) | bool
+  tags:
+    - monitoring
+    - grafana
+    - validation
+
+- name: "🎉 [DASHBOARD] Dashboard Redis configuré avec succès"
   debug:
-    msg: "AVERTISSEMENT: Le dashboard Grafana pour Redis n'a pas été créé. Vérifiez les logs pour plus d'informations."
-  when: grafana_check is succeeded and grafana_check.resources | length > 0 and dashboard_result is failed
+    msg:
+      - "✅ Dashboard '{{ app_name }}-{{ lions_redis_service_name | default('redis') }}-dashboard' créé"
+      - "📍 Namespace: {{ lions_monitoring_namespace | default('monitoring') }}"
+      - "🎨 Dashboard disponible dans Grafana"
+      - "🔗 URL: {{ lions_grafana_url | default('http://grafana.' + lions_dns_full_domain) }}"
+  when:
+    - lions_monitoring_enabled | default(true) | bool
+    - lions_redis_monitoring_enabled | default(true) | bool
+    - lions_grafana_available
+    - lions_redis_dashboard_enabled | default(true) | bool
+    - lions_redis_dashboard_check.resources | default([]) | length > 0
+  tags:
+    - monitoring
+    - grafana
+
+- name: "❌ [DASHBOARD] Erreur lors de la création du dashboard"
+  debug:
+    msg:
+      - "⚠️  Le dashboard Grafana Redis n'a pas pu être créé"
+      - "🔍 Vérifiez les logs et les permissions"
+      - "📝 Namespace: {{ lions_monitoring_namespace | default('monitoring') }}"
+      - "🏷️  Nom: {{ app_name }}-{{ lions_redis_service_name | default('redis') }}-dashboard"
+  when:
+    - lions_monitoring_enabled | default(true) | bool
+    - lions_redis_monitoring_enabled | default(true) | bool
+    - lions_grafana_available
+    - lions_redis_dashboard_enabled | default(true) | bool
+    - lions_redis_dashboard_check.resources | default([]) | length == 0
+  tags:
+    - monitoring
+    - grafana
+
+# =========================================================================
+# CONFIGURATION DES ALERTES PROMETHEUS
+# =========================================================================
+- name: "🚨 [ALERTES] Génération des règles d'alerte Redis"
+  template:
+    src: alert-rules.yml.j2
+    dest: "{{ temp_dir.path }}/redis-alert-rules.yml"
+    mode: '0644'
+  when:
+    - lions_monitoring_enabled | default(true) | bool
+    - lions_redis_monitoring_enabled | default(true) | bool
+    - lions_prometheus_available
+    - lions_redis_alerts_enabled | default(true) | bool
+  tags:
+    - monitoring
+    - prometheus
+    - alerts
+
+- name: "🔔 [ALERTES] Déploiement des règles d'alerte Redis"
+  kubernetes.core.k8s:
+    state: present
+    src: "{{ temp_dir.path }}/redis-alert-rules.yml"
+    wait: true
+    wait_timeout: "{{ lions_timeout_default | default(300) }}"
+  register: lions_redis_alerts_result
+  when:
+    - lions_monitoring_enabled | default(true) | bool
+    - lions_redis_monitoring_enabled | default(true) | bool
+    - lions_prometheus_available
+    - lions_redis_alerts_enabled | default(true) | bool
+  tags:
+    - monitoring
+    - prometheus
+    - alerts
+
+- name: "✅ [ALERTES] Règles d'alerte Redis configurées"
+  debug:
+    msg:
+      - "✅ Règles d'alerte Redis déployées avec succès"
+      - "🚨 Alertes actives pour les métriques critiques"
+      - "📧 Notifications configurées selon la configuration Alertmanager"
+  when:
+    - lions_monitoring_enabled | default(true) | bool
+    - lions_redis_monitoring_enabled | default(true) | bool
+    - lions_prometheus_available
+    - lions_redis_alerts_enabled | default(true) | bool
+    - lions_redis_alerts_result is succeeded
+  tags:
+    - monitoring
+    - prometheus
+    - alerts
+
+# =========================================================================
+# NETTOYAGE DES FICHIERS TEMPORAIRES
+# =========================================================================
+- name: "🧹 [CLEANUP] Nettoyage des fichiers temporaires de monitoring"
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ temp_dir.path }}/redis-servicemonitor.yml"
+    - "{{ temp_dir.path }}/redis-dashboard.json"
+    - "{{ temp_dir.path }}/redis-alert-rules.yml"
+  when: lions_cleanup_temp_files | default(true) | bool
+  tags:
+    - monitoring
+    - cleanup
+
+# =========================================================================
+# RÉSUMÉ DE LA CONFIGURATION
+# =========================================================================
+- name: "📋 [RÉSUMÉ] Configuration du monitoring Redis terminée"
+  debug:
+    msg:
+      - "🎯 === RÉSUMÉ MONITORING REDIS ==="
+      - "✅ Monitoring global: {{ lions_monitoring_enabled | default(false) }}"
+      - "📈 Monitoring Redis: {{ lions_redis_monitoring_enabled | default(false) }}"
+      - "🎯 Prometheus disponible: {{ lions_prometheus_available | default(false) }}"
+      - "📊 Grafana disponible: {{ lions_grafana_available | default(false) }}"
+      - "🔍 ServiceMonitor: {{ 'Configuré' if lions_prometheus_available and lions_redis_prometheus_scrape | default(true) else 'Non configuré' }}"
+      - "🎨 Dashboard: {{ 'Configuré' if lions_grafana_available and lions_redis_dashboard_enabled | default(true) else 'Non configuré' }}"
+      - "🚨 Alertes: {{ 'Configurées' if lions_prometheus_available and lions_redis_alerts_enabled | default(true) else 'Non configurées' }}"
+      - "🏷️  Service: {{ app_name }}-{{ lions_redis_service_name | default('redis') }}"
+      - "📍 Namespace: {{ app_namespace }}"
+      - "🌐 Environnement: {{ lions_environment | default('development') }}"
+  tags:
+    - monitoring
+    - summary

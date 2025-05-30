@@ -1,115 +1,387 @@
 ---
-# Titre: Playbook de Déploiement des Services d'Infrastructure
-# Description: Déploie les services d'infrastructure (PostgreSQL, PgAdmin, Gitea, Keycloak)
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-10
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - DÉPLOIEMENT SERVICES D'INFRASTRUCTURE
+# =========================================================================
+# Description: Déploie les services d'infrastructure core avec gestion avancée
+# Version: 5.0.0
+# Auteur: DevOps Team - LIONS Infrastructure
+# Date: 2025-05-26
+# Documentation: https://docs.lions.dev/infrastructure/playbooks/deploy-infrastructure
+# =========================================================================
 
-- name: Déploiement des Services d'Infrastructure
-  hosts: vps
-  become: yes
-  gather_facts: yes
+- name: "LIONS Infrastructure 5.0 - Déploiement Services d'Infrastructure"
+  hosts: "{{ lions_target_hosts | default('vps') }}"
+  become: true
+  gather_facts: true
+  serial: "{{ lions_deployment_serial | default('100%') }}"
+  max_fail_percentage: "{{ lions_max_fail_percentage | default(0) }}"
+
   vars:
-    deploy_environment: "{{ target_env | default('development') }}"
-    roles_path: "{{ playbook_dir }}/../roles"
+    # =====================================================================
+    # CONFIGURATION PRINCIPALE DU PLAYBOOK
+    # =====================================================================
+    playbook_name: "deploy-infrastructure-services"
+    playbook_version: "5.0.0"
+    deployment_timestamp: "{{ ansible_date_time.iso8601 }}"
+    deployment_id: "{{ deployment_timestamp | regex_replace('[^0-9]', '') }}"
 
+    # Variables d'environnement (utilisation stricte des variables LIONS_*)
+    lions_environment: "{{ lookup('env', 'LIONS_ENVIRONMENT') | default('development') }}"
+    lions_deployment_mode: "{{ lookup('env', 'LIONS_DEPLOYMENT_MODE') | default('single') }}"
+    lions_debug_mode: "{{ lookup('env', 'LIONS_DEBUG_MODE') | default('false') | bool }}"
+    lions_dry_run: "{{ lookup('env', 'LIONS_DRY_RUN') | default('false') | bool }}"
+
+    # Configuration DNS et domaines
+    lions_dns_domain_base: "{{ lookup('env', 'LIONS_DNS_DOMAIN_BASE') | default('lions.local') }}"
+    lions_dns_subdomain_prefix: "{{ lookup('env', 'LIONS_DNS_SUBDOMAIN_PREFIX') | default(lions_environment) }}"
+    lions_dns_full_domain: "{{ lions_dns_subdomain_prefix }}.{{ lions_dns_domain_base }}"
+
+    # Configuration des timeouts
+    lions_timeout_deployment: "{{ lookup('env', 'LIONS_TIMEOUT_DEPLOYMENT') | default('1800') | int }}"
+    lions_timeout_default: "{{ lookup('env', 'LIONS_TIMEOUT_DEFAULT') | default('300') | int }}"
+
+    # Configuration du logging
+    lions_log_level: "{{ lookup('env', 'LIONS_LOG_LEVEL') | default('INFO') }}"
+    lions_audit_enabled: "{{ lookup('env', 'LIONS_AUDIT_ENABLED') | default('true') | bool }}"
+
+    # =====================================================================
+    # CONFIGURATION DES SERVICES À DÉPLOYER
+    # =====================================================================
+    infrastructure_services:
+      # Registry Docker
+      - name: "registry"
+        enabled: "{{ lookup('env', 'LIONS_REGISTRY_ENABLED') | default('true') | bool }}"
+        priority: 1
+        role_name: "registry"
+        config:
+          app_name: "registry"
+          app_namespace: "{{ lookup('env', 'LIONS_REGISTRY_NAMESPACE') | default('development') }}"
+          app_version: "{{ lookup('env', 'LIONS_REGISTRY_VERSION') | default('2.8') }}"
+          app_port: "{{ lookup('env', 'LIONS_REGISTRY_PORT') | default('5000') | int }}"
+          app_domain: "registry.{{ lions_dns_full_domain }}"
+          storage_size: "{{ lookup('env', 'LIONS_REGISTRY_STORAGE_SIZE') | default('50Gi') }}"
+          service_name: "{{ lookup('env', 'LIONS_REGISTRY_SERVICE_NAME') | default('registry') }}"
+
+      # PostgreSQL
+      - name: "postgres"
+        enabled: "{{ lookup('env', 'LIONS_POSTGRES_ENABLED') | default('true') | bool }}"
+        priority: 2
+        role_name: "postgres"
+        config:
+          app_name: "postgresql"
+          app_namespace: "{{ lookup('env', 'LIONS_POSTGRES_NAMESPACE') | default('database') }}"
+          app_version: "{{ lookup('env', 'LIONS_POSTGRES_VERSION') | default('15.4') }}"
+          app_port: "{{ lookup('env', 'LIONS_POSTGRES_PORT') | default('5432') | int }}"
+          app_domain: "postgres.{{ lions_dns_full_domain }}"
+          storage_size: "{{ lookup('env', 'LIONS_POSTGRES_STORAGE_SIZE') | default('20Gi') }}"
+          service_name: "{{ lookup('env', 'LIONS_POSTGRES_SERVICE_NAME') | default('postgresql') }}"
+          database_name: "{{ lookup('env', 'LIONS_POSTGRES_DATABASE') | default('lions_db') }}"
+          backup_enabled: "{{ lookup('env', 'LIONS_POSTGRES_BACKUP_ENABLED') | default('true') | bool }}"
+
+      # PgAdmin
+      - name: "pgadmin"
+        enabled: "{{ lookup('env', 'LIONS_POSTGRES_ENABLED') | default('true') | bool }}"
+        priority: 3
+        role_name: "pgadmin"
+        depends_on: ["postgres"]
+        config:
+          app_name: "pgadmin"
+          app_namespace: "{{ lookup('env', 'LIONS_POSTGRES_NAMESPACE') | default('database') }}"
+          app_version: "latest"
+          app_port: 80
+          app_domain: "pgadmin.{{ lions_dns_full_domain }}"
+          service_name: "pgadmin"
+          postgres_host: "{{ lookup('env', 'LIONS_POSTGRES_SERVICE_NAME') | default('postgresql') }}.{{ lookup('env', 'LIONS_POSTGRES_NAMESPACE') | default('database') }}.svc.cluster.local"
+          postgres_port: "{{ lookup('env', 'LIONS_POSTGRES_PORT') | default('5432') | int }}"
+
+      # Redis
+      - name: "redis"
+        enabled: "{{ lookup('env', 'LIONS_REDIS_ENABLED') | default('true') | bool }}"
+        priority: 4
+        role_name: "redis"
+        config:
+          app_name: "redis"
+          app_namespace: "{{ lookup('env', 'LIONS_REDIS_NAMESPACE') | default('database') }}"
+          app_version: "{{ lookup('env', 'LIONS_REDIS_VERSION') | default('7.2') }}"
+          app_port: "{{ lookup('env', 'LIONS_REDIS_PORT') | default('6379') | int }}"
+          app_domain: "redis.{{ lions_dns_full_domain }}"
+          storage_size: "{{ lookup('env', 'LIONS_REDIS_STORAGE_SIZE') | default('5Gi') }}"
+          service_name: "{{ lookup('env', 'LIONS_REDIS_SERVICE_NAME') | default('redis') }}"
+
+      # Gitea
+      - name: "gitea"
+        enabled: "{{ lookup('env', 'LIONS_GITEA_ENABLED') | default('true') | bool }}"
+        priority: 5
+        role_name: "gitea"
+        depends_on: ["postgres"]
+        config:
+          app_name: "gitea"
+          app_namespace: "{{ lookup('env', 'LIONS_GITEA_NAMESPACE') | default('development') }}"
+          app_version: "{{ lookup('env', 'LIONS_GITEA_VERSION') | default('1.20.5') }}"
+          app_port: "{{ lookup('env', 'LIONS_GITEA_PORT') | default('3000') | int }}"
+          app_domain: "gitea.{{ lions_dns_full_domain }}"
+          storage_size: "{{ lookup('env', 'LIONS_GITEA_STORAGE_SIZE') | default('10Gi') }}"
+          service_name: "{{ lookup('env', 'LIONS_GITEA_SERVICE_NAME') | default('gitea') }}"
+          postgres_host: "{{ lookup('env', 'LIONS_POSTGRES_SERVICE_NAME') | default('postgresql') }}.{{ lookup('env', 'LIONS_POSTGRES_NAMESPACE') | default('database') }}.svc.cluster.local"
+          postgres_port: "{{ lookup('env', 'LIONS_POSTGRES_PORT') | default('5432') | int }}"
+
+      # Keycloak
+      - name: "keycloak"
+        enabled: "{{ lookup('env', 'LIONS_KEYCLOAK_ENABLED') | default('true') | bool }}"
+        priority: 6
+        role_name: "keycloak"
+        depends_on: ["postgres"]
+        config:
+          app_name: "keycloak"
+          app_namespace: "{{ lookup('env', 'LIONS_KEYCLOAK_NAMESPACE') | default('security') }}"
+          app_version: "{{ lookup('env', 'LIONS_KEYCLOAK_VERSION') | default('22.0') }}"
+          app_port: "{{ lookup('env', 'LIONS_KEYCLOAK_PORT') | default('8080') | int }}"
+          app_domain: "keycloak.{{ lions_dns_full_domain }}"
+          service_name: "{{ lookup('env', 'LIONS_KEYCLOAK_SERVICE_NAME') | default('keycloak') }}"
+          realm_name: "{{ lookup('env', 'LIONS_KEYCLOAK_REALM') | default('lions') }}"
+          admin_user: "{{ lookup('env', 'LIONS_KEYCLOAK_ADMIN_USER') | default('admin') }}"
+          postgres_host: "{{ lookup('env', 'LIONS_POSTGRES_SERVICE_NAME') | default('postgresql') }}.{{ lookup('env', 'LIONS_POSTGRES_NAMESPACE') | default('database') }}.svc.cluster.local"
+          postgres_port: "{{ lookup('env', 'LIONS_POSTGRES_PORT') | default('5432') | int }}"
+
+      # Ollama
+      - name: "ollama"
+        enabled: "{{ lookup('env', 'LIONS_OLLAMA_ENABLED') | default('true') | bool }}"
+        priority: 7
+        role_name: "ollama"
+        config:
+          app_name: "ollama"
+          app_namespace: "{{ lookup('env', 'LIONS_OLLAMA_NAMESPACE') | default('ai') }}"
+          app_version: "{{ lookup('env', 'LIONS_OLLAMA_VERSION') | default('0.1.26') }}"
+          app_port: "{{ lookup('env', 'LIONS_OLLAMA_PORT') | default('11434') | int }}"
+          app_domain: "ollama.{{ lions_dns_full_domain }}"
+          storage_size: "{{ lookup('env', 'LIONS_OLLAMA_STORAGE_SIZE') | default('100Gi') }}"
+          service_name: "{{ lookup('env', 'LIONS_OLLAMA_SERVICE_NAME') | default('ollama') }}"
+          gpu_enabled: "{{ lookup('env', 'LIONS_OLLAMA_GPU_ENABLED') | default('false') | bool }}"
+
+  # =======================================================================
+  # PRE-TASKS - VALIDATION ET PRÉPARATION
+  # =======================================================================
   pre_tasks:
-    - name: Installation des dépendances Python requises
+    - name: "🔍 Validation - Affichage des informations de déploiement"
+      debug:
+        msg:
+          - "=================================================="
+          - "LIONS Infrastructure 5.0 - Déploiement Services"
+          - "=================================================="
+          - "Environnement: {{ lions_environment }}"
+          - "Mode de déploiement: {{ lions_deployment_mode }}"
+          - "Domaine complet: {{ lions_dns_full_domain }}"
+          - "ID de déploiement: {{ deployment_id }}"
+          - "Timestamp: {{ deployment_timestamp }}"
+          - "Mode debug: {{ lions_debug_mode }}"
+          - "Mode dry-run: {{ lions_dry_run }}"
+          - "=================================================="
+      tags: ["always", "validation"]
+
+    - name: "🔍 Validation - Vérification des variables critiques"
+      assert:
+        that:
+          - lions_environment in ['development', 'staging', 'production']
+          - lions_dns_domain_base is defined and lions_dns_domain_base | length > 0
+          - lions_deployment_mode in ['single', 'cluster', 'ha']
+        fail_msg: "Variables d'environnement critiques manquantes ou invalides"
+        success_msg: "Variables d'environnement validées avec succès"
+      tags: ["always", "validation"]
+
+    - name: "🔧 Préparation - Installation des dépendances Python requises"
       pip:
         name:
-          - kubernetes
-          - PyYAML
-          - jsonpatch
+          - kubernetes>=24.2.0
+          - PyYAML>=6.0
+          - jsonpatch>=1.32
+          - jmespath>=1.0.0
         state: present
-      become: yes
+        extra_args: "--upgrade --user"
+      become: false
+      when: not lions_dry_run
+      tags: ["preparation"]
 
+    - name: "🔧 Préparation - Vérification de la connectivité Kubernetes"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Node
+      register: k8s_nodes_check
+      failed_when: false
+      when: not lions_dry_run
+      tags: ["preparation", "k8s"]
+
+    - name: "❌ Échec - Kubernetes non accessible"
+      fail:
+        msg: "Impossible de se connecter au cluster Kubernetes. Vérifiez la configuration."
+      when:
+        - not lions_dry_run
+        - k8s_nodes_check is defined
+        - k8s_nodes_check.failed | default(false)
+      tags: ["preparation", "k8s"]
+
+    - name: "✅ Succès - Cluster Kubernetes accessible"
+      debug:
+        msg: "Cluster Kubernetes accessible - {{ k8s_nodes_check.resources | length }} nœud(s) détecté(s)"
+      when:
+        - not lions_dry_run
+        - k8s_nodes_check is defined
+        - not (k8s_nodes_check.failed | default(false))
+      tags: ["preparation", "k8s"]
+
+    - name: "📝 Audit - Enregistrement du début de déploiement"
+      lineinfile:
+        path: "/var/log/lions-infrastructure-audit.log"
+        line: "{{ deployment_timestamp }} | START | {{ playbook_name }} | {{ lions_environment }} | {{ deployment_id }} | {{ ansible_user }}@{{ inventory_hostname }}"
+        create: true
+        mode: "0644"
+      when:
+        - lions_audit_enabled
+        - not lions_dry_run
+      tags: ["audit"]
+
+  # =======================================================================
+  # TASKS PRINCIPALES - DÉPLOIEMENT DES SERVICES
+  # =======================================================================
   tasks:
-    - name: Affichage des informations de déploiement
+    - name: "🚀 Déploiement - Services d'infrastructure par ordre de priorité"
+      include_tasks: "tasks/deploy_service.yml"
+      vars:
+        service: "{{ item }}"
+        service_config: "{{ item.config }}"
+        deployment_context:
+          environment: "{{ lions_environment }}"
+          domain: "{{ lions_dns_full_domain }}"
+          timestamp: "{{ deployment_timestamp }}"
+          deployment_id: "{{ deployment_id }}"
+          dry_run: "{{ lions_dry_run }}"
+          debug: "{{ lions_debug_mode }}"
+      loop: "{{ infrastructure_services | selectattr('enabled') | sort(attribute='priority') }}"
+      loop_control:
+        loop_var: item
+        label: "{{ item.name }} (priorité: {{ item.priority }})"
+      when: item.enabled | default(false)
+      tags: ["deployment"]
+
+    - name: "🔍 Validation - Vérification post-déploiement des services"
+      include_tasks: "tasks/validate_service.yml"
+      vars:
+        service: "{{ item }}"
+        service_config: "{{ item.config }}"
+      loop: "{{ infrastructure_services | selectattr('enabled') | list }}"
+      loop_control:
+        loop_var: item
+        label: "{{ item.name }}"
+      when:
+        - item.enabled | default(false)
+        - not lions_dry_run
+      tags: ["validation", "post-deployment"]
+
+  # =======================================================================
+  # POST-TASKS - FINALISATION ET VALIDATION
+  # =======================================================================
+  post_tasks:
+    - name: "📊 Résumé - Collecte des informations de déploiement"
+      set_fact:
+        deployment_summary:
+          playbook: "{{ playbook_name }}"
+          version: "{{ playbook_version }}"
+          environment: "{{ lions_environment }}"
+          timestamp: "{{ deployment_timestamp }}"
+          deployment_id: "{{ deployment_id }}"
+          services_deployed: "{{ infrastructure_services | selectattr('enabled') | map(attribute='name') | list }}"
+          total_services: "{{ infrastructure_services | selectattr('enabled') | list | length }}"
+          domain: "{{ lions_dns_full_domain }}"
+          dry_run: "{{ lions_dry_run }}"
+      tags: ["summary"]
+
+    - name: "✅ Succès - Affichage du résumé de déploiement"
       debug:
-        msg: 
-          - "Environnement: {{ deploy_environment }}"
-          - "Services à déployer: Registry, PostgreSQL, PgAdmin, Gitea, Keycloak, Ollama"
+        msg:
+          - "=============================================="
+          - "DÉPLOIEMENT TERMINÉ AVEC SUCCÈS"
+          - "=============================================="
+          - "Services déployés: {{ deployment_summary.services_deployed | join(', ') }}"
+          - "Total: {{ deployment_summary.total_services }} service(s)"
+          - "Environnement: {{ deployment_summary.environment }}"
+          - "Domaine: {{ deployment_summary.domain }}"
+          - "ID de déploiement: {{ deployment_summary.deployment_id }}"
+          - "Timestamp: {{ deployment_summary.timestamp }}"
+          - "=============================================="
+          - "🌐 Accès aux services:"
+          - "{% for service in infrastructure_services | selectattr('enabled') %}"
+          - "  • {{ service.name | title }}: https://{{ service.config.app_domain }}"
+          - "{% endfor %}"
+          - "=============================================="
+      tags: ["summary"]
 
-    # Registry
-    - name: Déploiement de la Registry Docker
-      include_role:
-        name: "{{ roles_path }}/registry"
-      vars:
-        app_name: registry
-        app_namespace: "registry"
-        app_environment: "{{ deploy_environment }}"
-        app_domain: "registry.{{ deploy_environment }}.lions.dev"
-        app_version: "latest"
-        app_replicas: "{{ registry_replicas[deploy_environment] | default(1) }}"
-        registry_persistent_storage: true
-        registry_storage_size: "10Gi"
+    - name: "📝 Audit - Enregistrement de fin de déploiement"
+      lineinfile:
+        path: "/var/log/lions-infrastructure-audit.log"
+        line: "{{ ansible_date_time.iso8601 }} | SUCCESS | {{ playbook_name }} | {{ lions_environment }} | {{ deployment_id }} | {{ deployment_summary.total_services }} services deployed"
+        mode: "0644"
+      when:
+        - lions_audit_enabled
+        - not lions_dry_run
+      tags: ["audit"]
 
-    # PostgreSQL
-    - name: Déploiement de PostgreSQL
-      include_role:
-        name: "{{ roles_path }}/postgres"
-      vars:
-        app_name: postgres
-        app_namespace: "postgres-{{ deploy_environment }}"
-        app_environment: "{{ deploy_environment }}"
-        app_domain: "postgres.{{ deploy_environment }}.lions.dev"
-        app_version: "latest"
-        app_replicas: 1
+    - name: "🔄 Sauvegarde - Enregistrement de la configuration de déploiement"
+      copy:
+        content: "{{ deployment_summary | to_nice_yaml }}"
+        dest: "/opt/lions/deployments/{{ deployment_id }}-infrastructure-services.yml"
+        mode: "0644"
+      when: not lions_dry_run
+      tags: ["backup"]
 
-    # PgAdmin
-    - name: Déploiement de PgAdmin
-      include_role:
-        name: "{{ roles_path }}/pgadmin"
-      vars:
-        app_name: pgadmin
-        app_namespace: "pgadmin-{{ deploy_environment }}"
-        app_environment: "{{ deploy_environment }}"
-        app_domain: "pgadmin.{{ deploy_environment }}.lions.dev"
-        app_version: "latest"
-        app_replicas: 1
-        postgres_host: "postgres.postgres-{{ deploy_environment }}.svc.cluster.local"
-        postgres_port: 5432
-
-    # Gitea
-    - name: Déploiement de Gitea
-      include_role:
-        name: "{{ roles_path }}/gitea"
-      vars:
-        app_name: gitea
-        app_namespace: "gitea-{{ deploy_environment }}"
-        app_environment: "{{ deploy_environment }}"
-        app_domain: "gitea.{{ deploy_environment }}.lions.dev"
-        app_version: "latest"
-        app_replicas: 1
-        postgres_host: "postgres.postgres-{{ deploy_environment }}.svc.cluster.local"
-        postgres_port: 5432
-
-    # Keycloak
-    - name: Déploiement de Keycloak
-      include_role:
-        name: "{{ roles_path }}/keycloak"
-      vars:
-        app_name: keycloak
-        app_namespace: "keycloak-{{ deploy_environment }}"
-        app_environment: "{{ deploy_environment }}"
-        app_domain: "keycloak.{{ deploy_environment }}.lions.dev"
-        app_version: "latest"
-        app_replicas: 1
-        postgres_host: "postgres.postgres-{{ deploy_environment }}.svc.cluster.local"
-        postgres_port: 5432
-
-    # Ollama
-    - name: Déploiement d'Ollama
-      include_role:
-        name: "{{ roles_path }}/ollama"
-      vars:
-        app_name: ollama
-        app_namespace: "ollama-{{ deploy_environment }}"
-        app_environment: "{{ deploy_environment }}"
-        app_domain: "ollama.{{ deploy_environment }}.lions.dev"
-        app_version: "latest"
-        app_replicas: 1
-
-    - name: Vérification du déploiement des services
+  # =======================================================================
+  # GESTION DES ERREURS
+  # =======================================================================
+  rescue:
+    - name: "❌ Erreur - Déploiement échoué"
       debug:
-        msg: "Tous les services d'infrastructure ont été déployés avec succès"
+        msg:
+          - "=============================================="
+          - "ERREUR LORS DU DÉPLOIEMENT"
+          - "=============================================="
+          - "Playbook: {{ playbook_name }}"
+          - "Environnement: {{ lions_environment }}"
+          - "ID de déploiement: {{ deployment_id }}"
+          - "Timestamp: {{ deployment_timestamp }}"
+          - "=============================================="
+      tags: ["error-handling"]
+
+    - name: "📝 Audit - Enregistrement de l'échec"
+      lineinfile:
+        path: "/var/log/lions-infrastructure-audit.log"
+        line: "{{ ansible_date_time.iso8601 }} | FAILED | {{ playbook_name }} | {{ lions_environment }} | {{ deployment_id }} | Deployment failed"
+        mode: "0644"
+      when: lions_audit_enabled
+      tags: ["audit", "error-handling"]
+
+    - name: "🔄 Rollback - Déclenchement automatique si configuré"
+      include_tasks: "tasks/rollback_deployment.yml"
+      vars:
+        rollback_deployment_id: "{{ deployment_id }}"
+        rollback_services: "{{ infrastructure_services | selectattr('enabled') | map(attribute='name') | list }}"
+      when:
+        - lookup('env', 'LIONS_AUTO_ROLLBACK_ENABLED') | default('false') | bool
+        - not lions_dry_run
+      tags: ["rollback", "error-handling"]
+
+  # =========================================================================
+  # HANDLERS - ACTIONS DÉCLENCHÉES PAR LES NOTIFICATIONS
+  # =========================================================================
+  handlers:
+    - name: "🔄 restart monitoring"
+      debug:
+        msg: "Redémarrage du monitoring suite aux changements"
+      tags: ["handlers"]
+
+    - name: "📧 send notification"
+      debug:
+        msg: "Envoi de notification - Service: {{ service_name | default('unknown') }}"
+      tags: ["handlers"]
+
+    - name: "🔍 validate deployment"
+      debug:
+        msg: "Validation du déploiement demandée"
+      tags: ["handlers"]

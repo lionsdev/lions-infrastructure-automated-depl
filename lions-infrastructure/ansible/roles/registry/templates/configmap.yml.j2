@@ -1,64 +1,437 @@
 ---
-# Titre: Template de ConfigMap Kubernetes pour la registry de conteneurs
-# Description: Définit la ConfigMap Kubernetes pour la registry de conteneurs Docker
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-10
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - REGISTRY CONFIGMAP TEMPLATE
+# =========================================================================
+# Description: Template Kubernetes ConfigMap pour Docker Registry avec configuration avancée
+# Version: 5.0.0
+# Maintainer: DevOps Team LIONS
+# Documentation: https://docs.lions.dev/infrastructure/registry
+# Compatibilité: Docker Registry v2.8+, Kubernetes 1.28+
+# =========================================================================
 
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: "{{ app_name | default('registry') }}-config"
-  namespace: "{{ app_namespace | default('registry') }}"
+  name: "{{ LIONS_REGISTRY_SERVICE_NAME | default('registry') }}-config"
+  namespace: "{{ LIONS_REGISTRY_NAMESPACE | default('development') }}"
   labels:
-    app: "{{ app_name | default('registry') }}"
-    version: "{{ app_version | default('latest') }}"
-    environment: "{{ app_environment | default('development') }}"
-    technology: "registry"
+    # Labels standards LIONS
+    app.kubernetes.io/name: "{{ LIONS_REGISTRY_SERVICE_NAME | default('registry') }}"
+    app.kubernetes.io/component: "container-registry"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/version: "{{ LIONS_REGISTRY_VERSION | default('2.8') }}"
+    app.kubernetes.io/managed-by: "ansible"
+    app.kubernetes.io/instance: "{{ LIONS_ENVIRONMENT | default('development') }}"
+
+    # Labels métier LIONS
+    lions.dev/environment: "{{ LIONS_ENVIRONMENT | default('development') }}"
+    lions.dev/component: "registry"
+    lions.dev/tier: "infrastructure"
+    lions.dev/monitoring: "{{ LIONS_MONITORING_ENABLED | default('true') | string }}"
+    lions.dev/backup-required: "true"
+    lions.dev/security-level: "high"
+
+    # Labels techniques
+    technology: "docker-registry"
+    version: "{{ LIONS_REGISTRY_VERSION | default('2.8') }}"
+
   annotations:
-    description: "ConfigMap pour la registry {{ app_name | default('registry') }} ({{ app_version | default('latest') }}) en environnement {{ app_environment | default('development') }}"
+    # Annotations de documentation
+    description: "Docker Registry pour l'infrastructure LIONS en environnement {{ LIONS_ENVIRONMENT | default('development') }}"
+    maintainer: "{{ LIONS_CONFIG_MAINTAINER | default('devops@lions.dev') }}"
+    documentation: "https://docs.lions.dev/infrastructure/registry"
+
+    # Annotations de configuration
+    config.lions.dev/version: "{{ LIONS_CONFIG_VERSION | default('5.0.0') }}"
+    config.lions.dev/last-updated: "{{ ansible_date_time.iso8601 }}"
+    config.lions.dev/checksum: "{{ (registry_config_content | default('')) | hash('sha256') }}"
+
+    # Annotations de sécurité
+    security.lions.dev/tls-required: "{{ LIONS_SECURITY_TLS_ENABLED | default('true') | string }}"
+    security.lions.dev/auth-required: "true"
+    security.lions.dev/network-policy: "{{ LIONS_SECURITY_NETWORK_POLICIES | default('true') | string }}"
+
 data:
-  # Configuration personnalisée pour la registry Docker
+  # =========================================================================
+  # CONFIGURATION PRINCIPALE DOCKER REGISTRY
+  # =========================================================================
   config.yml: |
     version: 0.1
+
+    # Configuration du logging
     log:
-      level: {{ registry_log_level | default('info') }}
-      formatter: json
+      level: {{ lions_registry_log_level | default(LIONS_LOG_LEVEL | default('info') | lower) }}
+      formatter: {{ LIONS_LOG_FORMAT | default('json') }}
       fields:
-        service: registry
-        environment: {{ app_environment | default('development') }}
-    
+        service: {{ LIONS_REGISTRY_SERVICE_NAME | default('registry') }}
+        environment: {{ LIONS_ENVIRONMENT | default('development') }}
+        version: {{ LIONS_REGISTRY_VERSION | default('2.8') }}
+        cluster: {{ LIONS_DNS_DOMAIN_BASE | default('lions.local') }}
+      hooks:
+        - type: mail
+          disabled: {{ not (LIONS_MONITORING_ENABLED | default('true') | bool) }}
+          levels:
+            - panic
+            - fatal
+            - error
+
+    # Configuration du stockage
     storage:
       filesystem:
-        rootdirectory: /var/lib/registry
+        rootdirectory: {{ lions_registry_storage_path | default('/var/lib/registry') }}
+        maxthreads: {{ lions_registry_max_threads | default('100') }}
+
+      # Politique de suppression
       delete:
-        enabled: true
+        enabled: {{ lions_registry_delete_enabled | default('true') | bool }}
+
+      # Configuration de maintenance
       maintenance:
         uploadpurging:
-          enabled: true
-          age: 168h
-          interval: 24h
-          dryrun: false
+          enabled: {{ lions_registry_upload_purging | default('true') | bool }}
+          age: {{ lions_registry_upload_purging_age | default('168h') }}  # 7 jours
+          interval: {{ lions_registry_upload_purging_interval | default('24h') }}
+          dryrun: {{ LIONS_DRY_RUN | default('false') | bool }}
         readonly:
-          enabled: false
-    
+          enabled: {{ lions_registry_readonly_mode | default('false') | bool }}
+
+      # Configuration du cache
+      cache:
+        blobdescriptor: {{ lions_registry_cache_type | default('inmemory') }}
+        blobdescriptorsize: {{ lions_registry_cache_size | default('10000') }}
+
+    # Configuration HTTP
     http:
-      addr: :{{ registry_default_port | default(5000) }}
+      addr: :{{ LIONS_REGISTRY_PORT | default('5000') }}
+      net: tcp
+      prefix: {{ lions_registry_path_prefix | default('/') }}
+      host: {{ lions_registry_external_url | default('https://registry.' + LIONS_DNS_FULL_DOMAIN) }}
+      secret: {{ lions_registry_http_secret | default('changeme-in-production') }}
+      relativeurls: {{ lions_registry_relative_urls | default('false') | bool }}
+      draintimeout: {{ lions_registry_drain_timeout | default('60s') }}
+
+      # Headers de sécurité
       headers:
         X-Content-Type-Options: [nosniff]
+        X-Frame-Options: [DENY]
+        X-XSS-Protection: ["1; mode=block"]
+        Strict-Transport-Security: ["max-age=31536000; includeSubDomains"]
+        Content-Security-Policy: ["default-src 'self'"]
+        Referrer-Policy: [strict-origin-when-cross-origin]
+
+      # Configuration TLS (si terminaison TLS au niveau registry)
+      {% if lions_registry_tls_termination | default('ingress') == 'registry' %}
+      tls:
+        certificate: {{ lions_registry_tls_cert_path | default('/certs/tls.crt') }}
+        key: {{ lions_registry_tls_key_path | default('/certs/tls.key') }}
+        clientcas:
+          - {{ lions_registry_ca_cert_path | default('/certs/ca.crt') }}
+        minimumtls: {{ lions_registry_min_tls_version | default('tls1.2') }}
+        ciphersuites:
+          - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+          - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+          - TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305
+          - TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+          - TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+          - TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305
+      {% endif %}
+
+      # Configuration de debug et métriques
       debug:
-        addr: :{{ registry_debug_port | default(5001) }}
+        addr: {{ lions_registry_debug_host | default('localhost') }}:{{ lions_registry_debug_port | default('5001') }}
         prometheus:
-          enabled: {{ registry_prometheus_scrape | default(true) | string | lower }}
-          path: {{ registry_prometheus_path | default('/metrics') }}
-    
+          enabled: {{ LIONS_MONITORING_ENABLED | default('true') | bool }}
+          path: {{ lions_registry_prometheus_path | default('/metrics') }}
+
+      # Configuration HTTP/2
+      http2:
+        disabled: {{ lions_registry_http2_disabled | default('false') | bool }}
+
+    # Configuration d'authentification
     auth:
+      {% if lions_registry_auth_type | default('htpasswd') == 'htpasswd' %}
       htpasswd:
-        realm: Registry Realm
-        path: /auth/htpasswd
-    
+        realm: "{{ lions_registry_auth_realm | default('LIONS Registry') }}"
+        path: {{ lions_registry_auth_htpasswd_path | default('/auth/htpasswd') }}
+      {% elif lions_registry_auth_type | default('htpasswd') == 'token' %}
+      token:
+        realm: "{{ lions_registry_auth_realm | default('LIONS Registry') }}"
+        service: "{{ LIONS_REGISTRY_SERVICE_NAME | default('registry') }}"
+        issuer: "{{ lions_registry_token_issuer | default('registry-token-issuer') }}"
+        rootcertbundle: {{ lions_registry_token_cert_path | default('/auth/token.crt') }}
+        autoredirect: {{ lions_registry_auth_autoredirect | default('true') | bool }}
+      {% endif %}
+
+    # Configuration des middlewares
+    middleware:
+      registry:
+        - name: openshift
+          disabled: {{ not (lions_registry_openshift_support | default('false') | bool) }}
+      repository:
+        - name: openshift
+          disabled: {{ not (lions_registry_openshift_support | default('false') | bool) }}
+        - name: pullthroughcache
+          disabled: {{ not (lions_registry_pullthrough_cache | default('false') | bool) }}
+          options:
+            blobttl: {{ lions_registry_cache_blob_ttl | default('24h') }}
+      storage:
+        - name: cloudfront
+          disabled: {{ not (lions_registry_cloudfront_enabled | default('false') | bool) }}
+          options:
+            baseurl: {{ lions_registry_cloudfront_baseurl | default('') }}
+            privatekey: {{ lions_registry_cloudfront_key_path | default('') }}
+            keypairid: {{ lions_registry_cloudfront_keypair_id | default('') }}
+            duration: {{ lions_registry_cloudfront_duration | default('20m') }}
+
+    # Configuration de santé
     health:
       storagedriver:
-        enabled: true
-        interval: 10s
-        threshold: 3
+        enabled: {{ lions_registry_health_storage_enabled | default('true') | bool }}
+        interval: {{ lions_registry_health_interval | default('10s') }}
+        threshold: {{ lions_registry_health_threshold | default('3') }}
+      file:
+        - file: {{ lions_registry_health_file_path | default('/tmp/health') }}
+          interval: {{ lions_registry_health_file_interval | default('10s') }}
+      http:
+        - uri: {{ lions_registry_health_http_uri | default('http://localhost:5000/') }}
+          headers:
+            Authorization: ["Bearer {{ lions_registry_health_token | default('') }}"]
+          statuscode: {{ lions_registry_health_expected_status | default('200') }}
+          timeout: {{ lions_registry_health_http_timeout | default('3s') }}
+          interval: {{ lions_registry_health_http_interval | default('10s') }}
+          threshold: {{ lions_registry_health_http_threshold | default('3') }}
+      tcp:
+        - addr: {{ lions_registry_health_tcp_addr | default('localhost:5000') }}
+          timeout: {{ lions_registry_health_tcp_timeout | default('3s') }}
+          interval: {{ lions_registry_health_tcp_interval | default('10s') }}
+          threshold: {{ lions_registry_health_tcp_threshold | default('3') }}
+
+    # Configuration des proxies et redirections
+    proxy:
+      remoteurl: {{ lions_registry_proxy_upstream | default('') }}
+      username: {{ lions_registry_proxy_username | default('') }}
+      password: {{ lions_registry_proxy_password | default('') }}
+      ttl: {{ lions_registry_proxy_ttl | default('168h') }}
+
+    # Configuration de compatibilité
+    compatibility:
+      schema1:
+        enabled: {{ lions_registry_schema1_enabled | default('false') | bool }}
+        signingkeyfile: {{ lions_registry_schema1_signing_key | default('/etc/docker/registry/schema1-signing-key.json') }}
+
+    # Configuration de validation
+    validation:
+      manifests:
+        urls:
+          allow:
+            - ^https?://([^/]+\.)*{{ LIONS_DNS_DOMAIN_BASE | regex_escape }}(/.*)?$
+            {% if lions_registry_allowed_domains is defined %}
+            {% for domain in lions_registry_allowed_domains %}
+            - ^https?://([^/]+\.)*{{ domain | regex_escape }}(/.*)?$
+            {% endfor %}
+            {% endif %}
+          deny:
+            - ^https?://localhost(/.*)?$
+            - ^https?://127\.0\.0\.1(/.*)?$
+            {% if lions_registry_denied_domains is defined %}
+            {% for domain in lions_registry_denied_domains %}
+            - ^https?://([^/]+\.)*{{ domain | regex_escape }}(/.*)?$
+            {% endfor %}
+            {% endif %}
+
+    # Configuration des notifications (webhooks)
+    notifications:
+      events:
+        includereferences: {{ lions_registry_notifications_include_refs | default('true') | bool }}
+      endpoints:
+        {% if lions_registry_webhook_enabled | default('false') | bool %}
+        - name: lions-webhook
+          disabled: false
+          url: {{ lions_registry_webhook_url | default('http://webhook-service:8080/registry') }}
+          headers:
+            Authorization: ["Bearer {{ lions_registry_webhook_token | default('') }}"]
+            User-Agent: ["LIONS-Registry/{{ LIONS_REGISTRY_VERSION | default('2.8') }}"]
+          timeout: {{ lions_registry_webhook_timeout | default('1s') }}
+          threshold: {{ lions_registry_webhook_threshold | default('5') }}
+          backoff: {{ lions_registry_webhook_backoff | default('1s') }}
+          events:
+            - push
+            - pull
+            {% if lions_registry_webhook_delete_events | default('false') | bool %}
+            - delete
+            {% endif %}
+        {% endif %}
+
+  # =========================================================================
+  # CONFIGURATION NGINX (Si utilisé comme proxy)
+  # =========================================================================
+  {% if lions_registry_nginx_enabled | default('false') | bool %}
+  nginx.conf: |
+    user nginx;
+    worker_processes {{ lions_registry_nginx_workers | default('auto') }};
+    error_log /var/log/nginx/error.log {{ LIONS_LOG_LEVEL | default('info') }};
+    pid /var/run/nginx.pid;
+
+    events {
+        worker_connections {{ lions_registry_nginx_worker_connections | default('1024') }};
+        use epoll;
+        multi_accept on;
+    }
+
+    http {
+        include /etc/nginx/mime.types;
+        default_type application/octet-stream;
+
+        # Configuration des logs
+        log_format json_combined escape=json
+          '{'
+            '"time_local":"$time_local",'
+            '"remote_addr":"$remote_addr",'
+            '"remote_user":"$remote_user",'
+            '"request":"$request",'
+            '"status": "$status",'
+            '"body_bytes_sent":"$body_bytes_sent",'
+            '"request_time":"$request_time",'
+            '"http_referrer":"$http_referer",'
+            '"http_user_agent":"$http_user_agent",'
+            '"upstream_addr":"$upstream_addr",'
+            '"upstream_response_time":"$upstream_response_time"'
+          '}';
+
+        access_log /var/log/nginx/access.log json_combined;
+
+        # Configuration de performance
+        sendfile on;
+        tcp_nopush on;
+        tcp_nodelay on;
+        keepalive_timeout {{ lions_registry_nginx_keepalive_timeout | default('65') }};
+        client_max_body_size {{ lions_registry_nginx_max_body_size | default('0') }};
+
+        # Configuration de sécurité
+        server_tokens off;
+        add_header X-Frame-Options DENY;
+        add_header X-Content-Type-Options nosniff;
+        add_header X-XSS-Protection "1; mode=block";
+
+        # Configuration du proxy pour la registry
+        upstream registry {
+            server 127.0.0.1:{{ LIONS_REGISTRY_PORT | default('5000') }};
+        }
+
+        server {
+            listen {{ lions_registry_nginx_port | default('80') }};
+            server_name {{ lions_registry_external_url | default('registry.' + LIONS_DNS_FULL_DOMAIN) | regex_replace('^https?://','') }};
+
+            {% if LIONS_SECURITY_TLS_ENABLED | default('true') | bool %}
+            return 301 https://$host$request_uri;
+        }
+
+        server {
+            listen {{ lions_registry_nginx_ssl_port | default('443') }} ssl http2;
+            server_name {{ lions_registry_external_url | default('registry.' + LIONS_DNS_FULL_DOMAIN) | regex_replace('^https?://','') }};
+
+            # Configuration SSL
+            ssl_certificate {{ lions_registry_ssl_cert_path | default('/etc/ssl/certs/registry.crt') }};
+            ssl_certificate_key {{ lions_registry_ssl_key_path | default('/etc/ssl/private/registry.key') }};
+            ssl_protocols TLSv1.2 TLSv1.3;
+            ssl_ciphers ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-CHACHA20-POLY1305;
+            ssl_prefer_server_ciphers off;
+            ssl_session_cache shared:SSL:10m;
+            ssl_session_timeout 1d;
+            ssl_stapling on;
+            ssl_stapling_verify on;
+            {% endif %}
+
+            # Configuration de la registry
+            location /v2/ {
+                proxy_pass http://registry;
+                proxy_set_header Host $http_host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+                proxy_read_timeout {{ lions_registry_nginx_read_timeout | default('900') }};
+                proxy_send_timeout {{ lions_registry_nginx_send_timeout | default('900') }};
+
+                # Configuration pour les gros uploads
+                client_max_body_size {{ lions_registry_nginx_max_body_size | default('0') }};
+
+                # Headers de sécurité spécifiques
+                add_header 'Docker-Content-Digest' $upstream_http_docker_content_digest;
+                add_header 'Docker-Distribution-Api-Version' $upstream_http_docker_distribution_api_version;
+            }
+
+            # Health check endpoint
+            location /health {
+                proxy_pass http://registry;
+                access_log off;
+            }
+
+            # Métriques (si activées)
+            {% if LIONS_MONITORING_ENABLED | default('true') | bool %}
+            location /metrics {
+                proxy_pass http://registry;
+                allow 10.0.0.0/8;
+                allow 172.16.0.0/12;
+                allow 192.168.0.0/16;
+                deny all;
+                access_log off;
+            }
+            {% endif %}
+        }
+    }
+  {% endif %}
+
+  # =========================================================================
+  # SCRIPT DE VALIDATION DE CONFIGURATION
+  # =========================================================================
+  validate-config.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    echo "🔍 Validation de la configuration Docker Registry..."
+
+    # Validation du fichier de configuration
+    if ! registry serve /etc/docker/registry/config.yml --dry-run; then
+        echo "❌ Configuration Registry invalide"
+        exit 1
+    fi
+
+    # Validation des permissions
+    if [[ ! -r "/var/lib/registry" ]]; then
+        echo "❌ Répertoire de stockage non accessible"
+        exit 1
+    fi
+
+    # Validation de l'authentification
+    if [[ -f "/auth/htpasswd" ]] && [[ ! -r "/auth/htpasswd" ]]; then
+        echo "❌ Fichier d'authentification non accessible"
+        exit 1
+    fi
+
+    echo "✅ Configuration validée avec succès"
+
+  # =========================================================================
+  # SCRIPT DE SAUVEGARDE
+  # =========================================================================
+  backup-registry.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    BACKUP_DIR="{{ lions_registry_backup_dir | default('/backup') }}"
+    TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+    BACKUP_FILE="registry-backup-${TIMESTAMP}.tar.gz"
+
+    echo "📦 Démarrage de la sauvegarde Registry..."
+
+    # Création du répertoire de sauvegarde
+    mkdir -p "${BACKUP_DIR}"
+
+    # Sauvegarde des données
+    tar -czf "${BACKUP_DIR}/${BACKUP_FILE}" \
+        -C /var/lib/registry . \
+        --exclude='*.tmp' \
+        --exclude='*.lock'
+
+    # Nettoyage des anciennes sauvegardes
+    find "${BACKUP_DIR}" -name "registry-backup-*.tar.gz" -mtime +{{ LIONS_BACKUP_RETENTION_DAYS | default('30') }} -delete
+

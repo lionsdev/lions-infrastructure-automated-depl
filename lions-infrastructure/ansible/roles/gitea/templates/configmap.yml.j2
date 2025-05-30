@@ -1,72 +1,444 @@
 ---
-# Titre: Template de ConfigMap Kubernetes pour Gitea
-# Description: Définit la ConfigMap Kubernetes pour Gitea
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - GITEA CONFIGMAP TEMPLATE
+# =========================================================================
+# Description: Template de ConfigMap Kubernetes pour Gitea avec configuration complète
+# Version: 5.0.0
+# Date: {{ ansible_date_time.iso8601 }}
+# Maintainer: {{ lions_config_maintainer | default('devops@lions.dev') }}
+# Environment: {{ lions_environment | upper }}
+# Application: {{ gitea_app_name }}
+# =========================================================================
 
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: "{{ app_name }}-config"
-  namespace: "{{ app_namespace }}"
+  name: "{{ gitea_app_name }}-config"
+  namespace: "{{ gitea_namespace }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "gitea"
+    # Labels standards LIONS
+    app.kubernetes.io/name: "{{ gitea_app_name }}"
+    app.kubernetes.io/instance: "{{ gitea_app_name }}-{{ lions_environment }}"
+    app.kubernetes.io/version: "{{ gitea_version }}"
+    app.kubernetes.io/component: "git-repository"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+
+    # Labels personnalisés LIONS
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/tier: "application"
+    lions.dev/technology: "gitea"
+    lions.dev/backup-required: "{{ gitea_backup_enabled | string | lower }}"
+    lions.dev/monitoring-enabled: "{{ gitea_monitoring_enabled | string | lower }}"
+    lions.dev/config-version: "5.0.0"
+
+    # Labels Helm-like pour compatibilité
+    helm.sh/chart: "gitea-{{ gitea_version }}"
+
   annotations:
-    description: "ConfigMap pour Gitea {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    # Annotations de metadata
+    description: "ConfigMap pour Gitea {{ gitea_app_name }} version {{ gitea_version }} en environnement {{ lions_environment }}"
+    maintainer: "{{ lions_config_maintainer | default('devops@lions.dev') }}"
+    deployment.lions.dev/timestamp: "{{ ansible_date_time.iso8601 }}"
+    deployment.lions.dev/ansible-host: "{{ inventory_hostname }}"
+    deployment.lions.dev/config-hash: "{{ (gitea_config_content | string) | hash('sha256') }}"
+
+    # Annotations de configuration
+    config.lions.dev/database-type: "{{ gitea_database_type }}"
+    config.lions.dev/tls-enabled: "{{ gitea_tls_enabled | string | lower }}"
+    config.lions.dev/external-auth: "{{ gitea_external_auth_enabled | string | lower }}"
+
+    # Annotations de monitoring
+    prometheus.io/scrape: "{{ gitea_prometheus_scrape | string | lower }}"
+    prometheus.io/path: "{{ gitea_prometheus_path | default('/metrics') }}"
+    prometheus.io/port: "{{ gitea_prometheus_port | default(gitea_port) | string }}"
+
 data:
-  # Variables d'environnement pour Gitea
-  GITEA__log__LEVEL: "{% if app_environment == 'production' %}warn{% elif app_environment == 'staging' %}info{% else %}debug{% endif %}"
-  GITEA__log__MODE: "console"
-  
-  # Configuration du serveur
-  GITEA__server__PROTOCOL: "http"
-  GITEA__server__HTTP_PORT: "{{ gitea_default_port | string }}"
+  # =========================================================================
+  # CONFIGURATION CORE GITEA
+  # =========================================================================
+
+  # Configuration du serveur principal
+  GITEA__server__PROTOCOL: "{{ 'https' if gitea_tls_enabled else 'http' }}"
+  GITEA__server__DOMAIN: "{{ gitea_domain }}"
+  GITEA__server__ROOT_URL: "{{ gitea_root_url }}"
+  GITEA__server__HTTP_ADDR: "0.0.0.0"
+  GITEA__server__HTTP_PORT: "{{ gitea_port | string }}"
+  GITEA__server__UNIX_SOCKET_PERMISSION: "666"
+  GITEA__server__LOCAL_ROOT_URL: "http://localhost:{{ gitea_port }}/"
+  GITEA__server__OFFLINE_MODE: "{{ gitea_offline_mode | string | lower }}"
+  GITEA__server__DISABLE_SSH: "{{ (not gitea_ssh_enabled) | string | lower }}"
+  GITEA__server__START_SSH_SERVER: "{{ gitea_ssh_builtin_enabled | string | lower }}"
+  GITEA__server__SSH_DOMAIN: "{{ gitea_ssh_domain | default(gitea_domain) }}"
+  GITEA__server__SSH_PORT: "{{ gitea_ssh_port | string }}"
+  GITEA__server__SSH_LISTEN_PORT: "{{ gitea_ssh_listen_port | string }}"
+  GITEA__server__BUILTIN_SSH_SERVER_USER: "{{ gitea_ssh_user }}"
+  GITEA__server__DISABLE_ROUTER_LOG: "{{ gitea_disable_router_log | string | lower }}"
+  GITEA__server__CERT_FILE: "{{ gitea_cert_file | default('') }}"
+  GITEA__server__KEY_FILE: "{{ gitea_key_file | default('') }}"
+  GITEA__server__STATIC_ROOT_PATH: "{{ gitea_static_root_path }}"
+  GITEA__server__APP_DATA_PATH: "{{ gitea_app_data_path }}"
+  GITEA__server__ENABLE_GZIP: "{{ gitea_enable_gzip | string | lower }}"
+  GITEA__server__LANDING_PAGE: "{{ gitea_landing_page }}"
+  GITEA__server__LFS_START_SERVER: "{{ gitea_lfs_enabled | string | lower }}"
+  GITEA__server__LFS_CONTENT_PATH: "{{ gitea_lfs_content_path }}"
+
+  # =========================================================================
+  # CONFIGURATION BASE DE DONNÉES
+  # =========================================================================
+
+  GITEA__database__DB_TYPE: "{{ gitea_database_type }}"
+{% if gitea_database_type == 'postgres' %}
+  GITEA__database__HOST: "{{ gitea_database_host }}:{{ gitea_database_port }}"
+  GITEA__database__NAME: "{{ gitea_database_name }}"
+  GITEA__database__USER: "{{ gitea_database_user }}"
+  GITEA__database__SCHEMA: "{{ gitea_database_schema | default('') }}"
+  GITEA__database__SSL_MODE: "{{ gitea_database_ssl_mode }}"
+  GITEA__database__SSL_CERT: "{{ gitea_database_ssl_cert | default('') }}"
+  GITEA__database__SSL_KEY: "{{ gitea_database_ssl_key | default('') }}"
+  GITEA__database__SSL_ROOT_CERT: "{{ gitea_database_ssl_root_cert | default('') }}"
+  GITEA__database__MAX_IDLE_CONNS: "{{ gitea_database_max_idle_conns | string }}"
+  GITEA__database__MAX_OPEN_CONNS: "{{ gitea_database_max_open_conns | string }}"
+  GITEA__database__CONN_MAX_LIFETIME: "{{ gitea_database_conn_max_lifetime | string }}"
+  GITEA__database__LOG_SQL: "{{ gitea_database_log_sql | string | lower }}"
+{% elif gitea_database_type == 'mysql' %}
+  GITEA__database__HOST: "{{ gitea_database_host }}:{{ gitea_database_port }}"
+  GITEA__database__NAME: "{{ gitea_database_name }}"
+  GITEA__database__USER: "{{ gitea_database_user }}"
+  GITEA__database__CHARSET: "{{ gitea_database_charset }}"
+  GITEA__database__SSL_MODE: "{{ gitea_database_ssl_mode }}"
+{% else %}
+  GITEA__database__PATH: "{{ gitea_database_path }}"
+  GITEA__database__SQLITE_TIMEOUT: "{{ gitea_database_sqlite_timeout | string }}"
+  GITEA__database__SQLITE_JOURNAL_MODE: "{{ gitea_database_sqlite_journal_mode }}"
+{% endif %}
+
+  # =========================================================================
+  # CONFIGURATION SÉCURITÉ
+  # =========================================================================
+
+  GITEA__security__SECRET_KEY_URI: "file:{{ gitea_secret_key_path }}"
+  GITEA__security__INTERNAL_TOKEN_URI: "file:{{ gitea_internal_token_path }}"
+  GITEA__security__PASSWORD_HASH_ALGO: "{{ gitea_password_hash_algo }}"
+  GITEA__security__PASSWORD_CHECK_PWN: "{{ gitea_password_check_pwn | string | lower }}"
+  GITEA__security__MIN_PASSWORD_LENGTH: "{{ gitea_min_password_length | string }}"
+  GITEA__security__PASSWORD_COMPLEXITY: "{{ gitea_password_complexity | join(',') }}"
+  GITEA__security__PASSWORD_REQUIREMENT: "{{ gitea_password_requirement | join(',') }}"
+  GITEA__security__SUCCESSFUL_TOKENS_CACHE_SIZE: "{{ gitea_successful_tokens_cache_size | string }}"
+  GITEA__security__DISABLE_GIT_HOOKS: "{{ gitea_disable_git_hooks | string | lower }}"
+  GITEA__security__ONLY_ALLOW_PUSH_IF_GITEA_ENVIRONMENT_SET: "{{ gitea_only_allow_push_if_gitea_environment_set | string | lower }}"
+  GITEA__security__IMPORT_LOCAL_PATHS: "{{ gitea_import_local_paths | string | lower }}"
+  GITEA__security__DISABLE_QUERY_AUTH_TOKEN: "{{ gitea_disable_query_auth_token | string | lower }}"
+  GITEA__security__CSRF_COOKIE_HTTP_ONLY: "{{ gitea_csrf_cookie_http_only | string | lower }}"
+  GITEA__security__REVERSE_PROXY_AUTHENTICATION: "{{ gitea_reverse_proxy_authentication | string | lower }}"
+  GITEA__security__REVERSE_PROXY_AUTO_REGISTRATION: "{{ gitea_reverse_proxy_auto_registration | string | lower }}"
+  GITEA__security__REVERSE_PROXY_HEADER_NAME: "{{ gitea_reverse_proxy_header_name }}"
+  GITEA__security__REVERSE_PROXY_EMAIL_HEADER: "{{ gitea_reverse_proxy_email_header }}"
+  GITEA__security__REVERSE_PROXY_FULL_NAME_HEADER: "{{ gitea_reverse_proxy_full_name_header }}"
+
+  # =========================================================================
+  # CONFIGURATION SERVICE
+  # =========================================================================
+
+  GITEA__service__DISABLE_REGISTRATION: "{{ gitea_disable_registration | string | lower }}"
+  GITEA__service__ALLOW_ONLY_EXTERNAL_REGISTRATION: "{{ gitea_allow_only_external_registration | string | lower }}"
+  GITEA__service__REQUIRE_SIGNIN_VIEW: "{{ gitea_require_signin_view | string | lower }}"
+  GITEA__service__REGISTER_EMAIL_CONFIRM: "{{ gitea_register_email_confirm | string | lower }}"
+  GITEA__service__REGISTER_MANUAL_CONFIRM: "{{ gitea_register_manual_confirm | string | lower }}"
+  GITEA__service__ENABLE_NOTIFY_MAIL: "{{ gitea_enable_notify_mail | string | lower }}"
+  GITEA__service__ENABLE_BASIC_AUTHENTICATION: "{{ gitea_enable_basic_authentication | string | lower }}"
+  GITEA__service__ENABLE_REVERSE_PROXY_AUTHENTICATION: "{{ gitea_enable_reverse_proxy_authentication | string | lower }}"
+  GITEA__service__DEFAULT_KEEP_EMAIL_PRIVATE: "{{ gitea_default_keep_email_private | string | lower }}"
+  GITEA__service__DEFAULT_ALLOW_CREATE_ORGANIZATION: "{{ gitea_default_allow_create_organization | string | lower }}"
+  GITEA__service__DEFAULT_ENABLE_TIMETRACKING: "{{ gitea_default_enable_timetracking | string | lower }}"
+  GITEA__service__NO_REPLY_ADDRESS: "{{ gitea_no_reply_address }}"
+  GITEA__service__ENABLE_USER_HEATMAP: "{{ gitea_enable_user_heatmap | string | lower }}"
+  GITEA__service__AUTO_WATCH_NEW_REPOS: "{{ gitea_auto_watch_new_repos | string | lower }}"
+  GITEA__service__AUTO_WATCH_ON_CHANGES: "{{ gitea_auto_watch_on_changes | string | lower }}"
+  GITEA__service__DEFAULT_USER_VISIBILITY: "{{ gitea_default_user_visibility }}"
+  GITEA__service__ALLOWED_USER_VISIBILITY_MODES: "{{ gitea_allowed_user_visibility_modes | join(',') }}"
+  GITEA__service__DEFAULT_ORG_VISIBILITY: "{{ gitea_default_org_visibility }}"
+  GITEA__service__DEFAULT_ORG_MEMBER_VISIBLE: "{{ gitea_default_org_member_visible | string | lower }}"
+  GITEA__service__ENABLE_CAPTCHA: "{{ gitea_enable_captcha | string | lower }}"
+  GITEA__service__CAPTCHA_TYPE: "{{ gitea_captcha_type }}"
+  GITEA__service__RECAPTCHA_SECRET: "{{ gitea_recaptcha_secret | default('') }}"
+  GITEA__service__RECAPTCHA_SITEKEY: "{{ gitea_recaptcha_sitekey | default('') }}"
+  GITEA__service__HCAPTCHA_SECRET: "{{ gitea_hcaptcha_secret | default('') }}"
+  GITEA__service__HCAPTCHA_SITEKEY: "{{ gitea_hcaptcha_sitekey | default('') }}"
+
+  # =========================================================================
+  # CONFIGURATION REPOSITORY
+  # =========================================================================
+
+  GITEA__repository__ROOT: "{{ gitea_repository_root }}"
+  GITEA__repository__SCRIPT_TYPE: "{{ gitea_repository_script_type }}"
+  GITEA__repository__DETECTED_CHARSETS_ORDER: "{{ gitea_repository_detected_charsets_order | join(',') }}"
+  GITEA__repository__ANSI_CHARSET: "{{ gitea_repository_ansi_charset }}"
+  GITEA__repository__FORCE_PRIVATE: "{{ gitea_repository_force_private | string | lower }}"
+  GITEA__repository__DEFAULT_PRIVATE: "{{ gitea_repository_default_private }}"
+  GITEA__repository__DEFAULT_PUSH_CREATE_PRIVATE: "{{ gitea_repository_default_push_create_private | string | lower }}"
+  GITEA__repository__MAX_CREATION_LIMIT: "{{ gitea_repository_max_creation_limit | string }}"
+  GITEA__repository__MIRROR_QUEUE_LENGTH: "{{ gitea_repository_mirror_queue_length | string }}"
+  GITEA__repository__PULL_REQUEST_QUEUE_LENGTH: "{{ gitea_repository_pull_request_queue_length | string }}"
+  GITEA__repository__PREFERRED_LICENSES: "{{ gitea_repository_preferred_licenses | join(',') }}"
+  GITEA__repository__DISABLE_HTTP_GIT: "{{ gitea_repository_disable_http_git | string | lower }}"
+  GITEA__repository__ACCESS_CONTROL_ALLOW_ORIGIN: "{{ gitea_repository_access_control_allow_origin }}"
+  GITEA__repository__USE_COMPAT_SSH_URI: "{{ gitea_repository_use_compat_ssh_uri | string | lower }}"
+  GITEA__repository__DEFAULT_BRANCH: "{{ gitea_repository_default_branch }}"
+  GITEA__repository__ENABLE_PUSH_CREATE_USER: "{{ gitea_repository_enable_push_create_user | string | lower }}"
+  GITEA__repository__ENABLE_PUSH_CREATE_ORG: "{{ gitea_repository_enable_push_create_org | string | lower }}"
+  GITEA__repository__DISABLED_REPO_UNITS: "{{ gitea_repository_disabled_repo_units | join(',') }}"
+  GITEA__repository__DEFAULT_REPO_UNITS: "{{ gitea_repository_default_repo_units | join(',') }}"
+  GITEA__repository__PREFIX_ARCHIVE_FILES: "{{ gitea_repository_prefix_archive_files | string | lower }}"
+  GITEA__repository__DISABLE_MIGRATIONS: "{{ gitea_repository_disable_migrations | string | lower }}"
+  GITEA__repository__DISABLE_STARS: "{{ gitea_repository_disable_stars | string | lower }}"
+  GITEA__repository__DEFAULT_BRANCH_PROTECTION: "{{ gitea_repository_default_branch_protection | string | lower }}"
+
+  # =========================================================================
+  # CONFIGURATION UI
+  # =========================================================================
+
+  GITEA__ui__EXPLORE_PAGING_NUM: "{{ gitea_ui_explore_paging_num | string }}"
+  GITEA__ui__SITEMAP_PAGING_NUM: "{{ gitea_ui_sitemap_paging_num | string }}"
+  GITEA__ui__ISSUE_PAGING_NUM: "{{ gitea_ui_issue_paging_num | string }}"
+  GITEA__ui__MEMBERS_PAGING_NUM: "{{ gitea_ui_members_paging_num | string }}"
+  GITEA__ui__FEED_MAX_COMMIT_NUM: "{{ gitea_ui_feed_max_commit_num | string }}"
+  GITEA__ui__FEED_PAGING_NUM: "{{ gitea_ui_feed_paging_num | string }}"
+  GITEA__ui__GRAPH_MAX_COMMIT_NUM: "{{ gitea_ui_graph_max_commit_num | string }}"
+  GITEA__ui__CODE_COMMENT_LINES: "{{ gitea_ui_code_comment_lines | string }}"
+  GITEA__ui__DEFAULT_THEME: "{{ gitea_ui_default_theme }}"
+  GITEA__ui__THEMES: "{{ gitea_ui_themes | join(',') }}"
+  GITEA__ui__MAX_DISPLAY_FILE_SIZE: "{{ gitea_ui_max_display_file_size | string }}"
+  GITEA__ui__SHOW_USER_EMAIL: "{{ gitea_ui_show_user_email | string | lower }}"
+  GITEA__ui__USE_SERVICE_WORKER: "{{ gitea_ui_use_service_worker | string | lower }}"
+  GITEA__ui__NOTIFICATION_ENABLE_MAIL: "{{ gitea_ui_notification_enable_mail | string | lower }}"
+
+  # =========================================================================
+  # CONFIGURATION LOGGING
+  # =========================================================================
+
+  GITEA__log__MODE: "{{ gitea_log_mode }}"
+  GITEA__log__LEVEL: "{{ gitea_log_level }}"
+  GITEA__log__STACKTRACE_LEVEL: "{{ gitea_log_stacktrace_level }}"
+  GITEA__log__ROOT_PATH: "{{ gitea_log_root_path }}"
+  GITEA__log__ENABLE_ACCESS_LOG: "{{ gitea_log_enable_access_log | string | lower }}"
+  GITEA__log__ACCESS_LOG_TEMPLATE: "{{ gitea_log_access_log_template }}"
+  GITEA__log__DISABLE_ROUTER_LOG: "{{ gitea_log_disable_router_log | string | lower }}"
+  GITEA__log__ROUTER_LOG_LEVEL: "{{ gitea_log_router_log_level }}"
+  GITEA__log__ENABLE_XORM_LOG: "{{ gitea_log_enable_xorm_log | string | lower }}"
+
+  # =========================================================================
+  # CONFIGURATION CACHE
+  # =========================================================================
+
+  GITEA__cache__ADAPTER: "{{ gitea_cache_adapter }}"
+  GITEA__cache__INTERVAL: "{{ gitea_cache_interval | string }}"
+  GITEA__cache__HOST: "{{ gitea_cache_host | default('') }}"
+  GITEA__cache__ITEM_TTL: "{{ gitea_cache_item_ttl }}"
+
+  # =========================================================================
+  # CONFIGURATION SESSION
+  # =========================================================================
+
+  GITEA__session__PROVIDER: "{{ gitea_session_provider }}"
+  GITEA__session__PROVIDER_CONFIG: "{{ gitea_session_provider_config | default('') }}"
+  GITEA__session__COOKIE_SECURE: "{{ gitea_session_cookie_secure | string | lower }}"
+  GITEA__session__COOKIE_NAME: "{{ gitea_session_cookie_name }}"
+  GITEA__session__GC_INTERVAL_TIME: "{{ gitea_session_gc_interval_time | string }}"
+  GITEA__session__SESSION_LIFE_TIME: "{{ gitea_session_life_time | string }}"
+  GITEA__session__DOMAIN: "{{ gitea_session_domain | default('') }}"
+  GITEA__session__SAME_SITE: "{{ gitea_session_same_site }}"
+
+  # =========================================================================
+  # CONFIGURATION OAUTH2
+  # =========================================================================
+
+  GITEA__oauth2__ENABLE: "{{ gitea_oauth2_enable | string | lower }}"
+  GITEA__oauth2__ACCESS_TOKEN_EXPIRATION_TIME: "{{ gitea_oauth2_access_token_expiration_time | string }}"
+  GITEA__oauth2__REFRESH_TOKEN_EXPIRATION_TIME: "{{ gitea_oauth2_refresh_token_expiration_time | string }}"
+  GITEA__oauth2__INVALIDATE_REFRESH_TOKENS: "{{ gitea_oauth2_invalidate_refresh_tokens | string | lower }}"
+  GITEA__oauth2__JWT_SIGNING_ALGORITHM: "{{ gitea_oauth2_jwt_signing_algorithm }}"
+  GITEA__oauth2__JWT_SECRET_URI: "file:{{ gitea_oauth2_jwt_secret_path }}"
+  GITEA__oauth2__JWT_SIGNING_PRIVATE_KEY_FILE: "{{ gitea_oauth2_jwt_signing_private_key_file | default('') }}"
+  GITEA__oauth2__MAX_TOKEN_LENGTH: "{{ gitea_oauth2_max_token_length | string }}"
+
+  # =========================================================================
+  # CONFIGURATION WEBHOOKS
+  # =========================================================================
+
+  GITEA__webhook__QUEUE_LENGTH: "{{ gitea_webhook_queue_length | string }}"
+  GITEA__webhook__DELIVER_TIMEOUT: "{{ gitea_webhook_deliver_timeout | string }}"
+  GITEA__webhook__SKIP_TLS_VERIFY: "{{ gitea_webhook_skip_tls_verify | string | lower }}"
+  GITEA__webhook__ALLOWED_HOST_LIST: "{{ gitea_webhook_allowed_host_list }}"
+  GITEA__webhook__PROXY_URL: "{{ gitea_webhook_proxy_url | default('') }}"
+  GITEA__webhook__PROXY_HOSTS: "{{ gitea_webhook_proxy_hosts | default('') }}"
+
+  # =========================================================================
+  # CONFIGURATION MÉTRIQUES ET MONITORING
+  # =========================================================================
+
+  GITEA__metrics__ENABLED: "{{ gitea_metrics_enabled | string | lower }}"
+  GITEA__metrics__ENABLED_ISSUE_BY_LABEL: "{{ gitea_metrics_enabled_issue_by_label | string | lower }}"
+  GITEA__metrics__ENABLED_ISSUE_BY_REPOSITORY: "{{ gitea_metrics_enabled_issue_by_repository | string | lower }}"
+
+  # =========================================================================
+  # CONFIGURATION API
+  # =========================================================================
+
+  GITEA__api__ENABLE_SWAGGER: "{{ gitea_api_enable_swagger | string | lower }}"
+  GITEA__api__MAX_RESPONSE_ITEMS: "{{ gitea_api_max_response_items | string }}"
+  GITEA__api__DEFAULT_PAGING_NUM: "{{ gitea_api_default_paging_num | string }}"
+  GITEA__api__DEFAULT_GIT_TREES_PER_PAGE: "{{ gitea_api_default_git_trees_per_page | string }}"
+  GITEA__api__DEFAULT_MAX_BLOB_SIZE: "{{ gitea_api_default_max_blob_size | string }}"
+
+  # =========================================================================
+  # CONFIGURATION ACTIONS (CI/CD)
+  # =========================================================================
+
+  GITEA__actions__ENABLED: "{{ gitea_actions_enabled | string | lower }}"
+  GITEA__actions__DEFAULT_ACTIONS_URL: "{{ gitea_actions_default_actions_url }}"
+  GITEA__actions__STORAGE_TYPE: "{{ gitea_actions_storage_type }}"
+  GITEA__actions__MINIO_ENDPOINT: "{{ gitea_actions_minio_endpoint | default('') }}"
+  GITEA__actions__MINIO_ACCESS_KEY_ID: "{{ gitea_actions_minio_access_key_id | default('') }}"
+  GITEA__actions__MINIO_SECRET_ACCESS_KEY: "{{ gitea_actions_minio_secret_access_key | default('') }}"
+  GITEA__actions__MINIO_BUCKET: "{{ gitea_actions_minio_bucket | default('') }}"
+  GITEA__actions__MINIO_LOCATION: "{{ gitea_actions_minio_location | default('') }}"
+  GITEA__actions__MINIO_BASE_PATH: "{{ gitea_actions_minio_base_path | default('') }}"
+  GITEA__actions__MINIO_USE_SSL: "{{ gitea_actions_minio_use_ssl | string | lower }}"
+
+  # =========================================================================
+  # CONFIGURATION PACKAGE REGISTRY
+  # =========================================================================
+
+  GITEA__packages__ENABLED: "{{ gitea_packages_enabled | string | lower }}"
+  GITEA__packages__STORAGE_TYPE: "{{ gitea_packages_storage_type }}"
+  GITEA__packages__SERVE_DIRECT: "{{ gitea_packages_serve_direct | string | lower }}"
+  GITEA__packages__MINIO_ENDPOINT: "{{ gitea_packages_minio_endpoint | default('') }}"
+  GITEA__packages__MINIO_ACCESS_KEY_ID: "{{ gitea_packages_minio_access_key_id | default('') }}"
+  GITEA__packages__MINIO_SECRET_ACCESS_KEY: "{{ gitea_packages_minio_secret_access_key | default('') }}"
+  GITEA__packages__MINIO_BUCKET: "{{ gitea_packages_minio_bucket | default('') }}"
+  GITEA__packages__MINIO_LOCATION: "{{ gitea_packages_minio_location | default('') }}"
+  GITEA__packages__MINIO_BASE_PATH: "{{ gitea_packages_minio_base_path | default('') }}"
+  GITEA__packages__MINIO_USE_SSL: "{{ gitea_packages_minio_use_ssl | string | lower }}"
+
+  # =========================================================================
+  # CONFIGURATION SPÉCIFIQUE ENVIRONNEMENT
+  # =========================================================================
+{% if lions_environment == 'development' %}
+
+  # Configuration développement
+  GITEA__log__LEVEL: "debug"
   GITEA__server__OFFLINE_MODE: "false"
-  GITEA__server__LANDING_PAGE: "home"
-  
-  # Configuration de la base de données
-  GITEA__database__SSL_MODE: "disable"
-  GITEA__database__CHARSET: "utf8"
-  GITEA__database__PATH: "/data/gitea/gitea.db"
-  
-  # Configuration de la sécurité
-  GITEA__security__INTERNAL_TOKEN_URI: "file:/data/gitea/internal/token"
-  GITEA__security__PASSWORD_HASH_ALGO: "pbkdf2"
-  GITEA__security__MIN_PASSWORD_LENGTH: "8"
-  
-  # Configuration des métriques
-  GITEA__metrics__ENABLED: "{{ gitea_prometheus_scrape | string | lower }}"
-  GITEA__metrics__TOKEN: ""
-  
-  # Configuration des sessions
-  GITEA__session__PROVIDER: "memory"
-  GITEA__session__COOKIE_SECURE: "{% if app_environment == 'production' %}true{% else %}false{% endif %}"
-  
-  # Configuration du cache
-  GITEA__cache__ADAPTER: "memory"
-  GITEA__cache__INTERVAL: "60"
-  
-  # Configuration du service
-  GITEA__service__ENABLE_NOTIFY_MAIL: "false"
-  GITEA__service__REGISTER_EMAIL_CONFIRM: "{% if app_environment == 'production' %}true{% else %}false{% endif %}"
-  GITEA__service__ENABLE_CAPTCHA: "{% if app_environment == 'production' %}true{% else %}false{% endif %}"
-  
-  # Configuration des webhooks
-  GITEA__webhook__ALLOWED_HOST_LIST: "*"
+  GITEA__service__DISABLE_REGISTRATION: "false"
+  GITEA__service__REQUIRE_SIGNIN_VIEW: "false"
+  GITEA__service__ENABLE_CAPTCHA: "false"
+  GITEA__security__PASSWORD_CHECK_PWN: "false"
+  GITEA__api__ENABLE_SWAGGER: "true"
+  GITEA__repository__FORCE_PRIVATE: "false"
+
+{% elif lions_environment == 'staging' %}
+
+  # Configuration staging
+  GITEA__log__LEVEL: "info"
+  GITEA__server__OFFLINE_MODE: "false"
+  GITEA__service__DISABLE_REGISTRATION: "true"
+  GITEA__service__REQUIRE_SIGNIN_VIEW: "true"
+  GITEA__service__ENABLE_CAPTCHA: "true"
+  GITEA__security__PASSWORD_CHECK_PWN: "true"
+  GITEA__api__ENABLE_SWAGGER: "false"
+  GITEA__repository__FORCE_PRIVATE: "false"
+
+{% elif lions_environment == 'production' %}
+
+  # Configuration production
+  GITEA__log__LEVEL: "warn"
+  GITEA__server__OFFLINE_MODE: "false"
+  GITEA__service__DISABLE_REGISTRATION: "true"
+  GITEA__service__REQUIRE_SIGNIN_VIEW: "true"
+  GITEA__service__ENABLE_CAPTCHA: "true"
+  GITEA__security__PASSWORD_CHECK_PWN: "true"
+  GITEA__api__ENABLE_SWAGGER: "false"
+  GITEA__repository__FORCE_PRIVATE: "{{ gitea_repository_force_private_production | default('false') }}"
+  GITEA__security__CSRF_COOKIE_HTTP_ONLY: "true"
+  GITEA__session__COOKIE_SECURE: "true"
   GITEA__webhook__SKIP_TLS_VERIFY: "false"
-  
-  # Configuration des repositories
-  GITEA__repository__ROOT: "/data/git/repositories"
-  GITEA__repository__DEFAULT_BRANCH: "main"
-  GITEA__repository__MAX_CREATION_LIMIT: "50"
-  
-  # Configuration des actions
-  GITEA__actions__ENABLED: "true"
-  
-  # Configuration de l'interface
-  GITEA__ui__DEFAULT_THEME: "auto"
-  GITEA__ui__THEMES: "auto,gitea,arc-green,dark-blue"
+
+{% endif %}
+
+  # =========================================================================
+  # CONFIGURATION HEALTH CHECKS
+  # =========================================================================
+
+  # Configuration pour les health checks Kubernetes
+  GITEA__server__ENABLE_PPROF: "{{ gitea_enable_pprof | string | lower }}"
+  GITEA__server__PPROF_DATA_PATH: "{{ gitea_pprof_data_path | default('') }}"
+
+  # =========================================================================
+  # SCRIPTS DE CONFIGURATION
+  # =========================================================================
+
+  # Script d'initialisation personnalisé
+  init.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    echo "🚀 Initialisation de Gitea {{ gitea_version }} pour l'environnement {{ lions_environment }}"
+
+    # Création des répertoires nécessaires
+    mkdir -p {{ gitea_app_data_path }}/{custom,data,log}
+    mkdir -p {{ gitea_repository_root }}
+    mkdir -p {{ gitea_lfs_content_path }}
+
+    # Configuration des permissions
+    chown -R {{ gitea_user_uid }}:{{ gitea_user_gid }} {{ gitea_app_data_path }}
+    chown -R {{ gitea_user_uid }}:{{ gitea_user_gid }} {{ gitea_repository_root }}
+    chown -R {{ gitea_user_uid }}:{{ gitea_user_gid }} {{ gitea_lfs_content_path }}
+
+    # Vérification de la configuration
+    if [[ -f "{{ gitea_app_data_path }}/custom/conf/app.ini" ]]; then
+        echo "✅ Configuration personnalisée trouvée"
+    else
+        echo "⚠️  Aucune configuration personnalisée trouvée, utilisation des variables d'environnement"
+    fi
+
+    echo "✅ Initialisation de Gitea terminée"
+
+  # Script de vérification de la santé
+  health-check.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    # Health check pour Gitea
+    GITEA_URL="http://localhost:{{ gitea_port }}"
+
+    # Vérification de la disponibilité de l'API
+    if curl -sf "${GITEA_URL}/api/v1/version" >/dev/null 2>&1; then
+        echo "✅ Gitea API est accessible"
+        exit 0
+    else
+        echo "❌ Gitea API n'est pas accessible"
+        exit 1
+    fi
+
+  # Script de configuration post-démarrage
+  post-start.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    echo "🔧 Configuration post-démarrage de Gitea"
+
+    # Attendre que Gitea soit disponible
+    timeout 120 bash -c 'until curl -sf http://localhost:{{ gitea_port }}/api/v1/version; do sleep 2; done'
+
+    # Configuration spécifique à l'environnement
+    if [[ "{{ lions_environment }}" == "production" ]]; then
+        echo "🔒 Application des configurations de sécurité pour la production"
+        # Ajoutez ici des configurations spécifiques à la production
+    fi
+
+    echo "✅ Configuration post-démarrage terminée"
+
+---
+# =========================================================================
+  # FIN DU TEMPLATE CONFIGMAP GITEA
+  # =========================================================================

@@ -1,118 +1,470 @@
 ---
-# Titre: Déploiement du service de notification
-# Description: Déploie le service de notification sur Kubernetes
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-08
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - TÂCHES DE DÉPLOIEMENT NOTIFICATION SERVICE
+# =========================================================================
+# Description: Tâches avancées de déploiement du service de notification avec gestion d'erreurs complète
+# Version: 5.0.0
+# Auteur: Équipe DevOps LIONS
+# Date: 2025-05-28
+# Dépendances: PostgreSQL (optionnel), Redis (optionnel), Vault
+# =========================================================================
 
-- name: Déploiement du service de notification
-  k8s:
-    state: present
-    src: "{{ temp_dir.path }}/deployment.yml"
-  register: deployment_result
+# =========================================================================
+# VALIDATION PRÉ-DÉPLOIEMENT
+# =========================================================================
+- name: "[NOTIFICATION-DEPLOY] Valider les prérequis de déploiement"
+  block:
+    - name: "Vérifier l'existence du namespace"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Namespace
+        name: "{{ notification_namespace }}"
+      register: namespace_check
+      failed_when: namespace_check.resources | length == 0
 
-- name: Création du service pour le service de notification
-  k8s:
-    state: present
-    src: "{{ temp_dir.path }}/service.yml"
-  register: service_result
+    - name: "Valider les variables d'environnement requises"
+      assert:
+        that:
+          - notification_enabled | default(false) | bool
+          - notification_namespace is defined
+          - notification_service_name is defined
+          - notification_service_meta.version is defined
+          - notification_dns.full_domain is defined
+        fail_msg: "Les variables d'environnement du service de notification requises ne sont pas correctement configurées"
+        success_msg: "✅ Variables d'environnement du service de notification validées"
 
-- name: Création de l'ingress pour le service de notification
-  k8s:
-    state: present
-    src: "{{ temp_dir.path }}/ingress.yml"
-  register: ingress_result
+  rescue:
+    - name: "Journaliser l'échec de validation des prérequis"
+      debug:
+        msg: "❌ Les prérequis de déploiement du service de notification ne sont pas satisfaits. Abandon du déploiement."
+    - fail:
+        msg: "La validation des prérequis de déploiement du service de notification a échoué"
 
-- name: Attente du déploiement
-  k8s_info:
-    api_version: apps/v1
-    kind: Deployment
-    namespace: "{{ app_namespace }}"
-    name: "{{ app_name }}"
-  register: deployment_status
-  until: deployment_status.resources[0].status.readyReplicas is defined and deployment_status.resources[0].status.readyReplicas == deployment_status.resources[0].spec.replicas
-  retries: 30
-  delay: 10
-  ignore_errors: yes
+  tags: [notification, deploy, validation]
 
-- name: Vérification du statut du déploiement
-  fail:
-    msg: "Le déploiement du service de notification a échoué. Veuillez vérifier les logs pour plus d'informations."
-  when: deployment_status is failed or deployment_status.resources | length == 0
+# =========================================================================
+# CONFIGURATION DE DÉPLOIEMENT
+# =========================================================================
+- name: "[NOTIFICATION-DEPLOY] Générer la configuration de déploiement"
+  block:
+    - name: "Définir les variables de déploiement"
+      set_fact:
+        notification_deployment_config:
+          name: "{{ notification_service_name }}"
+          namespace: "{{ notification_namespace }}"
+          version: "{{ notification_service_meta.version }}"
+          replicas: "{{ notification_replicas }}"
+          domain: "{{ notification_dns.full_domain }}"
+          internal_url: "{{ notification_urls.internal }}"
+          storage_enabled: "{{ notification_storage.enabled }}"
+          resources: "{{ notification_resources }}"
 
-- name: Récupération des informations sur les pods
-  k8s_info:
-    api_version: v1
-    kind: Pod
-    namespace: "{{ app_namespace }}"
-    label_selectors:
-      - "app={{ app_name }}"
-  register: pods_info
+    - name: "Générer l'horodatage de déploiement"
+      set_fact:
+        deployment_timestamp: "{{ ansible_date_time.epoch }}"
+        deployment_id: "{{ ansible_date_time.iso8601_basic_short }}-{{ ansible_hostname | hash('md5') | truncate(8, True, '') }}"
 
-- name: Affichage des informations sur les pods
-  debug:
-    msg: "Pod {{ item.metadata.name }} est dans l'état {{ item.status.phase }}"
-  loop: "{{ pods_info.resources }}"
-  loop_control:
-    label: "{{ item.metadata.name }}"
+  tags: [notification, deploy, config]
 
-- name: Attente de l'initialisation du service de notification
-  pause:
-    seconds: "{{ notification_init_delay | default(30) }}"
-  when: deployment_status is succeeded
+# =========================================================================
+# GESTION DES SECRETS
+# =========================================================================
+- name: "[NOTIFICATION-DEPLOY] Gérer les secrets et la configuration"
+  block:
+    - name: "Récupérer la clé API depuis Vault"
+      lions_vault_secret:
+        vault_url: "{{ lions_vault_addr }}"
+        vault_token: "{{ vault_token | default(omit) }}"
+        path: "secret/notification/api"
+        key: "credentials"
+      register: notification_api_credentials
+      when: lions_vault_enabled | default(true) | bool
+      no_log: true
 
-- name: Vérification de l'état des pods après initialisation
-  k8s_info:
-    api_version: v1
-    kind: Pod
-    namespace: "{{ app_namespace }}"
-    label_selectors:
-      - "app={{ app_name }}"
-  register: pods_info_after_init
+    - name: "Générer une clé API aléatoire si elle n'existe pas"
+      set_fact:
+        notification_api_key: "{{ lookup('password', '/dev/null length=64 chars=ascii_letters,digits') }}"
+      when: notification_api_key is not defined
+      no_log: true
 
-- name: Affichage des informations sur les pods après initialisation
-  debug:
-    msg: "Pod {{ item.metadata.name }} est dans l'état {{ item.status.phase }} après initialisation"
-  loop: "{{ pods_info_after_init.resources }}"
-  loop_control:
-    label: "{{ item.metadata.name }}"
+    - name: "Stocker les identifiants dans Vault"
+      lions_vault_secret:
+        vault_url: "{{ lions_vault_addr }}"
+        vault_token: "{{ vault_token | default(omit) }}"
+        path: "secret/notification/admin"
+        data:
+          username: "{{ notification_secrets.admin.username }}"
+          password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+          email: "{{ notification_secrets.admin.email }}"
+          api_key: "{{ notification_api_key }}"
+        state: present
+      when: lions_vault_enabled | default(true) | bool
+      no_log: true
 
-- name: Vérification des logs des pods pour détecter des erreurs
-  shell: "kubectl logs -n {{ app_namespace }} {{ item.metadata.name }} | grep -i error | tail -10"
-  loop: "{{ pods_info_after_init.resources }}"
-  register: pod_logs
-  ignore_errors: yes
-  changed_when: false
-  loop_control:
-    label: "{{ item.metadata.name }}"
+  rescue:
+    - name: "Gérer l'échec de gestion des secrets"
+      debug:
+        msg: "⚠️  Avertissement : La gestion des secrets a échoué. Utilisation de la configuration de secours."
+    - set_fact:
+        notification_api_credentials:
+          api_key: "{{ notification_api_key | default(lookup('password', '/dev/null length=64 chars=ascii_letters,digits')) }}"
 
-- name: Affichage des erreurs dans les logs (si présentes)
-  debug:
-    msg: "Erreurs détectées dans les logs de {{ item.item.metadata.name }}: {{ item.stdout }}"
-  loop: "{{ pod_logs.results }}"
-  when: item.stdout != ""
-  loop_control:
-    label: "{{ item.item.metadata.name }}"
+  tags: [notification, deploy, secrets]
 
-- name: Vérification de la disponibilité du service de notification
-  shell: "kubectl exec -n {{ app_namespace }} {{ pods_info_after_init.resources[0].metadata.name }} -- curl -s http://localhost:{{ notification_default_port }}{{ notification_health_path }}"
-  register: health_check
-  ignore_errors: yes
-  retries: 5
-  delay: 10
-  until: health_check.rc == 0
-  changed_when: false
+# =========================================================================
+# DÉPLOIEMENT DES RESSOURCES KUBERNETES
+# =========================================================================
+- name: "[NOTIFICATION-DEPLOY] Déployer les ressources Kubernetes"
+  block:
+    # ServiceAccount
+    - name: "Déployer le ServiceAccount"
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('template', 'serviceaccount.yml.j2') | from_yaml }}"
+        wait: true
+        wait_condition:
+          type: Complete
+          status: "True"
+        wait_timeout: 60
+      register: serviceaccount_result
 
-- name: Avertissement si le service de notification n'est pas disponible
-  debug:
-    msg: "AVERTISSEMENT: Le service de notification n'est pas disponible. Vérifiez les logs pour plus d'informations."
-  when: health_check is failed
+    # ConfigMap
+    - name: "Déployer la ConfigMap"
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('template', 'configmap.yml.j2') | from_yaml }}"
+        wait: true
+        wait_timeout: 60
+      register: configmap_result
 
-- name: Récupération de l'URL d'accès
-  set_fact:
-    notification_url: "https://{{ app_name }}.{{ app_environment }}.lions.dev"
+    # PersistentVolumeClaim (si stockage activé)
+    - name: "Déployer le PersistentVolumeClaim"
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('template', 'persistentvolumeclaim.yml.j2') | from_yaml }}"
+        wait: true
+        wait_condition:
+          type: Bound
+          status: "True"
+        wait_timeout: 300
+      register: pvc_result
+      when: notification_storage.enabled | bool
 
-- name: Affichage de l'URL d'accès
-  debug:
-    msg: "Le service de notification est accessible à l'URL: {{ notification_url }}"
-  when: health_check is succeeded
+    # Secret pour l'API
+    - name: "Créer le secret d'API"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: "{{ notification_deployment_config.name }}-api-secret"
+            namespace: "{{ notification_deployment_config.namespace }}"
+            labels:
+              app.kubernetes.io/name: notification-service
+              app.kubernetes.io/instance: "{{ notification_deployment_config.name }}"
+              lions.dev/environment: "{{ notification_environment }}"
+          type: Opaque
+          data:
+            api-key: "{{ notification_api_credentials.api_key | b64encode }}"
+            admin-username: "{{ notification_secrets.admin.username | b64encode }}"
+            admin-password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') | b64encode }}"
+        wait: true
+        wait_timeout: 60
+      register: secret_result
+      no_log: true
+
+    # Service
+    - name: "Déployer le Service"
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('template', 'service.yml.j2') | from_yaml }}"
+        wait: true
+        wait_timeout: 60
+      register: service_result
+
+    # Deployment
+    - name: "Déployer l'application du service de notification"
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('template', 'deployment.yml.j2') | from_yaml }}"
+        wait: true
+        wait_condition:
+          type: Available
+          status: "True"
+        wait_timeout: 600
+      register: deployment_result
+
+  rescue:
+    - name: "Journaliser l'échec de déploiement"
+      debug:
+        msg: "❌ Le déploiement des ressources Kubernetes du service de notification a échoué à {{ ansible_date_time.iso8601 }}"
+    - name: "Collecter les logs de déploiement pour le dépannage"
+      include_tasks: "../utils/collect_logs.yml"
+      vars:
+        component_name: "notification-service"
+        log_collection_reason: "deployment_failure"
+      ignore_errors: true
+    - fail:
+        msg: "Le déploiement des ressources Kubernetes du service de notification a échoué"
+
+  tags: [notification, deploy, kubernetes]
+
+# =========================================================================
+# CONFIGURATION INGRESS
+# =========================================================================
+- name: "[NOTIFICATION-DEPLOY] Configurer l'ingress"
+  block:
+    - name: "Déployer la ressource Ingress"
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('template', 'ingress.yml.j2') | from_yaml }}"
+        wait: true
+        wait_timeout: 120
+      register: ingress_result
+      when:
+        - notification_ingress.enabled | bool
+        - notification_tls.enabled | bool
+
+    - name: "Attendre le provisionnement du certificat TLS"
+      kubernetes.core.k8s_info:
+        api_version: cert-manager.io/v1
+        kind: Certificate
+        namespace: "{{ notification_deployment_config.namespace }}"
+        name: "{{ notification_deployment_config.name }}-tls"
+      register: certificate_status
+      until:
+        - certificate_status.resources | length > 0
+        - certificate_status.resources[0].status.conditions | selectattr('type', 'equalto', 'Ready') | selectattr('status', 'equalto', 'True') | list | length > 0
+      retries: 30
+      delay: 10
+      when:
+        - ingress_result is not skipped
+        - notification_tls.enabled | bool
+
+  rescue:
+    - name: "Gérer l'échec de configuration de l'ingress"
+      debug:
+        msg: "⚠️  Avertissement : La configuration de l'ingress a échoué. Le service ne sera accessible qu'en interne."
+
+  tags: [notification, deploy, ingress]
+
+# =========================================================================
+# VÉRIFICATION POST-DÉPLOIEMENT
+# =========================================================================
+- name: "[NOTIFICATION-DEPLOY] Vérifier la santé du déploiement"
+  block:
+    - name: "Attendre la disponibilité du déploiement"
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        namespace: "{{ notification_deployment_config.namespace }}"
+        name: "{{ notification_deployment_config.name }}"
+      register: deployment_status
+      until:
+        - deployment_status.resources | length > 0
+        - deployment_status.resources[0].status.availableReplicas is defined
+        - deployment_status.resources[0].status.availableReplicas == deployment_status.resources[0].spec.replicas
+      retries: 30
+      delay: 10
+
+    - name: "Obtenir les informations des pods"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Pod
+        namespace: "{{ notification_deployment_config.namespace }}"
+        label_selectors:
+          - "app.kubernetes.io/name=notification-service"
+          - "app.kubernetes.io/instance={{ notification_deployment_config.name }}"
+      register: pods_info
+
+    - name: "Vérifier la santé des pods"
+      assert:
+        that:
+          - pods_info.resources | length > 0
+          - pods_info.resources | selectattr('status.phase', 'equalto', 'Running') | list | length == pods_info.resources | length
+        fail_msg: "❌ Tous les pods du service de notification ne fonctionnent pas correctement"
+        success_msg: "✅ Tous les pods du service de notification sont en cours d'exécution et en bonne santé"
+
+    - name: "Vérifier la disponibilité de l'application"
+      uri:
+        url: "{{ notification_deployment_config.internal_url }}{{ notification_endpoints.health }}"
+        method: GET
+        status_code: 200
+        timeout: 30
+      register: health_check
+      retries: 10
+      delay: 15
+      until: health_check is succeeded
+
+    - name: "Vérifier l'endpoint de métrics"
+      uri:
+        url: "{{ notification_deployment_config.internal_url }}{{ notification_endpoints.metrics }}"
+        method: GET
+        status_code: 200
+        timeout: 30
+      register: metrics_check
+      retries: 5
+      delay: 10
+      until: metrics_check is succeeded
+      when: notification_monitoring.enabled | bool
+
+  rescue:
+    - name: "Gérer l'échec de vérification post-déploiement"
+      debug:
+        msg: "❌ La vérification post-déploiement a échoué"
+
+    - name: "Collecter les logs des pods pour le dépannage"
+      kubernetes.core.k8s_log:
+        namespace: "{{ notification_deployment_config.namespace }}"
+        name: "{{ item.metadata.name }}"
+        tail_lines: 50
+      register: pod_logs
+      loop: "{{ pods_info.resources | default([]) }}"
+      when: pods_info.resources is defined
+
+    - name: "Afficher les logs des pods"
+      debug:
+        msg: |
+          Logs du pod {{ item.item.metadata.name }} :
+          {{ item.log | default('Aucun log disponible') }}
+      loop: "{{ pod_logs.results | default([]) }}"
+      when: pod_logs.results is defined
+
+    - fail:
+        msg: "La vérification du déploiement du service de notification a échoué"
+
+  tags: [notification, deploy, verification]
+
+# =========================================================================
+# CONFIGURATION DU MONITORING
+# =========================================================================
+- name: "[NOTIFICATION-DEPLOY] Configurer le monitoring"
+  block:
+    - name: "Déployer le ServiceMonitor pour Prometheus"
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('template', 'servicemonitor.yml.j2') | from_yaml }}"
+        wait: true
+        wait_timeout: 60
+      register: servicemonitor_result
+      when: notification_monitoring.enabled | bool
+
+    - name: "Créer la ConfigMap du tableau de bord Grafana"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: "{{ notification_deployment_config.name }}-dashboard"
+            namespace: "{{ lions_monitoring_namespace | default('monitoring') }}"
+            labels:
+              grafana_dashboard: "1"
+              app.kubernetes.io/name: notification-service
+              lions.dev/environment: "{{ notification_environment }}"
+          data:
+            notification-dashboard.json: "{{ lookup('file', '../../../monitoring/dashboards/notification/application-dashboard.json') | default('{}') }}"
+      when: notification_monitoring.enabled | bool
+      ignore_errors: true
+
+  rescue:
+    - name: "Gérer l'échec de configuration du monitoring"
+      debug:
+        msg: "⚠️  Avertissement : La configuration du monitoring a échoué. L'application est déployée mais le monitoring pourrait ne pas être disponible."
+
+  tags: [notification, deploy, monitoring]
+
+# =========================================================================
+# FINALISATION DU DÉPLOIEMENT
+# =========================================================================
+- name: "[NOTIFICATION-DEPLOY] Finaliser le déploiement"
+  block:
+    - name: "Mettre à jour le statut de déploiement dans Vault"
+      lions_vault_secret:
+        vault_url: "{{ lions_vault_addr }}"
+        vault_token: "{{ vault_token | default(omit) }}"
+        path: "secret/notification/deployment"
+        data:
+          status: "deployed"
+          version: "{{ notification_deployment_config.version }}"
+          deployment_id: "{{ deployment_id }}"
+          deployed_at: "{{ ansible_date_time.iso8601 }}"
+          internal_url: "{{ notification_deployment_config.internal_url }}"
+          external_url: "{{ notification_urls.external }}"
+          namespace: "{{ notification_deployment_config.namespace }}"
+        state: present
+      when: lions_vault_enabled | default(true) | bool
+
+    - name: "Journaliser le déploiement réussi"
+      debug:
+        msg: |
+          ✅ Déploiement du service de notification terminé avec succès !
+          
+          📊 Résumé du déploiement :
+          - Nom : {{ notification_deployment_config.name }}
+          - Namespace : {{ notification_deployment_config.namespace }}
+          - Version : {{ notification_deployment_config.version }}
+          - ID de déploiement : {{ deployment_id }}
+          - URL interne : {{ notification_deployment_config.internal_url }}
+          - URL externe : {{ notification_urls.external }}
+          - Déployé le : {{ ansible_date_time.iso8601 }}
+          
+          🔗 Informations d'accès :
+          - Interface Web : {{ notification_urls.external }}
+          - Point d'accès API : {{ notification_urls.external }}/api
+          - Vérification de santé : {{ notification_deployment_config.internal_url }}{{ notification_endpoints.health }}
+          
+          📈 Monitoring :
+          - Métriques : {{ notification_deployment_config.internal_url }}{{ notification_endpoints.metrics }}
+          - Logs : kubectl logs -n {{ notification_deployment_config.namespace }} -l app.kubernetes.io/name=notification-service
+
+    - name: "Définir les variables de résultat de déploiement"
+      set_fact:
+        notification_deployment_result:
+          status: "success"
+          deployment_id: "{{ deployment_id }}"
+          internal_url: "{{ notification_deployment_config.internal_url }}"
+          external_url: "{{ notification_urls.external }}"
+          namespace: "{{ notification_deployment_config.namespace }}"
+          version: "{{ notification_deployment_config.version }}"
+          deployed_at: "{{ ansible_date_time.iso8601 }}"
+
+  tags: [notification, deploy, completion]
+
+# =========================================================================
+# GESTION D'ERREURS ET ROLLBACK
+# =========================================================================
+- name: "[NOTIFICATION-DEPLOY] Gérer l'échec de déploiement"
+  block:
+    - name: "Initier la procédure de rollback"
+      include_tasks: "rollback.yml"
+      vars:
+        rollback_reason: "deployment_failure"
+        deployment_id: "{{ deployment_id }}"
+      when: notification_auto_rollback | default(true) | bool
+      ignore_errors: true
+
+    - name: "Mettre à jour le statut de déploiement comme échoué"
+      lions_vault_secret:
+        vault_url: "{{ lions_vault_addr }}"
+        vault_token: "{{ vault_token | default(omit) }}"
+        path: "secret/notification/deployment"
+        data:
+          status: "failed"
+          deployment_id: "{{ deployment_id }}"
+          failed_at: "{{ ansible_date_time.iso8601 }}"
+          error_message: "{{ ansible_failed_result.msg | default('Erreur inconnue') }}"
+        state: present
+      when: lions_vault_enabled | default(true) | bool
+
+    - name: "Définir les variables de résultat d'échec"
+      set_fact:
+        notification_deployment_result:
+          status: "failed"
+          deployment_id: "{{ deployment_id }}"
+          failed_at: "{{ ansible_date_time.iso8601 }}"
+          error_message: "{{ ansible_failed_result.msg | default('Erreur inconnue') }}"
+
+  when: ansible_failed_task is defined
+  tags: [notification, deploy, error-handling]

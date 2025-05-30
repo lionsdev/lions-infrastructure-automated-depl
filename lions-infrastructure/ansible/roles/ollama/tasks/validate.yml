@@ -1,60 +1,450 @@
 ---
-# Titre: Tâches de validation pour Ollama
-# Description: Validation du déploiement Ollama
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-14
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - VALIDATION OLLAMA
+# =========================================================================
+# Description: Tâches de validation complètes pour le déploiement Ollama
+# Version: 5.0.0
+# Maintainer: DevOps Team LIONS
+# Date: "{{ ansible_date_time.date }}"
+# Dependencies: kubernetes.core collection
+# Documentation: https://docs.lions.dev/infrastructure/services/ollama
+# =========================================================================
 
-- name: "[Ollama] Vérifier le statut du pod"
+- name: "[Ollama] Initialisation de la validation"
+  debug:
+    msg:
+      - "🔍 Démarrage de la validation Ollama"
+      - "Environnement: {{ lookup('env', 'LIONS_ENVIRONMENT') | default('development') }}"
+      - "Namespace: {{ lookup('env', 'LIONS_OLLAMA_NAMESPACE') | default('ai') }}"
+      - "Service: {{ lookup('env', 'LIONS_OLLAMA_SERVICE_NAME') | default('ollama') }}"
+      - "Version: {{ lookup('env', 'LIONS_OLLAMA_VERSION') | default('0.1.26') }}"
+  tags:
+    - ollama
+    - validation
+    - info
+
+# =========================================================================
+# VALIDATION DE L'INFRASTRUCTURE
+# =========================================================================
+
+- name: "[Ollama] Vérification de l'existence du namespace"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: "{{ lookup('env', 'LIONS_OLLAMA_NAMESPACE') | default('ai') }}"
+  register: ollama_namespace_info
+  failed_when: ollama_namespace_info.resources | length == 0
+  tags:
+    - ollama
+    - validation
+    - namespace
+
+- name: "[Ollama] Validation des ressources Kubernetes requises"
+  kubernetes.core.k8s_info:
+    api_version: "{{ item.api_version }}"
+    kind: "{{ item.kind }}"
+    name: "{{ lookup('env', 'LIONS_OLLAMA_SERVICE_NAME') | default('ollama') }}"
+    namespace: "{{ lookup('env', 'LIONS_OLLAMA_NAMESPACE') | default('ai') }}"
+  register: ollama_resource_validation
+  failed_when: ollama_resource_validation.resources | length == 0
+  loop:
+    - { api_version: "v1", kind: "ServiceAccount" }
+    - { api_version: "v1", kind: "Service" }
+    - { api_version: "v1", kind: "ConfigMap" }
+    - { api_version: "v1", kind: "PersistentVolumeClaim" }
+    - { api_version: "apps/v1", kind: "Deployment" }
+  loop_control:
+    label: "{{ item.kind }}"
+  tags:
+    - ollama
+    - validation
+    - resources
+
+# =========================================================================
+# VALIDATION DU DÉPLOIEMENT
+# =========================================================================
+
+- name: "[Ollama] Récupération du statut des pods"
   kubernetes.core.k8s_info:
     api_version: v1
     kind: Pod
-    namespace: "{{ app_namespace }}"
+    namespace: "{{ lookup('env', 'LIONS_OLLAMA_NAMESPACE') | default('ai') }}"
     label_selectors:
-      - "app={{ app_name }}"
-  register: pod_status
+      - "app={{ lookup('env', 'LIONS_OLLAMA_SERVICE_NAME') | default('ollama') }}"
+      - "component=ollama-server"
+  register: ollama_pods_status
+  tags:
+    - ollama
+    - validation
+    - pods
 
-- name: "[Ollama] Afficher le statut des pods"
-  debug:
-    msg: "Pod {{ item.metadata.name }} - Status: {{ item.status.phase }}"
-  loop: "{{ pod_status.resources }}"
+- name: "[Ollama] Validation du nombre de pods"
+  assert:
+    that:
+      - ollama_pods_status.resources | length > 0
+    fail_msg: "❌ Aucun pod Ollama trouvé dans le namespace {{ lookup('env', 'LIONS_OLLAMA_NAMESPACE') | default('ai') }}"
+    success_msg: "✅ {{ ollama_pods_status.resources | length }} pod(s) Ollama trouvé(s)"
+  tags:
+    - ollama
+    - validation
+    - pods
 
-- name: "[Ollama] Tester l'endpoint de santé"
-  uri:
-    url: "http://{{ app_name }}.{{ app_namespace }}.svc.cluster.local{{ ollama_health_path }}"
-    method: GET
-    validate_certs: no
-  register: health_check
-  until: health_check.status == 200
-  retries: 10
-  delay: 5
-
-- name: "[Ollama] Tester l'Ingress"
-  uri:
-    url: "https://{{ app_domain }}{{ ollama_health_path }}"
-    method: GET
-    validate_certs: yes
-  register: ingress_check
-  until: ingress_check.status == 200
-  retries: 10
-  delay: 5
-
-- name: "[Ollama] Vérifier les modèles disponibles"
-  kubernetes.core.k8s_exec:
-    namespace: "{{ app_namespace }}"
-    pod: "{{ pod_status.resources[0].metadata.name }}"
-    command: "ollama list"
-  register: models_list
-
-- name: "[Ollama] Afficher les modèles disponibles"
-  debug:
-    msg: "{{ models_list.stdout_lines }}"
-
-- name: "[Ollama] Résumé du déploiement"
+- name: "[Ollama] Vérification du statut des pods individuels"
   debug:
     msg:
-      - "✅ Ollama déployé avec succès"
-      - "URL: https://{{ app_domain }}"
-      - "Namespace: {{ app_namespace }}"
-      - "Pods actifs: {{ pod_status.resources | length }}"
-      - "Santé: {{ health_check.status }}"
+      - "Pod: {{ item.metadata.name }}"
+      - "Phase: {{ item.status.phase }}"
+      - "Ready: {{ item.status.conditions | selectattr('type', 'equalto', 'Ready') | map(attribute='status') | first | default('Unknown') }}"
+      - "Restart Count: {{ item.status.containerStatuses[0].restartCount | default(0) }}"
+      - "Image: {{ item.status.containerStatuses[0].image | default('N/A') }}"
+  loop: "{{ ollama_pods_status.resources }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+  tags:
+    - ollama
+    - validation
+    - pods
+    - debug
+
+- name: "[Ollama] Validation de l'état des pods"
+  assert:
+    that:
+      - item.status.phase == "Running"
+      - item.status.conditions | selectattr('type', 'equalto', 'Ready') | map(attribute='status') | first == "True"
+    fail_msg: "❌ Pod {{ item.metadata.name }} n'est pas dans un état sain"
+    success_msg: "✅ Pod {{ item.metadata.name }} est opérationnel"
+  loop: "{{ ollama_pods_status.resources }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+  tags:
+    - ollama
+    - validation
+    - pods
+
+# =========================================================================
+# VALIDATION DES SERVICES
+# =========================================================================
+
+- name: "[Ollama] Vérification de la connectivité interne du service"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Service
+    name: "{{ lookup('env', 'LIONS_OLLAMA_SERVICE_NAME') | default('ollama') }}"
+    namespace: "{{ lookup('env', 'LIONS_OLLAMA_NAMESPACE') | default('ai') }}"
+  register: ollama_service_info
+  tags:
+    - ollama
+    - validation
+    - service
+
+- name: "[Ollama] Test de connectivité interne (ClusterIP)"
+  uri:
+    url: "http://{{ lookup('env', 'LIONS_OLLAMA_SERVICE_NAME') | default('ollama') }}.{{ lookup('env', 'LIONS_OLLAMA_NAMESPACE') | default('ai') }}.svc.cluster.local:{{ lookup('env', 'LIONS_OLLAMA_PORT') | default('11434') }}/api/tags"
+    method: GET
+    validate_certs: false
+    timeout: 30
+    status_code: [200, 201]
+  register: ollama_internal_health
+  until: ollama_internal_health.status in [200, 201]
+  retries: 12
+  delay: 10
+  tags:
+    - ollama
+    - validation
+    - connectivity
+
+# =========================================================================
+# VALIDATION DE L'INGRESS ET ACCÈS EXTERNE
+# =========================================================================
+
+- name: "[Ollama] Vérification de l'existence de l'Ingress"
+  kubernetes.core.k8s_info:
+    api_version: networking.k8s.io/v1
+    kind: Ingress
+    name: "{{ lookup('env', 'LIONS_OLLAMA_SERVICE_NAME') | default('ollama') }}"
+    namespace: "{{ lookup('env', 'LIONS_OLLAMA_NAMESPACE') | default('ai') }}"
+  register: ollama_ingress_info
+  when: lookup('env', 'LIONS_SECURITY_TLS_ENABLED') | default('true') | bool
+  tags:
+    - ollama
+    - validation
+    - ingress
+
+- name: "[Ollama] Construction de l'URL d'accès externe"
+  set_fact:
+    ollama_external_url: "{{ 'https' if (lookup('env', 'LIONS_SECURITY_TLS_ENABLED') | default('true') | bool) else 'http' }}://ollama.{{ lookup('env', 'LIONS_DNS_FULL_DOMAIN') | default('dev.lions.local') }}"
+  tags:
+    - ollama
+    - validation
+    - ingress
+
+- name: "[Ollama] Test de connectivité externe via Ingress"
+  uri:
+    url: "{{ ollama_external_url }}/api/tags"
+    method: GET
+    validate_certs: "{{ not (lookup('env', 'LIONS_SECURITY_TLS_STAGING') | default('true') | bool) }}"
+    timeout: 30
+    status_code: [200, 201]
+  register: ollama_external_health
+  until: ollama_external_health.status in [200, 201]
+  retries: 8
+  delay: 15
+  when: lookup('env', 'LIONS_SECURITY_TLS_ENABLED') | default('true') | bool
+  tags:
+    - ollama
+    - validation
+    - connectivity
+    - external
+
+# =========================================================================
+# VALIDATION FONCTIONNELLE OLLAMA
+# =========================================================================
+
+- name: "[Ollama] Récupération de la liste des modèles disponibles"
+  kubernetes.core.k8s_exec:
+    namespace: "{{ lookup('env', 'LIONS_OLLAMA_NAMESPACE') | default('ai') }}"
+    pod: "{{ ollama_pods_status.resources[0].metadata.name }}"
+    command: ["ollama", "list"]
+  register: ollama_models_list
+  failed_when: ollama_models_list.rc != 0
+  tags:
+    - ollama
+    - validation
+    - models
+
+- name: "[Ollama] Affichage des modèles disponibles"
+  debug:
+    msg:
+      - "📋 Modèles Ollama disponibles:"
+      - "{{ ollama_models_list.stdout_lines }}"
+  when: ollama_models_list.stdout_lines is defined
+  tags:
+    - ollama
+    - validation
+    - models
+    - info
+
+- name: "[Ollama] Test de génération de base (si modèles disponibles)"
+  kubernetes.core.k8s_exec:
+    namespace: "{{ lookup('env', 'LIONS_OLLAMA_NAMESPACE') | default('ai') }}"
+    pod: "{{ ollama_pods_status.resources[0].metadata.name }}"
+    command: ["ollama", "run", "llama2:7b", "hello"]
+  register: ollama_generation_test
+  failed_when: false  # Ne pas échouer si le modèle n'est pas installé
+  when:
+    - ollama_models_list.stdout is defined
+    - "'llama2' in ollama_models_list.stdout"
+  tags:
+    - ollama
+    - validation
+    - functionality
+
+# =========================================================================
+# VALIDATION DU MONITORING
+# =========================================================================
+
+- name: "[Ollama] Vérification du ServiceMonitor Prometheus"
+  kubernetes.core.k8s_info:
+    api_version: monitoring.coreos.com/v1
+    kind: ServiceMonitor
+    name: "{{ lookup('env', 'LIONS_OLLAMA_SERVICE_NAME') | default('ollama') }}"
+    namespace: "{{ lookup('env', 'LIONS_OLLAMA_NAMESPACE') | default('ai') }}"
+  register: ollama_servicemonitor_info
+  when: lookup('env', 'LIONS_MONITORING_ENABLED') | default('true') | bool
+  tags:
+    - ollama
+    - validation
+    - monitoring
+
+- name: "[Ollama] Validation de la configuration du monitoring"
+  debug:
+    msg: "✅ ServiceMonitor Ollama configuré pour Prometheus"
+  when:
+    - lookup('env', 'LIONS_MONITORING_ENABLED') | default('true') | bool
+    - ollama_servicemonitor_info.resources | length > 0
+  tags:
+    - ollama
+    - validation
+    - monitoring
+
+# =========================================================================
+# VALIDATION DES RESSOURCES ET PERFORMANCES
+# =========================================================================
+
+- name: "[Ollama] Vérification de l'utilisation des ressources"
+  kubernetes.core.k8s_exec:
+    namespace: "{{ lookup('env', 'LIONS_OLLAMA_NAMESPACE') | default('ai') }}"
+    pod: "{{ ollama_pods_status.resources[0].metadata.name }}"
+    command: ["sh", "-c", "free -m && df -h"]
+  register: ollama_resources_usage
+  tags:
+    - ollama
+    - validation
+    - resources
+    - performance
+
+- name: "[Ollama] Affichage de l'utilisation des ressources"
+  debug:
+    msg:
+      - "💾 Utilisation des ressources dans le pod Ollama:"
+      - "{{ ollama_resources_usage.stdout_lines }}"
+  tags:
+    - ollama
+    - validation
+    - resources
+    - info
+
+# =========================================================================
+# VALIDATION GPU (si activé)
+# =========================================================================
+
+- name: "[Ollama] Vérification de la disponibilité GPU"
+  kubernetes.core.k8s_exec:
+    namespace: "{{ lookup('env', 'LIONS_OLLAMA_NAMESPACE') | default('ai') }}"
+    pod: "{{ ollama_pods_status.resources[0].metadata.name }}"
+    command: ["nvidia-smi"]
+  register: ollama_gpu_check
+  failed_when: false
+  when: lookup('env', 'LIONS_OLLAMA_GPU_ENABLED') | default('false') | bool
+  tags:
+    - ollama
+    - validation
+    - gpu
+
+- name: "[Ollama] Statut GPU"
+  debug:
+    msg:
+      - "🎮 Statut GPU:"
+      - "{{ ollama_gpu_check.stdout_lines if ollama_gpu_check.rc == 0 else 'GPU non disponible ou non configuré' }}"
+  when: lookup('env', 'LIONS_OLLAMA_GPU_ENABLED') | default('false') | bool
+  tags:
+    - ollama
+    - validation
+    - gpu
+
+# =========================================================================
+# VALIDATION DE LA PERSISTANCE
+# =========================================================================
+
+- name: "[Ollama] Vérification du stockage persistant"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: PersistentVolumeClaim
+    name: "{{ lookup('env', 'LIONS_OLLAMA_SERVICE_NAME') | default('ollama') }}-storage"
+    namespace: "{{ lookup('env', 'LIONS_OLLAMA_NAMESPACE') | default('ai') }}"
+  register: ollama_pvc_info
+  tags:
+    - ollama
+    - validation
+    - storage
+
+- name: "[Ollama] Validation du statut du PVC"
+  assert:
+    that:
+      - ollama_pvc_info.resources | length > 0
+      - ollama_pvc_info.resources[0].status.phase == "Bound"
+    fail_msg: "❌ PVC Ollama non lié ou inexistant"
+    success_msg: "✅ Stockage persistant Ollama configuré"
+  tags:
+    - ollama
+    - validation
+    - storage
+
+# =========================================================================
+# VALIDATION DES LOGS
+# =========================================================================
+
+- name: "[Ollama] Récupération des logs récents"
+  kubernetes.core.k8s_log:
+    namespace: "{{ lookup('env', 'LIONS_OLLAMA_NAMESPACE') | default('ai') }}"
+    name: "{{ ollama_pods_status.resources[0].metadata.name }}"
+    tail_lines: 20
+  register: ollama_recent_logs
+  tags:
+    - ollama
+    - validation
+    - logs
+
+- name: "[Ollama] Analyse des logs pour erreurs critiques"
+  debug:
+    msg: "⚠️  Erreurs détectées dans les logs"
+  when: "'error' in ollama_recent_logs.log.lower() or 'fatal' in ollama_recent_logs.log.lower()"
+  tags:
+    - ollama
+    - validation
+    - logs
+
+# =========================================================================
+# RÉSUMÉ DE VALIDATION
+# =========================================================================
+
+- name: "[Ollama] Collecte des métriques de validation"
+  set_fact:
+    ollama_validation_metrics:
+      deployment_status: "{{ 'healthy' if (ollama_pods_status.resources | length > 0) else 'unhealthy' }}"
+      pods_running: "{{ ollama_pods_status.resources | length }}"
+      service_accessible: "{{ 'yes' if (ollama_internal_health.status == 200) else 'no' }}"
+      external_accessible: "{{ 'yes' if (ollama_external_health.status | default(0) == 200) else 'no' }}"
+      models_available: "{{ ollama_models_list.stdout_lines | length if ollama_models_list.stdout_lines is defined else 0 }}"
+      storage_bound: "{{ 'yes' if (ollama_pvc_info.resources[0].status.phase == 'Bound') else 'no' }}"
+      monitoring_enabled: "{{ 'yes' if (lookup('env', 'LIONS_MONITORING_ENABLED') | default('true') | bool) else 'no' }}"
+      gpu_enabled: "{{ 'yes' if (lookup('env', 'LIONS_OLLAMA_GPU_ENABLED') | default('false') | bool) else 'no' }}"
+  tags:
+    - ollama
+    - validation
+    - metrics
+
+- name: "[Ollama] Rapport de validation final"
+  debug:
+    msg:
+      - "🎯 ==================================================================="
+      - "🤖 RAPPORT DE VALIDATION OLLAMA - LIONS INFRASTRUCTURE 5.0"
+      - "🎯 ==================================================================="
+      - "📊 Environnement: {{ lookup('env', 'LIONS_ENVIRONMENT') | default('development') }}"
+      - "🏷️  Namespace: {{ lookup('env', 'LIONS_OLLAMA_NAMESPACE') | default('ai') }}"
+      - "🔧 Service: {{ lookup('env', 'LIONS_OLLAMA_SERVICE_NAME') | default('ollama') }}"
+      - "📦 Version: {{ lookup('env', 'LIONS_OLLAMA_VERSION') | default('0.1.26') }}"
+      - ""
+      - "✅ STATUT GLOBAL: {{ ollama_validation_metrics.deployment_status | upper }}"
+      - ""
+      - "📈 MÉTRIQUES:"
+      - "   • Pods en cours d'exécution: {{ ollama_validation_metrics.pods_running }}"
+      - "   • Service accessible: {{ ollama_validation_metrics.service_accessible }}"
+      - "   • Accès externe: {{ ollama_validation_metrics.external_accessible }}"
+      - "   • Modèles disponibles: {{ ollama_validation_metrics.models_available }}"
+      - "   • Stockage persistant: {{ ollama_validation_metrics.storage_bound }}"
+      - "   • Monitoring: {{ ollama_validation_metrics.monitoring_enabled }}"
+      - "   • GPU: {{ ollama_validation_metrics.gpu_enabled }}"
+      - ""
+      - "🌐 ACCÈS:"
+      - "   • URL interne: http://{{ lookup('env', 'LIONS_OLLAMA_SERVICE_NAME') | default('ollama') }}.{{ lookup('env', 'LIONS_OLLAMA_NAMESPACE') | default('ai') }}.svc.cluster.local:{{ lookup('env', 'LIONS_OLLAMA_PORT') | default('11434') }}"
+      - "   • URL externe: {{ ollama_external_url | default('Non configuré') }}"
+      - ""
+      - "⏰ Validation terminée le: {{ ansible_date_time.iso8601 }}"
+      - "🎯 ==================================================================="
+  tags:
+    - ollama
+    - validation
+    - summary
+
+# =========================================================================
+# VALIDATION DES TESTS DE RÉGRESSION
+# =========================================================================
+
+- name: "[Ollama] Exécution des tests de régression de base"
+  include_tasks: "regression_tests.yml"
+  when:
+    - lookup('env', 'LIONS_ENVIRONMENT') in ['staging', 'production']
+    - ollama_validation_metrics.deployment_status == 'healthy'
+  tags:
+    - ollama
+    - validation
+    - regression
+
+- name: "[Ollama] Finalisation de la validation"
+  debug:
+    msg: "🎉 Validation Ollama terminée avec succès - Déploiement opérationnel"
+  tags:
+    - ollama
+    - validation
+    - success

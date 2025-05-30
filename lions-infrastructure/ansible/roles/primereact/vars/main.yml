@@ -1,92 +1,491 @@
 ---
-# Titre: Variables pour le déploiement d'applications PrimeReact
-# Description: Variables spécifiques aux applications PrimeReact
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - PRIMEREACT APPLICATION VARIABLES
+# =========================================================================
+# Description: Variables de configuration pour les applications PrimeReact
+# Version: 5.0.0
+# Date: "{{ ansible_date_time.date }}"
+# Maintainer: "{{ lions_config_maintainer | default('devops@lions.dev') }}"
+# Documentation: https://docs.lions.dev/applications/primereact
+# =========================================================================
 
-# Configuration par défaut pour PrimeReact
-primereact_default_port: 3000
+# =========================================================================
+# MÉTADONNÉES DE CONFIGURATION
+# =========================================================================
+primereact_config_version: "5.0.0"
+primereact_config_schema: "1.0"
+primereact_config_component: "primereact"
+primereact_config_category: "frontend-application"
+primereact_config_maintainer: "{{ lions_config_maintainer | default('devops@lions.dev') }}"
+
+# =========================================================================
+# CONFIGURATION GÉNÉRALE DE L'APPLICATION
+# =========================================================================
+# Utilisation des variables d'environnement LIONS pour la cohérence
+primereact_enabled: "{{ lions_primereact_enabled | default(false) }}"
+primereact_namespace: "{{ lions_primereact_namespace | default('applications') }}"
+primereact_service_name: "{{ app_name | default('primereact-app') }}"
+primereact_app_version: "{{ app_version | default('latest') }}"
+primereact_environment: "{{ lions_environment | default('development') }}"
+
+# Configuration des ports et endpoints
+primereact_port: "{{ lions_primereact_port | default(3000) }}"
+primereact_target_port: "{{ primereact_port }}"
+primereact_service_port: "{{ primereact_port }}"
+
+# Configuration des chemins applicatifs
 primereact_health_path: "/api/health"
-primereact_profile: "{{ app_environment }}"
-primereact_use_redis: false
-primereact_create_networkpolicy: true
+primereact_readiness_path: "/api/ready"
+primereact_liveness_path: "/api/alive"
+primereact_metrics_path: "/metrics"
+primereact_static_path: "/static"
 
-# Configuration des sondes de santé
-primereact_readiness_probe:
-  httpGet:
-    path: "{{ primereact_health_path }}"
-    port: http
-  initialDelaySeconds: 20
-  periodSeconds: 10
-  timeoutSeconds: 3
-  failureThreshold: 3
+# =========================================================================
+# CONFIGURATION DE SÉCURITÉ
+# =========================================================================
+# Service Account et RBAC
+primereact_service_account:
+  create: true
+  name: "{{ primereact_service_name }}-sa"
+  annotations:
+    "app.kubernetes.io/name": "{{ primereact_service_name }}"
+    "app.kubernetes.io/component": "frontend"
+    "app.kubernetes.io/part-of": "lions-infrastructure"
 
-primereact_liveness_probe:
-  httpGet:
-    path: "{{ primereact_health_path }}"
-    port: http
-  initialDelaySeconds: 40
-  periodSeconds: 20
-  timeoutSeconds: 3
-  failureThreshold: 3
+# Configuration de sécurité du conteneur
+primereact_security_context:
+  runAsNonRoot: true
+  runAsUser: 1001
+  runAsGroup: 1001
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
 
-# Configuration du monitoring
-primereact_prometheus_port: 3000
-primereact_prometheus_path: "/metrics"
-primereact_prometheus_scrape: true
-primereact_init_delay: 20
+# Configuration de sécurité du pod
+primereact_pod_security_context:
+  fsGroup: 1001
+  seccompProfile:
+    type: RuntimeDefault
 
-# Configuration des ressources par environnement
+# =========================================================================
+# CONFIGURATION DES RESSOURCES
+# =========================================================================
+# Utilisation des templates de ressources définis dans les variables LIONS
 primereact_resources:
   development:
     requests:
-      cpu: "100m"
-      memory: "256Mi"
+      cpu: "{{ lions_resources_small_cpu_request | default('100m') }}"
+      memory: "{{ lions_resources_small_memory_request | default('128Mi') }}"
     limits:
-      cpu: "500m"
-      memory: "512Mi"
+      cpu: "{{ lions_resources_small_cpu_limit | default('500m') }}"
+      memory: "{{ lions_resources_small_memory_limit | default('512Mi') }}"
   staging:
     requests:
-      cpu: "200m"
-      memory: "512Mi"
+      cpu: "{{ lions_resources_medium_cpu_request | default('200m') }}"
+      memory: "{{ lions_resources_medium_memory_request | default('512Mi') }}"
     limits:
-      cpu: "1000m"
-      memory: "1Gi"
+      cpu: "{{ lions_resources_medium_cpu_limit | default('1000m') }}"
+      memory: "{{ lions_resources_medium_memory_limit | default('2Gi') }}"
   production:
     requests:
-      cpu: "500m"
-      memory: "1Gi"
+      cpu: "{{ lions_resources_large_cpu_request | default('500m') }}"
+      memory: "{{ lions_resources_large_memory_request | default('1Gi') }}"
     limits:
-      cpu: "2000m"
-      memory: "2Gi"
+      cpu: "{{ lions_resources_large_cpu_limit | default('2000m') }}"
+      memory: "{{ lions_resources_large_memory_limit | default('4Gi') }}"
 
-# Configuration des réplicas par environnement
+# Configuration actuelle des ressources basée sur l'environnement
+primereact_current_resources: "{{ primereact_resources[primereact_environment] }}"
+
+# =========================================================================
+# CONFIGURATION DU SCALING
+# =========================================================================
+# Configuration des réplicas basée sur l'environnement et les variables LIONS
 primereact_replicas:
   development: 1
   staging: 2
-  production: 3
+  production: "{{ lions_deployment_mode == 'ha' | ternary(5, 3) }}"
 
-# Configuration de l'ingress
-primereact_ingress_annotations:
-  kubernetes.io/ingress.class: "nginx"
-  cert-manager.io/cluster-issuer: "letsencrypt-prod"
-  nginx.ingress.kubernetes.io/ssl-redirect: "true"
-  nginx.ingress.kubernetes.io/proxy-body-size: "10m"
-  nginx.ingress.kubernetes.io/configuration-snippet: |
-    more_set_headers "X-Frame-Options: SAMEORIGIN";
-    more_set_headers "X-XSS-Protection: 1; mode=block";
-    more_set_headers "X-Content-Type-Options: nosniff";
+# Configuration actuelle des réplicas
+primereact_current_replicas: "{{ primereact_replicas[primereact_environment] }}"
 
-# Configuration Redis (optionnel)
-primereact_redis_service: "{{ app_name }}-redis"
-primereact_redis_port: 6379
+# Configuration de l'auto-scaling
+primereact_autoscaling:
+  enabled: "{{ lions_autoscaling_enabled | default(true) }}"
+  min_replicas: "{{ lions_autoscaling_min_replicas | default(primereact_current_replicas) }}"
+  max_replicas: "{{ lions_autoscaling_max_replicas | default(10) }}"
+  target_cpu: "{{ lions_autoscaling_cpu_target | default(70) }}"
+  target_memory: "{{ lions_autoscaling_memory_target | default(80) }}"
 
-# Configuration Node.js
-primereact_node_env: "{{ app_environment }}"
-primereact_node_options: "--max-old-space-size=512"
+# =========================================================================
+# CONFIGURATION DES SONDES DE SANTÉ
+# =========================================================================
+# Configuration des sondes avec timeouts adaptatifs selon l'environnement
+primereact_probe_initial_delay:
+  development: 10
+  staging: 15
+  production: 30
 
-# Configuration spécifique à PrimeReact
-primereact_theme: "saga"
-primereact_ripple: true
-primereact_responsive: true
+primereact_probe_timeout:
+  development: 3
+  staging: 5
+  production: 10
+
+# Sonde de readiness
+primereact_readiness_probe:
+  httpGet:
+    path: "{{ primereact_readiness_path }}"
+    port: http
+    scheme: HTTP
+  initialDelaySeconds: "{{ primereact_probe_initial_delay[primereact_environment] }}"
+  periodSeconds: 10
+  timeoutSeconds: "{{ primereact_probe_timeout[primereact_environment] }}"
+  failureThreshold: 3
+  successThreshold: 1
+
+# Sonde de liveness
+primereact_liveness_probe:
+  httpGet:
+    path: "{{ primereact_liveness_path }}"
+    port: http
+    scheme: HTTP
+  initialDelaySeconds: "{{ (primereact_probe_initial_delay[primereact_environment] | int) * 2 }}"
+  periodSeconds: 30
+  timeoutSeconds: "{{ primereact_probe_timeout[primereact_environment] }}"
+  failureThreshold: 3
+  successThreshold: 1
+
+# Sonde de startup (pour les démarrages lents)
+primereact_startup_probe:
+  httpGet:
+    path: "{{ primereact_health_path }}"
+    port: http
+    scheme: HTTP
+  initialDelaySeconds: 5
+  periodSeconds: 5
+  timeoutSeconds: "{{ primereact_probe_timeout[primereact_environment] }}"
+  failureThreshold: 12
+  successThreshold: 1
+
+# =========================================================================
+# CONFIGURATION DU MONITORING
+# =========================================================================
+# Configuration Prometheus basée sur les variables LIONS
+primereact_monitoring:
+  enabled: "{{ lions_monitoring_enabled | default(true) }}"
+  namespace: "{{ lions_monitoring_namespace | default('monitoring') }}"
+  scrape_interval: "30s"
+  scrape_timeout: "10s"
+
+# Configuration des métriques
+primereact_metrics:
+  enabled: "{{ primereact_monitoring.enabled }}"
+  port: "{{ primereact_port }}"
+  path: "{{ primereact_metrics_path }}"
+  scheme: "http"
+
+# ServiceMonitor configuration
+primereact_service_monitor:
+  enabled: "{{ primereact_monitoring.enabled }}"
+  labels:
+    app: "{{ primereact_service_name }}"
+    component: "frontend"
+    team: "lions"
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "{{ primereact_port }}"
+    prometheus.io/path: "{{ primereact_metrics_path }}"
+
+# =========================================================================
+# CONFIGURATION RÉSEAU ET INGRESS
+# =========================================================================
+# Configuration du service
+primereact_service:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: "{{ primereact_service_port }}"
+      targetPort: "{{ primereact_target_port }}"
+      protocol: TCP
+
+# Configuration Ingress avec variables LIONS
+primereact_ingress:
+  enabled: true
+  className: "nginx"
+  hostname: "{{ primereact_service_name }}.{{ lions_dns_full_domain }}"
+  tls:
+    enabled: "{{ lions_security_tls_enabled | default(true) }}"
+    secretName: "{{ primereact_service_name }}-tls"
+  annotations:
+    # Annotations de base
+    kubernetes.io/ingress.class: "nginx"
+    nginx.ingress.kubernetes.io/ssl-redirect: "{{ lions_security_tls_enabled | string }}"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "{{ lions_security_tls_enabled | string }}"
+
+    # Gestion des certificats
+    cert-manager.io/cluster-issuer: "{{ lions_security_tls_staging | ternary('letsencrypt-staging', 'letsencrypt-prod') }}"
+
+    # Configuration de sécurité
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+
+    # Headers de sécurité
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers "X-Frame-Options: SAMEORIGIN";
+      more_set_headers "X-XSS-Protection: 1; mode=block";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      more_set_headers "Referrer-Policy: strict-origin-when-cross-origin";
+      more_set_headers "Permissions-Policy: geolocation=(), microphone=(), camera=()";
+      more_set_headers "Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:;";
+
+# =========================================================================
+# CONFIGURATION DES POLITIQUES RÉSEAU
+# =========================================================================
+primereact_network_policy:
+  enabled: "{{ lions_security_network_policies | default(true) }}"
+  ingress_rules:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: "{{ lions_monitoring_namespace | default('monitoring') }}"
+        - namespaceSelector:
+            matchLabels:
+              name: "ingress-nginx"
+        - podSelector:
+            matchLabels:
+              app: "nginx-ingress"
+      ports:
+        - protocol: TCP
+          port: "{{ primereact_port }}"
+  egress_rules:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: "kube-system"
+      ports:
+        - protocol: TCP
+          port: 53
+        - protocol: UDP
+          port: 53
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: "{{ lions_postgres_namespace | default('database') }}"
+      ports:
+        - protocol: TCP
+          port: "{{ lions_postgres_port | default(5432) }}"
+
+# =========================================================================
+# CONFIGURATION DES VARIABLES D'ENVIRONNEMENT
+# =========================================================================
+# Variables d'environnement de base
+primereact_env_vars:
+  # Configuration Node.js
+  NODE_ENV: "{{ primereact_environment }}"
+  NODE_OPTIONS: "--max-old-space-size={{ primereact_environment == 'production' | ternary('2048', '512') }}"
+
+  # Configuration de l'application
+  APP_NAME: "{{ primereact_service_name }}"
+  APP_VERSION: "{{ primereact_app_version }}"
+  APP_ENVIRONMENT: "{{ primereact_environment }}"
+  APP_PORT: "{{ primereact_port }}"
+
+  # Configuration PrimeReact
+  PRIMEREACT_THEME: "{{ app_theme | default('saga') }}"
+  PRIMEREACT_RIPPLE: "{{ app_ripple_enabled | default('true') }}"
+  PRIMEREACT_RESPONSIVE: "{{ app_responsive_enabled | default('true') }}"
+
+  # Configuration des APIs
+  API_BASE_URL: "https://api.{{ lions_dns_full_domain }}"
+  API_TIMEOUT: "{{ lions_timeout_default | default(30000) }}"
+
+  # Configuration de la base de données (si nécessaire)
+  DATABASE_HOST: "{{ lions_postgres_service_name }}.{{ lions_postgres_namespace }}.svc.cluster.local"
+  DATABASE_PORT: "{{ lions_postgres_port | default(5432) }}"
+  DATABASE_NAME: "{{ app_database_name | default(primereact_service_name) }}"
+
+  # Configuration Redis (si activé)
+  REDIS_ENABLED: "{{ app_redis_enabled | default('false') }}"
+  REDIS_HOST: "{{ lions_redis_service_name }}.{{ lions_redis_namespace }}.svc.cluster.local"
+  REDIS_PORT: "{{ lions_redis_port | default(6379) }}"
+
+  # Configuration du monitoring
+  METRICS_ENABLED: "{{ primereact_monitoring.enabled }}"
+  METRICS_PATH: "{{ primereact_metrics_path }}"
+
+  # Configuration des logs
+  LOG_LEVEL: "{{ lions_log_level | default('INFO') }}"
+  LOG_FORMAT: "{{ lions_log_format | default('json') }}"
+
+# Variables d'environnement sensibles (récupérées depuis Vault)
+primereact_secret_env_vars:
+  DATABASE_USERNAME:
+    vault_path: "database/{{ primereact_service_name }}"
+    vault_key: "username"
+  DATABASE_PASSWORD:
+    vault_path: "database/{{ primereact_service_name }}"
+    vault_key: "password"
+  REDIS_PASSWORD:
+    vault_path: "redis/{{ primereact_service_name }}"
+    vault_key: "password"
+  JWT_SECRET:
+    vault_path: "application/{{ primereact_service_name }}"
+    vault_key: "jwt_secret"
+  API_KEY:
+    vault_path: "application/{{ primereact_service_name }}"
+    vault_key: "api_key"
+
+# =========================================================================
+# CONFIGURATION DU STOCKAGE
+# =========================================================================
+primereact_storage:
+  enabled: false  # PrimeReact est généralement stateless
+  class: "{{ lions_storage_class_default | default('local-path') }}"
+  size: "{{ lions_storage_pv_size_small | default('5Gi') }}"
+  access_modes:
+    - ReadWriteOnce
+  mount_path: "/app/data"
+
+# =========================================================================
+# CONFIGURATION DES VOLUMES TEMPORAIRES
+# =========================================================================
+primereact_temp_volumes:
+  - name: tmp
+    emptyDir:
+      sizeLimit: "1Gi"
+    mount_path: "/tmp"
+  - name: var-cache
+    emptyDir:
+      sizeLimit: "512Mi"
+    mount_path: "/var/cache"
+  - name: node-cache
+    emptyDir:
+      sizeLimit: "2Gi"
+    mount_path: "/app/.npm"
+
+# =========================================================================
+# CONFIGURATION DES LABELS ET ANNOTATIONS
+# =========================================================================
+# Labels standardisés pour tous les objets Kubernetes
+primereact_common_labels:
+  app.kubernetes.io/name: "{{ primereact_service_name }}"
+  app.kubernetes.io/instance: "{{ primereact_service_name }}-{{ primereact_environment }}"
+  app.kubernetes.io/version: "{{ primereact_app_version }}"
+  app.kubernetes.io/component: "frontend"
+  app.kubernetes.io/part-of: "lions-infrastructure"
+  app.kubernetes.io/managed-by: "ansible"
+  lions.dev/team: "frontend"
+  lions.dev/environment: "{{ primereact_environment }}"
+
+# Annotations communes
+primereact_common_annotations:
+  lions.dev/config-version: "{{ primereact_config_version }}"
+  lions.dev/deployed-at: "{{ ansible_date_time.iso8601 }}"
+  lions.dev/deployed-by: "{{ ansible_user | default('ansible') }}"
+  lions.dev/deployment-id: "{{ deployment_id | default(ansible_date_time.epoch) }}"
+
+# =========================================================================
+# CONFIGURATION DE DÉPLOIEMENT
+# =========================================================================
+# Stratégie de déploiement
+primereact_deployment_strategy:
+  type: RollingUpdate
+  rolling_update:
+    max_unavailable: "{{ primereact_environment == 'production' | ternary('25%', '50%') }}"
+    max_surge: "{{ primereact_environment == 'production' | ternary('25%', '100%') }}"
+
+# Configuration des graceful shutdowns
+primereact_termination_grace_period: 30
+primereact_pre_stop_hook:
+  exec:
+    command:
+      - /bin/sh
+      - -c
+      - "sleep 15"  # Délai pour permettre la déconnexion des load balancers
+
+# =========================================================================
+# CONFIGURATION DE VALIDATION
+# =========================================================================
+# Règles de validation pour les variables critiques
+primereact_validation_rules:
+  required_vars:
+    - primereact_service_name
+    - primereact_namespace
+    - primereact_port
+    - lions_dns_full_domain
+  port_range:
+    min: 1024
+    max: 65535
+  memory_format: "^[0-9]+[MGT]i$"
+  cpu_format: "^[0-9]+m$|^[0-9]+(\.[0-9]+)?$"
+
+# =========================================================================
+# CONFIGURATION SPÉCIFIQUE PAR ENVIRONNEMENT
+# =========================================================================
+# Surcharge automatique selon l'environnement
+primereact_environment_overrides:
+  development:
+    replicas: 1
+    log_level: "DEBUG"
+    debug_mode: true
+    tls_staging: true
+  staging:
+    replicas: 2
+    log_level: "INFO"
+    debug_mode: false
+    tls_staging: true
+  production:
+    replicas: 3
+    log_level: "WARN"
+    debug_mode: false
+    tls_staging: false
+    security_enhanced: true
+
+# Application des surcharges
+primereact_active_overrides: "{{ primereact_environment_overrides[primereact_environment] | default({}) }}"
+
+# =========================================================================
+# INTÉGRATION AVEC LES SERVICES EXTERNES
+# =========================================================================
+# Configuration des dépendances de services
+primereact_service_dependencies:
+  database:
+    enabled: "{{ lions_postgres_enabled | default(true) }}"
+    service: "{{ lions_postgres_service_name }}"
+    namespace: "{{ lions_postgres_namespace }}"
+    port: "{{ lions_postgres_port }}"
+    health_check: true
+  redis:
+    enabled: "{{ app_redis_enabled | default(false) }}"
+    service: "{{ lions_redis_service_name }}"
+    namespace: "{{ lions_redis_namespace }}"
+    port: "{{ lions_redis_port }}"
+    health_check: true
+  keycloak:
+    enabled: "{{ lions_keycloak_enabled | default(true) }}"
+    service: "{{ lions_keycloak_service_name }}"
+    namespace: "{{ lions_keycloak_namespace }}"
+    port: "{{ lions_keycloak_port }}"
+    health_check: false  # Vérifié via API
+
+# =========================================================================
+# CONFIGURATION DE DEBUG ET MAINTENANCE
+# =========================================================================
+primereact_debug:
+  enabled: "{{ lions_debug_mode | default(false) }}"
+  log_requests: "{{ primereact_debug.enabled }}"
+  expose_metrics: true
+  profiling: "{{ primereact_debug.enabled and primereact_environment != 'production' }}"
+
+# Configuration de maintenance
+primereact_maintenance:
+  mode_enabled: false
+  message: "Application en maintenance - Retour prévu sous peu"
+  allowed_ips: []
+
+# =========================================================================
+# FIN DE CONFIGURATION
+# =========================================================================

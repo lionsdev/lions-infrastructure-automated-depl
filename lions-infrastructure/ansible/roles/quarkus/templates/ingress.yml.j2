@@ -1,39 +1,324 @@
----
-# Titre: Template d'ingress Kubernetes pour Quarkus
-# Description: Définit l'ingress Kubernetes pour une application Quarkus
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - QUARKUS INGRESS TEMPLATE
+# =========================================================================
+# Description: Template Jinja2 pour l'ingress Kubernetes des applications Quarkus
+# Composant: Quarkus Application Ingress
+# Version: 5.0.0
+# Maintainer: DevOps LIONS Team
+# Documentation: https://docs.lions.dev/infrastructure/quarkus/ingress
+# =========================================================================
 
+{% if lions_ingress_enabled | bool %}
+---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: "{{ app_name }}"
-  namespace: "{{ app_namespace }}"
+  name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
+  namespace: "{{ lions_quarkus_namespace }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "quarkus"
+    # Labels standards Kubernetes
+    app.kubernetes.io/name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
+    app.kubernetes.io/instance: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-{{ lions_environment }}"
+    app.kubernetes.io/version: "{{ lions_quarkus_app_version | default('latest') }}"
+    app.kubernetes.io/component: "backend"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+    
+    # Labels spécifiques LIONS
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/technology: "quarkus"
+    lions.dev/tier: "application"
+    lions.dev/ingress-type: "{{ lions_ingress_controller }}"
+    
+    # Labels pour l'ingress
+    ingress.lions.dev/ssl-redirect: "{{ lions_security_tls_enabled | lower }}"
+    ingress.lions.dev/rate-limiting: "{{ lions_quarkus_rate_limiting_enabled | default('false') | lower }}"
+    
   annotations:
-    description: "Ingress pour l'application {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
-    {% for key, value in quarkus_ingress_annotations.items() %}
+    # Annotations de documentation
+    description: "Ingress Quarkus {{ lions_quarkus_app_name | default(lions_quarkus_service_name) }} v{{ lions_quarkus_app_version | default('latest') }}"
+    lions.dev/documentation: "https://docs.lions.dev/infrastructure/quarkus"
+    lions.dev/ingress-checksum: "{{ ansible_date_time.epoch }}"
+    
+    # Annotations pour la configuration
+    ingress.lions.dev/last-updated: "{{ ansible_date_time.iso8601 }}"
+    ingress.lions.dev/environment: "{{ lions_environment }}"
+    ingress.lions.dev/managed-by: "lions-infrastructure-ansible"
+    
+    # =====================================================================
+    # ANNOTATIONS NGINX INGRESS CONTROLLER
+    # =====================================================================
+    
+{% if lions_ingress_controller == 'nginx' %}
+    # Configuration de base
+    nginx.ingress.kubernetes.io/ssl-redirect: "{{ lions_security_tls_enabled | lower }}"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "{{ lions_security_tls_enabled | lower }}"
+    
+    # Configuration SSL/TLS
+{% if lions_security_tls_enabled | bool %}
+    nginx.ingress.kubernetes.io/ssl-protocols: "{{ lions_tls_protocols | default('TLSv1.2 TLSv1.3') }}"
+    nginx.ingress.kubernetes.io/ssl-ciphers: "{{ lions_tls_ciphers | default('ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384') }}"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "true"
+{% endif %}
+    
+    # Configuration des timeouts
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "{{ lions_timeout_default }}"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "{{ lions_timeout_default }}"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "{{ lions_timeout_default }}"
+    
+    # Configuration des tailles
+    nginx.ingress.kubernetes.io/proxy-body-size: "{{ lions_quarkus_max_body_size | default('1m') }}"
+    nginx.ingress.kubernetes.io/client-max-body-size: "{{ lions_quarkus_max_body_size | default('1m') }}"
+    
+    # Configuration du buffering
+    nginx.ingress.kubernetes.io/proxy-buffering: "{{ lions_quarkus_proxy_buffering | default('on') }}"
+    nginx.ingress.kubernetes.io/proxy-buffer-size: "{{ lions_quarkus_proxy_buffer_size | default('4k') }}"
+    
+    # Configuration des en-têtes
+    nginx.ingress.kubernetes.io/proxy-set-headers: "default/proxy-headers"
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers "X-Frame-Options: SAMEORIGIN";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      more_set_headers "X-XSS-Protection: 1; mode=block";
+      more_set_headers "Referrer-Policy: strict-origin-when-cross-origin";
+{% if lions_environment == 'production' %}
+      more_set_headers "Strict-Transport-Security: max-age=31536000; includeSubDomains; preload";
+{% endif %}
+    
+{% if lions_quarkus_rate_limiting_enabled | default(false) | bool %}
+    # Configuration du rate limiting
+    nginx.ingress.kubernetes.io/rate-limit-enabled: "true"
+    nginx.ingress.kubernetes.io/rate-limit-requests-per-second: "{{ lions_quarkus_rate_limit_rps | default('10') }}"
+    nginx.ingress.kubernetes.io/rate-limit-burst-multiplier: "{{ lions_quarkus_rate_limit_burst | default('5') }}"
+{% endif %}
+    
+{% if lions_quarkus_cors_enabled | default(false) | bool %}
+    # Configuration CORS
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "{{ lions_quarkus_cors_origins | default('*') }}"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "{{ lions_quarkus_cors_methods | default('GET, POST, PUT, DELETE, OPTIONS') }}"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "{{ lions_quarkus_cors_headers | default('*') }}"
+    nginx.ingress.kubernetes.io/cors-max-age: "{{ lions_quarkus_cors_max_age | default('86400') }}"
+{% endif %}
+    
+{% if lions_quarkus_websocket_enabled | default(false) | bool %}
+    # Support WebSocket
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/server-snippets: |
+      location ~* /ws/ {
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_http_version 1.1;
+      }
+{% endif %}
+    
+{% if lions_quarkus_custom_nginx_config is defined %}
+    # Configuration personnalisée
+    nginx.ingress.kubernetes.io/server-snippet: |
+      {{ lions_quarkus_custom_nginx_config | indent(6) }}
+{% endif %}
+    
+{% elif lions_ingress_controller == 'traefik' %}
+    # =====================================================================
+    # ANNOTATIONS TRAEFIK INGRESS CONTROLLER
+    # =====================================================================
+    
+    # Configuration de base
+    traefik.ingress.kubernetes.io/router.entrypoints: "{{ 'websecure' if lions_security_tls_enabled | bool else 'web' }}"
+    
+{% if lions_security_tls_enabled | bool %}
+    # Configuration TLS
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.tls.certresolver: "{{ lions_cert_resolver | default('letsencrypt') }}"
+{% endif %}
+    
+{% if lions_quarkus_rate_limiting_enabled | default(false) | bool %}
+    # Configuration du rate limiting
+    traefik.ingress.kubernetes.io/router.middlewares: "{{ lions_quarkus_namespace }}-{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-ratelimit@kubernetescrd"
+{% endif %}
+    
+{% if lions_quarkus_custom_traefik_config is defined %}
+    # Configuration personnalisée
+{% for key, value in lions_quarkus_custom_traefik_config.items() %}
     {{ key }}: "{{ value }}"
-    {% endfor %}
+{% endfor %}
+{% endif %}
+    
+{% endif %}
+    
+    # =====================================================================
+    # ANNOTATIONS CERT-MANAGER (SI ACTIVÉ)
+    # =====================================================================
+    
+{% if lions_cert_manager_enabled | bool %}
+    cert-manager.io/cluster-issuer: "{{ lions_cert_issuer | default('letsencrypt-prod') }}"
+    cert-manager.io/acme-challenge-type: "{{ lions_cert_challenge_type | default('http01') }}"
+{% if lions_cert_challenge_type | default('http01') == 'dns01' %}
+    cert-manager.io/acme-dns01-provider: "{{ lions_dns_provider }}"
+{% endif %}
+{% endif %}
+    
+{% if lions_quarkus_custom_ingress_annotations is defined %}
+    # Annotations personnalisées
+{% for key, value in lions_quarkus_custom_ingress_annotations.items() %}
+    {{ key }}: "{{ value }}"
+{% endfor %}
+{% endif %}
+    
 spec:
-  ingressClassName: nginx
+  # =========================================================================
+  # CONFIGURATION DE L'INGRESS
+  # =========================================================================
+  
+  # Classe d'ingress
+  ingressClassName: "{{ lions_ingress_class | default('nginx') }}"
+  
+{% if lions_security_tls_enabled | bool %}
+  # =========================================================================
+  # CONFIGURATION TLS
+  # =========================================================================
+  
   tls:
     - hosts:
-        - "{{ app_domain }}"
-      secretName: "{{ app_name }}-tls"
+        - "{{ lions_quarkus_hostname }}.{{ lions_dns_full_domain }}"
+{% if lions_quarkus_additional_hostnames is defined %}
+{% for hostname in lions_quarkus_additional_hostnames %}
+        - "{{ hostname }}.{{ lions_dns_full_domain }}"
+{% endfor %}
+{% endif %}
+      secretName: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-tls"
+    
+{% if lions_quarkus_wildcard_tls | default(false) | bool %}
+    # Certificat wildcard
+    - hosts:
+        - "*.{{ lions_dns_full_domain }}"
+      secretName: "{{ lions_dns_domain }}-wildcard-tls"
+{% endif %}
+{% endif %}
+  
+  # =========================================================================
+  # RÈGLES DE ROUTAGE
+  # =========================================================================
+  
   rules:
-    - host: "{{ app_domain }}"
+    # Hôte principal
+    - host: "{{ lions_quarkus_hostname }}.{{ lions_dns_full_domain }}"
       http:
         paths:
-          - path: /
+          # Route principale
+          - path: "{{ lions_quarkus_context_path | default('/') }}"
+            pathType: "{{ lions_quarkus_path_type | default('Prefix') }}"
+            backend:
+              service:
+                name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
+                port:
+                  name: http
+          
+{% if lions_quarkus_health_path_exposed | default(false) | bool and lions_environment != 'production' %}
+          # Route pour les health checks (hors production)
+          - path: "/q/health"
             pathType: Prefix
             backend:
               service:
-                name: "{{ app_name }}"
+                name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
                 port:
                   name: http
+{% endif %}
+          
+{% if lions_monitoring_enabled | bool and lions_quarkus_metrics_path_exposed | default(false) | bool and lions_environment != 'production' %}
+          # Route pour les métriques (hors production)
+          - path: "/metrics"
+            pathType: Prefix
+            backend:
+              service:
+                name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
+                port:
+                  name: http
+{% endif %}
+          
+{% if lions_quarkus_openapi_path_exposed | default(false) | bool and lions_environment == 'development' %}
+          # Route pour OpenAPI (développement seulement)
+          - path: "/openapi"
+            pathType: Prefix
+            backend:
+              service:
+                name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
+                port:
+                  name: http
+          
+          # Route pour Swagger UI (développement seulement)
+          - path: "/swagger-ui"
+            pathType: Prefix
+            backend:
+              service:
+                name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
+                port:
+                  name: http
+{% endif %}
+          
+{% if lions_quarkus_custom_paths is defined %}
+          # Routes personnalisées
+{% for custom_path in lions_quarkus_custom_paths %}
+          - path: "{{ custom_path.path }}"
+            pathType: "{{ custom_path.path_type | default('Prefix') }}"
+            backend:
+              service:
+                name: "{{ custom_path.service_name | default(lions_quarkus_app_name | default(lions_quarkus_service_name)) }}"
+                port:
+                  name: "{{ custom_path.service_port | default('http') }}"
+{% endfor %}
+{% endif %}
+    
+{% if lions_quarkus_additional_hostnames is defined %}
+    # Hôtes additionnels
+{% for hostname in lions_quarkus_additional_hostnames %}
+    - host: "{{ hostname }}.{{ lions_dns_full_domain }}"
+      http:
+        paths:
+          - path: "{{ lions_quarkus_context_path | default('/') }}"
+            pathType: "{{ lions_quarkus_path_type | default('Prefix') }}"
+            backend:
+              service:
+                name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
+                port:
+                  name: http
+{% endfor %}
+{% endif %}
+    
+{% if lions_quarkus_redirect_hosts is defined %}
+    # Hôtes de redirection
+{% for redirect_host in lions_quarkus_redirect_hosts %}
+    - host: "{{ redirect_host.from }}"
+      http:
+        paths:
+          - path: "/"
+            pathType: Prefix
+            backend:
+              service:
+                name: "{{ redirect_host.service | default('redirect-service') }}"
+                port:
+                  name: http
+{% endfor %}
+{% endif %}
+
+{% if lions_quarkus_rate_limiting_enabled | default(false) | bool and lions_ingress_controller == 'traefik' %}
+---
+# Middleware Traefik pour le rate limiting
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-ratelimit"
+  namespace: "{{ lions_quarkus_namespace }}"
+  labels:
+    app.kubernetes.io/name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
+    app.kubernetes.io/instance: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-{{ lions_environment }}"
+    lions.dev/environment: "{{ lions_environment }}"
+spec:
+  rateLimit:
+    average: {{ lions_quarkus_rate_limit_rps | default('10') }}
+    period: "1s"
+    burst: {{ lions_quarkus_rate_limit_burst | default('5') }}
+{% endif %}
+
+{% endif %}

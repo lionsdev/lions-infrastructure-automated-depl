@@ -1,88 +1,492 @@
 ---
-# Titre: Préparation des ressources pour Keycloak
-# Description: Prépare les ressources nécessaires pour déployer Keycloak
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - KEYCLOAK PREPARATION TASKS
+# =========================================================================
+# Description: Préparation sécurisée et robuste des ressources Keycloak
+# Auteur: DevOps Team LIONS Infrastructure
+# Date: 2025-05-27
+# Version: 5.0.0
+# Maintainer: devops@lions.dev
+# =========================================================================
 
-- name: Création du répertoire temporaire pour les templates
-  tempfile:
+# =========================================================================
+# VARIABLES ET PRÉREQUIS
+# =========================================================================
+- name: "PREPARATION | Vérification des variables critiques"
+  assert:
+    that:
+      - keycloak_namespace is defined
+      - keycloak_service_name is defined
+      - keycloak_version is defined
+      - keycloak_admin_user is defined
+    fail_msg: "❌ Variables critiques manquantes pour Keycloak"
+    success_msg: "✅ Variables critiques validées"
+  tags:
+    - validation
+    - keycloak
+    - security
+
+- name: "PREPARATION | Debug - Affichage de la configuration Keycloak"
+  debug:
+    msg:
+      - "🔧 Configuration Keycloak:"
+      - "   - Namespace: {{ keycloak_namespace }}"
+      - "   - Service: {{ keycloak_service_name }}"
+      - "   - Version: {{ keycloak_version }}"
+      - "   - Environment: {{ lions_environment }}"
+      - "   - TLS Enabled: {{ lions_security_tls_enabled | default(true) }}"
+      - "   - Monitoring Enabled: {{ lions_monitoring_enabled | default(true) }}"
+  when: lions_debug_mode | default(false) | bool
+  tags:
+    - debug
+    - keycloak
+
+# =========================================================================
+# PRÉPARATION DU NAMESPACE
+# =========================================================================
+- name: "PREPARATION | Vérification de l'existence du namespace"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: "{{ keycloak_namespace }}"
+  register: namespace_check
+  failed_when: false
+  tags:
+    - namespace
+    - keycloak
+
+- name: "PREPARATION | Création du namespace si nécessaire"
+  kubernetes.core.k8s:
+    name: "{{ keycloak_namespace }}"
+    api_version: v1
+    kind: Namespace
+    state: present
+    definition:
+      metadata:
+        name: "{{ keycloak_namespace }}"
+        labels:
+          app.kubernetes.io/name: keycloak
+          app.kubernetes.io/component: security
+          app.kubernetes.io/part-of: lions-infrastructure
+          app.kubernetes.io/version: "{{ keycloak_version }}"
+          app.kubernetes.io/managed-by: ansible
+          lions.dev/environment: "{{ lions_environment }}"
+          lions.dev/tier: security
+        annotations:
+          lions.dev/created-by: "{{ ansible_user | default('lions-automation') }}"
+          lions.dev/created-at: "{{ ansible_date_time.iso8601 }}"
+  when: namespace_check.resources | length == 0
+  register: namespace_creation
+  tags:
+    - namespace
+    - keycloak
+
+# =========================================================================
+# PRÉPARATION DES RÉPERTOIRES DE TRAVAIL
+# =========================================================================
+- name: "PREPARATION | Création du répertoire temporaire pour les manifests"
+  ansible.builtin.tempfile:
     state: directory
-    suffix: keycloak-deploy
-  register: temp_dir
+    suffix: ".keycloak.{{ ansible_date_time.epoch }}"
+    prefix: "lions-"
+  register: keycloak_temp_dir
   changed_when: false
+  tags:
+    - filesystem
+    - keycloak
 
-- name: Génération des fichiers de configuration Kubernetes
-  template:
+- name: "PREPARATION | Création des sous-répertoires de travail"
+  ansible.builtin.file:
+    path: "{{ keycloak_temp_dir.path }}/{{ item }}"
+    state: directory
+    mode: '0750'
+  loop:
+    - manifests
+    - configs
+    - secrets
+    - backup
+  register: work_directories
+  tags:
+    - filesystem
+    - keycloak
+
+# =========================================================================
+# GESTION DES SECRETS ET SÉCURITÉ
+# =========================================================================
+- name: "SECURITY | Vérification des secrets existants"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: "{{ keycloak_namespace }}"
+    name: "{{ item.name }}"
+  loop:
+    - name: "{{ keycloak_admin_password_secret | default('keycloak-admin-secret') }}"
+      description: "Secret administrateur Keycloak"
+      required: true
+    - name: "{{ keycloak_database_password_secret | default('keycloak-db-secret') }}"
+      description: "Secret base de données Keycloak"
+      required: true
+    - name: "{{ keycloak_tls_secret | default('keycloak-tls-secret') }}"
+      description: "Certificat TLS Keycloak"
+      required: "{{ lions_security_tls_enabled | default(true) | bool }}"
+  register: secrets_check
+  failed_when: false
+  tags:
+    - security
+    - secrets
+    - keycloak
+
+- name: "SECURITY | Analyse des secrets manquants"
+  set_fact:
+    missing_secrets: >-
+      {{
+        secrets_check.results |
+        selectattr('resources', 'defined') |
+        selectattr('resources', 'equalto', []) |
+        map(attribute='item') |
+        list
+      }}
+  tags:
+    - security
+    - secrets
+    - keycloak
+
+- name: "SECURITY | Génération automatique des secrets manquants (dev uniquement)"
+  kubernetes.core.k8s:
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ item.name }}"
+        namespace: "{{ keycloak_namespace }}"
+        labels:
+          app.kubernetes.io/name: keycloak
+          app.kubernetes.io/component: security
+          app.kubernetes.io/managed-by: ansible
+          lions.dev/environment: "{{ lions_environment }}"
+          lions.dev/auto-generated: "true"
+        annotations:
+          lions.dev/created-by: "{{ ansible_user | default('lions-automation') }}"
+          lions.dev/created-at: "{{ ansible_date_time.iso8601 }}"
+          lions.dev/warning: "Auto-generated secret for development only"
+      type: Opaque
+      data:
+        password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') | b64encode }}"
+        username: "{{ (item.name == keycloak_admin_password_secret | default('keycloak-admin-secret')) | ternary(keycloak_admin_user | default('admin'), 'keycloak') | b64encode }}"
+    state: present
+  loop: "{{ missing_secrets }}"
+  when:
+    - lions_environment == 'development'
+    - item.required | bool
+    - keycloak_auto_generate_secrets | default(false) | bool
+  register: secrets_generation
+  no_log: true
+  tags:
+    - security
+    - secrets
+    - keycloak
+    - development
+
+- name: "SECURITY | Alerte pour secrets manquants en production"
+  ansible.builtin.fail:
+    msg: |
+      ❌ ERREUR CRITIQUE - Secrets manquants en environnement {{ lions_environment }}:
+      
+      {% for secret in missing_secrets %}
+      {% if secret.required | bool %}
+      - {{ secret.name }}: {{ secret.description }}
+        Commande: kubectl create secret generic {{ secret.name }} \
+                    --from-literal=username=<USERNAME> \
+                    --from-literal=password=<PASSWORD> \
+                    --namespace {{ keycloak_namespace }}
+      {% endif %}
+      {% endfor %}
+      
+      🔒 Les secrets doivent être créés manuellement pour des raisons de sécurité.
+  when:
+    - lions_environment in ['staging', 'production']
+    - missing_secrets | selectattr('required', 'equalto', true) | list | length > 0
+  tags:
+    - security
+    - secrets
+    - keycloak
+    - production
+
+- name: "SECURITY | Avertissement pour secrets manquants en développement"
+  debug:
+    msg: |
+      ⚠️  AVERTISSEMENT - Secrets manquants détectés:
+      
+      {% for secret in missing_secrets %}
+      {% if secret.required | bool %}
+      - {{ secret.name }}: {{ secret.description }}
+      {% endif %}
+      {% endfor %}
+      
+      💡 En développement, vous pouvez activer 'keycloak_auto_generate_secrets: true' 
+         pour générer automatiquement des secrets temporaires.
+  when:
+    - lions_environment == 'development'
+    - missing_secrets | selectattr('required', 'equalto', true) | list | length > 0
+    - not (keycloak_auto_generate_secrets | default(false) | bool)
+  tags:
+    - security
+    - secrets
+    - keycloak
+    - development
+
+# =========================================================================
+# GÉNÉRATION DES MANIFESTS KUBERNETES
+# =========================================================================
+- name: "MANIFESTS | Liste des templates à générer"
+  set_fact:
+    keycloak_templates:
+      - name: serviceaccount
+        src: serviceaccount.yml.j2
+        dest: serviceaccount.yml
+        required: true
+      - name: configmap
+        src: configmap.yml.j2
+        dest: configmap.yml
+        required: true
+      - name: persistentvolumeclaim
+        src: persistentvolumeclaim.yml.j2
+        dest: persistentvolumeclaim.yml
+        required: "{{ keycloak_persistent_storage | default(true) | bool }}"
+      - name: deployment
+        src: deployment.yml.j2
+        dest: deployment.yml
+        required: true
+      - name: service
+        src: service.yml.j2
+        dest: service.yml
+        required: true
+      - name: ingress
+        src: ingress.yml.j2
+        dest: ingress.yml
+        required: "{{ keycloak_ingress_enabled | default(true) | bool }}"
+      - name: servicemonitor
+        src: servicemonitor.yml.j2
+        dest: servicemonitor.yml
+        required: "{{ lions_monitoring_enabled | default(true) | bool }}"
+  tags:
+    - manifests
+    - keycloak
+
+- name: "MANIFESTS | Génération des manifests Kubernetes"
+  ansible.builtin.template:
     src: "{{ item.src }}"
-    dest: "{{ temp_dir.path }}/{{ item.dest }}"
+    dest: "{{ keycloak_temp_dir.path }}/manifests/{{ item.dest }}"
+    mode: '0640'
+    backup: false
+  loop: "{{ keycloak_templates }}"
+  when: item.required | bool
+  register: manifests_generation
+  tags:
+    - manifests
+    - keycloak
+
+- name: "MANIFESTS | Validation de la génération des manifests"
+  ansible.builtin.stat:
+    path: "{{ keycloak_temp_dir.path }}/manifests/{{ item.dest }}"
+  loop: "{{ keycloak_templates }}"
+  when: item.required | bool
+  register: manifests_validation
+  failed_when: not manifests_validation.stat.exists
+  tags:
+    - manifests
+    - validation
+    - keycloak
+
+# =========================================================================
+# VALIDATION YAML ET KUBERNETES
+# =========================================================================
+- name: "VALIDATION | Vérification de la syntaxe YAML des manifests"
+  ansible.builtin.include_tasks: validate_yaml.yml
+  vars:
+    yaml_file: "{{ keycloak_temp_dir.path }}/manifests/{{ item.dest }}"
+    component_name: "keycloak-{{ item.name }}"
+  loop: "{{ keycloak_templates }}"
+  when: item.required | bool
+  tags:
+    - validation
+    - yaml
+    - keycloak
+
+- name: "VALIDATION | Dry-run des manifests Kubernetes"
+  kubernetes.core.k8s:
+    state: present
+    src: "{{ keycloak_temp_dir.path }}/manifests/{{ item.dest }}"
+    dry_run: true
+    validate:
+      fail_on_error: true
+      strict: true
+  loop: "{{ keycloak_templates }}"
+  when:
+    - item.required | bool
+    - lions_validation_enabled | default(true) | bool
+  register: dryrun_validation
+  tags:
+    - validation
+    - kubernetes
+    - keycloak
+
+# =========================================================================
+# PRÉPARATION DES RESSOURCES DE BASE
+# =========================================================================
+- name: "RESOURCES | Création du ServiceAccount Keycloak"
+  kubernetes.core.k8s:
+    state: present
+    src: "{{ keycloak_temp_dir.path }}/manifests/serviceaccount.yml"
+    wait: true
+    wait_timeout: "{{ lions_timeout_default | default(300) }}"
+    wait_condition:
+      type: Ready
+      status: "True"
+  register: serviceaccount_creation
+  retries: 3
+  delay: 10
+  until: serviceaccount_creation is succeeded
+  tags:
+    - resources
+    - serviceaccount
+    - keycloak
+
+- name: "RESOURCES | Création du ConfigMap Keycloak"
+  kubernetes.core.k8s:
+    state: present
+    src: "{{ keycloak_temp_dir.path }}/manifests/configmap.yml"
+    wait: true
+    wait_timeout: "{{ lions_timeout_default | default(300) }}"
+  register: configmap_creation
+  retries: 3
+  delay: 5
+  until: configmap_creation is succeeded
+  tags:
+    - resources
+    - configmap
+    - keycloak
+
+- name: "RESOURCES | Création du PersistentVolumeClaim Keycloak"
+  kubernetes.core.k8s:
+    state: present
+    src: "{{ keycloak_temp_dir.path }}/manifests/persistentvolumeclaim.yml"
+    wait: true
+    wait_timeout: "{{ lions_timeout_default | default(300) }}"
+    wait_condition:
+      type: Bound
+      status: "True"
+  when: keycloak_persistent_storage | default(true) | bool
+  register: pvc_creation
+  retries: 5
+  delay: 15
+  until: pvc_creation is succeeded
+  tags:
+    - resources
+    - storage
+    - keycloak
+
+# =========================================================================
+# VÉRIFICATIONS POST-PRÉPARATION
+# =========================================================================
+- name: "VERIFICATION | Vérification de l'état des ressources créées"
+  kubernetes.core.k8s_info:
+    api_version: "{{ item.api_version }}"
+    kind: "{{ item.kind }}"
+    namespace: "{{ keycloak_namespace }}"
+    name: "{{ item.name }}"
   loop:
-    - { src: "deployment.yml.j2", dest: "deployment.yml" }
-    - { src: "service.yml.j2", dest: "service.yml" }
-    - { src: "ingress.yml.j2", dest: "ingress.yml" }
-    - { src: "configmap.yml.j2", dest: "configmap.yml" }
-    - { src: "serviceaccount.yml.j2", dest: "serviceaccount.yml" }
-    - { src: "servicemonitor.yml.j2", dest: "servicemonitor.yml" }
-    - { src: "persistentvolumeclaim.yml.j2", dest: "persistentvolumeclaim.yml" }
-  register: templates_generated
+    - api_version: v1
+      kind: ServiceAccount
+      name: "{{ keycloak_service_name }}"
+    - api_version: v1
+      kind: ConfigMap
+      name: "{{ keycloak_service_name }}-config"
+    - api_version: v1
+      kind: PersistentVolumeClaim
+      name: "{{ keycloak_service_name }}-data"
+  register: resources_verification
+  failed_when: resources_verification.resources | length == 0
+  tags:
+    - verification
+    - keycloak
 
-- name: Vérification des fichiers générés
-  stat:
-    path: "{{ temp_dir.path }}/{{ item }}"
-  loop:
-    - "deployment.yml"
-    - "service.yml"
-    - "ingress.yml"
-    - "configmap.yml"
-    - "serviceaccount.yml"
-    - "servicemonitor.yml"
-    - "persistentvolumeclaim.yml"
-  register: files_check
-  failed_when: not item.stat.exists
-
-- name: Création du compte de service
-  k8s:
-    state: present
-    src: "{{ temp_dir.path }}/serviceaccount.yml"
-  register: serviceaccount_result
-
-- name: Création du ConfigMap pour la configuration de Keycloak
-  k8s:
-    state: present
-    src: "{{ temp_dir.path }}/configmap.yml"
-  register: configmap_result
-
-- name: Création du PersistentVolumeClaim pour Keycloak
-  k8s:
-    state: present
-    src: "{{ temp_dir.path }}/persistentvolumeclaim.yml"
-  register: pvc_result
-  when: keycloak_persistent_storage | bool
-
-- name: Vérification de l'existence des secrets pour l'administrateur Keycloak
-  k8s_info:
+- name: "VERIFICATION | Contrôle de la santé du cluster"
+  kubernetes.core.k8s_info:
     api_version: v1
-    kind: Secret
-    namespace: "{{ app_namespace }}"
-    name: "{{ keycloak_admin_password_secret }}"
-  register: admin_secret_info
-  ignore_errors: yes
+    kind: Node
+  register: cluster_health
+  failed_when:
+    - cluster_health.resources | length == 0
+    - cluster_health.resources | selectattr('status.conditions', 'defined') | selectattr('status.conditions', 'selectattr', 'type', 'equalto', 'Ready') | selectattr('status.conditions', 'selectattr', 'status', 'equalto', 'True') | list | length == 0
+  tags:
+    - verification
+    - cluster
+    - keycloak
 
-- name: Avertissement si le secret administrateur n'existe pas
+# =========================================================================
+# NETTOYAGE ET FINALISATION
+# =========================================================================
+- name: "CLEANUP | Enregistrement des chemins des manifests"
+  set_fact:
+    keycloak_manifest_paths: >-
+      {{
+        keycloak_templates |
+        selectattr('required', 'equalto', true) |
+        map('regex_replace', '^(.*)$', keycloak_temp_dir.path + '/manifests/\1.dest') |
+        list
+      }}
+  tags:
+    - cleanup
+    - keycloak
+
+- name: "CLEANUP | Sauvegarde des manifests (optionnel)"
+  ansible.builtin.copy:
+    src: "{{ keycloak_temp_dir.path }}/manifests/"
+    dest: "{{ keycloak_backup_manifests_path | default('/tmp/keycloak-manifests-' + ansible_date_time.epoch) }}/"
+    mode: '0640'
+    remote_src: true
+  when: keycloak_backup_manifests | default(false) | bool
+  tags:
+    - cleanup
+    - backup
+    - keycloak
+
+# =========================================================================
+# LOGS ET RAPPORT FINAL
+# =========================================================================
+- name: "RAPPORT | Résumé de la préparation Keycloak"
   debug:
-    msg: "AVERTISSEMENT: Le secret pour l'administrateur Keycloak n'existe pas. Utilisez kubectl pour créer le secret {{ keycloak_admin_password_secret }}."
-  when: admin_secret_info is failed or admin_secret_info.resources | length == 0
+    msg:
+      - "✅ Préparation Keycloak terminée avec succès"
+      - ""
+      - "📊 Résumé des opérations:"
+      - "   - Namespace: {{ keycloak_namespace }} ({{ 'créé' if namespace_creation.changed else 'existant' }})"
+      - "   - ServiceAccount: {{ 'créé' if serviceaccount_creation.changed else 'existant' }}"
+      - "   - ConfigMap: {{ 'créé' if configmap_creation.changed else 'existant' }}"
+      - "   - PVC: {{ 'créé' if (pvc_creation.changed and keycloak_persistent_storage | default(true) | bool) else ('non requis' if not keycloak_persistent_storage | default(true) | bool else 'existant') }}"
+      - ""
+      - "🔧 Configuration:"
+      - "   - Version Keycloak: {{ keycloak_version }}"
+      - "   - Environnement: {{ lions_environment }}"
+      - "   - Stockage persistant: {{ keycloak_persistent_storage | default(true) | bool }}"
+      - "   - TLS activé: {{ lions_security_tls_enabled | default(true) | bool }}"
+      - "   - Monitoring activé: {{ lions_monitoring_enabled | default(true) | bool }}"
+      - ""
+      - "📂 Manifests générés dans: {{ keycloak_temp_dir.path }}/manifests/"
+  tags:
+    - report
+    - keycloak
 
-- name: Vérification de l'existence des secrets pour la base de données
-  k8s_info:
-    api_version: v1
-    kind: Secret
-    namespace: "{{ app_namespace }}"
-    name: "{{ keycloak_database_password_secret }}"
-  register: db_secret_info
-  ignore_errors: yes
+- name: "RAPPORT | Exportation des variables pour les tâches suivantes"
+  set_fact:
+    keycloak_preparation_completed: true
+    keycloak_manifests_path: "{{ keycloak_temp_dir.path }}/manifests"
+    keycloak_preparation_timestamp: "{{ ansible_date_time.iso8601 }}"
+  tags:
+    - export
+    - keycloak
 
-- name: Avertissement si le secret de base de données n'existe pas
-  debug:
-    msg: "AVERTISSEMENT: Le secret pour la base de données Keycloak n'existe pas. Utilisez kubectl pour créer le secret {{ keycloak_database_password_secret }}."
-  when: db_secret_info is failed or db_secret_info.resources | length == 0
+# =========================================================================
+# FIN DE LA PRÉPARATION KEYCLOAK
+# =========================================================================

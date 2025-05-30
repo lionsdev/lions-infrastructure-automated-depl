@@ -1,31 +1,244 @@
 ---
-# Titre: Template de service Kubernetes pour Keycloak
-# Description: Définit le service Kubernetes pour Keycloak
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - KEYCLOAK SERVICE TEMPLATE
+# =========================================================================
+# Description: Template de service Kubernetes pour Keycloak
+# Composant: Gestion d'identité et d'authentification
+# Environnement: {{ lions_environment | default('development') }}
+# Version: 5.0.0
+# Maintainer: {{ lions_config_maintainer | default('devops@lions.dev') }}
+# Documentation: https://docs.lions.dev/services/keycloak
+# =========================================================================
 
 apiVersion: v1
 kind: Service
 metadata:
-  name: "{{ app_name }}"
-  namespace: "{{ app_namespace }}"
+  name: {{ lions_keycloak_service_name | default('keycloak') }}
+  namespace: {{ lions_keycloak_namespace | default('security') }}
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "keycloak"
+    # Labels standards LIONS
+    app.kubernetes.io/name: {{ lions_keycloak_service_name | default('keycloak') }}
+    app.kubernetes.io/instance: {{ lions_keycloak_service_name | default('keycloak') }}-{{ lions_environment | default('development') }}
+    app.kubernetes.io/version: {{ lions_keycloak_version | default('22.0') }}
+    app.kubernetes.io/component: identity-provider
+    app.kubernetes.io/part-of: lions-infrastructure
+    app.kubernetes.io/managed-by: ansible
+
+    # Labels LIONS spécifiques
+    lions.dev/environment: {{ lions_environment | default('development') }}
+    lions.dev/service-type: security
+    lions.dev/technology: keycloak
+    lions.dev/tier: platform
+    lions.dev/team: devops
+    lions.dev/monitoring: {{ lions_monitoring_enabled | string | lower }}
+    lions.dev/backup: {{ lions_backup_enabled | string | lower }}
+
+    # Labels de déploiement
+    app: {{ lions_keycloak_service_name | default('keycloak') }}
+    version: {{ lions_keycloak_version | default('22.0') }}
+    environment: {{ lions_environment | default('development') }}
+    technology: keycloak
+
+{% if lions_environment == 'production' %}
+    # Labels de production
+    lions.dev/criticality: high
+    lions.dev/sla: 99.9
+{% elif lions_environment == 'staging' %}
+    # Labels de staging
+    lions.dev/criticality: medium
+    lions.dev/sla: 99.0
+{% else %}
+    # Labels de développement
+    lions.dev/criticality: low
+    lions.dev/sla: 95.0
+{% endif %}
+
   annotations:
-    description: "Service pour Keycloak {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
-    prometheus.io/scrape: "{{ keycloak_prometheus_scrape | string | lower }}"
-    prometheus.io/path: "{{ keycloak_prometheus_path }}"
-    prometheus.io/port: "{{ keycloak_prometheus_port | string }}"
+    # Annotations de description
+    description: |
+      Service Keycloak pour l'authentification et la gestion d'identité LIONS
+      Environnement: {{ lions_environment | default('development') }}
+      Version: {{ lions_keycloak_version | default('22.0') }}
+      Namespace: {{ lions_keycloak_namespace | default('security') }}
+
+    # Annotations de configuration
+    lions.dev/config-version: "{{ lions_config_version | default('5.0.0') }}"
+    lions.dev/deployment-date: "{{ ansible_date_time.iso8601 }}"
+    lions.dev/deployed-by: "{{ ansible_user_id | default('ansible') }}"
+
+    # Annotations de monitoring Prometheus
+{% if lions_monitoring_enabled | default(true) %}
+    prometheus.io/scrape: "true"
+    prometheus.io/path: "/auth/realms/master/metrics"
+    prometheus.io/port: "{{ lions_keycloak_port | default('8080') | string }}"
+    prometheus.io/scheme: "http"
+
+    # Annotations ServiceMonitor
+    servicemonitor.prometheus.io/enabled: "true"
+    servicemonitor.prometheus.io/interval: "30s"
+    servicemonitor.prometheus.io/scrape-timeout: "10s"
+{% else %}
+    prometheus.io/scrape: "false"
+{% endif %}
+
+    # Annotations de sécurité
+{% if lions_security_network_policies | default(true) %}
+    networkpolicy.kubernetes.io/ingress: "allowed"
+    networkpolicy.kubernetes.io/egress: "restricted"
+{% endif %}
+
+    # Annotations de loadbalancer (pour environnements avec LB externe)
+{% if lions_environment == 'production' %}
+    service.beta.kubernetes.io/external-traffic: "OnlyLocal"
+    service.beta.kubernetes.io/session-affinity: "ClientIP"
+{% endif %}
+
+    # Annotations de documentation
+    documentation/endpoint: "https://{{ lions_dns_full_domain }}/auth"
+    documentation/admin-console: "https://{{ lions_dns_full_domain }}/auth/admin"
+    documentation/realm: "{{ lions_keycloak_realm | default('lions') }}"
+
 spec:
   type: ClusterIP
+  sessionAffinity: {% if lions_environment == 'production' %}ClientIP{% else %}None{% endif %}
+
+{% if lions_environment == 'production' %}
+  # Configuration pour la production avec session affinity
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800  # 3 heures
+{% endif %}
+
   ports:
+    # Port principal HTTP
     - name: http
       port: 80
       targetPort: http
       protocol: TCP
+      appProtocol: http
+
+    # Port HTTPS (si TLS est activé)
+{% if lions_security_tls_enabled | default(true) %}
+    - name: https
+      port: 443
+      targetPort: https
+      protocol: TCP
+      appProtocol: https
+{% endif %}
+
+    # Port de monitoring (si activé)
+{% if lions_monitoring_enabled | default(true) %}
+    - name: monitoring
+      port: {{ lions_keycloak_port | default('8080') }}
+      targetPort: http
+      protocol: TCP
+      appProtocol: http
+{% endif %}
+
+    # Port de gestion pour les health checks
+    - name: management
+      port: 9990
+      targetPort: management
+      protocol: TCP
+      appProtocol: http
+
   selector:
-    app: "{{ app_name }}"
+    app.kubernetes.io/name: {{ lions_keycloak_service_name | default('keycloak') }}
+    app.kubernetes.io/instance: {{ lions_keycloak_service_name | default('keycloak') }}-{{ lions_environment | default('development') }}
+    app.kubernetes.io/component: identity-provider
+
+    # Sélecteurs LIONS
+    lions.dev/service-type: security
+    lions.dev/technology: keycloak
+
+  # Configuration IP families (IPv4/IPv6)
+  ipFamilyPolicy: SingleStack
+  ipFamilies:
+    - IPv4
+
+# =========================================================================
+# CONFIGURATION CONDITIONNELLE PAR ENVIRONNEMENT
+# =========================================================================
+{% if lions_environment == 'production' %}
+---
+# Service additionnel pour les métriques en production
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ lions_keycloak_service_name | default('keycloak') }}-metrics
+  namespace: {{ lions_keycloak_namespace | default('security') }}
+  labels:
+    app.kubernetes.io/name: {{ lions_keycloak_service_name | default('keycloak') }}
+    app.kubernetes.io/instance: {{ lions_keycloak_service_name | default('keycloak') }}-{{ lions_environment }}
+    app.kubernetes.io/version: {{ lions_keycloak_version | default('22.0') }}
+    app.kubernetes.io/component: metrics
+    app.kubernetes.io/part-of: lions-infrastructure
+    lions.dev/service-type: monitoring
+    lions.dev/technology: keycloak-metrics
+  annotations:
+    description: "Service dédié aux métriques Keycloak pour la production"
+    prometheus.io/scrape: "true"
+    prometheus.io/path: "/auth/realms/master/metrics"
+    prometheus.io/port: "{{ lions_keycloak_port | default('8080') | string }}"
+spec:
+  type: ClusterIP
+  ports:
+    - name: metrics
+      port: {{ lions_keycloak_port | default('8080') }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: {{ lions_keycloak_service_name | default('keycloak') }}
+    app.kubernetes.io/instance: {{ lions_keycloak_service_name | default('keycloak') }}-{{ lions_environment }}
+{% endif %}
+
+{% if lions_k8s_ha_enabled | default(false) and lions_environment == 'production' %}
+---
+# Service headless pour le clustering Keycloak en HA
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ lions_keycloak_service_name | default('keycloak') }}-headless
+  namespace: {{ lions_keycloak_namespace | default('security') }}
+  labels:
+    app.kubernetes.io/name: {{ lions_keycloak_service_name | default('keycloak') }}
+    app.kubernetes.io/instance: {{ lions_keycloak_service_name | default('keycloak') }}-{{ lions_environment }}
+    app.kubernetes.io/version: {{ lions_keycloak_version | default('22.0') }}
+    app.kubernetes.io/component: cluster
+    app.kubernetes.io/part-of: lions-infrastructure
+    lions.dev/service-type: cluster
+    lions.dev/technology: keycloak-cluster
+  annotations:
+    description: "Service headless pour le clustering Keycloak en haute disponibilité"
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+spec:
+  type: ClusterIP
+  clusterIP: None  # Service headless
+  publishNotReadyAddresses: true
+  ports:
+    - name: http
+      port: {{ lions_keycloak_port | default('8080') }}
+      targetPort: http
+      protocol: TCP
+    - name: jgroups
+      port: 7600
+      targetPort: jgroups
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: {{ lions_keycloak_service_name | default('keycloak') }}
+    app.kubernetes.io/instance: {{ lions_keycloak_service_name | default('keycloak') }}-{{ lions_environment }}
+    lions.dev/service-type: security
+{% endif %}
+
+# =========================================================================
+# INFORMATIONS DE DÉPLOIEMENT
+# =========================================================================
+# Configuration générée automatiquement par Ansible
+# Date de génération: {{ ansible_date_time.iso8601 }}
+# Environnement cible: {{ lions_environment | default('development') }}
+# Namespace de déploiement: {{ lions_keycloak_namespace | default('security') }}
+# Version Keycloak: {{ lions_keycloak_version | default('22.0') }}
+# Monitoring activé: {{ lions_monitoring_enabled | default(true) }}
+# TLS activé: {{ lions_security_tls_enabled | default(true) }}
+# HA activé: {{ lions_k8s_ha_enabled | default(false) }}
+# =========================================================================

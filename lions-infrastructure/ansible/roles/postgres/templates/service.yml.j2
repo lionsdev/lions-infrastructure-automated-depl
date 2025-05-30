@@ -1,23 +1,278 @@
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - PostgreSQL Service Template
+# =========================================================================
+# Description: Template Kubernetes Service pour PostgreSQL
+# Version: 5.0.0
+# Maintainer: DevOps Team
+# Documentation: https://docs.lions.dev/infrastructure/postgres
+# =========================================================================
+
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ app_name }}
-  namespace: {{ app_namespace }}
+  name: {{ lions_postgres_service_name | default('postgresql') }}
+  namespace: {{ lions_postgres_namespace | default('database') }}
   labels:
-    app: {{ app_name }}
-    environment: {{ app_environment }}
+    # Labels standards Kubernetes
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/instance: {{ lions_postgres_service_name | default('postgresql') }}
+    app.kubernetes.io/version: "{{ lions_postgres_version | default('15.4') }}"
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: lions-infrastructure
+    app.kubernetes.io/managed-by: ansible
+
+    # Labels LIONS personnalisés
+    lions.dev/environment: "{{ lions_environment | default('development') }}"
+    lions.dev/service-type: database
+    lions.dev/backup-enabled: "{{ lions_postgres_backup_enabled | default('true') | string }}"
+    lions.dev/monitoring-enabled: "{{ lions_monitoring_enabled | default('true') | string }}"
+    lions.dev/security-level: "{{ lions_postgres_security_level | default('standard') }}"
+
+    # Labels de gouvernance
+    owner: "{{ lions_postgres_owner | default('platform-team') }}"
+    cost-center: "{{ lions_cost_center | default('infrastructure') }}"
+    project: "{{ lions_project_name | default('lions-infrastructure') }}"
+
   annotations:
-    prometheus.io/scrape: "{{ postgres_prometheus_scrape | string }}"
-    prometheus.io/port: "{{ postgres_prometheus_port }}"
-    prometheus.io/path: "{{ postgres_prometheus_path }}"
+    # Annotations de service discovery
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "false"
+
+    # Annotations Prometheus/Monitoring
+    prometheus.io/scrape: "{{ lions_postgres_prometheus_scrape | default('true') | string }}"
+    prometheus.io/port: "{{ lions_postgres_prometheus_port | default('9187') | string }}"
+    prometheus.io/path: "{{ lions_postgres_prometheus_path | default('/metrics') }}"
+    prometheus.io/scheme: "{{ lions_postgres_prometheus_scheme | default('http') }}"
+
+    # Annotations de configuration
+    config.kubernetes.io/local-config: "true"
+
+    # Annotations de sécurité
+    security.lions.dev/network-policy: "{{ lions_security_network_policies | default('true') | string }}"
+    security.lions.dev/tls-enabled: "{{ lions_postgres_tls_enabled | default('true') | string }}"
+
+    # Annotations de backup
+    backup.lions.dev/enabled: "{{ lions_postgres_backup_enabled | default('true') | string }}"
+    backup.lions.dev/schedule: "{{ lions_postgres_backup_schedule | default('0 2 * * *') }}"
+    backup.lions.dev/retention: "{{ lions_postgres_backup_retention | default('30d') }}"
+
+    # Annotations cloud provider spécifiques (si LoadBalancer)
+    {% if lions_postgres_service_type | default('ClusterIP') == 'LoadBalancer' %}
+    {% if lions_postgres_cloud_provider | default('') == 'aws' %}
+    service.beta.kubernetes.io/aws-load-balancer-type: "{{ lions_postgres_aws_lb_type | default('nlb') }}"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "{{ lions_postgres_aws_lb_scheme | default('internal') }}"
+    {% if lions_postgres_aws_lb_subnets | default([]) | length > 0 %}
+    service.beta.kubernetes.io/aws-load-balancer-subnets: "{{ lions_postgres_aws_lb_subnets | join(',') }}"
+    {% endif %}
+    {% elif lions_postgres_cloud_provider | default('') == 'azure' %}
+    service.beta.kubernetes.io/azure-load-balancer-internal: "{{ lions_postgres_azure_internal | default('true') }}"
+    {% if lions_postgres_azure_lb_subnet | default('') != '' %}
+    service.beta.kubernetes.io/azure-load-balancer-internal-subnet: "{{ lions_postgres_azure_lb_subnet }}"
+    {% endif %}
+    {% elif lions_postgres_cloud_provider | default('') == 'gcp' %}
+    cloud.google.com/load-balancer-type: "{{ lions_postgres_gcp_lb_type | default('Internal') }}"
+    {% if lions_postgres_gcp_lb_subnet | default('') != '' %}
+    networking.gke.io/load-balancer-subnet: "{{ lions_postgres_gcp_lb_subnet }}"
+    {% endif %}
+    {% endif %}
+    {% endif %}
+
+    # Annotations de documentation
+    description: "PostgreSQL database service for LIONS Infrastructure"
+    documentation: "https://docs.lions.dev/infrastructure/postgres"
+    support-contact: "{{ lions_support_contact | default('devops@lions.dev') }}"
+
+spec:
+  # Sélecteur de pods
+  selector:
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/instance: {{ lions_postgres_service_name | default('postgresql') }}
+
+  # Configuration des ports
+  ports:
+    # Port principal PostgreSQL
+    - name: postgresql
+      port: {{ lions_postgres_port | default('5432') | int }}
+      targetPort: postgresql
+      protocol: TCP
+
+    # Port pour les métriques Prometheus
+    {% if lions_monitoring_enabled | default('true') | bool %}
+    - name: metrics
+      port: {{ lions_postgres_prometheus_port | default('9187') | int }}
+      targetPort: metrics
+      protocol: TCP
+    {% endif %}
+
+    # Port pour les connexions TLS (si activé)
+    {% if lions_postgres_tls_enabled | default('true') | bool %}
+    - name: postgresql-tls
+      port: {{ lions_postgres_tls_port | default('5433') | int }}
+      targetPort: postgresql-tls
+      protocol: TCP
+    {% endif %}
+
+  # Type de service
+  type: {{ lions_postgres_service_type | default('ClusterIP') }}
+
+  # Configuration du type de service
+  {% if lions_postgres_service_type | default('ClusterIP') == 'ClusterIP' %}
+  clusterIP: None  # Service headless pour StatefulSet
+  {% elif lions_postgres_service_type == 'LoadBalancer' %}
+  {% if lions_postgres_load_balancer_class | default('') != '' %}
+  loadBalancerClass: {{ lions_postgres_load_balancer_class }}
+  {% endif %}
+  {% if lions_postgres_load_balancer_source_ranges | default([]) | length > 0 %}
+  loadBalancerSourceRanges:
+    {% for range in lions_postgres_load_balancer_source_ranges %}
+    - {{ range }}
+    {% endfor %}
+  {% endif %}
+  {% endif %}
+
+      # Politique de trafic externe (pour LoadBalancer et NodePort uniquement)
+  {% if lions_postgres_service_type | default('ClusterIP') in ['LoadBalancer', 'NodePort'] %}
+  externalTrafficPolicy: {{ lions_postgres_external_traffic_policy | default('Cluster') }}
+  {% endif %}
+
+  # Affinité de session
+  sessionAffinity: {{ lions_postgres_session_affinity | default('None') }}
+
+  # Configuration de l'affinité de session
+  {% if lions_postgres_session_affinity | default('None') == 'ClientIP' %}
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: {{ lions_postgres_session_affinity_timeout | default('10800') | int }}
+  {% endif %}
+
+---
+# =========================================================================
+# Service pour les connexions en lecture seule (si réplication activée)
+# =========================================================================
+{% if lions_postgres_replication_enabled | default('false') | bool %}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ lions_postgres_service_name | default('postgresql') }}-readonly
+  namespace: {{ lions_postgres_namespace | default('database') }}
+  labels:
+    # Labels standards Kubernetes
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/instance: {{ lions_postgres_service_name | default('postgresql') }}-readonly
+    app.kubernetes.io/version: "{{ lions_postgres_version | default('15.4') }}"
+    app.kubernetes.io/component: database-readonly
+    app.kubernetes.io/part-of: lions-infrastructure
+    app.kubernetes.io/managed-by: ansible
+
+    # Labels LIONS personnalisés
+    lions.dev/environment: "{{ lions_environment | default('development') }}"
+    lions.dev/service-type: database-readonly
+    lions.dev/readonly: "true"
+
+  annotations:
+    # Annotations de service discovery
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "false"
+
+    # Annotations de configuration
+    description: "PostgreSQL read-only replica service for LIONS Infrastructure"
+    documentation: "https://docs.lions.dev/infrastructure/postgres/readonly"
+
 spec:
   selector:
-    app: {{ app_name }}
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/instance: {{ lions_postgres_service_name | default('postgresql') }}
+    lions.dev/role: replica
+
   ports:
-    - port: {{ postgres_default_port }}
-      targetPort: postgres
-      name: postgres
-    - port: {{ postgres_prometheus_port }}
-      targetPort: metrics
-      name: metrics
+    - name: postgresql
+      port: {{ lions_postgres_port | default('5432') | int }}
+      targetPort: postgresql
+      protocol: TCP
+
   type: ClusterIP
+  sessionAffinity: None
+{% endif %}
+
+---
+# =========================================================================
+# Service pour les connexions d'administration (si activé)
+# =========================================================================
+{% if lions_postgres_admin_service_enabled | default('false') | bool %}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ lions_postgres_service_name | default('postgresql') }}-admin
+  namespace: {{ lions_postgres_namespace | default('database') }}
+  labels:
+    # Labels standards Kubernetes
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/instance: {{ lions_postgres_service_name | default('postgresql') }}-admin
+    app.kubernetes.io/version: "{{ lions_postgres_version | default('15.4') }}"
+    app.kubernetes.io/component: database-admin
+    app.kubernetes.io/part-of: lions-infrastructure
+    app.kubernetes.io/managed-by: ansible
+
+    # Labels LIONS personnalisés
+    lions.dev/environment: "{{ lions_environment | default('development') }}"
+    lions.dev/service-type: database-admin
+    lions.dev/admin-access: "true"
+
+  annotations:
+    # Annotations de sécurité renforcée
+    security.lions.dev/admin-only: "true"
+    security.lions.dev/network-policy: "restricted"
+    security.lions.dev/audit-logging: "true"
+
+    # Annotations de configuration
+    description: "PostgreSQL admin service for LIONS Infrastructure"
+    documentation: "https://docs.lions.dev/infrastructure/postgres/admin"
+
+spec:
+  selector:
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/instance: {{ lions_postgres_service_name | default('postgresql') }}
+
+  ports:
+    - name: postgresql-admin
+      port: {{ lions_postgres_admin_port | default('5434') | int }}
+      targetPort: postgresql
+      protocol: TCP
+
+  type: ClusterIP
+
+  # Restrictions d'accès pour le service admin
+  {% if lions_postgres_admin_source_ranges | default([]) | length > 0 %}
+  loadBalancerSourceRanges:
+    {% for range in lions_postgres_admin_source_ranges %}
+    - {{ range }}
+    {% endfor %}
+  {% endif %}
+{% endif %}
+
+---
+# =========================================================================
+# Endpoints personnalisés pour le monitoring externe (si nécessaire)
+# =========================================================================
+{% if lions_postgres_external_monitoring_enabled | default('false') | bool %}
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: {{ lions_postgres_service_name | default('postgresql') }}-external-monitoring
+  namespace: {{ lions_postgres_namespace | default('database') }}
+  labels:
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/instance: {{ lions_postgres_service_name | default('postgresql') }}
+    lions.dev/external-monitoring: "true"
+
+subsets:
+  - addresses:
+      {% for endpoint in lions_postgres_external_monitoring_endpoints | default([]) %}
+      - ip: {{ endpoint.ip }}
+        {% if endpoint.hostname is defined %}
+        hostname: {{ endpoint.hostname }}
+        {% endif %}
+      {% endfor %}
+    ports:
+      - name: metrics
+        port: {{ lions_postgres_prometheus_port | default('9187') | int }}
+        protocol: TCP
+{% endif %}

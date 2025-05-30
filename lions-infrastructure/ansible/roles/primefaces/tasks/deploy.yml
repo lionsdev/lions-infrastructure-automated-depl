@@ -1,112 +1,437 @@
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - PRIMEFACES DEPLOYMENT TASKS
+# =========================================================================
+# Description: Tâches Ansible pour le déploiement des applications PrimeFaces
+# Composant: PrimeFaces Application Deployment
+# Version: 5.0.0
+# Maintainer: DevOps LIONS Team
+# Documentation: https://docs.lions.dev/infrastructure/primefaces/deployment
+# =========================================================================
+
 ---
-# Titre: Déploiement d'applications PrimeFaces
-# Description: Déploie une application PrimeFaces sur Kubernetes
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# PHASE DE DÉPLOIEMENT - COMPOSANTS KUBERNETES
+# =========================================================================
 
-- name: Déploiement de l'application PrimeFaces
-  k8s:
+- name: "PrimeFaces Deploy | {{ current_phase | default('deployment') | title }} - Initialisation"
+  set_fact:
+    primefaces_deploy_start_time: "{{ ansible_date_time.epoch }}"
+    primefaces_deploy_components:
+      configmap: false
+      serviceaccount: false
+      deployment: false
+      service: false
+      ingress: false
+      servicemonitor: false
+      pvc: false
+    primefaces_deploy_errors: []
+  tags:
+    - primefaces
+    - deploy
+    - init
+
+- name: "PrimeFaces Deploy | Affichage des informations de déploiement"
+  debug:
+    msg:
+      - "🚀 Début du déploiement PrimeFaces"
+      - "📋 Application: {{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+      - "🏷️  Namespace: {{ lions_primefaces_namespace }}"
+      - "🌍 Environnement: {{ lions_environment }}"
+      - "🆔 Version: {{ lions_primefaces_app_version | default('latest') }}"
+  when: primefaces_deployment_config.debug_mode | default(false) | bool
+  tags:
+    - primefaces
+    - deploy
+    - debug
+
+# =========================================================================
+# DÉPLOIEMENT DE LA CONFIGMAP
+# =========================================================================
+
+- name: "PrimeFaces Deploy | Génération de la ConfigMap"
+  template:
+    src: configmap.yml.j2
+    dest: "{{ primefaces_temp_dir }}/configmap.yml"
+    mode: '0644'
+  register: primefaces_configmap_template
+
+- name: "PrimeFaces Deploy | Application de la ConfigMap"
+  kubernetes.core.k8s:
     state: present
-    src: "{{ temp_dir.path }}/deployment.yml"
-  register: deployment_result
+    src: "{{ primefaces_temp_dir }}/configmap.yml"
+    wait: true
+    wait_timeout: "{{ lions_timeout_default }}"
+    wait_condition:
+      type: Created
+      status: "True"
+  register: primefaces_configmap_result
+  failed_when: false
 
-- name: Création du service pour l'application
-  k8s:
+- name: "PrimeFaces Deploy | Vérification du déploiement ConfigMap"
+  set_fact:
+    primefaces_deploy_components: "{{ primefaces_deploy_components | combine({'configmap': primefaces_configmap_result is succeeded}) }}"
+    primefaces_deploy_errors: "{{ primefaces_deploy_errors + ['ConfigMap: ' + (primefaces_configmap_result.msg | default('Unknown error'))] if primefaces_configmap_result is failed else primefaces_deploy_errors }}"
+
+# =========================================================================
+# DÉPLOIEMENT DU SERVICE ACCOUNT
+# =========================================================================
+
+- name: "PrimeFaces Deploy | Génération du ServiceAccount"
+  template:
+    src: serviceaccount.yml.j2
+    dest: "{{ primefaces_temp_dir }}/serviceaccount.yml"
+    mode: '0644'
+  register: primefaces_serviceaccount_template
+
+- name: "PrimeFaces Deploy | Application du ServiceAccount"
+  kubernetes.core.k8s:
     state: present
-    src: "{{ temp_dir.path }}/service.yml"
-  register: service_result
+    src: "{{ primefaces_temp_dir }}/serviceaccount.yml"
+    wait: true
+    wait_timeout: "{{ lions_timeout_default }}"
+  register: primefaces_serviceaccount_result
+  failed_when: false
 
-- name: Création de l'ingress pour l'application
-  k8s:
+- name: "PrimeFaces Deploy | Vérification du déploiement ServiceAccount"
+  set_fact:
+    primefaces_deploy_components: "{{ primefaces_deploy_components | combine({'serviceaccount': primefaces_serviceaccount_result is succeeded}) }}"
+    primefaces_deploy_errors: "{{ primefaces_deploy_errors + ['ServiceAccount: ' + (primefaces_serviceaccount_result.msg | default('Unknown error'))] if primefaces_serviceaccount_result is failed else primefaces_deploy_errors }}"
+
+# =========================================================================
+# DÉPLOIEMENT DU PERSISTENT VOLUME CLAIM
+# =========================================================================
+
+- name: "PrimeFaces Deploy | Génération du PersistentVolumeClaim"
+  template:
+    src: persistentvolumeclaim.yml.j2
+    dest: "{{ primefaces_temp_dir }}/persistentvolumeclaim.yml"
+    mode: '0644'
+  when: lions_primefaces_storage_enabled | default(false) | bool
+  register: primefaces_pvc_template
+
+- name: "PrimeFaces Deploy | Application du PersistentVolumeClaim"
+  kubernetes.core.k8s:
     state: present
-    src: "{{ temp_dir.path }}/ingress.yml"
-  register: ingress_result
-  when: app_environment != 'development' or (extra_params.create_ingress | default(true) | bool)
+    src: "{{ primefaces_temp_dir }}/persistentvolumeclaim.yml"
+    wait: true
+    wait_timeout: "{{ lions_timeout_default }}"
+    wait_condition:
+      type: Bound
+      status: "True"
+  when: lions_primefaces_storage_enabled | default(false) | bool
+  register: primefaces_pvc_result
+  failed_when: false
 
-- name: Attente du déploiement
-  k8s_info:
+- name: "PrimeFaces Deploy | Vérification du déploiement PVC"
+  set_fact:
+    primefaces_deploy_components: "{{ primefaces_deploy_components | combine({'pvc': primefaces_pvc_result is succeeded or not (lions_primefaces_storage_enabled | default(false) | bool)}) }}"
+    primefaces_deploy_errors: "{{ primefaces_deploy_errors + ['PVC: ' + (primefaces_pvc_result.msg | default('Unknown error'))] if (primefaces_pvc_result is failed and lions_primefaces_storage_enabled | default(false) | bool) else primefaces_deploy_errors }}"
+
+# =========================================================================
+# DÉPLOIEMENT PRINCIPAL - DEPLOYMENT
+# =========================================================================
+
+- name: "PrimeFaces Deploy | Génération du Deployment"
+  template:
+    src: deployment.yml.j2
+    dest: "{{ primefaces_temp_dir }}/deployment.yml"
+    mode: '0644'
+  register: primefaces_deployment_template
+
+- name: "PrimeFaces Deploy | Application du Deployment"
+  kubernetes.core.k8s:
+    state: present
+    src: "{{ primefaces_temp_dir }}/deployment.yml"
+    wait: true
+    wait_timeout: "{{ lions_primefaces_deployment_timeout | default(600) }}"
+    wait_condition:
+      type: Progressing
+      status: "True"
+      reason: NewReplicaSetAvailable
+  register: primefaces_deployment_result
+  failed_when: false
+
+- name: "PrimeFaces Deploy | Vérification du déploiement Deployment"
+  set_fact:
+    primefaces_deploy_components: "{{ primefaces_deploy_components | combine({'deployment': primefaces_deployment_result is succeeded}) }}"
+    primefaces_deploy_errors: "{{ primefaces_deploy_errors + ['Deployment: ' + (primefaces_deployment_result.msg | default('Unknown error'))] if primefaces_deployment_result is failed else primefaces_deploy_errors }}"
+
+# =========================================================================
+# ATTENTE DE LA DISPONIBILITÉ DES PODS
+# =========================================================================
+
+- name: "PrimeFaces Deploy | Attente de la disponibilité des pods"
+  kubernetes.core.k8s_info:
     api_version: apps/v1
     kind: Deployment
-    namespace: "{{ app_namespace }}"
-    name: "{{ app_name }}"
-  register: deployment_status
-  until: deployment_status.resources[0].status.availableReplicas is defined and deployment_status.resources[0].status.availableReplicas == deployment_status.resources[0].spec.replicas
-  retries: 30
-  delay: 10
-  ignore_errors: yes
+    namespace: "{{ lions_primefaces_namespace }}"
+    name: "{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+    wait: true
+    wait_timeout: "{{ lions_primefaces_readiness_timeout | default(300) }}"
+    wait_condition:
+      type: Available
+      status: "True"
+  register: primefaces_deployment_status
+  retries: "{{ primefaces_error_handling.max_retries | default(3) }}"
+  delay: "{{ primefaces_error_handling.retry_delay | default(10) }}"
+  until: >
+    primefaces_deployment_status.resources | length > 0 and
+    primefaces_deployment_status.resources[0].status.availableReplicas is defined and
+    primefaces_deployment_status.resources[0].status.availableReplicas == primefaces_deployment_status.resources[0].spec.replicas
+  when: primefaces_deploy_components.deployment
+  failed_when: false
 
-- name: Vérification du statut du déploiement
-  fail:
-    msg: "Le déploiement de l'application {{ app_name }} a échoué. Veuillez vérifier les logs pour plus d'informations."
-  when: deployment_status is failed or deployment_status.resources | length == 0
-
-- name: Récupération des informations sur les pods
-  k8s_info:
+- name: "PrimeFaces Deploy | Vérification de l'état des pods"
+  kubernetes.core.k8s_info:
     api_version: v1
     kind: Pod
-    namespace: "{{ app_namespace }}"
+    namespace: "{{ lions_primefaces_namespace }}"
     label_selectors:
-      - "app={{ app_name }}"
-  register: pods_info
+      - "app.kubernetes.io/name={{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}"
+      - "app.kubernetes.io/instance={{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}-{{ lions_environment }}"
+  register: primefaces_pods_status
+  when: primefaces_deploy_components.deployment
 
-- name: Affichage des informations sur les pods
+- name: "PrimeFaces Deploy | Analyse des pods non opérationnels"
+  set_fact:
+    primefaces_unhealthy_pods: >-
+      {{ primefaces_pods_status.resources | default([]) |
+         selectattr('status.phase', 'ne', 'Running') |
+         list }}
+  when: 
+    - primefaces_deploy_components.deployment
+    - primefaces_pods_status.resources is defined
+
+- name: "PrimeFaces Deploy | Logging des pods problématiques"
   debug:
-    msg: "Pod {{ item.metadata.name }} est dans l'état {{ item.status.phase }}"
-  loop: "{{ pods_info.resources }}"
-  loop_control:
-    label: "{{ item.metadata.name }}"
+    msg:
+      - "⚠️  Pod non opérationnel détecté:"
+      - "📛 Nom: {{ item.metadata.name }}"
+      - "📊 Phase: {{ item.status.phase }}"
+      - "🔍 Conditions: {{ item.status.conditions | default([]) | map(attribute='type') | list }}"
+  loop: "{{ primefaces_unhealthy_pods | default([]) }}"
+  when: primefaces_unhealthy_pods | default([]) | length > 0
 
-- name: Attente de l'initialisation de l'application PrimeFaces
-  pause:
-    seconds: "{{ primefaces_init_delay | default(30) }}"
-  when: deployment_status is succeeded
+# =========================================================================
+# DÉPLOIEMENT DU SERVICE
+# =========================================================================
 
-- name: Vérification de l'état des pods après initialisation
-  k8s_info:
-    api_version: v1
-    kind: Pod
-    namespace: "{{ app_namespace }}"
-    label_selectors:
-      - "app={{ app_name }}"
-  register: pods_info_after_init
+- name: "PrimeFaces Deploy | Génération du Service"
+  template:
+    src: service.yml.j2
+    dest: "{{ primefaces_temp_dir }}/service.yml"
+    mode: '0644'
+  register: primefaces_service_template
 
-- name: Affichage des informations sur les pods après initialisation
-  debug:
-    msg: "Pod {{ item.metadata.name }} est dans l'état {{ item.status.phase }} après initialisation"
-  loop: "{{ pods_info_after_init.resources }}"
-  loop_control:
-    label: "{{ item.metadata.name }}"
+- name: "PrimeFaces Deploy | Application du Service"
+  kubernetes.core.k8s:
+    state: present
+    src: "{{ primefaces_temp_dir }}/service.yml"
+    wait: true
+    wait_timeout: "{{ lions_timeout_default }}"
+  register: primefaces_service_result
+  failed_when: false
 
-- name: Vérification des logs des pods pour détecter des erreurs
-  shell: "kubectl logs -n {{ app_namespace }} {{ item.metadata.name }} | grep -i error | tail -10"
-  loop: "{{ pods_info_after_init.resources }}"
-  register: pod_logs
-  ignore_errors: yes
-  changed_when: false
-  loop_control:
-    label: "{{ item.metadata.name }}"
+- name: "PrimeFaces Deploy | Vérification du déploiement Service"
+  set_fact:
+    primefaces_deploy_components: "{{ primefaces_deploy_components | combine({'service': primefaces_service_result is succeeded}) }}"
+    primefaces_deploy_errors: "{{ primefaces_deploy_errors + ['Service: ' + (primefaces_service_result.msg | default('Unknown error'))] if primefaces_service_result is failed else primefaces_deploy_errors }}"
 
-- name: Affichage des erreurs dans les logs (si présentes)
-  debug:
-    msg: "Erreurs détectées dans les logs de {{ item.item.metadata.name }}: {{ item.stdout }}"
-  loop: "{{ pod_logs.results }}"
-  when: item.stdout != ""
-  loop_control:
-    label: "{{ item.item.metadata.name }}"
+# =========================================================================
+# DÉPLOIEMENT DE L'INGRESS
+# =========================================================================
 
-- name: Vérification de la disponibilité de l'API
+- name: "PrimeFaces Deploy | Génération de l'Ingress"
+  template:
+    src: ingress.yml.j2
+    dest: "{{ primefaces_temp_dir }}/ingress.yml"
+    mode: '0644'
+  when: lions_ingress_enabled | bool
+  register: primefaces_ingress_template
+
+- name: "PrimeFaces Deploy | Application de l'Ingress"
+  kubernetes.core.k8s:
+    state: present
+    src: "{{ primefaces_temp_dir }}/ingress.yml"
+    wait: true
+    wait_timeout: "{{ lions_timeout_default }}"
+  when: lions_ingress_enabled | bool
+  register: primefaces_ingress_result
+  failed_when: false
+
+- name: "PrimeFaces Deploy | Vérification du déploiement Ingress"
+  set_fact:
+    primefaces_deploy_components: "{{ primefaces_deploy_components | combine({'ingress': primefaces_ingress_result is succeeded or not (lions_ingress_enabled | bool)}) }}"
+    primefaces_deploy_errors: "{{ primefaces_deploy_errors + ['Ingress: ' + (primefaces_ingress_result.msg | default('Unknown error'))] if (primefaces_ingress_result is failed and lions_ingress_enabled | bool) else primefaces_deploy_errors }}"
+
+# =========================================================================
+# DÉPLOIEMENT DU SERVICEMONITOR
+# =========================================================================
+
+- name: "PrimeFaces Deploy | Génération du ServiceMonitor"
+  template:
+    src: servicemonitor.yml.j2
+    dest: "{{ primefaces_temp_dir }}/servicemonitor.yml"
+    mode: '0644'
+  when: lions_monitoring_enabled | bool
+  register: primefaces_servicemonitor_template
+
+- name: "PrimeFaces Deploy | Application du ServiceMonitor"
+  kubernetes.core.k8s:
+    state: present
+    src: "{{ primefaces_temp_dir }}/servicemonitor.yml"
+    wait: true
+    wait_timeout: "{{ lions_timeout_default }}"
+  when: lions_monitoring_enabled | bool
+  register: primefaces_servicemonitor_result
+  failed_when: false
+
+- name: "PrimeFaces Deploy | Vérification du déploiement ServiceMonitor"
+  set_fact:
+    primefaces_deploy_components: "{{ primefaces_deploy_components | combine({'servicemonitor': primefaces_servicemonitor_result is succeeded or not (lions_monitoring_enabled | bool)}) }}"
+    primefaces_deploy_errors: "{{ primefaces_deploy_errors + ['ServiceMonitor: ' + (primefaces_servicemonitor_result.msg | default('Unknown error'))] if (primefaces_servicemonitor_result is failed and lions_monitoring_enabled | bool) else primefaces_deploy_errors }}"
+
+# =========================================================================
+# TESTS DE CONNECTIVITÉ ET HEALTH CHECKS
+# =========================================================================
+
+- name: "PrimeFaces Deploy | Test de connectivité interne"
   uri:
-    url: "http://{{ app_name }}.{{ app_namespace }}.svc.cluster.local/api/health"
+    url: "http://{{ lions_primefaces_app_name | default(lions_primefaces_service_name) }}.{{ lions_primefaces_namespace }}.svc.cluster.local:{{ lions_primefaces_port }}/actuator/health"
     method: GET
-    status_code: 200
-  register: api_check
-  ignore_errors: yes
-  retries: 5
-  delay: 10
-  until: api_check is succeeded
+    status_code: [200, 503]
+    timeout: "{{ lions_timeout_default }}"
+  register: primefaces_internal_health_check
+  retries: "{{ lions_primefaces_health_retries | default(5) }}"
+  delay: "{{ lions_primefaces_health_delay | default(10) }}"
+  until: primefaces_internal_health_check.status == 200
+  when: 
+    - primefaces_deploy_components.deployment
+    - primefaces_deploy_components.service
+    - lions_monitoring_enabled | bool
+  failed_when: false
 
-- name: Avertissement si l'API n'est pas disponible
+- name: "PrimeFaces Deploy | Test de connectivité externe (via Ingress)"
+  uri:
+    url: "https://{{ lions_primefaces_hostname }}.{{ lions_dns_full_domain }}/actuator/health"
+    method: GET
+    status_code: [200, 503]
+    timeout: "{{ lions_timeout_default }}"
+    validate_certs: "{{ lions_security_tls_enabled | bool }}"
+  register: primefaces_external_health_check
+  retries: "{{ lions_primefaces_health_retries | default(3) }}"
+  delay: "{{ lions_primefaces_health_delay | default(15) }}"
+  until: primefaces_external_health_check.status == 200
+  when: 
+    - primefaces_deploy_components.ingress
+    - lions_ingress_enabled | bool
+    - lions_monitoring_enabled | bool
+    - lions_environment != 'development'
+  failed_when: false
+
+# =========================================================================
+# VALIDATION POST-DÉPLOIEMENT
+# =========================================================================
+
+- name: "PrimeFaces Deploy | Collecte des métriques de déploiement"
+  set_fact:
+    primefaces_deployment_metrics:
+      duration: "{{ (ansible_date_time.epoch | int) - (primefaces_deploy_start_time | int) }}"
+      components_deployed: "{{ primefaces_deploy_components.values() | select('equalto', true) | list | length }}"
+      total_components: "{{ primefaces_deploy_components | length }}"
+      success_rate: "{{ ((primefaces_deploy_components.values() | select('equalto', true) | list | length) / (primefaces_deploy_components | length) * 100) | round(2) }}"
+      errors_count: "{{ primefaces_deploy_errors | length }}"
+      pods_healthy: "{{ (primefaces_pods_status.resources | default([]) | selectattr('status.phase', 'equalto', 'Running') | list | length) if primefaces_pods_status.resources is defined else 0 }}"
+      internal_health: "{{ 'OK' if primefaces_internal_health_check.status == 200 else 'FAILED' }}"
+      external_health: "{{ 'OK' if primefaces_external_health_check.status == 200 else 'FAILED' }}"
+
+- name: "PrimeFaces Deploy | Rapport de déploiement"
   debug:
-    msg: "AVERTISSEMENT: L'API de l'application {{ app_name }} n'est pas disponible. Vérifiez les logs pour plus d'informations."
-  when: api_check is failed
+    msg:
+      - "📊 RAPPORT DE DÉPLOIEMENT PRIMEFACES"
+      - "============================================"
+      - "⏱️  Durée: {{ primefaces_deployment_metrics.duration }}s"
+      - "📦 Composants déployés: {{ primefaces_deployment_metrics.components_deployed }}/{{ primefaces_deployment_metrics.total_components }}"
+      - "✅ Taux de succès: {{ primefaces_deployment_metrics.success_rate }}%"
+      - "🏥 Pods sains: {{ primefaces_deployment_metrics.pods_healthy }}"
+      - "🔍 Santé interne: {{ primefaces_deployment_metrics.internal_health }}"
+      - "🌐 Santé externe: {{ primefaces_deployment_metrics.external_health }}"
+      - "❌ Erreurs: {{ primefaces_deployment_metrics.errors_count }}"
+      - "{% if primefaces_deploy_errors | length > 0 %}🚨 Détails des erreurs: {{ primefaces_deploy_errors | join(', ') }}{% endif %}"
+  tags:
+    - primefaces
+    - deploy
+    - report
+
+# =========================================================================
+# GESTION DES ÉCHECS DE DÉPLOIEMENT
+# =========================================================================
+
+- name: "PrimeFaces Deploy | Échec du déploiement - Composants critiques"
+  fail:
+    msg: |
+      ❌ Échec critique du déploiement PrimeFaces!
+      
+      📋 Composants en échec:
+      {% for component, status in primefaces_deploy_components.items() %}
+      - {{ component }}: {{ 'OK' if status else 'FAILED' }}
+      {% endfor %}
+      
+      🚨 Erreurs détectées:
+      {% for error in primefaces_deploy_errors %}
+      - {{ error }}
+      {% endfor %}
+      
+      🔍 Vérifiez les logs pour plus de détails
+  when: >
+    not primefaces_deploy_components.configmap or
+    not primefaces_deploy_components.serviceaccount or
+    not primefaces_deploy_components.deployment or
+    not primefaces_deploy_components.service or
+    primefaces_deployment_metrics.success_rate < 80
+
+- name: "PrimeFaces Deploy | Avertissement - Composants non critiques"
+  debug:
+    msg:
+      - "⚠️  Avertissement: Certains composants non critiques ont échoué"
+      - "📋 Le déploiement principal est fonctionnel mais incomplet"
+      - "🔧 Composants à vérifier: {{ primefaces_deploy_errors | join(', ') }}"
+  when: 
+    - primefaces_deploy_components.deployment
+    - primefaces_deploy_components.service
+    - primefaces_deploy_errors | length > 0
+    - primefaces_deployment_metrics.success_rate >= 80
+
+- name: "PrimeFaces Deploy | Succès du déploiement"
+  debug:
+    msg:
+      - "🎉 Déploiement PrimeFaces terminé avec succès!"
+      - "🌐 Application accessible à: https://{{ lions_primefaces_hostname }}.{{ lions_dns_full_domain }}"
+      - "📊 Métriques: https://{{ lions_primefaces_hostname }}.{{ lions_dns_full_domain }}/actuator/metrics"
+      - "🏥 Health Check: https://{{ lions_primefaces_hostname }}.{{ lions_dns_full_domain }}/actuator/health"
+  when: 
+    - primefaces_deployment_metrics.success_rate == 100
+    - primefaces_deploy_errors | length == 0
+
+# =========================================================================
+# NETTOYAGE POST-DÉPLOIEMENT
+# =========================================================================
+
+- name: "PrimeFaces Deploy | Nettoyage des fichiers temporaires"
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ primefaces_temp_dir }}/configmap.yml"
+    - "{{ primefaces_temp_dir }}/serviceaccount.yml"
+    - "{{ primefaces_temp_dir }}/deployment.yml"
+    - "{{ primefaces_temp_dir }}/service.yml"
+    - "{{ primefaces_temp_dir }}/ingress.yml"
+    - "{{ primefaces_temp_dir }}/servicemonitor.yml"
+    - "{{ primefaces_temp_dir }}/persistentvolumeclaim.yml"
+  when: not primefaces_deployment_config.debug_mode | default(false) | bool
+  ignore_errors: yes
+  tags:
+    - primefaces
+    - deploy
+    - cleanup

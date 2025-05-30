@@ -1,128 +1,516 @@
 ---
-# Titre: Déploiement de Keycloak
-# Description: Déploie Keycloak sur Kubernetes
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - DÉPLOIEMENT KEYCLOAK
+# =========================================================================
+# Description: Déploiement sécurisé et robuste de Keycloak sur Kubernetes
+# Version: 5.0.0
+# Maintainer: DevOps Team LIONS
+# Date: 2025-05-27
+# Documentation: https://docs.lions.dev/infrastructure/keycloak
+# =========================================================================
 
-- name: Déploiement de Keycloak
-  k8s:
-    state: present
-    src: "{{ temp_dir.path }}/deployment.yml"
-  register: deployment_result
+# =========================================================================
+# PHASE 1: PRÉPARATIFS ET VALIDATION PRE-DÉPLOIEMENT
+# =========================================================================
 
-- name: Création du service pour Keycloak
-  k8s:
-    state: present
-    src: "{{ temp_dir.path }}/service.yml"
-  register: service_result
+- name: "🔍 [KEYCLOAK] Validation des pré-requis pour le déploiement"
+  block:
+    - name: "📋 Vérification des variables d'environnement obligatoires"
+      assert:
+        that:
+          - keycloak_namespace is defined and keycloak_namespace != ""
+          - keycloak_app_name is defined and keycloak_app_name != ""
+          - keycloak_version is defined and keycloak_version != ""
+          - keycloak_database_host is defined and keycloak_database_host != ""
+        fail_msg: "❌ Variables d'environnement Keycloak manquantes ou invalides"
+        success_msg: "✅ Variables d'environnement Keycloak validées"
 
-- name: Création de l'ingress pour Keycloak
-  k8s:
-    state: present
-    src: "{{ temp_dir.path }}/ingress.yml"
-  register: ingress_result
-  when: app_environment != 'development' or (extra_params.create_ingress | default(true) | bool)
+    - name: "🔐 Vérification de la disponibilité des secrets"
+      k8s_info:
+        api_version: v1
+        kind: Secret
+        namespace: "{{ keycloak_namespace }}"
+        name: "{{ keycloak_secret_name }}"
+      register: keycloak_secret_check
+      failed_when: false
 
-- name: Attente du déploiement
-  k8s_info:
-    api_version: apps/v1
-    kind: Deployment
-    namespace: "{{ app_namespace }}"
-    name: "{{ app_name }}"
-  register: deployment_status
-  until: deployment_status.resources[0].status.availableReplicas is defined and deployment_status.resources[0].status.availableReplicas == deployment_status.resources[0].spec.replicas
-  retries: 30
-  delay: 10
-  ignore_errors: yes
+    - name: "🏥 Vérification de la santé du cluster"
+      k8s_info:
+        api_version: v1
+        kind: Node
+      register: cluster_nodes
 
-- name: Vérification du statut du déploiement
-  fail:
-    msg: "Le déploiement de Keycloak a échoué. Veuillez vérifier les logs pour plus d'informations."
-  when: deployment_status is failed or deployment_status.resources | length == 0
+    - name: "📊 Affichage de l'état du cluster"
+      debug:
+        msg: "🏗️ Cluster K8s: {{ cluster_nodes.resources | length }} nœuds disponibles"
 
-- name: Récupération des informations sur les pods
-  k8s_info:
-    api_version: v1
-    kind: Pod
-    namespace: "{{ app_namespace }}"
-    label_selectors:
-      - "app={{ app_name }}"
-  register: pods_info
+  rescue:
+    - name: "❌ Échec de la validation des pré-requis"
+      fail:
+        msg: "La validation des pré-requis a échoué. Vérifiez la configuration."
 
-- name: Affichage des informations sur les pods
-  debug:
-    msg: "Pod {{ item.metadata.name }} est dans l'état {{ item.status.phase }}"
-  loop: "{{ pods_info.resources }}"
-  loop_control:
-    label: "{{ item.metadata.name }}"
+  tags:
+    - keycloak
+    - validation
+    - pre-deployment
 
-- name: Attente de l'initialisation de Keycloak
-  pause:
-    seconds: "{{ keycloak_init_delay | default(60) }}"
-  when: deployment_status is succeeded
+# =========================================================================
+# PHASE 2: CRÉATION DES RESSOURCES KUBERNETES
+# =========================================================================
 
-- name: Vérification de l'état des pods après initialisation
-  k8s_info:
-    api_version: v1
-    kind: Pod
-    namespace: "{{ app_namespace }}"
-    label_selectors:
-      - "app={{ app_name }}"
-  register: pods_info_after_init
+- name: "🚀 [KEYCLOAK] Déploiement des ressources Kubernetes"
+  block:
+    - name: "📦 Création du ServiceAccount Keycloak"
+      k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: "{{ keycloak_service_account_name }}"
+            namespace: "{{ keycloak_namespace }}"
+            labels:
+              app.kubernetes.io/name: keycloak
+              app.kubernetes.io/instance: "{{ keycloak_instance_name }}"
+              app.kubernetes.io/version: "{{ keycloak_version }}"
+              app.kubernetes.io/component: identity-provider
+              app.kubernetes.io/part-of: lions-infrastructure
+              app.kubernetes.io/managed-by: ansible
+              lions.dev/environment: "{{ lions_environment }}"
+        wait: true
+        wait_condition:
+          type: Ready
+          status: "True"
+        wait_timeout: "{{ keycloak_timeout_short }}"
+      register: serviceaccount_result
 
-- name: Affichage des informations sur les pods après initialisation
-  debug:
-    msg: "Pod {{ item.metadata.name }} est dans l'état {{ item.status.phase }} après initialisation"
-  loop: "{{ pods_info_after_init.resources }}"
-  loop_control:
-    label: "{{ item.metadata.name }}"
+    - name: "⚙️ Création du ConfigMap pour Keycloak"
+      k8s:
+        state: present
+        src: "{{ keycloak_temp_dir }}/configmap.yml"
+        wait: true
+        wait_timeout: "{{ keycloak_timeout_short }}"
+      register: configmap_result
 
-- name: Vérification des logs des pods pour détecter des erreurs
-  shell: "kubectl logs -n {{ app_namespace }} {{ item.metadata.name }} | grep -i error | tail -10"
-  loop: "{{ pods_info_after_init.resources }}"
-  register: pod_logs
-  ignore_errors: yes
-  changed_when: false
-  loop_control:
-    label: "{{ item.metadata.name }}"
+    - name: "💾 Création du PersistentVolumeClaim (si nécessaire)"
+      k8s:
+        state: present
+        src: "{{ keycloak_temp_dir }}/persistentvolumeclaim.yml"
+        wait: true
+        wait_condition:
+          type: Bound
+          status: "True"
+        wait_timeout: "{{ keycloak_timeout_medium }}"
+      register: pvc_result
+      when: keycloak_persistence_enabled | default(true) | bool
 
-- name: Affichage des erreurs dans les logs (si présentes)
-  debug:
-    msg: "Erreurs détectées dans les logs de {{ item.item.metadata.name }}: {{ item.stdout }}"
-  loop: "{{ pod_logs.results }}"
-  when: item.stdout != ""
-  loop_control:
-    label: "{{ item.item.metadata.name }}"
+    - name: "🔧 Déploiement de l'application Keycloak"
+      k8s:
+        state: present
+        src: "{{ keycloak_temp_dir }}/deployment.yml"
+        wait: false  # Nous gérerons l'attente manuellement
+      register: deployment_result
 
-- name: Vérification de la disponibilité de l'API Keycloak
-  uri:
-    url: "http://{{ app_name }}.{{ app_namespace }}.svc.cluster.local:{{ keycloak_default_port }}{{ keycloak_health_path }}/ready"
-    method: GET
-    status_code: 200
-  register: api_check
-  ignore_errors: yes
-  retries: 5
-  delay: 10
-  until: api_check is succeeded
+    - name: "🌐 Création du Service Keycloak"
+      k8s:
+        state: present
+        src: "{{ keycloak_temp_dir }}/service.yml"
+        wait: true
+        wait_timeout: "{{ keycloak_timeout_short }}"
+      register: service_result
 
-- name: Avertissement si l'API Keycloak n'est pas disponible
-  debug:
-    msg: "AVERTISSEMENT: L'API de Keycloak n'est pas disponible. Vérifiez les logs pour plus d'informations."
-  when: api_check is failed
+    - name: "🔗 Création de l'Ingress pour Keycloak"
+      k8s:
+        state: present
+        src: "{{ keycloak_temp_dir }}/ingress.yml"
+        wait: true
+        wait_timeout: "{{ keycloak_timeout_short }}"
+      register: ingress_result
+      when:
+        - keycloak_ingress_enabled | default(true) | bool
+        - lions_environment != 'development' or keycloak_dev_ingress_enabled | default(true) | bool
 
-- name: Vérification de la connexion à la base de données
-  uri:
-    url: "http://{{ app_name }}.{{ app_namespace }}.svc.cluster.local:{{ keycloak_default_port }}/health/ready"
-    method: GET
-    status_code: 200
-  register: db_check
-  ignore_errors: yes
-  retries: 3
-  delay: 5
-  until: db_check is succeeded
+  rescue:
+    - name: "❌ Échec du déploiement des ressources"
+      debug:
+        msg: "Échec lors de la création des ressources Kubernetes pour Keycloak"
 
-- name: Avertissement si la connexion à la base de données n'est pas fonctionnelle
-  debug:
-    msg: "AVERTISSEMENT: La connexion à la base de données n'est pas fonctionnelle. Vérifiez les logs et la configuration de la base de données."
-  when: db_check is failed
+    - name: "🔍 Collecte d'informations pour diagnostic"
+      k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        namespace: "{{ keycloak_namespace }}"
+        name: "{{ keycloak_app_name }}"
+      register: failed_deployment_info
+      ignore_errors: true
+
+    - name: "📋 Affichage des informations de diagnostic"
+      debug:
+        var: failed_deployment_info
+      when: failed_deployment_info is defined
+
+    - name: "💥 Arrêt du processus avec erreur"
+      fail:
+        msg: "Le déploiement des ressources Keycloak a échoué"
+
+  tags:
+    - keycloak
+    - deployment
+    - kubernetes
+
+# =========================================================================
+# PHASE 3: SURVEILLANCE ET VALIDATION DU DÉPLOIEMENT
+# =========================================================================
+
+- name: "⏱️ [KEYCLOAK] Surveillance du déploiement"
+  block:
+    - name: "🔄 Attente du déploiement avec retry intelligent"
+      k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        namespace: "{{ keycloak_namespace }}"
+        name: "{{ keycloak_app_name }}"
+        wait: true
+        wait_condition:
+          type: Progressing
+          status: "True"
+          reason: NewReplicaSetAvailable
+        wait_timeout: "{{ keycloak_timeout_deployment }}"
+      register: deployment_status
+      retries: "{{ keycloak_deploy_retries }}"
+      delay: "{{ keycloak_deploy_retry_delay }}"
+      until: >
+        deployment_status.resources | length > 0 and
+        deployment_status.resources[0].status.readyReplicas is defined and
+        deployment_status.resources[0].status.readyReplicas == deployment_status.resources[0].spec.replicas
+
+    - name: "📊 Vérification de l'état détaillé du déploiement"
+      k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        namespace: "{{ keycloak_namespace }}"
+        name: "{{ keycloak_app_name }}"
+      register: final_deployment_status
+
+    - name: "✅ Validation du succès du déploiement"
+      assert:
+        that:
+          - final_deployment_status.resources[0].status.readyReplicas is defined
+          - final_deployment_status.resources[0].status.readyReplicas > 0
+          - final_deployment_status.resources[0].status.readyReplicas == final_deployment_status.resources[0].spec.replicas
+        fail_msg: "❌ Le déploiement n'a pas atteint l'état souhaité"
+        success_msg: "✅ Déploiement réussi: {{ final_deployment_status.resources[0].status.readyReplicas }}/{{ final_deployment_status.resources[0].spec.replicas }} replicas"
+
+  rescue:
+    - name: "⚠️ Gestion des échecs de déploiement"
+      block:
+        - name: "🔍 Collecte d'informations sur les pods en échec"
+          k8s_info:
+            api_version: v1
+            kind: Pod
+            namespace: "{{ keycloak_namespace }}"
+            label_selectors:
+              - "app.kubernetes.io/name=keycloak"
+              - "app.kubernetes.io/instance={{ keycloak_instance_name }}"
+          register: failed_pods_info
+
+        - name: "📋 Analyse des événements du namespace"
+          shell: |
+            kubectl get events --namespace {{ keycloak_namespace }} \
+              --field-selector involvedObject.name={{ keycloak_app_name }} \
+              --sort-by='.lastTimestamp' --no-headers -o custom-columns=REASON:.reason,MESSAGE:.message
+          register: deployment_events
+          ignore_errors: true
+          changed_when: false
+
+        - name: "🚨 Affichage des informations de diagnostic"
+          debug:
+            msg:
+              - "❌ Le déploiement Keycloak a échoué"
+              - "🔍 Pods en échec: {{ failed_pods_info.resources | length }}"
+              - "📰 Événements récents:"
+              - "{{ deployment_events.stdout_lines | default(['Aucun événement trouvé']) }}"
+
+        - name: "💥 Échec critique du déploiement"
+          fail:
+            msg: "Le déploiement de Keycloak a échoué après {{ keycloak_deploy_retries }} tentatives"
+
+  tags:
+    - keycloak
+    - monitoring
+    - validation
+
+# =========================================================================
+# PHASE 4: VÉRIFICATIONS POST-DÉPLOIEMENT
+# =========================================================================
+
+- name: "🔍 [KEYCLOAK] Vérifications post-déploiement"
+  block:
+    - name: "📋 Récupération des informations sur les pods"
+      k8s_info:
+        api_version: v1
+        kind: Pod
+        namespace: "{{ keycloak_namespace }}"
+        label_selectors:
+          - "app.kubernetes.io/name=keycloak"
+          - "app.kubernetes.io/instance={{ keycloak_instance_name }}"
+      register: keycloak_pods_info
+
+    - name: "🔍 Affichage de l'état des pods"
+      debug:
+        msg: "📦 Pod {{ item.metadata.name }}: {{ item.status.phase | default('Inconnu') }} ({{ item.status.containerStatuses[0].ready | default(false) | ternary('Ready', 'Not Ready') }})"
+      loop: "{{ keycloak_pods_info.resources }}"
+      loop_control:
+        label: "{{ item.metadata.name }}"
+
+    - name: "⏳ Période d'initialisation de Keycloak"
+      pause:
+        seconds: "{{ keycloak_init_delay }}"
+        prompt: "🕐 Attente de l'initialisation complète de Keycloak ({{ keycloak_init_delay }}s)"
+      when: keycloak_wait_for_init | default(true) | bool
+
+    - name: "🏥 Vérification de la santé via health endpoint"
+      uri:
+        url: "{{ keycloak_health_check_url }}"
+        method: GET
+        status_code: [200, 204]
+        timeout: "{{ keycloak_timeout_health_check }}"
+        validate_certs: "{{ keycloak_tls_verify | default(true) }}"
+      register: keycloak_health_check
+      retries: "{{ keycloak_health_check_retries }}"
+      delay: "{{ keycloak_health_check_delay }}"
+      until: keycloak_health_check is succeeded
+      ignore_errors: true
+
+    - name: "🔌 Test de connectivité interne (service)"
+      uri:
+        url: "http://{{ keycloak_app_name }}.{{ keycloak_namespace }}.svc.cluster.local:{{ keycloak_service_port }}{{ keycloak_health_path }}"
+        method: GET
+        status_code: [200, 204]
+        timeout: "{{ keycloak_timeout_health_check }}"
+      register: keycloak_internal_check
+      retries: "{{ keycloak_health_check_retries }}"
+      delay: "{{ keycloak_health_check_delay }}"
+      until: keycloak_internal_check is succeeded
+      ignore_errors: true
+
+    - name: "💾 Vérification de la connectivité base de données"
+      uri:
+        url: "http://{{ keycloak_app_name }}.{{ keycloak_namespace }}.svc.cluster.local:{{ keycloak_service_port }}/health/ready"
+        method: GET
+        status_code: [200, 204]
+        timeout: "{{ keycloak_timeout_health_check }}"
+      register: keycloak_db_check
+      retries: 3
+      delay: 5
+      until: keycloak_db_check is succeeded
+      ignore_errors: true
+
+    - name: "📊 Collecte des métriques de performance"
+      uri:
+        url: "http://{{ keycloak_app_name }}.{{ keycloak_namespace }}.svc.cluster.local:{{ keycloak_service_port }}/metrics"
+        method: GET
+        status_code: [200, 404]  # 404 acceptable si les métriques ne sont pas activées
+        timeout: 10
+      register: keycloak_metrics
+      ignore_errors: true
+
+  rescue:
+    - name: "⚠️ Gestion des erreurs de vérification"
+      debug:
+        msg: "❌ Certaines vérifications post-déploiement ont échoué, mais le déploiement continue"
+
+  tags:
+    - keycloak
+    - post-deployment
+    - health-check
+
+# =========================================================================
+# PHASE 5: MONITORING ET SURVEILLANCE
+# =========================================================================
+
+- name: "📊 [KEYCLOAK] Configuration du monitoring"
+  block:
+    - name: "📈 Création du ServiceMonitor pour Prometheus"
+      k8s:
+        state: present
+        src: "{{ keycloak_temp_dir }}/servicemonitor.yml"
+        wait: true
+        wait_timeout: "{{ keycloak_timeout_short }}"
+      register: servicemonitor_result
+      when:
+        - keycloak_monitoring_enabled | default(true) | bool
+        - lions_monitoring_enabled | default(true) | bool
+
+    - name: "🚨 Configuration des alertes personnalisées"
+      k8s:
+        state: present
+        definition:
+          apiVersion: monitoring.coreos.com/v1
+          kind: PrometheusRule
+          metadata:
+            name: "{{ keycloak_app_name }}-alerts"
+            namespace: "{{ keycloak_namespace }}"
+            labels:
+              app.kubernetes.io/name: keycloak
+              app.kubernetes.io/instance: "{{ keycloak_instance_name }}"
+              prometheus: kube-prometheus
+              role: alert-rules
+          spec:
+            groups:
+              - name: keycloak.rules
+                rules:
+                  - alert: KeycloakDown
+                    expr: up{job="keycloak"} == 0
+                    for: 5m
+                    labels:
+                      severity: critical
+                    annotations:
+                      summary: "Keycloak instance is down"
+                      description: "Keycloak instance {{ '{{ $labels.instance }}' }} has been down for more than 5 minutes."
+
+                  - alert: KeycloakHighResponseTime
+                    expr: http_request_duration_seconds{job="keycloak",quantile="0.95"} > 2
+                    for: 10m
+                    labels:
+                      severity: warning
+                    annotations:
+                      summary: "Keycloak high response time"
+                      description: "Keycloak 95th percentile response time is above 2 seconds."
+      when:
+        - keycloak_monitoring_enabled | default(true) | bool
+        - lions_monitoring_enabled | default(true) | bool
+        - keycloak_alerts_enabled | default(true) | bool
+
+  tags:
+    - keycloak
+    - monitoring
+    - prometheus
+
+# =========================================================================
+# PHASE 6: RAPPORT FINAL ET LOGGING
+# =========================================================================
+
+- name: "📋 [KEYCLOAK] Génération du rapport de déploiement"
+  block:
+    - name: "📊 Collecte des informations finales"
+      k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        namespace: "{{ keycloak_namespace }}"
+        name: "{{ keycloak_app_name }}"
+      register: final_deployment_info
+
+    - name: "🔍 Informations sur les services"
+      k8s_info:
+        api_version: v1
+        kind: Service
+        namespace: "{{ keycloak_namespace }}"
+        name: "{{ keycloak_app_name }}"
+      register: service_info
+
+    - name: "🌐 Informations sur l'ingress"
+      k8s_info:
+        api_version: networking.k8s.io/v1
+        kind: Ingress
+        namespace: "{{ keycloak_namespace }}"
+        name: "{{ keycloak_app_name }}"
+      register: ingress_info
+      when: keycloak_ingress_enabled | default(true) | bool
+
+    - name: "✅ Rapport de déploiement réussi"
+      debug:
+        msg:
+          - "🎉 ============================================="
+          - "🎉          DÉPLOIEMENT KEYCLOAK RÉUSSI"
+          - "🎉 ============================================="
+          - "📦 Application: {{ keycloak_app_name }}"
+          - "🏷️  Version: {{ keycloak_version }}"
+          - "🏢 Namespace: {{ keycloak_namespace }}"
+          - "🔢 Replicas: {{ final_deployment_info.resources[0].status.readyReplicas | default(0) }}/{{ final_deployment_info.resources[0].spec.replicas }}"
+          - "🌐 Service: {{ service_info.resources[0].spec.clusterIP }}:{{ keycloak_service_port }}"
+          - "🔗 URL externe: {{ keycloak_external_url | default('Non configurée') }}"
+          - "🏥 Santé: {{ keycloak_health_check.status | default('Non testée') }}"
+          - "💾 Base de données: {{ keycloak_db_check.status | default('Non testée') }}"
+          - "📊 Monitoring: {{ 'Activé' if (keycloak_monitoring_enabled | default(true)) else 'Désactivé' }}"
+          - "🎯 Environnement: {{ lions_environment }}"
+          - "⏰ Déployé le: {{ ansible_date_time.iso8601 }}"
+          - "🎉 ============================================="
+
+    - name: "📝 Logging du déploiement réussi"
+      lineinfile:
+        path: "{{ keycloak_deploy_log_file | default('/var/log/lions/keycloak-deploy.log') }}"
+        line: "{{ ansible_date_time.iso8601 }} - SUCCESS - Keycloak {{ keycloak_version }} deployed successfully in {{ keycloak_namespace }} namespace"
+        create: true
+        mode: '0644'
+      delegate_to: localhost
+      ignore_errors: true
+
+  rescue:
+    - name: "❌ Rapport d'échec du déploiement"
+      debug:
+        msg:
+          - "💥 ============================================="
+          - "💥        ÉCHEC DU DÉPLOIEMENT KEYCLOAK"
+          - "💥 ============================================="
+          - "📦 Application: {{ keycloak_app_name }}"
+          - "🏢 Namespace: {{ keycloak_namespace }}"
+          - "⏰ Échec le: {{ ansible_date_time.iso8601 }}"
+          - "💥 ============================================="
+
+  always:
+    - name: "🧹 Nettoyage des fichiers temporaires"
+      file:
+        path: "{{ keycloak_temp_dir }}"
+        state: absent
+      ignore_errors: true
+      when: keycloak_cleanup_temp_files | default(true) | bool
+
+  tags:
+    - keycloak
+    - reporting
+    - cleanup
+
+# =========================================================================
+# GESTION GLOBALE DES ERREURS
+# =========================================================================
+rescue:
+  - name: "🚨 Gestion globale des erreurs critiques"
+    block:
+      - name: "📋 Collecte d'informations système pour diagnostic"
+        shell: |
+          echo "=== DIAGNOSTIC SYSTÈME ==="
+          kubectl get nodes -o wide
+          echo ""
+          echo "=== UTILISATION DES RESSOURCES ==="
+          kubectl top nodes --no-headers | head -5
+          echo ""
+          echo "=== ÉVÉNEMENTS RÉCENTS ==="
+          kubectl get events --all-namespaces --sort-by='.lastTimestamp' | tail -10
+        register: emergency_diagnostic
+        ignore_errors: true
+
+      - name: "🚨 Notification d'échec critique"
+        debug:
+          msg:
+            - "🚨 ÉCHEC CRITIQUE: Le déploiement de Keycloak a échoué"
+            - "🔍 Diagnostic système:"
+            - "{{ emergency_diagnostic.stdout_lines | default(['Diagnostic non disponible']) }}"
+            - "📧 Contactez l'équipe DevOps pour investigation"
+
+      - name: "📝 Logging de l'échec critique"
+        lineinfile:
+          path: "{{ keycloak_deploy_log_file | default('/var/log/lions/keycloak-deploy.log') }}"
+          line: "{{ ansible_date_time.iso8601 }} - CRITICAL_FAILURE - Keycloak deployment failed critically"
+          create: true
+          mode: '0644'
+        delegate_to: localhost
+        ignore_errors: true
+
+      - name: "💥 Arrêt avec code d'erreur"
+        fail:
+          msg: "Déploiement de Keycloak échoué de manière critique"
+
+# =========================================================================
+# FIN DU PLAYBOOK
+# =========================================================================

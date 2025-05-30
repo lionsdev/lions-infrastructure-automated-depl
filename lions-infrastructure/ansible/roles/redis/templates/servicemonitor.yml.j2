@@ -1,48 +1,288 @@
 ---
-# Titre: Template de ServiceMonitor Kubernetes pour Redis
-# Description: Définit le ServiceMonitor Kubernetes pour Redis
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-08
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - REDIS SERVICEMONITOR TEMPLATE
+# =========================================================================
+# Description: Template ServiceMonitor Kubernetes pour Redis avec monitoring avancé
+# Version: 5.0.0
+# Maintainer: {{ lions_config_maintainer | default('devops@lions.dev') }}
+# Documentation: https://docs.lions.dev/infrastructure/monitoring/redis
+# Compatibility: Prometheus Operator v0.60+, Redis 7.x+
+# =========================================================================
 
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: "{{ app_name }}"
-  namespace: "{{ app_namespace }}"
+  name: "{{ lions_redis_service_name | default('redis') }}-monitor"
+  namespace: "{{ lions_redis_namespace | default('database') }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "redis"
-    prometheus: "kube-prometheus"
+    # Labels standards LIONS
+    app.kubernetes.io/name: "{{ lions_redis_service_name | default('redis') }}"
+    app.kubernetes.io/instance: "{{ lions_redis_service_name | default('redis') }}-{{ lions_environment | default('development') }}"
+    app.kubernetes.io/version: "{{ lions_redis_version | default('7.2') }}"
+    app.kubernetes.io/component: "database"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+
+    # Labels métier LIONS
+    lions.dev/environment: "{{ lions_environment | default('development') }}"
+    lions.dev/technology: "redis"
+    lions.dev/tier: "database"
+    lions.dev/monitoring: "enabled"
+    lions.dev/backup: "{{ 'enabled' if lions_backup_enabled | default(true) | bool else 'disabled' }}"
+
+    # Labels Prometheus
+    prometheus: "{{ lions_prometheus_instance | default('kube-prometheus') }}"
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "{{ lions_redis_metrics_port | default('9121') }}"
+    prometheus.io/path: "{{ lions_redis_metrics_path | default('/metrics') }}"
+
+    # Labels pour le monitoring avancé
+    alerting.coreos.com/enabled: "{{ 'true' if lions_monitoring_alerts_enabled | default(true) | bool else 'false' }}"
+    grafana.com/dashboard: "redis-dashboard"
+
   annotations:
-    description: "ServiceMonitor pour Redis {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    # Annotations de documentation
+    description: |
+      ServiceMonitor pour Redis {{ lions_redis_service_name | default('redis') }}
+      Version: {{ lions_redis_version | default('7.2') }}
+      Environnement: {{ lions_environment | default('development') }}
+      Namespace: {{ lions_redis_namespace | default('database') }}
+
+    # Annotations de configuration
+    prometheus.io/interval: "{{ lions_monitoring_scrape_interval | default('30s') }}"
+    prometheus.io/timeout: "{{ lions_monitoring_scrape_timeout | default('10s') }}"
+    prometheus.io/scheme: "{{ 'https' if lions_security_tls_enabled | default(true) | bool else 'http' }}"
+
+    # Annotations de maintenance
+    lions.dev/created-by: "ansible-automation"
+    lions.dev/created-at: "{{ ansible_date_time.iso8601 }}"
+    lions.dev/config-version: "{{ lions_config_version | default('5.0.0') }}"
+
+    # Annotations pour les SLOs
+    slo.dev/availability-target: "{{ lions_redis_slo_availability | default('99.9') }}"
+    slo.dev/latency-target: "{{ lions_redis_slo_latency | default('10ms') }}"
+    slo.dev/error-budget: "{{ lions_redis_slo_error_budget | default('0.1') }}"
+
 spec:
+  # Sélection du service cible
   selector:
     matchLabels:
-      app: "{{ app_name }}"
+      app.kubernetes.io/name: "{{ lions_redis_service_name | default('redis') }}"
+      app.kubernetes.io/component: "database"
+      lions.dev/technology: "redis"
+
+  # Sélection du namespace
   namespaceSelector:
     matchNames:
-      - "{{ app_namespace }}"
+      - "{{ lions_redis_namespace | default('database') }}"
+{% if lions_monitoring_cross_namespace_enabled | default(false) | bool %}
+      - "{{ lions_monitoring_namespace | default('monitoring') }}"
+{% endif %}
+
+  # Configuration des endpoints de monitoring
   endpoints:
+    # Endpoint principal Redis Exporter
     - port: metrics
-      path: "{{ redis_prometheus_path }}"
-      interval: 30s
-      scrapeTimeout: 10s
-      honorLabels: true
+      path: "{{ lions_redis_metrics_path | default('/metrics') }}"
+      interval: "{{ lions_monitoring_scrape_interval | default('30s') }}"
+      scrapeTimeout: "{{ lions_monitoring_scrape_timeout | default('10s') }}"
+      honorLabels: {{ lions_monitoring_honor_labels | default(true) | bool | lower }}
+      honorTimestamps: {{ lions_monitoring_honor_timestamps | default(true) | bool | lower }}
+
+      # Configuration TLS si activée
+{% if lions_security_tls_enabled | default(true) | bool %}
+      scheme: https
+      tlsConfig:
+        serverName: "{{ lions_redis_service_name | default('redis') }}.{{ lions_redis_namespace | default('database') }}.svc.{{ lions_k8s_dns_domain | default('cluster.local') }}"
+        insecureSkipVerify: {{ lions_security_tls_skip_verify | default(false) | bool | lower }}
+{% if lions_security_tls_ca_secret is defined %}
+        ca:
+          secret:
+            name: "{{ lions_security_tls_ca_secret }}"
+            key: "ca.crt"
+{% endif %}
+{% if lions_security_tls_client_cert_secret is defined %}
+        cert:
+          secret:
+            name: "{{ lions_security_tls_client_cert_secret }}"
+            key: "tls.crt"
+        keySecret:
+          name: "{{ lions_security_tls_client_cert_secret }}"
+          key: "tls.key"
+{% endif %}
+{% else %}
+      scheme: http
+{% endif %}
+
+      # Configuration des paramètres HTTP
+      params:
+        format: ['prometheus']
+{% if lions_redis_metrics_include_system_metrics | default(true) | bool %}
+        include-system-metrics: ['true']
+{% endif %}
+{% if lions_redis_metrics_check_keys is defined %}
+        check-keys: {{ lions_redis_metrics_check_keys | to_json }}
+{% endif %}
+
+      # Relabeling rules pour enrichir les métriques
       relabelings:
+        # Labels standard Kubernetes
         - sourceLabels: [__meta_kubernetes_pod_name]
           action: replace
           targetLabel: pod
+          replacement: '${1}'
+
+        - sourceLabels: [__meta_kubernetes_pod_node_name]
+          action: replace
+          targetLabel: node
+          replacement: '${1}'
+
         - sourceLabels: [__meta_kubernetes_namespace]
           action: replace
           targetLabel: namespace
+          replacement: '${1}'
+
         - sourceLabels: [__meta_kubernetes_service_name]
           action: replace
           targetLabel: service
+          replacement: '${1}'
+
+        # Labels LIONS spécifiques
+        - sourceLabels: [__meta_kubernetes_pod_label_lions_dev_environment]
+          action: replace
+          targetLabel: lions_environment
+          replacement: '${1}'
+
+        - sourceLabels: [__meta_kubernetes_pod_label_lions_dev_technology]
+          action: replace
+          targetLabel: lions_technology
+          replacement: '${1}'
+
+        - sourceLabels: [__meta_kubernetes_pod_label_lions_dev_tier]
+          action: replace
+          targetLabel: lions_tier
+          replacement: '${1}'
+
+        # Enrichissement avec des informations de cluster
+        - sourceLabels: []
+          action: replace
+          targetLabel: cluster
+          replacement: "{{ lions_k8s_cluster_name | default('lions-cluster') }}"
+
+        - sourceLabels: []
+          action: replace
+          targetLabel: environment
+          replacement: "{{ lions_environment | default('development') }}"
+
+        - sourceLabels: []
+          action: replace
+          targetLabel: region
+          replacement: "{{ lions_infrastructure_region | default('local') }}"
+
+        # Filtrage conditionnel des métriques
+{% if lions_monitoring_filter_high_cardinality | default(true) | bool %}
+        - sourceLabels: [__name__]
+          action: drop
+          regex: 'redis_keyspace_hits_total|redis_keyspace_misses_total'
+          replacement: '${1}'
+{% endif %}
+
+        # Normalisation des noms de métriques
+        - sourceLabels: [__name__]
+          action: replace
+          targetLabel: __name__
+          regex: 'redis_(.+)'
+          replacement: 'lions_redis_${1}'
+
+      # Post-relabeling pour le nettoyage final
+      metricRelabelings:
+        # Suppression des labels temporaires
+        - regex: '__meta_kubernetes_.*'
+          action: labeldrop
+
+        # Normalisation des valeurs de statut
+        - sourceLabels: [status]
+          action: replace
+          targetLabel: status
+          regex: '([Tt]rue|1)'
+          replacement: 'up'
+
+        - sourceLabels: [status]
+          action: replace
+          targetLabel: status
+          regex: '([Ff]alse|0)'
+          replacement: 'down'
+
+        # Ajout de labels calculés pour les SLIs
+        - sourceLabels: [__name__]
+          action: replace
+          targetLabel: sli_type
+          regex: 'lions_redis_(connected_clients|used_memory_percent)'
+          replacement: 'resource_utilization'
+
+        - sourceLabels: [__name__]
+          action: replace
+          targetLabel: sli_type
+          regex: 'lions_redis_(commands_processed_total|keyspace_hits_total)'
+          replacement: 'throughput'
+
+        - sourceLabels: [__name__]
+          action: replace
+          targetLabel: sli_type
+          regex: 'lions_redis_ping_latency_seconds'
+          replacement: 'latency'
+
+{% if lions_redis_monitoring_additional_endpoints | default([]) | length > 0 %}
+{% for endpoint in lions_redis_monitoring_additional_endpoints %}
+    # Endpoint additionnel: {{ endpoint.name | default('custom') }}
+    - port: "{{ endpoint.port }}"
+      path: "{{ endpoint.path | default('/metrics') }}"
+      interval: "{{ endpoint.interval | default(lions_monitoring_scrape_interval | default('30s')) }}"
+      scrapeTimeout: "{{ endpoint.timeout | default(lions_monitoring_scrape_timeout | default('10s')) }}"
+      honorLabels: {{ endpoint.honor_labels | default(true) | bool | lower }}
+{% if endpoint.params is defined %}
+      params:
+{% for key, value in endpoint.params.items() %}
+        {{ key }}: {{ value | to_json }}
+{% endfor %}
+{% endif %}
+{% endfor %}
+{% endif %}
+
+  # Labels à propager depuis le service vers les métriques
   targetLabels:
-    - app
-    - version
-    - environment
-    - technology
+    - app.kubernetes.io/name
+    - app.kubernetes.io/version
+    - app.kubernetes.io/component
+    - lions.dev/environment
+    - lions.dev/technology
+    - lions.dev/tier
+
+  # Configuration de la découverte de pods (si service headless)
+{% if lions_redis_service_type | default('ClusterIP') == 'Headless' %}
+  podTargetLabels:
+    - app.kubernetes.io/name
+    - app.kubernetes.io/instance
+    - lions.dev/environment
+{% endif %}
+
+  # Limite de découverte pour éviter la surcharge
+  sampleLimit: {{ lions_monitoring_sample_limit | default(10000) }}
+  targetLimit: {{ lions_monitoring_target_limit | default(100) }}
+  labelLimit: {{ lions_monitoring_label_limit | default(1000) }}
+  labelNameLengthLimit: {{ lions_monitoring_label_name_length_limit | default(200) }}
+  labelValueLengthLimit: {{ lions_monitoring_label_value_length_limit | default(1000) }}
+
+  # =========================================================================
+  # CONFIGURATION AVANCÉE CONDITIONNELLE
+  # =========================================================================
+{% if lions_environment == 'production' %}
+  # Configuration spécifique à la production
+  # - Intervalles plus fréquents pour la détection rapide des problèmes
+  # - Timeouts plus courts pour éviter les impacts sur les performances
+  # - Limitation stricte des ressources de monitoring
+{% elif lions_environment == 'development' %}
+  # Configuration spécifique au développement
+  # - Monitoring plus verbeux pour le debugging
+  # - Métriques supplémentaires pour l'analyse des performances
+{% endif %}

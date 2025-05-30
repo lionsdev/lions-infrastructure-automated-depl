@@ -1,26 +1,138 @@
 ---
-# Titre: Template de PersistentVolumeClaim Kubernetes pour la registry de conteneurs
-# Description: Définit le PersistentVolumeClaim Kubernetes pour la registry de conteneurs Docker
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-10
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - REGISTRY PERSISTENT VOLUME CLAIM
+# =========================================================================
+# Description: Template Kubernetes PersistentVolumeClaim pour Docker Registry
+# Composant: Container Registry Service
+# Version: 5.0.0
+# Auteur: DevOps Team LIONS
+# Date: {{ ansible_date_time.iso8601 }}
+# Documentation: https://docs.lions.dev/infrastructure/storage/registry
+# =========================================================================
 
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: "{{ app_name | default('registry') }}-data"
-  namespace: "{{ app_namespace | default('registry') }}"
+  name: "{{ lions_registry_service_name | default(lookup('env', 'LIONS_REGISTRY_SERVICE_NAME') | default('registry', true)) }}-data-pvc"
+  namespace: "{{ lions_registry_namespace | default(lookup('env', 'LIONS_REGISTRY_NAMESPACE') | default('development', true)) }}"
   labels:
-    app: "{{ app_name | default('registry') }}"
-    version: "{{ app_version | default('latest') }}"
-    environment: "{{ app_environment | default('development') }}"
-    technology: "registry"
+    # Étiquettes de base LIONS
+    app.kubernetes.io/name: "{{ lions_registry_service_name | default(lookup('env', 'LIONS_REGISTRY_SERVICE_NAME') | default('registry', true)) }}"
+    app.kubernetes.io/instance: "{{ lions_registry_service_name | default(lookup('env', 'LIONS_REGISTRY_SERVICE_NAME') | default('registry', true)) }}-{{ lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT') | default('development', true)) }}"
+    app.kubernetes.io/version: "{{ lions_registry_version | default(lookup('env', 'LIONS_REGISTRY_VERSION') | default('2.8', true)) }}"
+    app.kubernetes.io/component: "storage"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+
+    # Étiquettes LIONS spécifiques
+    lions.dev/environment: "{{ lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT') | default('development', true)) }}"
+    lions.dev/deployment-mode: "{{ lions_deployment_mode | default(lookup('env', 'LIONS_DEPLOYMENT_MODE') | default('single', true)) }}"
+    lions.dev/component-type: "registry"
+    lions.dev/service-tier: "infrastructure"
+    lions.dev/backup-enabled: "{{ lions_backup_enabled | default(lookup('env', 'LIONS_BACKUP_ENABLED') | default('true', true)) }}"
+    lions.dev/monitoring-enabled: "{{ lions_monitoring_enabled | default(lookup('env', 'LIONS_MONITORING_ENABLED') | default('true', true)) }}"
+
+    # Étiquettes opérationnelles
+    ops.lions.dev/provisioned-by: "ansible-{{ ansible_version.full }}"
+    ops.lions.dev/provisioned-at: "{{ ansible_date_time.iso8601 }}"
+    ops.lions.dev/config-version: "{{ lions_config_version | default(lookup('env', 'LIONS_CONFIG_VERSION') | default('5.0.0', true)) }}"
+
+    # Étiquettes de sécurité
+    security.lions.dev/data-classification: "internal"
+    security.lions.dev/encryption-required: "{{ lions_security_encryption_at_rest | default(lookup('env', 'LIONS_SECURITY_ENCRYPTION_AT_REST') | default('true', true)) }}"
+
   annotations:
-    description: "PersistentVolumeClaim pour la registry {{ app_name | default('registry') }} ({{ app_version | default('latest') }}) en environnement {{ app_environment | default('development') }}"
+    # Annotations descriptives
+    description: "PersistentVolumeClaim pour Docker Registry dans l'environnement {{ lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT') | default('development', true)) }}"
+    lions.dev/purpose: "Stockage des images de conteneurs Docker pour l'écosystème LIONS"
+    lions.dev/data-retention-policy: "{{ lions_backup_retention_days | default(lookup('env', 'LIONS_BACKUP_RETENTION_DAYS') | default('30', true)) }} jours"
+
+    # Annotations opérationnelles
+    ops.lions.dev/storage-type: "container-registry"
+    ops.lions.dev/performance-profile: "high-iops"
+    ops.lions.dev/backup-schedule: "{{ lions_backup_schedule | default(lookup('env', 'LIONS_BACKUP_SCHEDULE') | default('0 2 * * *', true)) }}"
+
+    # Annotations de sécurité et conformité
+    security.lions.dev/scan-enabled: "true"
+    security.lions.dev/access-control: "rbac"
+    compliance.lions.dev/gdpr-compliant: "true"
+
+    # Annotations Kubernetes natives
+    volume.beta.kubernetes.io/storage-provisioner: "{{ lions_storage_provisioner | default(lookup('env', 'LIONS_STORAGE_PROVISIONER') | default('rancher.io/local-path', true)) }}"
+
+{% if lions_backup_enabled | default(lookup('env', 'LIONS_BACKUP_ENABLED') | default('true', true)) | bool %}
+    # Annotations de sauvegarde Velero/Restic
+    backup.velero.io/backup-volumes: "registry-data"
+    pre.hook.backup.velero.io/command: '["/bin/bash", "-c", "registry garbage-collect /etc/docker/registry/config.yml"]'
+    pre.hook.backup.velero.io/timeout: "3m"
+{% endif %}
+
+spec:
+  # Mode d'accès au volume
+  accessModes:
+    - ReadWriteOnce
+
+  # Demande de ressources de stockage
+  resources:
+    requests:
+      storage: "{{ lions_registry_storage_size | default(lookup('env', 'LIONS_REGISTRY_STORAGE_SIZE') | default('50Gi', true)) }}"
+
+  # Classe de stockage
+  storageClassName: "{{ lions_storage_class_default | default(lookup('env', 'LIONS_STORAGE_CLASS_DEFAULT') | default('local-path', true)) }}"
+
+{% if lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT') | default('development', true)) == 'production' %}
+  # Configuration spécifique à la production
+  volumeMode: Filesystem
+
+  # Sélecteur pour volumes préexistants (si applicable)
+  selector:
+    matchLabels:
+      lions.dev/environment: "production"
+      lions.dev/component-type: "registry"
+      lions.dev/service-tier: "infrastructure"
+{% endif %}
+
+---
+# =========================================================================
+# BACKUP PVC (Optionnel - Production uniquement)
+# =========================================================================
+{% if lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT') | default('development', true)) == 'production' and lions_backup_enabled | default(lookup('env', 'LIONS_BACKUP_ENABLED') | default('true', true)) | bool %}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: "{{ lions_registry_service_name | default(lookup('env', 'LIONS_REGISTRY_SERVICE_NAME') | default('registry', true)) }}-backup-pvc"
+  namespace: "{{ lions_registry_namespace | default(lookup('env', 'LIONS_REGISTRY_NAMESPACE') | default('development', true)) }}"
+  labels:
+    # Étiquettes de base LIONS
+    app.kubernetes.io/name: "{{ lions_registry_service_name | default(lookup('env', 'LIONS_REGISTRY_SERVICE_NAME') | default('registry', true)) }}-backup"
+    app.kubernetes.io/instance: "{{ lions_registry_service_name | default(lookup('env', 'LIONS_REGISTRY_SERVICE_NAME') | default('registry', true)) }}-backup-{{ lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT') | default('development', true)) }}"
+    app.kubernetes.io/version: "{{ lions_registry_version | default(lookup('env', 'LIONS_REGISTRY_VERSION') | default('2.8', true)) }}"
+    app.kubernetes.io/component: "backup-storage"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+
+    # Étiquettes LIONS spécifiques
+    lions.dev/environment: "{{ lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT') | default('development', true)) }}"
+    lions.dev/component-type: "registry-backup"
+    lions.dev/service-tier: "infrastructure"
+    lions.dev/backup-enabled: "true"
+
+  annotations:
+    description: "PersistentVolumeClaim pour les sauvegardes Docker Registry"
+    lions.dev/purpose: "Stockage des sauvegardes du registre de conteneurs"
+    lions.dev/retention-policy: "{{ lions_backup_retention_days | default(lookup('env', 'LIONS_BACKUP_RETENTION_DAYS') | default('30', true)) }} jours"
+
 spec:
   accessModes:
     - ReadWriteOnce
   resources:
     requests:
-      storage: {{ registry_storage_size | default('10Gi') }}
-  storageClassName: {{ registry_storage_class | default('standard') }}
+      storage: "{{ (lions_registry_storage_size | default(lookup('env', 'LIONS_REGISTRY_STORAGE_SIZE') | default('50Gi', true)) | regex_replace('Gi', '') | int * 0.5) | round | int }}Gi"
+  storageClassName: "{{ lions_backup_storage_class | default(lookup('env', 'LIONS_BACKUP_STORAGE_CLASS') | default('local-path', true)) }}"
+
+  selector:
+    matchLabels:
+      lions.dev/environment: "production"
+      lions.dev/component-type: "registry-backup"
+      lions.dev/service-tier: "infrastructure"
+{% endif %}

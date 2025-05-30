@@ -1,60 +1,512 @@
----
-# Titre: Template d'ingress Kubernetes pour Quarkus avec Traefik
-# Description: Définit l'ingress Kubernetes pour une application Quarkus avec Traefik
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-16
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - QUARKUS TRAEFIK INGRESS TEMPLATE
+# =========================================================================
+# Description: Template Jinja2 pour l'ingress Traefik Kubernetes des applications Quarkus
+# Composant: Quarkus Application Traefik Ingress
+# Version: 5.0.0
+# Maintainer: DevOps LIONS Team
+# Documentation: https://docs.lions.dev/infrastructure/quarkus/traefik-ingress
+# =========================================================================
 
+{% if lions_ingress_enabled | bool and lions_ingress_controller == 'traefik' %}
+---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: "{{ app_name }}"
-  namespace: "{{ app_namespace }}"
+  name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-traefik"
+  namespace: "{{ lions_quarkus_namespace }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "quarkus"
+    # Labels standards Kubernetes
+    app.kubernetes.io/name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
+    app.kubernetes.io/instance: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-{{ lions_environment }}"
+    app.kubernetes.io/version: "{{ lions_quarkus_app_version | default('latest') }}"
+    app.kubernetes.io/component: "backend"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+    
+    # Labels spécifiques LIONS
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/technology: "quarkus"
+    lions.dev/tier: "application"
+    lions.dev/ingress-type: "traefik"
+    
+    # Labels pour l'ingress Traefik
+    ingress.lions.dev/controller: "traefik"
+    ingress.lions.dev/ssl-redirect: "{{ lions_security_tls_enabled | lower }}"
+    ingress.lions.dev/middleware-enabled: "{{ lions_quarkus_traefik_middleware_enabled | default('true') | lower }}"
+    
   annotations:
-    description: "Ingress pour l'application {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
-    {% for key, value in quarkus_ingress_annotations.items() %}
+    # Annotations de documentation
+    description: "Ingress Traefik Quarkus {{ lions_quarkus_app_name | default(lions_quarkus_service_name) }} v{{ lions_quarkus_app_version | default('latest') }}"
+    lions.dev/documentation: "https://docs.lions.dev/infrastructure/quarkus"
+    lions.dev/ingress-checksum: "{{ ansible_date_time.epoch }}"
+    
+    # Annotations pour la configuration
+    ingress.lions.dev/last-updated: "{{ ansible_date_time.iso8601 }}"
+    ingress.lions.dev/environment: "{{ lions_environment }}"
+    ingress.lions.dev/managed-by: "lions-infrastructure-ansible"
+    
+    # =====================================================================
+    # ANNOTATIONS TRAEFIK INGRESS CONTROLLER
+    # =====================================================================
+    
+    # Configuration des entrypoints
+    traefik.ingress.kubernetes.io/router.entrypoints: "{{ 'websecure' if lions_security_tls_enabled | bool else 'web' }}"
+    
+    # Configuration TLS
+{% if lions_security_tls_enabled | bool %}
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.tls.certresolver: "{{ lions_cert_resolver | default('letsencrypt') }}"
+{% if lions_quarkus_tls_options is defined %}
+    traefik.ingress.kubernetes.io/router.tls.options: "{{ lions_quarkus_tls_options }}"
+{% endif %}
+{% endif %}
+    
+    # Configuration des middlewares
+{% if lions_quarkus_traefik_middleware_enabled | default(true) | bool %}
+    traefik.ingress.kubernetes.io/router.middlewares: >-
+      {{ lions_quarkus_namespace }}-{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-headers@kubernetescrd
+{% if lions_quarkus_rate_limiting_enabled | default(false) | bool %},
+      {{ lions_quarkus_namespace }}-{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-ratelimit@kubernetescrd
+{% endif %}
+{% if lions_quarkus_cors_enabled | default(false) | bool %},
+      {{ lions_quarkus_namespace }}-{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-cors@kubernetescrd
+{% endif %}
+{% if lions_quarkus_auth_enabled | default(false) | bool %},
+      {{ lions_quarkus_namespace }}-{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-auth@kubernetescrd
+{% endif %}
+{% if lions_quarkus_strip_prefix_enabled | default(false) | bool %},
+      {{ lions_quarkus_namespace }}-{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-strip-prefix@kubernetescrd
+{% endif %}
+{% if lions_quarkus_custom_middlewares is defined %}
+{% for middleware in lions_quarkus_custom_middlewares %},
+      {{ lions_quarkus_namespace }}-{{ middleware }}@kubernetescrd
+{% endfor %}
+{% endif %}
+{% endif %}
+    
+    # Configuration des priorités
+    traefik.ingress.kubernetes.io/router.priority: "{{ lions_quarkus_traefik_priority | default('100') }}"
+    
+    # Configuration du load balancer
+{% if lions_quarkus_traefik_load_balancer is defined %}
+    traefik.ingress.kubernetes.io/service.loadbalancer.method: "{{ lions_quarkus_traefik_load_balancer }}"
+{% endif %}
+    
+{% if lions_quarkus_traefik_sticky_sessions | default(false) | bool %}
+    # Configuration des sessions persistantes
+    traefik.ingress.kubernetes.io/service.loadbalancer.sticky: "true"
+    traefik.ingress.kubernetes.io/service.loadbalancer.sticky.cookie.name: "{{ lions_quarkus_session_cookie_name | default('JSESSIONID') }}"
+    traefik.ingress.kubernetes.io/service.loadbalancer.sticky.cookie.secure: "{{ lions_security_tls_enabled | lower }}"
+{% endif %}
+    
+{% if lions_cert_manager_enabled | bool %}
+    # Annotations Cert-Manager
+    cert-manager.io/cluster-issuer: "{{ lions_cert_issuer | default('letsencrypt-prod') }}"
+    cert-manager.io/acme-challenge-type: "{{ lions_cert_challenge_type | default('http01') }}"
+{% if lions_cert_challenge_type | default('http01') == 'dns01' %}
+    cert-manager.io/acme-dns01-provider: "{{ lions_dns_provider }}"
+{% endif %}
+{% endif %}
+    
+{% if lions_quarkus_custom_traefik_annotations is defined %}
+    # Annotations personnalisées
+{% for key, value in lions_quarkus_custom_traefik_annotations.items() %}
     {{ key }}: "{{ value }}"
-    {% endfor %}
-    {% if app_path is defined %}
-    traefik.ingress.kubernetes.io/router.middlewares: "{{ app_namespace }}-{{ app_name }}-strip-prefix@kubernetescrd"
-    {% endif %}
+{% endfor %}
+{% endif %}
+
 spec:
-  ingressClassName: traefik
+  # =========================================================================
+  # CONFIGURATION DE L'INGRESS TRAEFIK
+  # =========================================================================
+  
+  # Classe d'ingress Traefik
+  ingressClassName: "{{ lions_traefik_ingress_class | default('traefik') }}"
+  
+{% if lions_security_tls_enabled | bool %}
+  # =========================================================================
+  # CONFIGURATION TLS
+  # =========================================================================
+  
   tls:
     - hosts:
-        - "{{ app_domain }}"
-      secretName: "{{ app_name }}-tls"
+        - "{{ lions_quarkus_hostname }}.{{ lions_dns_full_domain }}"
+{% if lions_quarkus_additional_hostnames is defined %}
+{% for hostname in lions_quarkus_additional_hostnames %}
+        - "{{ hostname }}.{{ lions_dns_full_domain }}"
+{% endfor %}
+{% endif %}
+      secretName: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-tls"
+    
+{% if lions_quarkus_wildcard_tls | default(false) | bool %}
+    # Certificat wildcard
+    - hosts:
+        - "*.{{ lions_dns_full_domain }}"
+      secretName: "{{ lions_dns_domain }}-wildcard-tls"
+{% endif %}
+{% endif %}
+  
+  # =========================================================================
+  # RÈGLES DE ROUTAGE TRAEFIK
+  # =========================================================================
+  
   rules:
-    - host: "{{ app_domain }}"
+    # Hôte principal
+    - host: "{{ lions_quarkus_hostname }}.{{ lions_dns_full_domain }}"
       http:
         paths:
-          - path: "{{ app_path | default('/') }}"
+          # Route principale
+          - path: "{{ lions_quarkus_context_path | default('/') }}"
+            pathType: "{{ lions_quarkus_path_type | default('Prefix') }}"
+            backend:
+              service:
+                name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
+                port:
+                  name: http
+          
+{% if lions_quarkus_health_path_exposed | default(false) | bool and lions_environment != 'production' %}
+          # Route pour les health checks (hors production)
+          - path: "/q/health"
             pathType: Prefix
             backend:
               service:
-                name: "{{ app_name }}"
+                name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
                 port:
                   name: http
+{% endif %}
+          
+{% if lions_monitoring_enabled | bool and lions_quarkus_metrics_path_exposed | default(false) | bool and lions_environment != 'production' %}
+          # Route pour les métriques (hors production)
+          - path: "/metrics"
+            pathType: Prefix
+            backend:
+              service:
+                name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
+                port:
+                  name: http
+{% endif %}
+          
+{% if lions_quarkus_openapi_path_exposed | default(false) | bool and lions_environment == 'development' %}
+          # Route pour OpenAPI (développement seulement)
+          - path: "/openapi"
+            pathType: Prefix
+            backend:
+              service:
+                name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
+                port:
+                  name: http
+          
+          # Route pour Swagger UI (développement seulement)
+          - path: "/swagger-ui"
+            pathType: Prefix
+            backend:
+              service:
+                name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
+                port:
+                  name: http
+{% endif %}
+          
+{% if lions_quarkus_custom_paths is defined %}
+          # Routes personnalisées
+{% for custom_path in lions_quarkus_custom_paths %}
+          - path: "{{ custom_path.path }}"
+            pathType: "{{ custom_path.path_type | default('Prefix') }}"
+            backend:
+              service:
+                name: "{{ custom_path.service_name | default(lions_quarkus_app_name | default(lions_quarkus_service_name)) }}"
+                port:
+                  name: "{{ custom_path.service_port | default('http') }}"
+{% endfor %}
+{% endif %}
+    
+{% if lions_quarkus_additional_hostnames is defined %}
+    # Hôtes additionnels
+{% for hostname in lions_quarkus_additional_hostnames %}
+    - host: "{{ hostname }}.{{ lions_dns_full_domain }}"
+      http:
+        paths:
+          - path: "{{ lions_quarkus_context_path | default('/') }}"
+            pathType: "{{ lions_quarkus_path_type | default('Prefix') }}"
+            backend:
+              service:
+                name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
+                port:
+                  name: http
+{% endfor %}
+{% endif %}
 
-{% if app_path is defined %}
+{% if lions_quarkus_traefik_middleware_enabled | default(true) | bool %}
+---
+# =========================================================================
+# MIDDLEWARE TRAEFIK - HEADERS DE SÉCURITÉ
+# =========================================================================
+
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-headers"
+  namespace: "{{ lions_quarkus_namespace }}"
+  labels:
+    app.kubernetes.io/name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
+    app.kubernetes.io/instance: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-{{ lions_environment }}"
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/technology: "quarkus"
+    lions.dev/middleware-type: "headers"
+  annotations:
+    description: "Middleware Traefik pour les headers de sécurité"
+    lions.dev/middleware-checksum: "{{ ansible_date_time.epoch }}"
+spec:
+  headers:
+    # Headers de sécurité standards
+    customRequestHeaders:
+      X-Forwarded-Proto: "{{ 'https' if lions_security_tls_enabled | bool else 'http' }}"
+      X-Forwarded-Port: "{{ '443' if lions_security_tls_enabled | bool else '80' }}"
+      X-Real-IP: ""
+      X-Forwarded-For: ""
+    
+    customResponseHeaders:
+      X-Frame-Options: "{{ lions_quarkus_x_frame_options | default('SAMEORIGIN') }}"
+      X-Content-Type-Options: "nosniff"
+      X-XSS-Protection: "1; mode=block"
+      Referrer-Policy: "{{ lions_quarkus_referrer_policy | default('strict-origin-when-cross-origin') }}"
+      Permissions-Policy: "{{ lions_quarkus_permissions_policy | default('geolocation=(), microphone=(), camera=()') }}"
+{% if lions_environment == 'production' and lions_security_tls_enabled | bool %}
+      Strict-Transport-Security: "max-age={{ lions_quarkus_hsts_max_age | default('31536000') }}; includeSubDomains; preload"
+{% endif %}
+{% if lions_quarkus_csp_header is defined %}
+      Content-Security-Policy: "{{ lions_quarkus_csp_header }}"
+{% endif %}
+    
+    # Suppression des headers sensibles
+    customRequestHeadersToRemove:
+      - "Server"
+      - "X-Powered-By"
+{% if lions_quarkus_custom_headers_to_remove is defined %}
+{% for header in lions_quarkus_custom_headers_to_remove %}
+      - "{{ header }}"
+{% endfor %}
+{% endif %}
+
+{% if lions_quarkus_rate_limiting_enabled | default(false) | bool %}
+---
+# =========================================================================
+# MIDDLEWARE TRAEFIK - RATE LIMITING
+# =========================================================================
+
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-ratelimit"
+  namespace: "{{ lions_quarkus_namespace }}"
+  labels:
+    app.kubernetes.io/name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
+    app.kubernetes.io/instance: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-{{ lions_environment }}"
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/technology: "quarkus"
+    lions.dev/middleware-type: "ratelimit"
+  annotations:
+    description: "Middleware Traefik pour le rate limiting"
+    lions.dev/middleware-checksum: "{{ ansible_date_time.epoch }}"
+spec:
+  rateLimit:
+    average: {{ lions_quarkus_rate_limit_rps | default('100') }}
+    period: "{{ lions_quarkus_rate_limit_period | default('1m') }}"
+    burst: {{ lions_quarkus_rate_limit_burst | default('50') }}
+{% if lions_quarkus_rate_limit_source_criterion is defined %}
+    sourceCriterion:
+      requestHeaderName: "{{ lions_quarkus_rate_limit_source_criterion }}"
+{% endif %}
+{% endif %}
+
+{% if lions_quarkus_cors_enabled | default(false) | bool %}
+---
+# =========================================================================
+# MIDDLEWARE TRAEFIK - CORS
+# =========================================================================
+
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-cors"
+  namespace: "{{ lions_quarkus_namespace }}"
+  labels:
+    app.kubernetes.io/name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
+    app.kubernetes.io/instance: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-{{ lions_environment }}"
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/technology: "quarkus"
+    lions.dev/middleware-type: "cors"
+  annotations:
+    description: "Middleware Traefik pour CORS"
+    lions.dev/middleware-checksum: "{{ ansible_date_time.epoch }}"
+spec:
+  headers:
+    accessControlAllowMethods:
+{% for method in (lions_quarkus_cors_methods | default('GET,POST,PUT,DELETE,OPTIONS')).split(',') %}
+      - "{{ method.strip() }}"
+{% endfor %}
+    accessControlAllowHeaders:
+{% for header in (lions_quarkus_cors_headers | default('*')).split(',') %}
+      - "{{ header.strip() }}"
+{% endfor %}
+    accessControlAllowOriginList:
+{% for origin in (lions_quarkus_cors_origins | default('*')).split(',') %}
+      - "{{ origin.strip() }}"
+{% endfor %}
+    accessControlAllowCredentials: {{ lions_quarkus_cors_credentials | default('false') }}
+    accessControlMaxAge: {{ lions_quarkus_cors_max_age | default('86400') }}
+{% endif %}
+
+{% if lions_quarkus_auth_enabled | default(false) | bool %}
+---
+# =========================================================================
+# MIDDLEWARE TRAEFIK - AUTHENTIFICATION
+# =========================================================================
+
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-auth"
+  namespace: "{{ lions_quarkus_namespace }}"
+  labels:
+    app.kubernetes.io/name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
+    app.kubernetes.io/instance: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-{{ lions_environment }}"
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/technology: "quarkus"
+    lions.dev/middleware-type: "auth"
+  annotations:
+    description: "Middleware Traefik pour l'authentification"
+    lions.dev/middleware-checksum: "{{ ansible_date_time.epoch }}"
+spec:
+{% if lions_quarkus_auth_type == 'forward' %}
+  forwardAuth:
+    address: "{{ lions_quarkus_auth_forward_url }}"
+    trustForwardHeader: {{ lions_quarkus_auth_trust_forward | default('true') }}
+{% if lions_quarkus_auth_forward_headers is defined %}
+    authRequestHeaders:
+{% for header in lions_quarkus_auth_forward_headers %}
+      - "{{ header }}"
+{% endfor %}
+{% endif %}
+{% elif lions_quarkus_auth_type == 'basic' %}
+  basicAuth:
+    secret: "{{ lions_quarkus_auth_secret_name }}"
+{% endif %}
+{% endif %}
+
+{% if lions_quarkus_strip_prefix_enabled | default(false) | bool %}
+---
+# =========================================================================
+# MIDDLEWARE TRAEFIK - STRIP PREFIX
+# =========================================================================
+
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-strip-prefix"
+  namespace: "{{ lions_quarkus_namespace }}"
+  labels:
+    app.kubernetes.io/name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
+    app.kubernetes.io/instance: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-{{ lions_environment }}"
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/technology: "quarkus"
+    lions.dev/middleware-type: "strip-prefix"
+  annotations:
+    description: "Middleware Traefik pour supprimer le préfixe des URLs"
+    lions.dev/middleware-checksum: "{{ ansible_date_time.epoch }}"
+spec:
+  stripPrefix:
+    prefixes:
+{% if lions_quarkus_strip_prefixes is defined %}
+{% for prefix in lions_quarkus_strip_prefixes %}
+      - "{{ prefix }}"
+{% endfor %}
+{% else %}
+      - "{{ lions_quarkus_context_path | default('/api') }}"
+{% endif %}
+    forceSlash: {{ lions_quarkus_strip_force_slash | default('true') }}
+{% endif %}
+
+{% if lions_quarkus_redirect_scheme_enabled | default(false) | bool and lions_security_tls_enabled | bool %}
+---
+# =========================================================================
+# MIDDLEWARE TRAEFIK - REDIRECT SCHEME
+# =========================================================================
+
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-redirect-scheme"
+  namespace: "{{ lions_quarkus_namespace }}"
+  labels:
+    app.kubernetes.io/name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
+    app.kubernetes.io/instance: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-{{ lions_environment }}"
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/technology: "quarkus"
+    lions.dev/middleware-type: "redirect-scheme"
+  annotations:
+    description: "Middleware Traefik pour rediriger HTTP vers HTTPS"
+    lions.dev/middleware-checksum: "{{ ansible_date_time.epoch }}"
+spec:
+  redirectScheme:
+    scheme: "https"
+    permanent: {{ lions_quarkus_redirect_permanent | default('true') }}
+{% endif %}
+
+{% if lions_quarkus_circuit_breaker_enabled | default(false) | bool %}
+---
+# =========================================================================
+# MIDDLEWARE TRAEFIK - CIRCUIT BREAKER
+# =========================================================================
+
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-circuit-breaker"
+  namespace: "{{ lions_quarkus_namespace }}"
+  labels:
+    app.kubernetes.io/name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
+    app.kubernetes.io/instance: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-{{ lions_environment }}"
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/technology: "quarkus"
+    lions.dev/middleware-type: "circuit-breaker"
+  annotations:
+    description: "Middleware Traefik pour le circuit breaker"
+    lions.dev/middleware-checksum: "{{ ansible_date_time.epoch }}"
+spec:
+  circuitBreaker:
+    expression: "{{ lions_quarkus_circuit_breaker_expression | default('NetworkErrorRatio() > 0.30') }}"
+    checkPeriod: "{{ lions_quarkus_circuit_breaker_check_period | default('10s') }}"
+    fallbackDuration: "{{ lions_quarkus_circuit_breaker_fallback_duration | default('10s') }}"
+    recoveryDuration: "{{ lions_quarkus_circuit_breaker_recovery_duration | default('30s') }}"
+{% endif %}
+
+{% if lions_quarkus_custom_traefik_middlewares is defined %}
+# =========================================================================
+# MIDDLEWARES TRAEFIK PERSONNALISÉS
+# =========================================================================
+
+{% for middleware in lions_quarkus_custom_traefik_middlewares %}
 ---
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
-  name: "{{ app_name }}-strip-prefix"
-  namespace: "{{ app_namespace }}"
+  name: "{{ middleware.name }}"
+  namespace: "{{ lions_quarkus_namespace }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "quarkus"
+    app.kubernetes.io/name: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}"
+    app.kubernetes.io/instance: "{{ lions_quarkus_app_name | default(lions_quarkus_service_name) }}-{{ lions_environment }}"
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/technology: "quarkus"
+    lions.dev/middleware-type: "custom"
+  annotations:
+    description: "Middleware Traefik personnalisé {{ middleware.name }}"
+    lions.dev/middleware-checksum: "{{ ansible_date_time.epoch }}"
 spec:
-  stripPrefix:
-    prefixes:
-      - "{{ app_path }}"
+{{ middleware.spec | to_nice_yaml | indent(2) }}
+{% endfor %}
+{% endif %}
+
+{% endif %}
+
 {% endif %}

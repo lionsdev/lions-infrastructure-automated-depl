@@ -1,54 +1,414 @@
+# =========================================================================
+  # LIONS INFRASTRUCTURE 5.0 - POSTGRESQL CONFIGMAP TEMPLATE
+  # =========================================================================
+  # Description: Template Jinja2 pour la configuration PostgreSQL
+  # Version: 5.0.0
+  # Maintainer: DevOps Team
+  # Documentation: https://docs.lions.dev/infrastructure/postgres/configuration
+  # =========================================================================
+
+---
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ app_name }}-config
-  namespace: {{ app_namespace }}
+  name: {{ lions_postgres_service_name | default('postgresql') }}-config
+  namespace: {{ lions_postgres_namespace | default('database') }}
   labels:
-    app: {{ app_name }}
-    environment: {{ app_environment }}
+    app: {{ lions_postgres_service_name | default('postgresql') }}
+    component: database
+    part-of: lions-infrastructure
+    managed-by: ansible
+    environment: {{ lions_environment | default('development') }}
+    version: "{{ lions_postgres_version | default('15.4') }}"
+  annotations:
+    lions.dev/config-version: "5.0.0"
+    lions.dev/last-updated: "{{ ansible_date_time.iso8601 }}"
+    lions.dev/managed-by: "lions-infrastructure-ansible"
+    lions.dev/backup-enabled: "{{ lions_postgres_backup_enabled | default('true') | string }}"
 data:
+  # =========================================================================
+  # CONFIGURATION POSTGRESQL PRINCIPALE
+  # =========================================================================
   postgresql.conf: |
+    # -------------------------------------------------------------------------
+    # Configuration de connexion et d'authentification
+    # -------------------------------------------------------------------------
     listen_addresses = '*'
-    port = {{ postgres_default_port }}
-    max_connections = {{ postgres_max_connections }}
-    shared_buffers = {{ postgres_shared_buffers }}
-    effective_cache_size = {{ postgres_effective_cache_size }}
-    maintenance_work_mem = {{ postgres_maintenance_work_mem }}
-    checkpoint_completion_target = {{ postgres_checkpoint_completion_target }}
-    wal_buffers = {{ postgres_wal_buffers }}
-    default_statistics_target = {{ postgres_default_statistics_target }}
-    random_page_cost = {{ postgres_random_page_cost }}
-    effective_io_concurrency = {{ postgres_effective_io_concurrency }}
-    work_mem = {{ postgres_work_mem }}
-    min_wal_size = {{ postgres_min_wal_size }}
-    max_wal_size = {{ postgres_max_wal_size }}
-    log_destination = 'stderr'
-    logging_collector = on
-    log_directory = 'pg_log'
-    log_filename = 'postgresql-%Y-%m-%d_%H%M%S.log'
-    log_rotation_age = 1d
-    log_rotation_size = 10MB
-    log_min_duration_statement = 1000
-    log_checkpoints = on
-    log_connections = on
-    log_disconnections = on
-    log_lock_waits = on
-    log_temp_files = 0
-    log_autovacuum_min_duration = 0
-    log_line_prefix = '%t [%p]: [%l-1] user=%u,db=%d,app=%a,client=%h '
-    {% if postgres_ha_enabled | bool %}
-    wal_level = replica
-    max_wal_senders = 10
-    wal_keep_segments = 64
-    hot_standby = on
+    port = {{ lions_postgres_port | default(5432) }}
+    max_connections = {{ lions_postgres_max_connections | default(200) }}
+    superuser_reserved_connections = {{ lions_postgres_superuser_reserved_connections | default(3) }}
+
+    # Configuration SSL/TLS
+    {% if lions_security_tls_enabled | default(true) | bool %}
+    ssl = on
+    ssl_cert_file = '/var/lib/postgresql/server.crt'
+    ssl_key_file = '/var/lib/postgresql/server.key'
+    ssl_ca_file = '/var/lib/postgresql/ca.crt'
+    ssl_ciphers = 'HIGH:MEDIUM:+3DES:!aNULL'
+    ssl_prefer_server_ciphers = on
+    ssl_protocols = 'TLSv1.2,TLSv1.3'
+    {% else %}
+    ssl = off
     {% endif %}
 
-  pg_hba.conf: |
-    # TYPE  DATABASE        USER            ADDRESS                 METHOD
-    local   all             all                                     trust
-    host    all             all             127.0.0.1/32            md5
-    host    all             all             ::1/128                 md5
-    host    all             all             0.0.0.0/0               md5
-    {% if postgres_ha_enabled | bool %}
-    host    replication     {{ postgres_ha_replication_user }}      0.0.0.0/0               md5
+    # -------------------------------------------------------------------------
+    # Configuration mémoire et performance
+    # -------------------------------------------------------------------------
+    # Mémoire partagée (25% de la RAM disponible recommandé)
+    shared_buffers = {{ lions_postgres_shared_buffers | default('256MB') }}
+
+    # Cache effectif (75% de la RAM disponible recommandé)
+    effective_cache_size = {{ lions_postgres_effective_cache_size | default('1GB') }}
+
+    # Mémoire de travail par opération
+    work_mem = {{ lions_postgres_work_mem | default('4MB') }}
+
+    # Mémoire pour les opérations de maintenance
+    maintenance_work_mem = {{ lions_postgres_maintenance_work_mem | default('64MB') }}
+
+    # Configuration du planificateur de requêtes
+    default_statistics_target = {{ lions_postgres_default_statistics_target | default(100) }}
+    random_page_cost = {{ lions_postgres_random_page_cost | default(1.1) }}
+    effective_io_concurrency = {{ lions_postgres_effective_io_concurrency | default(200) }}
+
+    # -------------------------------------------------------------------------
+    # Configuration WAL (Write-Ahead Logging)
+    # -------------------------------------------------------------------------
+    wal_level = {{ 'replica' if (lions_postgres_ha_enabled | default(false) | bool or lions_postgres_backup_enabled | default(true) | bool) else 'minimal' }}
+    wal_buffers = {{ lions_postgres_wal_buffers | default('16MB') }}
+    min_wal_size = {{ lions_postgres_min_wal_size | default('1GB') }}
+    max_wal_size = {{ lions_postgres_max_wal_size | default('4GB') }}
+
+    # Configuration des checkpoints
+    checkpoint_completion_target = {{ lions_postgres_checkpoint_completion_target | default(0.9) }}
+    checkpoint_timeout = {{ lions_postgres_checkpoint_timeout | default('5min') }}
+    checkpoint_flush_after = {{ lions_postgres_checkpoint_flush_after | default('256kB') }}
+
+    # -------------------------------------------------------------------------
+    # Configuration de la réplication (si HA activée)
+    # -------------------------------------------------------------------------
+    {% if lions_postgres_ha_enabled | default(false) | bool %}
+    # Configuration pour le serveur maître
+    max_wal_senders = {{ lions_postgres_max_wal_senders | default(10) }}
+    wal_keep_size = {{ lions_postgres_wal_keep_size | default('1GB') }}
+
+    # Configuration pour les serveurs de réplication
+    hot_standby = on
+    max_standby_archive_delay = {{ lions_postgres_max_standby_archive_delay | default('30s') }}
+    max_standby_streaming_delay = {{ lions_postgres_max_standby_streaming_delay | default('30s') }}
+    wal_receiver_status_interval = {{ lions_postgres_wal_receiver_status_interval | default('10s') }}
+    hot_standby_feedback = on
+
+    # Configuration de synchronisation
+    {% if lions_postgres_synchronous_commit_enabled | default(false) | bool %}
+    synchronous_commit = on
+    synchronous_standby_names = '{{ lions_postgres_synchronous_standby_names | default("standby1") }}'
     {% endif %}
+    {% endif %}
+
+    # -------------------------------------------------------------------------
+    # Configuration du logging et monitoring
+    # -------------------------------------------------------------------------
+    # Destination des logs
+    log_destination = 'stderr,csvlog'
+    logging_collector = on
+    log_directory = '{{ lions_postgres_log_directory | default("pg_log") }}'
+    log_filename = 'postgresql-%Y-%m-%d_%H%M%S.log'
+    log_file_mode = 0600
+
+    # Rotation des logs
+    log_rotation_age = {{ lions_postgres_log_rotation_age | default('1d') }}
+    log_rotation_size = {{ lions_postgres_log_rotation_size | default('10MB') }}
+    log_truncate_on_rotation = off
+
+    # Niveau de logging selon l'environnement
+    {% if lions_environment == 'development' %}
+    log_min_messages = info
+    log_min_error_statement = info
+    log_min_duration_statement = 100
+    {% elif lions_environment == 'staging' %}
+    log_min_messages = warning
+    log_min_error_statement = error
+    log_min_duration_statement = 500
+    {% else %}
+    log_min_messages = warning
+    log_min_error_statement = error
+    log_min_duration_statement = 1000
+    {% endif %}
+
+    # Contenu des logs
+    log_line_prefix = '%t [%p]: [%l-1] user=%u,db=%d,app=%a,client=%h,xid=%x '
+    log_checkpoints = {{ 'on' if (lions_environment == 'development' or lions_postgres_debug_enabled | default(false) | bool) else 'off' }}
+    log_connections = {{ 'on' if (lions_environment == 'development' or lions_postgres_debug_enabled | default(false) | bool) else 'off' }}
+    log_disconnections = {{ 'on' if (lions_environment == 'development' or lions_postgres_debug_enabled | default(false) | bool) else 'off' }}
+    log_lock_waits = on
+    log_temp_files = {{ '0' if (lions_environment == 'development') else '10MB' }}
+    log_autovacuum_min_duration = {{ '0' if (lions_environment == 'development') else '250ms' }}
+    log_statement = '{{ "all" if (lions_environment == "development" and lions_postgres_debug_enabled | default(false) | bool) else "ddl" }}'
+
+    # -------------------------------------------------------------------------
+    # Configuration de l'autovacuum
+    # -------------------------------------------------------------------------
+    autovacuum = on
+    autovacuum_naptime = {{ lions_postgres_autovacuum_naptime | default('1min') }}
+    autovacuum_vacuum_threshold = {{ lions_postgres_autovacuum_vacuum_threshold | default(50) }}
+    autovacuum_analyze_threshold = {{ lions_postgres_autovacuum_analyze_threshold | default(50) }}
+    autovacuum_vacuum_scale_factor = {{ lions_postgres_autovacuum_vacuum_scale_factor | default(0.2) }}
+    autovacuum_analyze_scale_factor = {{ lions_postgres_autovacuum_analyze_scale_factor | default(0.1) }}
+    autovacuum_vacuum_cost_delay = {{ lions_postgres_autovacuum_vacuum_cost_delay | default('20ms') }}
+    autovacuum_vacuum_cost_limit = {{ lions_postgres_autovacuum_vacuum_cost_limit | default(200) }}
+    autovacuum_max_workers = {{ lions_postgres_autovacuum_max_workers | default(3) }}
+
+    # -------------------------------------------------------------------------
+    # Configuration des extensions et modules
+    # -------------------------------------------------------------------------
+    shared_preload_libraries = '{{ lions_postgres_shared_preload_libraries | default("pg_stat_statements") }}'
+
+    # Configuration pg_stat_statements
+    {% if 'pg_stat_statements' in (lions_postgres_shared_preload_libraries | default("pg_stat_statements")) %}
+    pg_stat_statements.track = all
+    pg_stat_statements.max = {{ lions_postgres_pg_stat_statements_max | default(10000) }}
+    pg_stat_statements.track_utility = off
+    {% endif %}
+
+    # -------------------------------------------------------------------------
+    # Configuration spécifique par environnement
+    # -------------------------------------------------------------------------
+    {% if lions_environment == 'development' %}
+    # Configuration développement - Plus permissive et verbeuse
+    log_statement = 'all'
+    log_duration = on
+    track_activities = on
+    track_counts = on
+    track_functions = all
+    {% elif lions_environment == 'production' %}
+    # Configuration production - Optimisée pour les performances
+    track_activities = on
+    track_counts = on
+    track_functions = none
+    {% endif %}
+
+    # -------------------------------------------------------------------------
+    # Configuration de sécurité avancée
+    # -------------------------------------------------------------------------
+    {% if lions_postgres_security_enhanced | default(true) | bool %}
+    # Protection contre les attaques par déni de service
+    idle_in_transaction_session_timeout = {{ lions_postgres_idle_in_transaction_timeout | default('10min') }}
+    lock_timeout = {{ lions_postgres_lock_timeout | default('30s') }}
+    statement_timeout = {{ lions_postgres_statement_timeout | default('0') }}
+
+    # Configuration de chiffrement
+    {% if lions_security_encryption_at_rest | default(true) | bool %}
+    # Note: Le chiffrement au repos nécessite une configuration au niveau du stockage
+    # Cette section est préparée pour les futures extensions de chiffrement
+    {% endif %}
+    {% endif %}
+
+  # =========================================================================
+  # CONFIGURATION D'AUTHENTIFICATION (pg_hba.conf)
+  # =========================================================================
+  pg_hba.conf: |
+    # -------------------------------------------------------------------------
+    # Configuration d'accès PostgreSQL (pg_hba.conf)
+    # -------------------------------------------------------------------------
+    # TYPE  DATABASE        USER            ADDRESS                 METHOD    OPTIONS
+
+    # Connexions locales (socket Unix)
+    local   all             postgres                                peer
+    local   all             all                                     {{ lions_postgres_local_auth_method | default('md5') }}
+
+    # Connexions IPv4 locales
+    host    all             postgres        127.0.0.1/32            reject
+    host    all             all             127.0.0.1/32            {{ lions_postgres_ipv4_auth_method | default('md5') }}
+
+    # Connexions IPv6 locales
+    host    all             all             ::1/128                 {{ lions_postgres_ipv6_auth_method | default('md5') }}
+
+    # -------------------------------------------------------------------------
+    # Connexions réseau selon l'environnement
+    # -------------------------------------------------------------------------
+    {% if lions_environment == 'development' %}
+    # Développement - Plus permissif pour faciliter les tests
+    host    all             all             10.0.0.0/8              md5
+    host    all             all             172.16.0.0/12           md5
+    host    all             all             192.168.0.0/16          md5
+    {% else %}
+    # Production/Staging - Accès restreint aux réseaux Kubernetes
+    host    all             all             {{ lions_k8s_cluster_cidr | default('10.42.0.0/16') }}    md5
+    host    all             all             {{ lions_k8s_service_cidr | default('10.43.0.0/16') }}    md5
+    {% endif %}
+
+    # -------------------------------------------------------------------------
+    # Configuration de la réplication (si HA activée)
+    # -------------------------------------------------------------------------
+    {% if lions_postgres_ha_enabled | default(false) | bool %}
+    # Utilisateur de réplication
+    {% set replication_user = lions_postgres_ha_replication_user | default('replicator') %}
+    {% if lions_environment == 'development' %}
+    host    replication     {{ replication_user }}    10.0.0.0/8              md5
+    host    replication     {{ replication_user }}    172.16.0.0/12           md5
+    host    replication     {{ replication_user }}    192.168.0.0/16          md5
+    {% else %}
+    host    replication     {{ replication_user }}    {{ lions_k8s_cluster_cidr | default('10.42.0.0/16') }}    md5
+    host    replication     {{ replication_user }}    {{ lions_k8s_service_cidr | default('10.43.0.0/16') }}    md5
+    {% endif %}
+    {% endif %}
+
+    # -------------------------------------------------------------------------
+    # Configuration de monitoring
+    # -------------------------------------------------------------------------
+    {% if lions_monitoring_enabled | default(true) | bool %}
+    # Utilisateur de monitoring (Prometheus, etc.)
+    {% set monitoring_user = lions_postgres_monitoring_user | default('monitoring') %}
+    host    all             {{ monitoring_user }}    {{ lions_k8s_cluster_cidr | default('10.42.0.0/16') }}    md5
+    host    all             {{ monitoring_user }}    {{ lions_k8s_service_cidr | default('10.43.0.0/16') }}    md5
+    {% endif %}
+
+    # -------------------------------------------------------------------------
+    # Configuration backup
+    # -------------------------------------------------------------------------
+    {% if lions_postgres_backup_enabled | default(true) | bool %}
+    # Utilisateur de backup
+    {% set backup_user = lions_postgres_backup_user | default('backup') %}
+    host    all             {{ backup_user }}       {{ lions_k8s_cluster_cidr | default('10.42.0.0/16') }}    md5
+    host    all             {{ backup_user }}       {{ lions_k8s_service_cidr | default('10.43.0.0/16') }}    md5
+    {% endif %}
+
+    # -------------------------------------------------------------------------
+    # Règles de sécurité - Rejet explicite
+    # -------------------------------------------------------------------------
+    # Rejeter toutes les autres connexions
+    host    all             all             0.0.0.0/0               reject
+    host    all             all             ::/0                    reject
+
+---
+# =========================================================================
+# CONFIGMAP POUR LES SCRIPTS D'INITIALISATION
+# =========================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ lions_postgres_service_name | default('postgresql') }}-init-scripts
+  namespace: {{ lions_postgres_namespace | default('database') }}
+  labels:
+    app: {{ lions_postgres_service_name | default('postgresql') }}
+    component: database
+    part-of: lions-infrastructure
+    managed-by: ansible
+    environment: {{ lions_environment | default('development') }}
+  annotations:
+    lions.dev/config-version: "5.0.0"
+    lions.dev/script-type: "initialization"
+data:
+  # Script d'initialisation de la base de données
+  01-init-database.sql: |
+    -- =====================================================================
+    -- Script d'initialisation PostgreSQL pour LIONS Infrastructure
+    -- =====================================================================
+
+    -- Création de la base de données principale si elle n'existe pas
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT FROM pg_database WHERE datname = '{{ lions_postgres_database | default("lions_db") }}') THEN
+        CREATE DATABASE "{{ lions_postgres_database | default("lions_db") }}"
+          WITH ENCODING = 'UTF8'
+               LC_COLLATE = 'en_US.UTF-8'
+               LC_CTYPE = 'en_US.UTF-8'
+               TEMPLATE = template0;
+    END IF;
+    END
+    $$;
+    
+    -- Connexion à la base de données pour les opérations suivantes
+    \c {{ lions_postgres_database | default("lions_db") }};
+    
+    -- Activation des extensions nécessaires
+    {% for extension in lions_postgres_extensions | default(['pg_stat_statements', 'uuid-ossp', 'pgcrypto']) %}
+    CREATE EXTENSION IF NOT EXISTS "{{ extension }}";
+    {% endfor %}
+    
+    -- Création des schémas applicatifs
+    {% for schema in lions_postgres_schemas | default(['lions', 'audit', 'monitoring']) %}
+    CREATE SCHEMA IF NOT EXISTS {{ schema }};
+    {% endfor %}
+
+  # Script de création des utilisateurs
+  02-create-users.sql: |
+    -- =====================================================================
+    -- Création des utilisateurs PostgreSQL
+    -- =====================================================================
+
+    {% if lions_postgres_ha_enabled | default(false) | bool %}
+    -- Utilisateur de réplication
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{{ lions_postgres_ha_replication_user | default("replicator") }}') THEN
+    CREATE ROLE "{{ lions_postgres_ha_replication_user | default("replicator") }}" WITH
+        LOGIN
+        REPLICATION
+        CONNECTION LIMIT 5
+        PASSWORD '{{ lions_postgres_ha_replication_password | default("CHANGE_ME") }}';
+    END IF;
+    END
+    $$;
+    {% endif %}
+    
+    {% if lions_monitoring_enabled | default(true) | bool %}
+    -- Utilisateur de monitoring
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{{ lions_postgres_monitoring_user | default("monitoring") }}') THEN
+    CREATE ROLE "{{ lions_postgres_monitoring_user | default("monitoring") }}" WITH
+        LOGIN
+        CONNECTION LIMIT 10
+        PASSWORD '{{ lions_postgres_monitoring_password | default("CHANGE_ME") }}';
+
+    -- Permissions pour le monitoring
+    GRANT CONNECT ON DATABASE "{{ lions_postgres_database | default("lions_db") }}" TO "{{ lions_postgres_monitoring_user | default("monitoring") }}";
+        GRANT USAGE ON SCHEMA public TO "{{ lions_postgres_monitoring_user | default("monitoring") }}";
+        GRANT SELECT ON ALL TABLES IN SCHEMA public TO "{{ lions_postgres_monitoring_user | default("monitoring") }}";
+    GRANT SELECT ON ALL SEQUENCES IN SCHEMA public TO "{{ lions_postgres_monitoring_user | default("monitoring") }}";
+
+    -- Accès aux vues système pour le monitoring
+    GRANT SELECT ON pg_stat_database TO "{{ lions_postgres_monitoring_user | default("monitoring") }}";
+    GRANT SELECT ON pg_stat_user_tables TO "{{ lions_postgres_monitoring_user | default("monitoring") }}";
+    GRANT SELECT ON pg_stat_user_indexes TO "{{ lions_postgres_monitoring_user | default("monitoring") }}";
+    END IF;
+    END
+    $$;
+    {% endif %}
+    
+    {% if lions_postgres_backup_enabled | default(true) | bool %}
+    -- Utilisateur de backup
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{{ lions_postgres_backup_user | default("backup") }}') THEN
+    CREATE ROLE "{{ lions_postgres_backup_user | default("backup") }}" WITH
+        LOGIN
+        CONNECTION LIMIT 5
+        PASSWORD '{{ lions_postgres_backup_password | default("CHANGE_ME") }}';
+
+    -- Permissions pour les backups
+    GRANT CONNECT ON DATABASE "{{ lions_postgres_database | default("lions_db") }}" TO "{{ lions_postgres_backup_user | default("backup") }}";
+        GRANT USAGE ON SCHEMA public TO "{{ lions_postgres_backup_user | default("backup") }}";
+        GRANT SELECT ON ALL TABLES IN SCHEMA public TO "{{ lions_postgres_backup_user | default("backup") }}";
+    END IF;
+    END
+    $$;
+    {% endif %}
+
+  # Script de configuration des paramètres de performance
+  03-performance-tuning.sql: |
+    -- =====================================================================
+    -- Configuration des paramètres de performance spécifiques
+    -- =====================================================================
+
+    -- Configuration des paramètres au niveau session si nécessaire
+    {% if lions_environment == 'development' %}
+    -- Paramètres de développement pour faciliter le débogage
+    ALTER SYSTEM SET log_statement = 'all';
+    ALTER SYSTEM SET log_duration = 'on';
+    {% endif %}
+    
+    -- Rechargement de la configuration
+    SELECT pg_reload_conf();

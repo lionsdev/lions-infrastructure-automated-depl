@@ -1,42 +1,309 @@
 ---
-# Titre: Template d'Ingress Kubernetes pour le service de notification
-# Description: Définit l'Ingress Kubernetes pour le service de notification
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-08
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - TEMPLATE INGRESS NOTIFICATION SERVICE
+# =========================================================================
+# Description: Template d'ingress Kubernetes pour le service de notification avec configuration avancée
+# Version: 5.0.0
+# Auteur: DevOps Team LIONS
+# Date: {{ ansible_date_time.iso8601 }}
+# Documentation: https://docs.lions.dev/infrastructure/notification/ingress
+# =========================================================================
 
+{% if notification_ingress.enabled | default(true) | bool %}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: "{{ app_name }}"
-  namespace: "{{ app_namespace }}"
+  name: "{{ notification_service_name }}-ingress"
+  namespace: "{{ notification_namespace }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "notification-service"
+    # Labels standards Kubernetes
+    app.kubernetes.io/name: "{{ notification_service_name }}"
+    app.kubernetes.io/instance: "{{ notification_service_name }}-{{ notification_environment }}"
+    app.kubernetes.io/version: "{{ notification_service_meta.version }}"
+    app.kubernetes.io/component: "ingress"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    app.kubernetes.io/managed-by: "ansible"
+
+    # Labels personnalisés LIONS
+    lions.dev/environment: "{{ notification_environment }}"
+    lions.dev/deployment-mode: "{{ notification_deployment.mode | default('rolling') }}"
+    lions.dev/service-type: "communication"
+    lions.dev/backup-enabled: "{{ notification_storage.backup_enabled | default('false') | string }}"
+    lions.dev/monitoring-enabled: "{{ notification_monitoring.enabled | string }}"
+    lions.dev/security-level: "{{ notification_security.level | default('standard') }}"
+    lions.dev/config-version: "{{ notification_service_meta.config_version | default('5.0.0') }}"
+
+    # Labels pour le monitoring et les alertes
+    prometheus.io/scrape: "true"
+    grafana.dashboard: "notification-service"
+
   annotations:
-    description: "Ingress pour le service de notification {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    # Annotations de documentation
+    description: "Ingress pour le service de notification {{ notification_service_name }} v{{ notification_service_meta.version }} en environnement {{ notification_environment }}"
+    lions.dev/documentation: "https://docs.lions.dev/infrastructure/notification"
+    lions.dev/maintainer: "{{ notification_service_meta.maintainer | default('devops@lions.dev') }}"
+    lions.dev/created-by: "ansible-lions-infrastructure"
+    lions.dev/last-updated: "{{ ansible_date_time.iso8601 }}"
+
+    # Configuration Ingress Controller dynamique
+{% if notification_ingress.class == 'traefik' %}
+    # Configuration Traefik - Routage de base
+    traefik.ingress.kubernetes.io/router.entrypoints: "{{ 'websecure' if notification_tls.enabled else 'web' }}"
+    traefik.ingress.kubernetes.io/router.rule: "Host(`{{ notification_dns.full_domain }}`)"
+    traefik.ingress.kubernetes.io/router.priority: "{{ notification_ingress.priority | default('100') }}"
+
+    # Configuration Traefik - TLS et sécurité
+{% if notification_tls.enabled %}
+    traefik.ingress.kubernetes.io/router.tls: "true"
+{% if notification_tls.provider == 'letsencrypt' %}
+    traefik.ingress.kubernetes.io/router.tls.certresolver: "{{ 'letsencrypt-staging' if notification_tls.staging else 'letsencrypt-prod' }}"
+{% endif %}
+    traefik.ingress.kubernetes.io/router.middlewares: "{{ notification_namespace }}-{{ notification_service_name }}-security@kubernetescrd"
+{% endif %}
+
+    # Configuration Traefik - Timeouts et buffers
+    traefik.ingress.kubernetes.io/router.timeout: "{{ notification_ingress.timeout | default('300') }}s"
+    traefik.ingress.kubernetes.io/service.sticky: "{{ notification_ingress.sticky_sessions | default('false') }}"
+
+    # Configuration Traefik - Headers de sécurité
+    traefik.ingress.kubernetes.io/router.middlewares: >-
+      {{ notification_namespace }}-security-headers@kubernetescrd,
+      {{ notification_namespace }}-rate-limit@kubernetescrd
+{% if notification_tls.enabled %}
+        ,{{ notification_namespace }}-redirect-https@kubernetescrd
+{% endif %}
+{% if notification_security.authentication.enabled | default(false) %}
+        ,{{ notification_namespace }}-basic-auth@kubernetescrd
+{% endif %}
+
+{% elif notification_ingress.class == 'nginx' %}
+    # Configuration NGINX Ingress
     kubernetes.io/ingress.class: "nginx"
-    cert-manager.io/cluster-issuer: "letsencrypt-{{ app_environment }}"
-    nginx.ingress.kubernetes.io/ssl-redirect: "true"
-    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
-    nginx.ingress.kubernetes.io/proxy-connect-timeout: "60"
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
-    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+    nginx.ingress.kubernetes.io/ssl-redirect: "{{ notification_tls.enabled | string | lower }}"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "{{ notification_tls.force_redirect | default(notification_tls.enabled) | string | lower }}"
+    
+    # Configuration des timeouts
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "{{ notification_ingress.timeouts.connect | default('60') }}"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "{{ notification_ingress.timeouts.read | default('300') }}"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "{{ notification_ingress.timeouts.send | default('300') }}"
+    
+    # Configuration des tailles de buffer
+    nginx.ingress.kubernetes.io/proxy-body-size: "{{ notification_ingress.max_body_size | default('10m') }}"
+    nginx.ingress.kubernetes.io/proxy-buffer-size: "{{ notification_ingress.buffer_size | default('16k') }}"
+    
+    # Rate limiting
+{% if notification_security.rate_limiting.enabled %}
+    nginx.ingress.kubernetes.io/rate-limit: "{{ notification_security.rate_limiting.requests_per_minute }}"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+{% endif %}
+
+    # Configuration TLS
+{% if notification_tls.enabled %}
+    cert-manager.io/cluster-issuer: "{{ notification_tls.issuer | default('letsencrypt-' + notification_environment) }}"
+{% endif %}
+
+{% endif %}
+
+    # Configuration pour le monitoring
+{% if notification_monitoring.enabled %}
+    prometheus.io/probe: "true"
+    prometheus.io/path: "{{ notification_endpoints.health }}"
+    prometheus.io/module: "http_2xx"
+{% endif %}
+
+    # Configuration spécifique aux notifications
+    notification.lions.dev/version: "{{ notification_service_meta.version }}"
+    notification.lions.dev/api-version: "{{ notification_api.version | default('v1') }}"
+    notification.lions.dev/channels: "{{ notification_app_config.channels.keys() | join(',') }}"
+
+    # Configuration du cache
+{% if notification_ingress.cache.enabled | default(true) %}
+    cache-control: "{{ notification_ingress.cache.control | default('public, max-age=300') }}"
+{% endif %}
+
+    # Configuration CORS pour les API
+{% if notification_security.cors.enabled | default(false) %}
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "{{ notification_security.cors.allowed_origins | join(',') }}"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "{{ notification_security.cors.allowed_methods | default(['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']) | join(',') }}"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "{{ notification_security.cors.allowed_headers | default(['Content-Type', 'Authorization', 'X-API-Key']) | join(',') }}"
+{% endif %}
+
+    # Configuration de sécurité renforcée
+{% if notification_environment == 'production' %}
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers "X-Frame-Options: DENY";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      more_set_headers "X-XSS-Protection: 1; mode=block";
+      more_set_headers "Referrer-Policy: strict-origin-when-cross-origin";
+      more_set_headers "Content-Security-Policy: default-src 'self'";
+{% endif %}
+
+    # Annotations personnalisées supplémentaires
+{% for key, value in notification_ingress.annotations | default({}).items() %}
+    {{ key }}: "{{ value }}"
+{% endfor %}
+
 spec:
+{% if notification_ingress.class is defined %}
+  ingressClassName: "{{ notification_ingress.class }}"
+{% endif %}
+
+{% if notification_tls.enabled %}
   tls:
     - hosts:
-        - "{{ app_name }}.{{ app_environment }}.lions.dev"
-      secretName: "{{ app_name }}-tls"
+        - "{{ notification_dns.full_domain }}"
+{% if notification_dns.additional_domains is defined and notification_dns.additional_domains | length > 0 %}
+{% for domain in notification_dns.additional_domains %}
+        - "{{ domain }}"
+{% endfor %}
+{% endif %}
+      secretName: "{{ notification_service_name }}-tls"
+{% if notification_tls.additional_secrets is defined and notification_tls.additional_secrets | length > 0 %}
+{% for secret in notification_tls.additional_secrets %}
+    - hosts:
+        - "{{ secret.host }}"
+      secretName: "{{ secret.name }}"
+{% endfor %}
+{% endif %}
+{% endif %}
+
   rules:
-    - host: "{{ app_name }}.{{ app_environment }}.lions.dev"
+    - host: "{{ notification_dns.full_domain }}"
+      http:
+        paths:
+          # Endpoint principal de l'API
+          - path: {{ notification_ingress.paths.api | default('/api') }}
+            pathType: Prefix
+            backend:
+              service:
+                name: "{{ notification_service_name }}"
+                port:
+                  name: http
+
+          # Endpoint de health check
+          - path: {{ notification_endpoints.health }}
+            pathType: Exact
+            backend:
+              service:
+                name: "{{ notification_service_name }}"
+                port:
+                  name: http
+
+{% if notification_monitoring.enabled %}
+          # Endpoint des métriques (si exposé publiquement)
+{% if notification_monitoring.public_metrics | default(false) %}
+          - path: {{ notification_endpoints.metrics }}
+            pathType: Exact
+            backend:
+              service:
+                name: "{{ notification_service_name }}"
+                port:
+{% if notification_monitoring.prometheus.separate_port %}
+                  name: metrics
+{% else %}
+                  name: http
+{% endif %}
+{% endif %}
+{% endif %}
+
+{% if notification_management.enabled and notification_management.public_endpoints | default(false) %}
+          # Endpoints de management (si exposés publiquement)
+          - path: {{ notification_endpoints.management }}
+            pathType: Prefix
+            backend:
+              service:
+                name: "{{ notification_service_name }}"
+                port:
+{% if notification_management.separate_port %}
+                  name: management
+{% else %}
+                  name: http
+{% endif %}
+{% endif %}
+
+{% if notification_app_config.channels.webhook.enabled and notification_app_config.channels.webhook.public_endpoint | default(false) %}
+          # Endpoint pour recevoir les webhooks
+          - path: {{ notification_app_config.channels.webhook.path | default('/webhooks') }}
+            pathType: Prefix
+            backend:
+              service:
+                name: "{{ notification_service_name }}"
+                port:
+                  name: http
+{% endif %}
+
+          # Interface web (si activée)
+{% if notification_web_ui.enabled | default(false) %}
+          - path: {{ notification_web_ui.path | default('/') }}
+            pathType: Prefix
+            backend:
+              service:
+                name: "{{ notification_service_name }}"
+                port:
+                  name: http
+{% endif %}
+
+{% if notification_dns.additional_domains is defined and notification_dns.additional_domains | length > 0 %}
+{% for domain in notification_dns.additional_domains %}
+    - host: "{{ domain }}"
       http:
         paths:
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: "{{ app_name }}"
+                name: "{{ notification_service_name }}"
                 port:
                   name: http
+{% endfor %}
+{% endif %}
+
+---
+# =========================================================================
+# INGRESS SÉPARÉ POUR LES MÉTRIQUES (si configuré)
+# =========================================================================
+{% if notification_monitoring.separate_ingress | default(false) | bool %}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: "{{ notification_service_name }}-metrics-ingress"
+  namespace: "{{ notification_namespace }}"
+  labels:
+    app.kubernetes.io/name: "{{ notification_service_name }}-metrics"
+    app.kubernetes.io/instance: "{{ notification_service_name }}-{{ notification_environment }}"
+    app.kubernetes.io/component: "metrics-ingress"
+    app.kubernetes.io/part-of: "lions-infrastructure"
+    lions.dev/environment: "{{ notification_environment }}"
+    lions.dev/service-type: "monitoring"
+  annotations:
+    description: "Ingress séparé pour les métriques du service de notification"
+{% if notification_monitoring.metrics_auth.enabled | default(true) %}
+    nginx.ingress.kubernetes.io/auth-type: basic
+    nginx.ingress.kubernetes.io/auth-secret: "{{ notification_monitoring.metrics_auth.secret }}"
+    nginx.ingress.kubernetes.io/auth-realm: "Notification Service Metrics"
+{% endif %}
+spec:
+{% if notification_ingress.class is defined %}
+  ingressClassName: "{{ notification_ingress.class }}"
+{% endif %}
+{% if notification_tls.enabled %}
+  tls:
+    - hosts:
+        - "{{ notification_monitoring.metrics_domain | default('metrics-' + notification_service_name + '.' + notification_dns.domain_base) }}"
+      secretName: "{{ notification_service_name }}-metrics-tls"
+{% endif %}
+  rules:
+    - host: "{{ notification_monitoring.metrics_domain | default('metrics-' + notification_service_name + '.' + notification_dns.domain_base) }}"
+      http:
+        paths:
+          - path: {{ notification_endpoints.metrics }}
+            pathType: Exact
+            backend:
+              service:
+                name: "{{ notification_service_name }}{% if notification_monitoring.prometheus.separate_service %}-metrics{% endif %}"
+                port:
+                  name: metrics
+{% endif %}
+
+{% endif %}

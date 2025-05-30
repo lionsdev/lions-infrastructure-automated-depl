@@ -1,78 +1,449 @@
 ---
-# Titre: Variables pour le déploiement de la registry de conteneurs
-# Description: Variables spécifiques à la registry de conteneurs Docker
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-10
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - REGISTRY CONTAINER VARIABLES
+# =========================================================================
+# Description: Variables pour le déploiement de la registry de conteneurs Docker
+# Version: 5.0.0
+# Date: "{{ ansible_date_time.date }}"
+# Maintainer: DevOps Team LIONS
+# Documentation: https://docs.lions.dev/infrastructure/services/registry
+# =========================================================================
 
-# Configuration par défaut pour la registry
-registry_version: "2.8.2"
-registry_default_port: 5000
-registry_debug_port: 5001
+# =========================================================================
+# MÉTADONNÉES DU RÔLE
+# =========================================================================
+registry_role_version: "5.0.0"
+registry_role_author: "LIONS DevOps Team"
+registry_role_description: "Déploiement sécurisé de la registry de conteneurs Docker"
+registry_role_documentation: "https://docs.lions.dev/services/registry"
+
+# =========================================================================
+# CONFIGURATION DE BASE - VARIABLES D'ENVIRONNEMENT
+# =========================================================================
+# Configuration héritée des variables d'environnement LIONS
+registry_enabled: "{{ lookup('env', 'LIONS_REGISTRY_ENABLED') | default('true') | bool }}"
+registry_version: "{{ lookup('env', 'LIONS_REGISTRY_VERSION') | default('2.8.2') }}"
+registry_namespace: "{{ lookup('env', 'LIONS_REGISTRY_NAMESPACE') | default('development') }}"
+registry_service_name: "{{ lookup('env', 'LIONS_REGISTRY_SERVICE_NAME') | default('registry') }}"
+registry_app_name: "{{ registry_service_name }}"
+registry_component: "container-registry"
+registry_part_of: "lions-infrastructure"
+
+# =========================================================================
+# CONFIGURATION RÉSEAU ET PORTS
+# =========================================================================
+registry_port: "{{ lookup('env', 'LIONS_REGISTRY_PORT') | default('5000') | int }}"
+registry_debug_port: "{{ registry_port | int + 1 }}"
+registry_metrics_port: "{{ registry_port | int + 100 }}"
+registry_health_port: "{{ registry_port }}"
+
+# Configuration des endpoints
 registry_health_path: "/v2/"
 registry_metrics_path: "/metrics"
-registry_auth_secret: "registry-auth"
-registry_http_secret: "changeme"  # À remplacer par une valeur sécurisée en production
-registry_log_level: "info"
-registry_init_delay: 30
+registry_debug_path: "/debug/vars"
+registry_catalog_path: "/v2/_catalog"
 
-# Configuration des sondes de disponibilité
-registry_readiness_probe:
-  httpGet:
-    path: /v2/
-    port: 5000
-  initialDelaySeconds: 10
-  timeoutSeconds: 5
-  periodSeconds: 10
-  successThreshold: 1
-  failureThreshold: 3
+# Configuration de l'exposition
+registry_service_type: "ClusterIP"
+registry_external_port: "{{ registry_port }}"
+registry_target_port: "{{ registry_port }}"
 
-registry_liveness_probe:
-  httpGet:
-    path: /v2/
-    port: 5000
-  initialDelaySeconds: 20
-  timeoutSeconds: 5
-  periodSeconds: 10
-  successThreshold: 1
-  failureThreshold: 3
+# =========================================================================
+# CONFIGURATION DOMAINE ET INGRESS
+# =========================================================================
+registry_domain_base: "{{ lookup('env', 'LIONS_DNS_DOMAIN_BASE') | default('lions.local') }}"
+registry_subdomain: "registry"
+registry_full_domain: "{{ registry_subdomain }}.{{ lookup('env', 'LIONS_DNS_FULL_DOMAIN') | default('dev.lions.local') }}"
 
-# Configuration du monitoring
-registry_prometheus_port: 5000
-registry_prometheus_path: "/metrics"
-registry_prometheus_scrape: true
+# Configuration TLS
+registry_tls_enabled: "{{ lookup('env', 'LIONS_SECURITY_TLS_ENABLED') | default('true') | bool }}"
+registry_tls_secret_name: "{{ registry_service_name }}-tls"
+registry_tls_issuer: "letsencrypt-{{ 'prod' if (lookup('env', 'LIONS_SECURITY_TLS_STAGING') | default('true') | bool == false) else 'staging' }}"
 
-# Configuration des ressources
-registry_resources:
+# =========================================================================
+# CONFIGURATION DE SÉCURITÉ
+# =========================================================================
+# Authentification et autorisation
+registry_auth_enabled: true
+registry_auth_type: "htpasswd"  # htpasswd|token|silly
+registry_auth_secret_name: "{{ registry_service_name }}-auth"
+registry_auth_realm: "Registry Realm"
+
+# Configuration des secrets
+registry_http_secret_name: "{{ registry_service_name }}-http-secret"
+registry_http_secret_value: "{{ lookup('env', 'REGISTRY_HTTP_SECRET') | default(lookup('password', '/dev/null chars=ascii_letters,digits length=32')) }}"
+
+# Configuration de la sécurité du pod
+registry_security_context:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+registry_container_security_context:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  capabilities:
+    drop:
+      - ALL
+
+# =========================================================================
+# CONFIGURATION STOCKAGE
+# =========================================================================
+registry_persistent_storage: "{{ lookup('env', 'LIONS_REGISTRY_ENABLED') | default('true') | bool }}"
+registry_storage_size: "{{ lookup('env', 'LIONS_REGISTRY_STORAGE_SIZE') | default('50Gi') }}"
+registry_storage_class: "{{ lookup('env', 'LIONS_STORAGE_CLASS_DEFAULT') | default('local-path') }}"
+registry_storage_access_modes:
+  - ReadWriteOnce
+registry_storage_mount_path: "/var/lib/registry"
+registry_storage_subpath: "data"
+
+# Configuration du stockage temporaire
+registry_temp_storage_enabled: true
+registry_temp_storage_size: "5Gi"
+registry_temp_storage_mount_path: "/tmp"
+
+# =========================================================================
+# CONFIGURATION DES RESSOURCES PAR ENVIRONNEMENT
+# =========================================================================
+# Détection automatique de l'environnement
+registry_environment: "{{ lookup('env', 'LIONS_ENVIRONMENT') | default('development') }}"
+
+# Configuration des ressources basée sur l'environnement
+registry_resources_config:
   development:
     requests:
-      cpu: "100m"
-      memory: "256Mi"
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_CPU_REQUEST') | default('100m') }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_MEMORY_REQUEST') | default('256Mi') }}"
     limits:
-      cpu: "500m"
-      memory: "512Mi"
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_CPU_LIMIT') | default('500m') }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_MEMORY_LIMIT') | default('512Mi') }}"
   staging:
     requests:
-      cpu: "200m"
-      memory: "512Mi"
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_CPU_REQUEST') | default('200m') }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_MEMORY_REQUEST') | default('512Mi') }}"
     limits:
-      cpu: "1000m"
-      memory: "1Gi"
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_CPU_LIMIT') | default('1000m') }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_MEMORY_LIMIT') | default('1Gi') }}"
   production:
     requests:
-      cpu: "500m"
-      memory: "1Gi"
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_CPU_REQUEST') | default('500m') }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_MEMORY_REQUEST') | default('1Gi') }}"
     limits:
-      cpu: "2000m"
-      memory: "2Gi"
+      cpu: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_CPU_LIMIT') | default('2000m') }}"
+      memory: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_MEMORY_LIMIT') | default('2Gi') }}"
 
-# Configuration de la haute disponibilité
-registry_replicas:
+# Ressources appliquées pour l'environnement actuel
+registry_resources: "{{ registry_resources_config[registry_environment] }}"
+
+# =========================================================================
+# CONFIGURATION HAUTE DISPONIBILITÉ
+# =========================================================================
+# Configuration des répliques par environnement
+registry_replicas_config:
   development: 1
   staging: 2
   production: 3
 
-# Configuration du stockage
-registry_persistent_storage: true
-registry_storage_size: "10Gi"
-registry_storage_class: "local-path"
+registry_replicas: "{{ registry_replicas_config[registry_environment] }}"
+
+# Configuration de l'anti-affinité pour la production
+registry_pod_anti_affinity_enabled: "{{ registry_environment == 'production' }}"
+registry_pod_anti_affinity:
+  preferredDuringSchedulingIgnoredDuringExecution:
+    - weight: 100
+      podAffinityTerm:
+        labelSelector:
+          matchExpressions:
+            - key: app.kubernetes.io/name
+              operator: In
+              values:
+                - "{{ registry_service_name }}"
+        topologyKey: kubernetes.io/hostname
+
+# =========================================================================
+# CONFIGURATION DES SONDES DE SANTÉ
+# =========================================================================
+# Configuration des timeouts basée sur l'environnement
+registry_probe_timeouts:
+  development:
+    initial_delay: 10
+    timeout: 5
+    period: 10
+  staging:
+    initial_delay: 15
+    timeout: 10
+    period: 15
+  production:
+    initial_delay: 20
+    timeout: 15
+    period: 20
+
+# Sonde de disponibilité (Readiness)
+registry_readiness_probe:
+  httpGet:
+    path: "{{ registry_health_path }}"
+    port: "{{ registry_health_port }}"
+    scheme: HTTP
+  initialDelaySeconds: "{{ registry_probe_timeouts[registry_environment].initial_delay }}"
+  timeoutSeconds: "{{ registry_probe_timeouts[registry_environment].timeout }}"
+  periodSeconds: "{{ registry_probe_timeouts[registry_environment].period }}"
+  successThreshold: 1
+  failureThreshold: 3
+
+# Sonde de vivacité (Liveness)
+registry_liveness_probe:
+  httpGet:
+    path: "{{ registry_health_path }}"
+    port: "{{ registry_health_port }}"
+    scheme: HTTP
+  initialDelaySeconds: "{{ (registry_probe_timeouts[registry_environment].initial_delay | int) * 2 }}"
+  timeoutSeconds: "{{ registry_probe_timeouts[registry_environment].timeout }}"
+  periodSeconds: "{{ (registry_probe_timeouts[registry_environment].period | int) * 2 }}"
+  successThreshold: 1
+  failureThreshold: 3
+
+# Sonde de démarrage (Startup)
+registry_startup_probe:
+  httpGet:
+    path: "{{ registry_health_path }}"
+    port: "{{ registry_health_port }}"
+    scheme: HTTP
+  initialDelaySeconds: 5
+  timeoutSeconds: 5
+  periodSeconds: 5
+  successThreshold: 1
+  failureThreshold: 30
+
+# =========================================================================
+# CONFIGURATION DU MONITORING
+# =========================================================================
+registry_monitoring_enabled: "{{ lookup('env', 'LIONS_MONITORING_ENABLED') | default('true') | bool }}"
+registry_metrics_enabled: "{{ registry_monitoring_enabled }}"
+
+# Configuration Prometheus
+registry_prometheus_config:
+  enabled: "{{ registry_monitoring_enabled }}"
+  port: "{{ registry_metrics_port }}"
+  path: "{{ registry_metrics_path }}"
+  scrape_interval: "30s"
+  scrape_timeout: "10s"
+
+# Configuration ServiceMonitor
+registry_service_monitor:
+  enabled: "{{ registry_monitoring_enabled }}"
+  namespace: "{{ registry_namespace }}"
+  labels:
+    app.kubernetes.io/name: "{{ registry_service_name }}"
+    app.kubernetes.io/component: "{{ registry_component }}"
+    app.kubernetes.io/part-of: "{{ registry_part_of }}"
+  endpoints:
+    - port: "{{ registry_port }}"
+      path: "{{ registry_metrics_path }}"
+      interval: "{{ registry_prometheus_config.scrape_interval }}"
+      scrapeTimeout: "{{ registry_prometheus_config.scrape_timeout }}"
+
+# =========================================================================
+# CONFIGURATION DES LOGS
+# =========================================================================
+registry_log_level: "{{ lookup('env', 'LIONS_LOG_LEVEL') | default('info') | lower }}"
+registry_log_format: "{{ lookup('env', 'LIONS_LOG_FORMAT') | default('json') }}"
+
+# Configuration des logs structurés
+registry_logging_config:
+  level: "{{ registry_log_level }}"
+  formatter: "{{ registry_log_format }}"
+  fields:
+    service: "{{ registry_service_name }}"
+    version: "{{ registry_version }}"
+    environment: "{{ registry_environment }}"
+
+# =========================================================================
+# CONFIGURATION DE LA REGISTRY
+# =========================================================================
+# Configuration du stockage de la registry
+registry_storage_config:
+  cache:
+    layerinfo: "inmemory"
+  filesystem:
+    rootdirectory: "{{ registry_storage_mount_path }}"
+  maintenance:
+    uploadpurging:
+      enabled: true
+      age: "168h"  # 1 semaine
+      interval: "24h"
+      dryrun: false
+  delete:
+    enabled: true
+
+# Configuration HTTP
+registry_http_config:
+  addr: "0.0.0.0:{{ registry_port }}"
+  secret: "{{ registry_http_secret_value }}"
+  debug:
+    addr: "0.0.0.0:{{ registry_debug_port }}"
+    prometheus:
+      enabled: "{{ registry_metrics_enabled }}"
+      path: "{{ registry_metrics_path }}"
+  headers:
+    X-Content-Type-Options:
+      - nosniff
+    X-Frame-Options:
+      - DENY
+    X-XSS-Protection:
+      - "1; mode=block"
+    Strict-Transport-Security:
+      - "max-age=31536000; includeSubDomains"
+
+# Configuration de la santé
+registry_health_config:
+  storagedriver:
+    enabled: true
+    interval: "10s"
+    threshold: 3
+
+# =========================================================================
+# CONFIGURATION DE L'AUTO-SCALING
+# =========================================================================
+registry_autoscaling_enabled: "{{ lookup('env', 'LIONS_AUTOSCALING_ENABLED') | default('true') | bool and registry_environment != 'development' }}"
+
+registry_hpa_config:
+  enabled: "{{ registry_autoscaling_enabled }}"
+  min_replicas: "{{ registry_replicas }}"
+  max_replicas: "{{ lookup('env', 'LIONS_AUTOSCALING_MAX_REPLICAS') | default('10') | int }}"
+  target_cpu_utilization: "{{ lookup('env', 'LIONS_AUTOSCALING_CPU_TARGET') | default('70') | int }}"
+  target_memory_utilization: "{{ lookup('env', 'LIONS_AUTOSCALING_MEMORY_TARGET') | default('80') | int }}"
+
+# =========================================================================
+# CONFIGURATION DES POLITIQUES RÉSEAU
+# =========================================================================
+registry_network_policies_enabled: "{{ lookup('env', 'LIONS_SECURITY_NETWORK_POLICIES') | default('true') | bool }}"
+
+registry_network_policy_config:
+  enabled: "{{ registry_network_policies_enabled }}"
+  ingress_rules:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: "{{ lookup('env', 'LIONS_GITEA_NAMESPACE') | default('development') }}"
+        - namespaceSelector:
+            matchLabels:
+              name: "{{ lookup('env', 'LIONS_MONITORING_NAMESPACE') | default('monitoring') }}"
+        - namespaceSelector:
+            matchLabels:
+              name: "kube-system"
+      ports:
+        - protocol: TCP
+          port: "{{ registry_port }}"
+        - protocol: TCP
+          port: "{{ registry_metrics_port }}"
+  egress_rules:
+    - to: []
+      ports:
+        - protocol: TCP
+          port: 53
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 80
+
+# =========================================================================
+# CONFIGURATION DES LABELS ET ANNOTATIONS
+# =========================================================================
+# Labels standard Kubernetes
+registry_labels:
+  app.kubernetes.io/name: "{{ registry_service_name }}"
+  app.kubernetes.io/instance: "{{ registry_service_name }}-{{ registry_environment }}"
+  app.kubernetes.io/version: "{{ registry_version }}"
+  app.kubernetes.io/component: "{{ registry_component }}"
+  app.kubernetes.io/part-of: "{{ registry_part_of }}"
+  app.kubernetes.io/managed-by: "ansible"
+  lions.dev/environment: "{{ registry_environment }}"
+  lions.dev/service-type: "infrastructure"
+
+# Annotations
+registry_annotations:
+  lions.dev/deployed-by: "ansible"
+  lions.dev/deployment-date: "{{ ansible_date_time.iso8601 }}"
+  lions.dev/config-version: "{{ registry_role_version }}"
+  lions.dev/documentation: "{{ registry_role_documentation }}"
+
+# =========================================================================
+# CONFIGURATION DES VOLUMES TEMPORAIRES
+# =========================================================================
+registry_tmp_volumes:
+  - name: tmp-volume
+    emptyDir:
+      sizeLimit: "{{ registry_temp_storage_size }}"
+  - name: var-tmp-volume
+    emptyDir:
+      sizeLimit: "1Gi"
+
+registry_tmp_volume_mounts:
+  - name: tmp-volume
+    mountPath: "/tmp"
+    readOnly: false
+  - name: var-tmp-volume
+    mountPath: "/var/tmp"
+    readOnly: false
+
+# =========================================================================
+# CONFIGURATION DE VALIDATION
+# =========================================================================
+# Variables requises pour la validation
+registry_required_vars:
+  - registry_version
+  - registry_namespace
+  - registry_service_name
+  - registry_port
+  - registry_storage_size
+  - registry_storage_class
+
+# Configuration de validation de l'environnement
+registry_validation_config:
+  check_storage_class: true
+  check_namespace_exists: true
+  check_tls_issuer: "{{ registry_tls_enabled }}"
+  check_monitoring_namespace: "{{ registry_monitoring_enabled }}"
+
+# =========================================================================
+# CONFIGURATION BACKUP
+# =========================================================================
+registry_backup_enabled: "{{ lookup('env', 'LIONS_BACKUP_ENABLED') | default('true') | bool }}"
+registry_backup_config:
+  enabled: "{{ registry_backup_enabled }}"
+  schedule: "{{ lookup('env', 'LIONS_BACKUP_SCHEDULE') | default('0 2 * * *') }}"
+  retention_days: "{{ lookup('env', 'LIONS_BACKUP_RETENTION_DAYS') | default('30') | int }}"
+  storage_class: "{{ lookup('env', 'LIONS_BACKUP_STORAGE_CLASS') | default(registry_storage_class) }}"
+  compression: "{{ lookup('env', 'LIONS_BACKUP_COMPRESSION') | default('gzip') }}"
+
+# =========================================================================
+# VARIABLES CALCULÉES ET DÉRIVÉES
+# =========================================================================
+# Ces variables sont calculées automatiquement
+registry_full_name: "{{ registry_service_name }}-{{ registry_environment }}"
+registry_selector_labels:
+  app.kubernetes.io/name: "{{ registry_service_name }}"
+  app.kubernetes.io/instance: "{{ registry_service_name }}-{{ registry_environment }}"
+
+# Configuration finale de l'image
+registry_image_config:
+  repository: "registry"
+  tag: "{{ registry_version }}"
+  pullPolicy: "IfNotPresent"
+
+# =========================================================================
+# CONFIGURATION DE DEBUG
+# =========================================================================
+registry_debug_enabled: "{{ lookup('env', 'LIONS_DEBUG_MODE') | default('false') | bool }}"
+registry_debug_config:
+  enabled: "{{ registry_debug_enabled }}"
+  log_requests: "{{ registry_debug_enabled }}"
+  pprof_enabled: "{{ registry_debug_enabled and registry_environment == 'development' }}"

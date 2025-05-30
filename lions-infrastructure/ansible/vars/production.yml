@@ -1,124 +1,547 @@
 ---
-# Production environment variables for LIONS Infrastructure
-# These variables override common.yml for the production environment
-# Author: LIONS Infrastructure Team
-# Date: 2025-05-24
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - VARIABLES ENVIRONNEMENT PRODUCTION
+# =========================================================================
+# Description: Variables spécifiques à l'environnement de production
+# Version: 5.0.0
+# Date: 2025-05-26
+# Maintainer: DevOps Team
+# Documentation: https://docs.lions.dev/infrastructure/environments/production
+# =========================================================================
 
-# Environment settings
-lions_env: "production"
-lions_domain: "lions.dev"
+# =========================================================================
+# MÉTADONNÉES DE CONFIGURATION
+# =========================================================================
+lions_config_version: "5.0.0"
+lions_config_environment: "production"
+lions_config_schema_version: "1.0"
+lions_config_last_updated: "{{ ansible_date_time.iso8601 }}"
+lions_config_maintainer: "devops@lions.dev"
 
-# Resource settings - optimized for production environment
-lions_cpu_request: "500m"
-lions_cpu_limit: "2000m"
-lions_memory_request: "1Gi"
-lions_memory_limit: "4Gi"
+# =========================================================================
+# CONFIGURATION ENVIRONNEMENT PRINCIPAL
+# =========================================================================
+lions_environment: "{{ lookup('env', 'LIONS_ENVIRONMENT') | default('production') }}"
+lions_deployment_mode: "{{ lookup('env', 'LIONS_DEPLOYMENT_MODE') | default('ha') }}"
+lions_debug_mode: "{{ lookup('env', 'LIONS_DEBUG_MODE') | default('false') | bool }}"
+lions_dry_run: "{{ lookup('env', 'LIONS_DRY_RUN') | default('false') | bool }}"
 
-# Monitoring configuration - robust for production environment
-monitoring_config:
-  namespace: "monitoring"
-  grafana_admin_password: "{{ lookup('env', 'LIONS_PROD_GRAFANA_PASSWORD') | default('CHANGE_ME_IN_PRODUCTION', true) }}"
-  prometheus_retention: "30d"   # Extended retention for production
-  prometheus_storage: "50Gi"    # Increased storage for production
-  grafana_storage: "10Gi"       # Increased storage for production
-  resource_limits:
-    prometheus_cpu: "1500m"     # Increased CPU for production
-    prometheus_memory: "4Gi"    # Increased memory for production
-    grafana_cpu: "500m"         # Increased CPU for production
-    grafana_memory: "1Gi"       # Increased memory for production
+# =========================================================================
+# CONFIGURATION INFRASTRUCTURE RÉSEAU
+# =========================================================================
+# Configuration cible de production
+lions_infra:
+  target_host: "{{ lookup('env', 'LIONS_INFRA_TARGET_HOST') }}"
+  target_port: "{{ lookup('env', 'LIONS_INFRA_TARGET_PORT') | default(22) | int }}"
+  target_user: "{{ lookup('env', 'LIONS_INFRA_TARGET_USER') | default('lions-admin') }}"
+  ssh_key_path: "{{ lookup('env', 'LIONS_INFRA_SSH_KEY_PATH') | default('~/.ssh/lions_infrastructure_rsa') }}"
 
-# Production-specific component enablement
-# Enable all components for production
-lions_monitoring_enabled: true
-lions_registry_enabled: true
-lions_postgres_enabled: true
-lions_keycloak_enabled: true
-lions_gitea_enabled: true
-lions_ollama_enabled: true
-lions_vault_enabled: true
+# Configuration DNS pour production
+lions_dns:
+  domain_base: "{{ lookup('env', 'LIONS_DNS_DOMAIN_BASE') | default('lions.dev') }}"
+  subdomain_prefix: "{{ lookup('env', 'LIONS_DNS_SUBDOMAIN_PREFIX') | default('') }}"
+  full_domain: >-
+    {%- if lookup('env', 'LIONS_DNS_SUBDOMAIN_PREFIX') -%}
+    {{ lookup('env', 'LIONS_DNS_SUBDOMAIN_PREFIX') }}.{{ lookup('env', 'LIONS_DNS_DOMAIN_BASE') | default('lions.dev') }}
+    {%- else -%}
+    {{ lookup('env', 'LIONS_DNS_DOMAIN_BASE') | default('lions.dev') }}
+    {%- endif -%}
+  wildcard_enabled: "{{ lookup('env', 'LIONS_DNS_WILDCARD_ENABLED') | default('true') | bool }}"
 
-# Production-specific credentials
-# Using environment variables for production (no defaults)
-default_credentials:
-  postgres:
-    username: "postgres"
-    password: "{{ lookup('env', 'LIONS_PROD_POSTGRES_PASSWORD') }}"
-  keycloak:
-    admin_username: "admin"
-    admin_password: "{{ lookup('env', 'LIONS_PROD_KEYCLOAK_PASSWORD') }}"
-  gitea:
-    admin_username: "gitea_admin"
-    admin_password: "{{ lookup('env', 'LIONS_PROD_GITEA_PASSWORD') }}"
-  registry:
-    username: "registry_admin"
-    password: "{{ lookup('env', 'LIONS_PROD_REGISTRY_PASSWORD') }}"
+# Configuration réseau Kubernetes pour production
+lions_k8s_network:
+  cluster_cidr: "{{ lookup('env', 'LIONS_K8S_CLUSTER_CIDR') | default('10.42.0.0/16') }}"
+  service_cidr: "{{ lookup('env', 'LIONS_K8S_SERVICE_CIDR') | default('10.43.0.0/16') }}"
+  dns_domain: "{{ lookup('env', 'LIONS_K8S_DNS_DOMAIN') | default('cluster.local') }}"
 
-# Backup configuration - comprehensive for production
-backup_config:
-  schedule: "0 1 * * *"    # Daily at 1 AM
-  storage_location: "/var/backups/lions"
-  retention_days: 90       # Keep 90 days of backups in production
+# =========================================================================
+# CONFIGURATION KUBERNETES (K3s) - PRODUCTION
+# =========================================================================
+lions_k8s:
+  version: "{{ lookup('env', 'LIONS_K8S_VERSION') | default('v1.30.2+k3s1') }}"
+  install_channel: "{{ lookup('env', 'LIONS_K8S_INSTALL_CHANNEL') | default('stable') }}"
+  data_dir: "{{ lookup('env', 'LIONS_K8S_DATA_DIR') | default('/var/lib/rancher/k3s') }}"
+  config_file: "{{ lookup('env', 'LIONS_K8S_CONFIG_FILE') | default('/etc/rancher/k3s/k3s.yaml') }}"
+
+  # Configuration haute disponibilité (obligatoire en production)
+  ha:
+    enabled: "{{ lookup('env', 'LIONS_K8S_HA_ENABLED') | default('true') | bool }}"
+    cluster_secret: "{{ lookup('env', 'LIONS_K8S_HA_CLUSTER_SECRET') }}"
+    datastore_endpoint: "{{ lookup('env', 'LIONS_K8S_HA_DATASTORE_ENDPOINT') }}"
+
+  # Configuration des composants intégrés
   components:
-    - postgres
-    - gitea
-    - keycloak
-    - kubernetes_resources
-    - vault
-    - registry
+    traefik_enabled: "{{ lookup('env', 'LIONS_K8S_TRAEFIK_ENABLED') | default('true') | bool }}"
+    metallb_enabled: "{{ lookup('env', 'LIONS_K8S_METALLB_ENABLED') | default('true') | bool }}"
+    metallb_ip_range: "{{ lookup('env', 'LIONS_K8S_METALLB_IP_RANGE') }}"
 
-# Logging configuration - optimized for production
-logging_config:
-  log_level: "INFO"        # Standard logging for production
-  retention_days: 90       # Keep 90 days of logs in production
-  max_size: "500Mi"        # Larger log size for production
+# =========================================================================
+# CONFIGURATION STOCKAGE - PRODUCTION
+# =========================================================================
+lions_storage:
+  class_default: "{{ lookup('env', 'LIONS_STORAGE_CLASS_DEFAULT') | default('local-path') }}"
+  class_ssd: "{{ lookup('env', 'LIONS_STORAGE_CLASS_SSD') | default('fast-ssd') }}"
+  provisioner: "{{ lookup('env', 'LIONS_STORAGE_PROVISIONER') | default('rancher.io/local-path') }}"
+  reclaim_policy: "{{ lookup('env', 'LIONS_STORAGE_RECLAIM_POLICY') | default('Retain') }}"
+  base_path: "{{ lookup('env', 'LIONS_STORAGE_BASE_PATH') | default('/opt/lions/storage') }}"
 
-# Security settings - maximum for production
-lions_tls_enabled: true
-lions_network_policy_enabled: true
+  # Tailles de volumes pour production
+  pv_sizes:
+    small: "{{ lookup('env', 'LIONS_STORAGE_PV_SIZE_SMALL') | default('10Gi') }}"
+    medium: "{{ lookup('env', 'LIONS_STORAGE_PV_SIZE_MEDIUM') | default('50Gi') }}"
+    large: "{{ lookup('env', 'LIONS_STORAGE_PV_SIZE_LARGE') | default('200Gi') }}"
 
-# High availability settings - enabled for production
-ha_settings:
-  enabled: true
-  replicas:
-    postgres: 3
-    keycloak: 2
-    gitea: 2
-    registry: 2
-    monitoring: 2
-  backup_strategy:
-    type: "scheduled_and_pre_upgrade"
-    offsite_copy: true
-    encryption_enabled: true
+# =========================================================================
+# CONFIGURATION SÉCURITÉ - PRODUCTION RENFORCÉE
+# =========================================================================
+lions_security:
+  # Configuration TLS/SSL (obligatoire en production)
+  tls:
+    enabled: "{{ lookup('env', 'LIONS_SECURITY_TLS_ENABLED') | default('true') | bool }}"
+    provider: "{{ lookup('env', 'LIONS_SECURITY_TLS_PROVIDER') | default('letsencrypt') }}"
+    email: "{{ lookup('env', 'LIONS_SECURITY_TLS_EMAIL') | default('admin@' + lions_dns.domain_base) }}"
+    staging: "{{ lookup('env', 'LIONS_SECURITY_TLS_STAGING') | default('false') | bool }}"
 
-# Performance settings - optimized for production
-performance_settings:
-  postgres:
-    max_connections: 200
-    shared_buffers: "1GB"
-    work_mem: "64MB"
-  keycloak:
-    cache_owners: 2
-    worker_threads: 8
-  ingress:
-    max_connections: 10000
-    timeouts:
-      read: "300s"
-      write: "300s"
-      idle: "60s"
+  # Politiques de sécurité (renforcées en production)
+  policies:
+    network_policies: "{{ lookup('env', 'LIONS_SECURITY_NETWORK_POLICIES') | default('true') | bool }}"
+    pod_security_standards: "{{ lookup('env', 'LIONS_SECURITY_POD_SECURITY_STANDARDS') | default('restricted') }}"
+    rbac_enabled: "{{ lookup('env', 'LIONS_SECURITY_RBAC_ENABLED') | default('true') | bool }}"
 
-# Alerting configuration - comprehensive for production
-alerting_config:
+  # Configuration du chiffrement
+  encryption:
+    at_rest: "{{ lookup('env', 'LIONS_SECURITY_ENCRYPTION_AT_REST') | default('true') | bool }}"
+    secrets_encryption: "{{ lookup('env', 'LIONS_SECURITY_SECRETS_ENCRYPTION') | default('true') | bool }}"
+    provider: "{{ lookup('env', 'LIONS_SECURITY_ENCRYPTION_PROVIDER') | default('aescbc') }}"
+
+# =========================================================================
+# CONFIGURATION VAULT - PRODUCTION HA
+# =========================================================================
+lions_vault:
+  enabled: "{{ lookup('env', 'LIONS_VAULT_ENABLED') | default('true') | bool }}"
+  version: "{{ lookup('env', 'LIONS_VAULT_VERSION') | default('1.15.2') }}"
+  namespace: "{{ lookup('env', 'LIONS_VAULT_NAMESPACE') | default('vault-system') }}"
+  service_name: "{{ lookup('env', 'LIONS_VAULT_SERVICE_NAME') | default('vault') }}"
+  port: "{{ lookup('env', 'LIONS_VAULT_PORT') | default(8200) | int }}"
+  storage_size: "{{ lookup('env', 'LIONS_VAULT_STORAGE_SIZE') | default('20Gi') }}"
+
+  # Configuration d'accès
+  addr: "{{ lookup('env', 'LIONS_VAULT_ADDR') | default('https://vault.' + lions_dns.full_domain) }}"
+  skip_verify: "{{ lookup('env', 'LIONS_VAULT_SKIP_VERIFY') | default('false') | bool }}"
+  data_dir: "{{ lookup('env', 'LIONS_VAULT_DATA_DIR') | default('/opt/vault/data') }}"
+  config_dir: "{{ lookup('env', 'LIONS_VAULT_CONFIG_DIR') | default('/etc/vault.d') }}"
+
+  # Configuration sécurité (production)
+  security:
+    auto_unseal: "{{ lookup('env', 'LIONS_VAULT_AUTO_UNSEAL') | default('true') | bool }}"
+    seal_type: "{{ lookup('env', 'LIONS_VAULT_SEAL_TYPE') | default('awskms') }}"
+    ha_enabled: "{{ lookup('env', 'LIONS_VAULT_HA_ENABLED') | default('true') | bool }}"
+
+# =========================================================================
+# CONFIGURATION DES SERVICES - BASES DE DONNÉES PRODUCTION
+# =========================================================================
+# PostgreSQL - Configuration production
+lions_postgres:
+  enabled: "{{ lookup('env', 'LIONS_POSTGRES_ENABLED') | default('true') | bool }}"
+  version: "{{ lookup('env', 'LIONS_POSTGRES_VERSION') | default('15.4') }}"
+  namespace: "{{ lookup('env', 'LIONS_POSTGRES_NAMESPACE') | default('database') }}"
+  service_name: "{{ lookup('env', 'LIONS_POSTGRES_SERVICE_NAME') | default('postgresql') }}"
+  port: "{{ lookup('env', 'LIONS_POSTGRES_PORT') | default(5432) | int }}"
+  database: "{{ lookup('env', 'LIONS_POSTGRES_DATABASE') | default('lions_db') }}"
+  storage_size: "{{ lookup('env', 'LIONS_POSTGRES_STORAGE_SIZE') | default('100Gi') }}"
+  backup_enabled: "{{ lookup('env', 'LIONS_POSTGRES_BACKUP_ENABLED') | default('true') | bool }}"
+
+  # Configuration haute disponibilité
+  ha:
+    enabled: true
+    replicas: 3
+    replication_mode: "streaming"
+
+  # Configuration performance production
+  performance:
+    max_connections: 500
+    shared_buffers: "2GB"
+    effective_cache_size: "6GB"
+    work_mem: "128MB"
+    maintenance_work_mem: "512MB"
+    wal_buffers: "64MB"
+
+  # Authentification sécurisée
+  auth:
+    username: "{{ lookup('env', 'LIONS_POSTGRES_USERNAME') | default('postgres') }}"
+    password: "{{ lookup('env', 'LIONS_POSTGRES_PASSWORD') }}"
+    database: "{{ lookup('env', 'LIONS_POSTGRES_DATABASE') | default('lions_db') }}"
+
+# Redis - Configuration production
+lions_redis:
+  enabled: "{{ lookup('env', 'LIONS_REDIS_ENABLED') | default('true') | bool }}"
+  version: "{{ lookup('env', 'LIONS_REDIS_VERSION') | default('7.2') }}"
+  namespace: "{{ lookup('env', 'LIONS_REDIS_NAMESPACE') | default('database') }}"
+  service_name: "{{ lookup('env', 'LIONS_REDIS_SERVICE_NAME') | default('redis') }}"
+  port: "{{ lookup('env', 'LIONS_REDIS_PORT') | default(6379) | int }}"
+  storage_size: "{{ lookup('env', 'LIONS_REDIS_STORAGE_SIZE') | default('20Gi') }}"
+
+  # Configuration haute disponibilité
+  ha:
+    enabled: true
+    mode: "sentinel"
+    replicas: 3
+
+  # Authentification
+  auth:
+    password: "{{ lookup('env', 'LIONS_REDIS_PASSWORD') }}"
+
+# =========================================================================
+# CONFIGURATION DES SERVICES - SÉCURITÉ PRODUCTION
+# =========================================================================
+# Keycloak - Configuration production sécurisée
+lions_keycloak:
+  enabled: "{{ lookup('env', 'LIONS_KEYCLOAK_ENABLED') | default('true') | bool }}"
+  version: "{{ lookup('env', 'LIONS_KEYCLOAK_VERSION') | default('22.0') }}"
+  namespace: "{{ lookup('env', 'LIONS_KEYCLOAK_NAMESPACE') | default('security') }}"
+  service_name: "{{ lookup('env', 'LIONS_KEYCLOAK_SERVICE_NAME') | default('keycloak') }}"
+  port: "{{ lookup('env', 'LIONS_KEYCLOAK_PORT') | default(8080) | int }}"
+  realm: "{{ lookup('env', 'LIONS_KEYCLOAK_REALM') | default('lions') }}"
+
+  # Configuration haute disponibilité
+  ha:
+    enabled: true
+    replicas: 3
+    cache_owners: 3
+
+  # Configuration performance
+  performance:
+    worker_threads: 16
+    max_memory: "4Gi"
+
+  # Authentification admin sécurisée
+  admin:
+    username: "{{ lookup('env', 'LIONS_KEYCLOAK_ADMIN_USER') | default('admin') }}"
+    password: "{{ lookup('env', 'LIONS_KEYCLOAK_ADMIN_PASSWORD') }}"
+
+# =========================================================================
+# CONFIGURATION DES SERVICES - DÉVELOPPEMENT PRODUCTION
+# =========================================================================
+# Gitea - Configuration production
+lions_gitea:
+  enabled: "{{ lookup('env', 'LIONS_GITEA_ENABLED') | default('true') | bool }}"
+  version: "{{ lookup('env', 'LIONS_GITEA_VERSION') | default('1.20.5') }}"
+  namespace: "{{ lookup('env', 'LIONS_GITEA_NAMESPACE') | default('development') }}"
+  service_name: "{{ lookup('env', 'LIONS_GITEA_SERVICE_NAME') | default('gitea') }}"
+  port: "{{ lookup('env', 'LIONS_GITEA_PORT') | default(3000) | int }}"
+  storage_size: "{{ lookup('env', 'LIONS_GITEA_STORAGE_SIZE') | default('100Gi') }}"
+
+  # Configuration haute disponibilité
+  ha:
+    enabled: true
+    replicas: 2
+
+  # Authentification
+  admin:
+    username: "{{ lookup('env', 'LIONS_GITEA_ADMIN_USERNAME') | default('gitea_admin') }}"
+    password: "{{ lookup('env', 'LIONS_GITEA_ADMIN_PASSWORD') }}"
+
+# Registry - Configuration production sécurisée
+lions_registry:
+  enabled: "{{ lookup('env', 'LIONS_REGISTRY_ENABLED') | default('true') | bool }}"
+  version: "{{ lookup('env', 'LIONS_REGISTRY_VERSION') | default('2.8') }}"
+  namespace: "{{ lookup('env', 'LIONS_REGISTRY_NAMESPACE') | default('development') }}"
+  service_name: "{{ lookup('env', 'LIONS_REGISTRY_SERVICE_NAME') | default('registry') }}"
+  port: "{{ lookup('env', 'LIONS_REGISTRY_PORT') | default(5000) | int }}"
+  storage_size: "{{ lookup('env', 'LIONS_REGISTRY_STORAGE_SIZE') | default('200Gi') }}"
+
+  # Configuration haute disponibilité
+  ha:
+    enabled: true
+    replicas: 2
+
+  # Authentification
+  auth:
+    username: "{{ lookup('env', 'LIONS_REGISTRY_USERNAME') | default('registry_admin') }}"
+    password: "{{ lookup('env', 'LIONS_REGISTRY_PASSWORD') }}"
+
+# =========================================================================
+# CONFIGURATION IA - OLLAMA PRODUCTION
+# =========================================================================
+lions_ollama:
+  enabled: "{{ lookup('env', 'LIONS_OLLAMA_ENABLED') | default('true') | bool }}"
+  version: "{{ lookup('env', 'LIONS_OLLAMA_VERSION') | default('0.1.26') }}"
+  namespace: "{{ lookup('env', 'LIONS_OLLAMA_NAMESPACE') | default('ai') }}"
+  service_name: "{{ lookup('env', 'LIONS_OLLAMA_SERVICE_NAME') | default('ollama') }}"
+  port: "{{ lookup('env', 'LIONS_OLLAMA_PORT') | default(11434) | int }}"
+  storage_size: "{{ lookup('env', 'LIONS_OLLAMA_STORAGE_SIZE') | default('500Gi') }}"
+  gpu_enabled: "{{ lookup('env', 'LIONS_OLLAMA_GPU_ENABLED') | default('true') | bool }}"
+
+  # Configuration haute disponibilité
+  ha:
+    enabled: true
+    replicas: 2
+
+# =========================================================================
+# CONFIGURATION APPLICATIONS MÉTIER PRODUCTION
+# =========================================================================
+# Applications frontend
+lions_apps_frontend:
+  primereact:
+    enabled: "{{ lookup('env', 'LIONS_PRIMEREACT_ENABLED') | default('true') | bool }}"
+    namespace: "{{ lookup('env', 'LIONS_PRIMEREACT_NAMESPACE') | default('applications') }}"
+    port: "{{ lookup('env', 'LIONS_PRIMEREACT_PORT') | default(3000) | int }}"
+    ha:
+      enabled: true
+      replicas: 3
+
+  primefaces:
+    enabled: "{{ lookup('env', 'LIONS_PRIMEFACES_ENABLED') | default('true') | bool }}"
+    namespace: "{{ lookup('env', 'LIONS_PRIMEFACES_NAMESPACE') | default('applications') }}"
+    port: "{{ lookup('env', 'LIONS_PRIMEFACES_PORT') | default(8080) | int }}"
+    ha:
+      enabled: true
+      replicas: 3
+
+# Applications backend
+lions_apps_backend:
+  quarkus:
+    enabled: "{{ lookup('env', 'LIONS_QUARKUS_ENABLED') | default('true') | bool }}"
+    namespace: "{{ lookup('env', 'LIONS_QUARKUS_NAMESPACE') | default('applications') }}"
+    port: "{{ lookup('env', 'LIONS_QUARKUS_PORT') | default(8080) | int }}"
+    ha:
+      enabled: true
+      replicas: 3
+
+  notification_service:
+    enabled: "{{ lookup('env', 'LIONS_NOTIFICATION_SERVICE_ENABLED') | default('true') | bool }}"
+    namespace: "{{ lookup('env', 'LIONS_NOTIFICATION_SERVICE_NAMESPACE') | default('services') }}"
+    port: "{{ lookup('env', 'LIONS_NOTIFICATION_SERVICE_PORT') | default(8080) | int }}"
+    ha:
+      enabled: true
+      replicas: 2
+
+# =========================================================================
+# CONFIGURATION MONITORING PRODUCTION
+# =========================================================================
+lions_monitoring:
+  enabled: "{{ lookup('env', 'LIONS_MONITORING_ENABLED') | default('true') | bool }}"
+  namespace: "{{ lookup('env', 'LIONS_MONITORING_NAMESPACE') | default('monitoring') }}"
+
+  # Prometheus - Configuration production
+  prometheus:
+    enabled: "{{ lookup('env', 'LIONS_PROMETHEUS_ENABLED') | default('true') | bool }}"
+    version: "{{ lookup('env', 'LIONS_PROMETHEUS_VERSION') | default('2.45.0') }}"
+    storage_size: "{{ lookup('env', 'LIONS_PROMETHEUS_STORAGE_SIZE') | default('200Gi') }}"
+    retention: "{{ lookup('env', 'LIONS_PROMETHEUS_RETENTION') | default('90d') }}"
+    ha:
+      enabled: true
+      replicas: 2
+    resources:
+      cpu_request: "1000m"
+      cpu_limit: "3000m"
+      memory_request: "4Gi"
+      memory_limit: "8Gi"
+
+  # Grafana - Configuration production
+  grafana:
+    enabled: "{{ lookup('env', 'LIONS_GRAFANA_ENABLED') | default('true') | bool }}"
+    version: "{{ lookup('env', 'LIONS_GRAFANA_VERSION') | default('10.1.0') }}"
+    admin_user: "{{ lookup('env', 'LIONS_GRAFANA_ADMIN_USER') | default('admin') }}"
+    admin_password: "{{ lookup('env', 'LIONS_GRAFANA_ADMIN_PASSWORD') }}"
+    ha:
+      enabled: true
+      replicas: 2
+    resources:
+      cpu_request: "500m"
+      cpu_limit: "1500m"
+      memory_request: "1Gi"
+      memory_limit: "3Gi"
+
+  # Alertmanager - Configuration production
+  alertmanager:
+    enabled: "{{ lookup('env', 'LIONS_ALERTMANAGER_ENABLED') | default('true') | bool }}"
+    version: "{{ lookup('env', 'LIONS_ALERTMANAGER_VERSION') | default('0.25.0') }}"
+    ha:
+      enabled: true
+      replicas: 2
+
+  # Loki - Configuration production
+  loki:
+    enabled: "{{ lookup('env', 'LIONS_LOKI_ENABLED') | default('true') | bool }}"
+    version: "{{ lookup('env', 'LIONS_LOKI_VERSION') | default('2.9.0') }}"
+    storage_size: "{{ lookup('env', 'LIONS_LOKI_STORAGE_SIZE') | default('200Gi') }}"
+    ha:
+      enabled: true
+      replicas: 2
+
+# =========================================================================
+# CONFIGURATION RESSOURCES PRODUCTION
+# =========================================================================
+# Ressources par défaut optimisées pour la production
+lions_resources:
+  # Applications critiques (Keycloak, PostgreSQL)
+  critical:
+    cpu_request: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_CPU_REQUEST') | default('1000m') }}"
+    cpu_limit: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_CPU_LIMIT') | default('3000m') }}"
+    memory_request: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_MEMORY_REQUEST') | default('2Gi') }}"
+    memory_limit: "{{ lookup('env', 'LIONS_RESOURCES_LARGE_MEMORY_LIMIT') | default('6Gi') }}"
+
+  # Applications importantes (Applications métier)
+  important:
+    cpu_request: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_CPU_REQUEST') | default('500m') }}"
+    cpu_limit: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_CPU_LIMIT') | default('2000m') }}"
+    memory_request: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_MEMORY_REQUEST') | default('1Gi') }}"
+    memory_limit: "{{ lookup('env', 'LIONS_RESOURCES_MEDIUM_MEMORY_LIMIT') | default('4Gi') }}"
+
+  # Applications standard (Utilitaires)
+  standard:
+    cpu_request: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_CPU_REQUEST') | default('200m') }}"
+    cpu_limit: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_CPU_LIMIT') | default('1000m') }}"
+    memory_request: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_MEMORY_REQUEST') | default('512Mi') }}"
+    memory_limit: "{{ lookup('env', 'LIONS_RESOURCES_SMALL_MEMORY_LIMIT') | default('2Gi') }}"
+
+# =========================================================================
+# CONFIGURATION BACKUP PRODUCTION
+# =========================================================================
+lions_backup:
+  enabled: "{{ lookup('env', 'LIONS_BACKUP_ENABLED') | default('true') | bool }}"
+  storage_class: "{{ lookup('env', 'LIONS_BACKUP_STORAGE_CLASS') | default(lions_storage.class_default) }}"
+  retention_days: "{{ lookup('env', 'LIONS_BACKUP_RETENTION_DAYS') | default(90) | int }}"
+  schedule: "{{ lookup('env', 'LIONS_BACKUP_SCHEDULE') | default('0 2 * * *') }}"
+  compression: "{{ lookup('env', 'LIONS_BACKUP_COMPRESSION') | default('gzip') }}"
+  encryption: "{{ lookup('env', 'LIONS_BACKUP_ENCRYPTION') | default('true') | bool }}"
+
+  # Configuration backup externe (obligatoire en production)
+  external:
+    enabled: "{{ lookup('env', 'LIONS_BACKUP_EXTERNAL_ENABLED') | default('true') | bool }}"
+    type: "{{ lookup('env', 'LIONS_BACKUP_EXTERNAL_TYPE') | default('s3') }}"
+    bucket: "{{ lookup('env', 'LIONS_BACKUP_EXTERNAL_BUCKET') | default('lions-backup-production') }}"
+
+  # Composants à sauvegarder
+  components:
+    - name: "postgres"
+      enabled: "{{ lions_postgres.enabled }}"
+      retention_days: 90
+    - name: "vault"
+      enabled: "{{ lions_vault.enabled }}"
+      retention_days: 365  # Retention longue pour Vault
+    - name: "gitea"
+      enabled: "{{ lions_gitea.enabled }}"
+      retention_days: 90
+    - name: "keycloak"
+      enabled: "{{ lions_keycloak.enabled }}"
+      retention_days: 90
+    - name: "registry"
+      enabled: "{{ lions_registry.enabled }}"
+      retention_days: 30
+    - name: "kubernetes_resources"
+      enabled: true
+      retention_days: 90
+
+# =========================================================================
+# CONFIGURATION LOGGING PRODUCTION
+# =========================================================================
+lions_logging:
+  level: "{{ lookup('env', 'LIONS_LOG_LEVEL') | default('WARN') }}"
+  format: "{{ lookup('env', 'LIONS_LOG_FORMAT') | default('json') }}"
+  output: "{{ lookup('env', 'LIONS_LOG_OUTPUT') | default('stdout') }}"
+  retention_days: "{{ lookup('env', 'LIONS_LOG_RETENTION_DAYS') | default(30) | int }}"
+
+  # Configuration audit (obligatoire en production)
+  audit:
+    enabled: "{{ lookup('env', 'LIONS_AUDIT_ENABLED') | default('true') | bool }}"
+    log_level: "{{ lookup('env', 'LIONS_AUDIT_LOG_LEVEL') | default('INFO') }}"
+    retention_days: "{{ lookup('env', 'LIONS_AUDIT_RETENTION_DAYS') | default(365) | int }}"
+
+# =========================================================================
+# CONFIGURATION PERFORMANCE ET SCALING PRODUCTION
+# =========================================================================
+lions_autoscaling:
+  enabled: "{{ lookup('env', 'LIONS_AUTOSCALING_ENABLED') | default('true') | bool }}"
+  min_replicas: "{{ lookup('env', 'LIONS_AUTOSCALING_MIN_REPLICAS') | default(2) | int }}"
+  max_replicas: "{{ lookup('env', 'LIONS_AUTOSCALING_MAX_REPLICAS') | default(20) | int }}"
+  cpu_target: "{{ lookup('env', 'LIONS_AUTOSCALING_CPU_TARGET') | default(60) | int }}"
+  memory_target: "{{ lookup('env', 'LIONS_AUTOSCALING_MEMORY_TARGET') | default(70) | int }}"
+
+# Configuration des timeouts (ajustés pour la production)
+lions_timeouts:
+  default: "{{ lookup('env', 'LIONS_TIMEOUT_DEFAULT') | default(600) | int }}"    # 10 minutes
+  deployment: "{{ lookup('env', 'LIONS_TIMEOUT_DEPLOYMENT') | default(3600) | int }}"  # 1 heure
+  rollback: "{{ lookup('env', 'LIONS_TIMEOUT_ROLLBACK') | default(1800) | int }}"   # 30 minutes
+
+# =========================================================================
+# CONFIGURATION ALERTING PRODUCTION
+# =========================================================================
+lions_alerting:
   enabled: true
   notification_channels:
-    - type: "email"
-      name: "admin-alerts"
-      address: "{{ lookup('env', 'LIONS_PROD_ALERT_EMAIL') }}"
-    - type: "slack"
-      name: "ops-alerts"
-      webhook: "{{ lookup('env', 'LIONS_PROD_SLACK_WEBHOOK') }}"
+    email:
+      enabled: "{{ lookup('env', 'LIONS_ALERTING_EMAIL_ENABLED') | default('true') | bool }}"
+      address: "{{ lookup('env', 'LIONS_ALERTING_EMAIL_ADDRESS') | default('alerts@' + lions_dns.domain_base) }}"
+    slack:
+      enabled: "{{ lookup('env', 'LIONS_ALERTING_SLACK_ENABLED') | default('true') | bool }}"
+      webhook: "{{ lookup('env', 'LIONS_ALERTING_SLACK_WEBHOOK') }}"
+    pagerduty:
+      enabled: "{{ lookup('env', 'LIONS_ALERTING_PAGERDUTY_ENABLED') | default('true') | bool }}"
+      service_key: "{{ lookup('env', 'LIONS_ALERTING_PAGERDUTY_SERVICE_KEY') }}"
+
+  # Niveaux de sévérité
   severity_levels:
     - critical
     - warning
     - info
+
+  # Configuration avancée
   silence_during_maintenance: true
+  escalation_timeout: 300  # 5 minutes
+  repeat_interval: 1800    # 30 minutes
+
+# =========================================================================
+# CONFIGURATION SLA ET MONITORING AVANCÉ
+# =========================================================================
+lions_sla:
+  # Objectifs de niveau de service
+  uptime_target: 99.9      # 99.9% uptime
+  response_time_target: 200 # 200ms average response time
+  error_rate_target: 0.1   # 0.1% error rate
+
+  # Fenêtres de mesure
+  measurement_window: "30d"
+  alert_window: "5m"
+
+# Configuration métrics personnalisées
+lions_metrics:
+  business_metrics_enabled: true
+  custom_exporters_enabled: true
+  retention_period: "90d"
+
+# =========================================================================
+# VALIDATION DE CONFIGURATION PRODUCTION
+# =========================================================================
+# Variables obligatoires en production (vérifiées par les playbooks)
+lions_required_vars:
+  - "lions_infra.target_host"
+  - "lions_dns.domain_base"
+  - "lions_postgres.auth.password"
+  - "lions_keycloak.admin.password"
+  - "lions_grafana.admin_password"
+  - "lions_vault.ha.cluster_secret"
+  - "lions_alerting.notification_channels.email.address"
+
+# Configuration de sanity checks
+lions_sanity_checks:
+  enabled: true
+  pre_deployment: true
+  post_deployment: true
+  health_check_timeout: 300
+  rollback_on_failure: true
+
+# =========================================================================
+# COMPATIBILITÉ ET MIGRATION
+# =========================================================================
+# Version de schéma pour la migration
+lions_schema_compatibility:
+  minimum_version: "4.0.0"
+  current_version: "5.0.0"
+  migration_required: false
+
+# Support de la rétrocompatibilité
+lions_legacy_support:
+  enabled: false  # Désactivé en production
+  deprecated_vars_warning: true

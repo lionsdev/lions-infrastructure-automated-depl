@@ -1,49 +1,285 @@
 ---
-# Titre: Template de ServiceMonitor Kubernetes pour PrimeReact
-# Description: Définit le ServiceMonitor Kubernetes pour une application PrimeReact
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - SERVICEMONITOR PRIMEREACT
+# =========================================================================
+# Description: Template ServiceMonitor Kubernetes pour application PrimeReact
+# Version: 5.0.0
+# Équipe: LIONS DevOps Team
+# Date: {{ ansible_date_time.iso8601 }}
+# Documentation: https://docs.lions.dev/monitoring/servicemonitor
+# =========================================================================
 
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: "{{ app_name }}"
-  namespace: "{{ app_namespace }}"
+  name: "{{ lions_app_name | default(lions_primereact_app_name) }}-servicemonitor"
+  namespace: "{{ lions_app_namespace | default(lions_primereact_namespace) }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "primereact"
-    prometheus: k8s
+    # Labels obligatoires LIONS
+    app.kubernetes.io/name: "{{ lions_app_name | default(lions_primereact_app_name) }}"
+    app.kubernetes.io/instance: "{{ lions_app_instance | default(lions_primereact_app_name + '-' + lions_environment) }}"
+    app.kubernetes.io/version: "{{ lions_app_version | default(lions_primereact_version) }}"
+    app.kubernetes.io/component: "frontend"
+    app.kubernetes.io/part-of: "lions-platform"
+    app.kubernetes.io/managed-by: "ansible"
+
+    # Labels spécifiques au monitoring
+    monitoring.lions.dev/enabled: "true"
+    monitoring.lions.dev/type: "application"
+    monitoring.lions.dev/framework: "primereact"
+    monitoring.lions.dev/scrape-interval: "{{ lions_monitoring_scrape_interval | default('15s') }}"
+
+    # Labels environnement et infrastructure
+    lions.dev/environment: "{{ lions_environment }}"
+    lions.dev/deployment-mode: "{{ lions_deployment_mode }}"
+    lions.dev/stack: "frontend"
+    lions.dev/technology: "react"
+    lions.dev/framework: "primereact"
+
+    # Labels Prometheus et Grafana
+    prometheus.io/scrape: "true"
+    grafana.dashboard: "primereact-application"
+
+    # Labels de métadonnées
+    version: "{{ lions_app_version | default(lions_primereact_version) }}"
+    environment: "{{ lions_environment }}"
+    cluster: "{{ lions_k8s_cluster_name | default('lions-' + lions_environment) }}"
+
   annotations:
-    description: "ServiceMonitor pour l'application {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    # Annotations de documentation
+    description: "ServiceMonitor pour l'application PrimeReact {{ lions_app_name | default(lions_primereact_app_name) }}"
+    lions.dev/maintainer: "{{ lions_config_maintainer }}"
+    lions.dev/documentation: "https://docs.lions.dev/applications/primereact"
+    lions.dev/monitoring-docs: "https://docs.lions.dev/monitoring/applications/primereact"
+
+    # Annotations de configuration
+    monitoring.lions.dev/alert-severity: "{{ lions_monitoring_alert_severity | default('warning') }}"
+    monitoring.lions.dev/slo-target: "{{ lions_monitoring_slo_target | default('99.5') }}"
+    monitoring.lions.dev/dashboard-url: "{{ lions_grafana_base_url }}/d/primereact-app/primereact-application"
+
+    # Annotations de métadonnées
+    config.version: "{{ lions_config_version }}"
+    deployed.at: "{{ ansible_date_time.iso8601 }}"
+    deployed.by: "{{ ansible_user | default('ansible') }}"
+
+spec:
+  # Sélecteur pour cibler le service PrimeReact
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: "{{ lions_app_name | default(lions_primereact_app_name) }}"
+      app.kubernetes.io/component: "frontend"
+      lions.dev/technology: "react"
+
+  # Sélection des namespaces
+  namespaceSelector:
+    matchNames:
+      - "{{ lions_app_namespace | default(lions_primereact_namespace) }}"
+
+  # Configuration des endpoints de scraping
+  endpoints:
+    # Endpoint principal pour les métriques de l'application
+    - port: "{{ lions_primereact_metrics_port_name | default('metrics') }}"
+      path: "{{ lions_primereact_metrics_path | default('/metrics') }}"
+      interval: "{{ lions_monitoring_scrape_interval | default('15s') }}"
+      scrapeTimeout: "{{ lions_monitoring_scrape_timeout | default('10s') }}"
+      honorLabels: true
+      honorTimestamps: true
+
+      # Configuration des en-têtes HTTP
+      {% if lions_monitoring_http_headers is defined %}
+      httpHeaders:
+      {% for header in lions_monitoring_http_headers %}
+        - name: "{{ header.name }}"
+          value: "{{ header.value }}"
+      {% endfor %}
+      {% endif %}
+
+      # Configuration TLS si activée
+      {% if lions_security_tls_enabled | default(true) %}
+      scheme: https
+      tlsConfig:
+        serverName: "{{ lions_app_name | default(lions_primereact_app_name) }}.{{ lions_app_namespace | default(lions_primereact_namespace) }}.svc.cluster.local"
+        insecureSkipVerify: {{ lions_monitoring_tls_skip_verify | default(false) }}
+        {% if lions_monitoring_tls_ca_secret is defined %}
+        ca:
+          secret:
+            name: "{{ lions_monitoring_tls_ca_secret }}"
+            key: "ca.crt"
+        {% endif %}
+      {% else %}
+      scheme: http
+      {% endif %}
+
+      # Relabeling des métriques
+      metricRelabelings:
+        # Conservation des métriques Node.js essentielles
+        - sourceLabels: [__name__]
+          regex: '^(nodejs_|node_|process_|http_request_|http_response_).*'
+          action: keep
+
+        # Conservation des métriques React/PrimeReact
+        - sourceLabels: [__name__]
+          regex: '^(react_|primereact_|frontend_|ui_|component_).*'
+          action: keep
+
+        # Conservation des métriques système importantes
+        - sourceLabels: [__name__]
+          regex: '^(up|probe_|scrape_duration_seconds|scrape_samples_scraped)$'
+          action: keep
+
+        # Conservation des métriques d'application personnalisées
+        - sourceLabels: [__name__]
+          regex: '^(application_|app_|business_|user_).*'
+          action: keep
+
+        # Conservation des métriques de performance web
+        - sourceLabels: [__name__]
+          regex: '^(web_vitals_|performance_|page_load_|network_).*'
+          action: keep
+
+        # Ajout de labels environnement
+        - targetLabel: 'environment'
+          replacement: '{{ lions_environment }}'
+
+        # Ajout de labels application
+        - targetLabel: 'application'
+          replacement: '{{ lions_app_name | default(lions_primereact_app_name) }}'
+
+        # Ajout de labels cluster
+        - targetLabel: 'cluster'
+          replacement: '{{ lions_k8s_cluster_name | default("lions-" + lions_environment) }}'
+
+        # Ajout de labels namespace
+        - targetLabel: 'namespace'
+          replacement: '{{ lions_app_namespace | default(lions_primereact_namespace) }}'
+
+        # Normalisation des noms de métriques
+        - sourceLabels: [__name__]
+          targetLabel: '__name__'
+          regex: '^(.*)_total$'
+          replacement: '${1}'
+
+        # Suppression des métriques non critiques en production
+        {% if lions_environment == 'production' %}
+        - sourceLabels: [__name__]
+          regex: '^(debug_|test_|dev_).*'
+          action: drop
+        {% endif %}
+
+      # Relabeling des instances
+      relabelings:
+        # Préservation des labels d'origine
+        - sourceLabels: [__address__]
+          targetLabel: '__original_address__'
+
+        # Ajout du nom du service
+        - sourceLabels: [__meta_kubernetes_service_name]
+          targetLabel: 'service'
+
+        # Ajout du nom du pod
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: 'pod'
+
+        # Ajout du nœud Kubernetes
+        - sourceLabels: [__meta_kubernetes_pod_node_name]
+          targetLabel: 'node'
+
+        # Ajout de l'adresse IP du pod
+        - sourceLabels: [__meta_kubernetes_pod_ip]
+          targetLabel: 'pod_ip'
+
+        # Configuration du nom de l'instance
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: 'instance'
+          regex: '(.*)'
+          replacement: '{{ lions_app_name | default(lions_primereact_app_name) }}-${1}'
+
+        # Ajout des labels de déploiement
+        - sourceLabels: [__meta_kubernetes_pod_label_version]
+          targetLabel: 'version'
+
+        # Ajout des annotations importantes
+        - sourceLabels: [__meta_kubernetes_pod_annotation_lions_dev_component]
+          targetLabel: 'component'
+
+    # Endpoint secondaire pour les métriques de santé (si configuré)
+    {% if lions_primereact_health_metrics_enabled | default(false) %}
+    - port: "{{ lions_primereact_health_port_name | default('health') }}"
+      path: "{{ lions_primereact_health_path | default('/health/metrics') }}"
+      interval: "{{ lions_monitoring_health_scrape_interval | default('30s') }}"
+      scrapeTimeout: "{{ lions_monitoring_scrape_timeout | default('10s') }}"
+      honorLabels: true
+
+      # Métriques spécifiques à la santé
+      metricRelabelings:
+        - sourceLabels: [__name__]
+          regex: '^(health_|readiness_|liveness_|startup_).*'
+          action: keep
+
+        - targetLabel: 'check_type'
+          replacement: 'health'
+    {% endif %}
+
+    # Endpoint pour les métriques business (si configuré)
+    {% if lions_primereact_business_metrics_enabled | default(false) %}
+    - port: "{{ lions_primereact_business_port_name | default('business') }}"
+      path: "{{ lions_primereact_business_metrics_path | default('/business/metrics') }}"
+      interval: "{{ lions_monitoring_business_scrape_interval | default('60s') }}"
+      scrapeTimeout: "{{ lions_monitoring_scrape_timeout | default('10s') }}"
+      honorLabels: true
+
+      # Métriques business spécifiques
+      metricRelabelings:
+        - sourceLabels: [__name__]
+          regex: '^(business_|user_|transaction_|revenue_).*'
+          action: keep
+
+        - targetLabel: 'metric_category'
+          replacement: 'business'
+    {% endif %}
+
+  # Configuration des échantillons
+  sampleLimit: {{ lions_monitoring_sample_limit | default(10000) }}
+  targetLimit: {{ lions_monitoring_target_limit | default(100) }}
+  labelLimit: {{ lions_monitoring_label_limit | default(1000) }}
+  labelNameLengthLimit: {{ lions_monitoring_label_name_length_limit | default(256) }}
+  labelValueLengthLimit: {{ lions_monitoring_label_value_length_limit | default(2048) }}
+
+---
+# =========================================================================
+# SERVICEMONITOR COMPLÉMENTAIRE POUR MÉTRIQUES PERSONNALISÉES
+# =========================================================================
+{% if lions_primereact_custom_metrics_enabled | default(false) %}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: "{{ lions_app_name | default(lions_primereact_app_name) }}-custom-metrics"
+  namespace: "{{ lions_app_namespace | default(lions_primereact_namespace) }}"
+  labels:
+    app.kubernetes.io/name: "{{ lions_app_name | default(lions_primereact_app_name) }}"
+    monitoring.lions.dev/type: "custom"
+    lions.dev/environment: "{{ lions_environment }}"
+  annotations:
+    description: "ServiceMonitor pour métriques personnalisées PrimeReact"
+
 spec:
   selector:
     matchLabels:
-      app: "{{ app_name }}"
+      app.kubernetes.io/name: "{{ lions_app_name | default(lions_primereact_app_name) }}"
+      monitoring.lions.dev/custom-metrics: "true"
+
   namespaceSelector:
     matchNames:
-      - "{{ app_namespace }}"
+      - "{{ lions_app_namespace | default(lions_primereact_namespace) }}"
+
   endpoints:
-    - port: http
-      path: "{{ primereact_prometheus_path }}"
-      interval: 15s
-      scrapeTimeout: 10s
-      honorLabels: true
+    - port: "{{ lions_primereact_custom_metrics_port | default('custom-metrics') }}"
+      path: "{{ lions_primereact_custom_metrics_path | default('/custom/metrics') }}"
+      interval: "{{ lions_monitoring_custom_scrape_interval | default('30s') }}"
+      scrapeTimeout: "{{ lions_monitoring_scrape_timeout | default('10s') }}"
+
       metricRelabelings:
         - sourceLabels: [__name__]
-          regex: 'nodejs_.*'
+          regex: '^(custom_|lions_|primereact_custom_).*'
           action: keep
-        - sourceLabels: [__name__]
-          regex: 'http_.*'
-          action: keep
-        - sourceLabels: [__name__]
-          regex: 'process_.*'
-          action: keep
-        - sourceLabels: [__name__]
-          regex: 'system_.*'
-          action: keep
-        - sourceLabels: [__name__]
-          regex: 'application_.*'
-          action: keep
+{% endif %}

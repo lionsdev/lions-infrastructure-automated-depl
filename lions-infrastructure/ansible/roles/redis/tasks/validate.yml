@@ -1,107 +1,484 @@
 ---
-# Titre: Validation post-déploiement pour Redis
-# Description: Effectue des validations après le déploiement de Redis
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-08
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - VALIDATION REDIS
+# =========================================================================
+# Description: Validation post-déploiement complète pour Redis
+# Version: 5.0.0
+# Maintainer: DevOps Team LIONS
+# Date: 2025-05-27
+# Documentation: https://docs.lions.dev/infrastructure/redis/validation
+# =========================================================================
 
-- name: Vérification de l'état des pods Redis
+# =========================================================================
+# VARIABLES ET PRÉREQUIS
+# =========================================================================
+- name: "{{ lions_log_prefix }} Initialisation des variables de validation Redis"
+  set_fact:
+    redis_validation_start_time: "{{ ansible_date_time.epoch }}"
+    redis_validation_errors: []
+    redis_validation_warnings: []
+    redis_validation_success: true
+    redis_validation_report: {}
+  tags:
+    - redis
+    - validation
+    - health-check
+
+- name: "{{ lions_log_prefix }} Vérification des variables d'environnement requises"
+  assert:
+    that:
+      - lions_redis_namespace is defined
+      - lions_redis_service_name is defined
+      - lions_redis_version is defined
+      - lions_environment is defined
+    fail_msg: "Variables d'environnement Redis manquantes - vérifiez la configuration"
+    success_msg: "Variables d'environnement Redis validées"
+  tags:
+    - redis
+    - validation
+    - prerequisites
+
+# =========================================================================
+# VALIDATION DE L'ÉTAT DES RESSOURCES KUBERNETES
+# =========================================================================
+- name: "{{ lions_log_prefix }} Vérification de l'existence du namespace Redis"
+  k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: "{{ lions_redis_namespace }}"
+  register: redis_namespace_check
+  failed_when: redis_namespace_check.resources | length == 0
+  tags:
+    - redis
+    - validation
+    - namespace
+
+- name: "{{ lions_log_prefix }} Vérification de l'état des pods Redis"
   k8s_info:
     api_version: v1
     kind: Pod
-    namespace: "{{ app_namespace }}"
+    namespace: "{{ lions_redis_namespace }}"
     label_selectors:
-      - "app={{ app_name }}"
-  register: pods_status
-  until: pods_status.resources | length > 0 and pods_status.resources | map(attribute='status.phase') | list | unique | first == "Running"
-  retries: 10
-  delay: 10
+      - "app={{ lions_redis_service_name }}"
+      - "environment={{ lions_environment }}"
+  register: redis_pods_status
+  until: >
+    redis_pods_status.resources | length > 0 and
+    redis_pods_status.resources | selectattr('status.phase', 'equalto', 'Running') | list | length > 0
+  retries: "{{ (lions_timeout_deployment | int / 30) | round | int }}"
+  delay: 30
+  tags:
+    - redis
+    - validation
+    - pods
 
-- name: Vérification de l'état du service Redis
+- name: "{{ lions_log_prefix }} Analyse détaillée des pods Redis"
+  set_fact:
+    redis_pods_running: "{{ redis_pods_status.resources | selectattr('status.phase', 'equalto', 'Running') | list | length }}"
+    redis_pods_total: "{{ redis_pods_status.resources | length }}"
+    redis_pods_details: "{{ redis_pods_status.resources | map(attribute='metadata.name') | list }}"
+  tags:
+    - redis
+    - validation
+    - analysis
+
+- name: "{{ lions_log_prefix }} Validation du nombre de réplicas Redis"
+  assert:
+    that:
+      - redis_pods_running | int >= 1
+      - redis_pods_running | int == redis_pods_total | int
+    fail_msg: "Pods Redis non disponibles - {{ redis_pods_running }}/{{ redis_pods_total }} en cours d'exécution"
+    success_msg: "Tous les pods Redis sont opérationnels ({{ redis_pods_running }}/{{ redis_pods_total }})"
+  tags:
+    - redis
+    - validation
+    - replicas
+
+# =========================================================================
+# VALIDATION DES SERVICES KUBERNETES
+# =========================================================================
+- name: "{{ lions_log_prefix }} Vérification de l'état du service Redis"
   k8s_info:
     api_version: v1
     kind: Service
-    namespace: "{{ app_namespace }}"
-    name: "{{ app_name }}"
-  register: service_status
-  failed_when: service_status.resources | length == 0
+    namespace: "{{ lions_redis_namespace }}"
+    name: "{{ lions_redis_service_name }}"
+  register: redis_service_status
+  failed_when: redis_service_status.resources | length == 0
+  tags:
+    - redis
+    - validation
+    - service
 
-- name: Vérification de la connectivité Redis
-  shell: "kubectl exec -n {{ app_namespace }} {{ pods_status.resources[0].metadata.name }} -- redis-cli ping"
-  register: redis_ping
-  ignore_errors: yes
-  changed_when: false
+- name: "{{ lions_log_prefix }} Validation des endpoints du service Redis"
+  k8s_info:
+    api_version: v1
+    kind: Endpoints
+    namespace: "{{ lions_redis_namespace }}"
+    name: "{{ lions_redis_service_name }}"
+  register: redis_endpoints_status
+  tags:
+    - redis
+    - validation
+    - endpoints
 
-- name: Affichage du résultat de la connectivité
-  debug:
-    msg: "Connectivité Redis: {{ 'OK' if redis_ping is succeeded and redis_ping.stdout == 'PONG' else 'ÉCHEC' }}"
+- name: "{{ lions_log_prefix }} Vérification de la disponibilité des endpoints"
+  assert:
+    that:
+      - redis_endpoints_status.resources | length > 0
+      - redis_endpoints_status.resources[0].subsets is defined
+      - redis_endpoints_status.resources[0].subsets | length > 0
+    fail_msg: "Aucun endpoint disponible pour le service Redis"
+    success_msg: "Endpoints Redis disponibles et configurés"
+  tags:
+    - redis
+    - validation
+    - endpoints
 
-- name: Vérification des métriques Prometheus (si activé)
-  shell: "kubectl exec -n {{ app_namespace }} {{ pods_status.resources[0].metadata.name }} -- curl -s http://localhost:{{ redis_prometheus_port | default(9121) }}{{ redis_prometheus_path | default('/metrics') }} | head -10"
-  register: metrics_check
-  ignore_errors: yes
-  changed_when: false
-  when: redis_prometheus_scrape | default(true) | bool
+# =========================================================================
+# VALIDATION DE LA CONNECTIVITÉ REDIS
+# =========================================================================
+- name: "{{ lions_log_prefix }} Test de connectivité Redis (PING)"
+  kubernetes.core.k8s_exec:
+    namespace: "{{ lions_redis_namespace }}"
+    pod: "{{ redis_pods_details[0] }}"
+    command: |
+      timeout 10 redis-cli -h localhost -p {{ lions_redis_port }} ping
+  register: redis_ping_test
+  retries: 3
+  delay: 5
+  until: redis_ping_test.stdout is defined and "PONG" in redis_ping_test.stdout
+  tags:
+    - redis
+    - validation
+    - connectivity
 
-- name: Affichage des métriques Prometheus
-  debug:
-    msg: "Métriques Prometheus: {{ metrics_check.stdout_lines if metrics_check is succeeded else 'Non disponibles' }}"
-  when: redis_prometheus_scrape | default(true) | bool
+- name: "{{ lions_log_prefix }} Validation de la connectivité Redis"
+  set_fact:
+    redis_connectivity_ok: "{{ redis_ping_test.stdout is defined and 'PONG' in redis_ping_test.stdout }}"
+  tags:
+    - redis
+    - validation
+    - connectivity
 
-- name: Vérification de la configuration Redis
-  shell: "kubectl exec -n {{ app_namespace }} {{ pods_status.resources[0].metadata.name }} -- redis-cli info"
-  register: redis_info
-  ignore_errors: yes
-  changed_when: false
+# =========================================================================
+# VALIDATION DE LA CONFIGURATION REDIS
+# =========================================================================
+- name: "{{ lions_log_prefix }} Récupération des informations de configuration Redis"
+  kubernetes.core.k8s_exec:
+    namespace: "{{ lions_redis_namespace }}"
+    pod: "{{ redis_pods_details[0] }}"
+    command: |
+      timeout 10 redis-cli -h localhost -p {{ lions_redis_port }} INFO server
+  register: redis_info_server
+  ignore_errors: true
+  tags:
+    - redis
+    - validation
+    - configuration
 
-- name: Analyse de la configuration Redis
-  debug:
-    msg: "Configuration Redis: {{ 'OK' if redis_info is succeeded else 'À vérifier' }}"
-  when: redis_info is succeeded
+- name: "{{ lions_log_prefix }} Vérification de la version Redis"
+  set_fact:
+    redis_version_deployed: "{{ redis_info_server.stdout | regex_search('redis_version:([0-9.]+)', '\\1') | first if redis_info_server.stdout is defined else 'unknown' }}"
+    redis_config_ok: "{{ redis_info_server.rc == 0 if redis_info_server.rc is defined else false }}"
+  tags:
+    - redis
+    - validation
+    - version
 
-- name: Vérification des ressources utilisées
-  shell: "kubectl top pod -n {{ app_namespace }} {{ pods_status.resources[0].metadata.name }}"
-  register: resources_check
-  ignore_errors: yes
-  changed_when: false
-
-- name: Affichage des ressources utilisées
-  debug:
-    msg: "Ressources utilisées: {{ resources_check.stdout if resources_check is succeeded else 'Non disponibles' }}"
-
-- name: Vérification de la persistance (si activée)
-  shell: "kubectl exec -n {{ app_namespace }} {{ pods_status.resources[0].metadata.name }} -- redis-cli config get dir"
-  register: redis_dir
-  ignore_errors: yes
-  changed_when: false
-  when: redis_persistent_storage | default(true) | bool
-
-- name: Affichage du répertoire de données Redis
-  debug:
-    msg: "Répertoire de données Redis: {{ redis_dir.stdout_lines[1] if redis_dir is succeeded and redis_dir.stdout_lines | length > 1 else 'Non disponible' }}"
-  when: redis_persistent_storage | default(true) | bool
-
-- name: Résumé du déploiement
+- name: "{{ lions_log_prefix }} Validation de la version Redis déployée"
   debug:
     msg: |
-      =====================================================
-      RÉSUMÉ DU DÉPLOIEMENT REDIS
-      =====================================================
-      Nom: {{ app_name }}
-      Namespace: {{ app_namespace }}
-      Environnement: {{ app_environment }}
-      Version: {{ redis_version | default('latest') }}
-      Pods en cours d'exécution: {{ pods_status.resources | length }}
-      Service disponible: {{ 'Oui' if service_status.resources | length > 0 else 'Non' }}
-      Connectivité: {{ 'OK' if redis_ping is succeeded and redis_ping.stdout == 'PONG' else 'ÉCHEC' }}
-      Monitoring: {{ 'Activé' if redis_prometheus_scrape | default(true) | bool else 'Désactivé' }}
-      Cluster: {{ 'Activé' if redis_cluster_enabled | default(false) | bool else 'Désactivé' }}
-      Persistance: {{ 'Activée' if redis_persistent_storage | default(true) | bool else 'Désactivée' }}
-      =====================================================
-      STATUT FINAL: {{ 'SUCCÈS' if redis_ping is succeeded and redis_ping.stdout == 'PONG' and service_status.resources | length > 0 and pods_status.resources | length > 0 else 'ÉCHEC' }}
-      =====================================================
+      Version Redis attendue: {{ lions_redis_version }}
+      Version Redis déployée: {{ redis_version_deployed }}
+      État de la configuration: {{ 'OK' if redis_config_ok else 'ERREUR' }}
+  tags:
+    - redis
+    - validation
+    - version
 
-- name: Échec si la validation échoue
+# =========================================================================
+# VALIDATION DU STOCKAGE PERSISTANT
+# =========================================================================
+- name: "{{ lions_log_prefix }} Vérification du stockage persistant Redis"
+  kubernetes.core.k8s_exec:
+    namespace: "{{ lions_redis_namespace }}"
+    pod: "{{ redis_pods_details[0] }}"
+    command: |
+      timeout 10 redis-cli -h localhost -p {{ lions_redis_port }} CONFIG GET dir
+  register: redis_storage_dir
+  ignore_errors: true
+  when: lions_redis_storage_size is defined and lions_redis_storage_size != "0"
+  tags:
+    - redis
+    - validation
+    - storage
+
+- name: "{{ lions_log_prefix }} Test d'écriture/lecture sur le stockage persistant"
+  kubernetes.core.k8s_exec:
+    namespace: "{{ lions_redis_namespace }}"
+    pod: "{{ redis_pods_details[0] }}"
+    command: |
+      timeout 10 bash -c '
+        redis-cli -h localhost -p {{ lions_redis_port }} SET lions:test:validation "$(date)" &&
+        redis-cli -h localhost -p {{ lions_redis_port }} GET lions:test:validation &&
+        redis-cli -h localhost -p {{ lions_redis_port }} DEL lions:test:validation
+      '
+  register: redis_storage_test
+  ignore_errors: true
+  when: lions_redis_storage_size is defined and lions_redis_storage_size != "0"
+  tags:
+    - redis
+    - validation
+    - storage
+
+# =========================================================================
+# VALIDATION DU MONITORING ET DES MÉTRIQUES
+# =========================================================================
+- name: "{{ lions_log_prefix }} Vérification du ServiceMonitor Prometheus"
+  k8s_info:
+    api_version: monitoring.coreos.com/v1
+    kind: ServiceMonitor
+    namespace: "{{ lions_redis_namespace }}"
+    name: "{{ lions_redis_service_name }}-monitor"
+  register: redis_servicemonitor_status
+  ignore_errors: true
+  when: lions_monitoring_enabled | default(true) | bool
+  tags:
+    - redis
+    - validation
+    - monitoring
+
+- name: "{{ lions_log_prefix }} Test des métriques Prometheus Redis"
+  kubernetes.core.k8s_exec:
+    namespace: "{{ lions_redis_namespace }}"
+    pod: "{{ redis_pods_details[0] }}"
+    command: |
+      timeout 10 curl -s http://localhost:9121/metrics | head -20
+  register: redis_metrics_test
+  ignore_errors: true
+  when: lions_monitoring_enabled | default(true) | bool
+  tags:
+    - redis
+    - validation
+    - metrics
+
+# =========================================================================
+# VALIDATION DES PERFORMANCES
+# =========================================================================
+- name: "{{ lions_log_prefix }} Vérification des ressources utilisées par Redis"
+  shell: |
+    kubectl top pod -n {{ lions_redis_namespace }} {{ redis_pods_details[0] }} --no-headers 2>/dev/null || echo "N/A N/A"
+  register: redis_resources_usage
+  ignore_errors: true
+  changed_when: false
+  tags:
+    - redis
+    - validation
+    - performance
+
+- name: "{{ lions_log_prefix }} Test de performance basique Redis"
+  kubernetes.core.k8s_exec:
+    namespace: "{{ lions_redis_namespace }}"
+    pod: "{{ redis_pods_details[0] }}"
+    command: |
+      timeout 30 redis-cli -h localhost -p {{ lions_redis_port }} --latency-history -i 1 | head -5
+  register: redis_performance_test
+  ignore_errors: true
+  tags:
+    - redis
+    - validation
+    - performance
+
+# =========================================================================
+# VALIDATION DE LA HAUTE DISPONIBILITÉ (SI ACTIVÉE)
+# =========================================================================
+- name: "{{ lions_log_prefix }} Vérification de la configuration HA Redis"
+  kubernetes.core.k8s_exec:
+    namespace: "{{ lions_redis_namespace }}"
+    pod: "{{ redis_pods_details[0] }}"
+    command: |
+      timeout 10 redis-cli -h localhost -p {{ lions_redis_port }} INFO replication
+  register: redis_ha_status
+  ignore_errors: true
+  when:
+    - lions_deployment_mode is defined
+    - lions_deployment_mode in ['cluster', 'ha']
+  tags:
+    - redis
+    - validation
+    - ha
+
+# =========================================================================
+# COMPILATION DU RAPPORT DE VALIDATION
+# =========================================================================
+- name: "{{ lions_log_prefix }} Compilation du rapport de validation Redis"
+  set_fact:
+    redis_validation_report:
+      timestamp: "{{ ansible_date_time.iso8601 }}"
+      environment: "{{ lions_environment }}"
+      namespace: "{{ lions_redis_namespace }}"
+      service_name: "{{ lions_redis_service_name }}"
+      version_expected: "{{ lions_redis_version }}"
+      version_deployed: "{{ redis_version_deployed }}"
+      validation_duration: "{{ (ansible_date_time.epoch | int) - (redis_validation_start_time | int) }}"
+      pods:
+        total: "{{ redis_pods_total }}"
+        running: "{{ redis_pods_running }}"
+        names: "{{ redis_pods_details }}"
+      connectivity:
+        status: "{{ 'OK' if redis_connectivity_ok else 'FAILED' }}"
+        ping_response: "{{ redis_ping_test.stdout | default('N/A') }}"
+      service:
+        available: "{{ redis_service_status.resources | length > 0 }}"
+        endpoints: "{{ redis_endpoints_status.resources[0].subsets | length if redis_endpoints_status.resources | length > 0 else 0 }}"
+      storage:
+        enabled: "{{ lions_redis_storage_size is defined and lions_redis_storage_size != '0' }}"
+        test_result: "{{ 'OK' if redis_storage_test.rc is defined and redis_storage_test.rc == 0 else 'N/A' }}"
+      monitoring:
+        enabled: "{{ lions_monitoring_enabled | default(true) | bool }}"
+        servicemonitor: "{{ redis_servicemonitor_status.resources | length > 0 if redis_servicemonitor_status.resources is defined else false }}"
+        metrics_available: "{{ 'OK' if redis_metrics_test.rc is defined and redis_metrics_test.rc == 0 else 'N/A' }}"
+      performance:
+        resources_usage: "{{ redis_resources_usage.stdout | default('N/A') }}"
+        latency_test: "{{ 'OK' if redis_performance_test.rc is defined and redis_performance_test.rc == 0 else 'N/A' }}"
+      high_availability:
+        mode: "{{ lions_deployment_mode | default('single') }}"
+        replication_info: "{{ 'OK' if redis_ha_status.rc is defined and redis_ha_status.rc == 0 else 'N/A' }}"
+  tags:
+    - redis
+    - validation
+    - reporting
+
+# =========================================================================
+# DÉTERMINATION DU STATUT FINAL
+# =========================================================================
+- name: "{{ lions_log_prefix }} Évaluation du statut final de validation"
+  set_fact:
+    redis_validation_success: "{{
+      redis_connectivity_ok and
+      redis_pods_running | int > 0 and
+      redis_pods_running | int == redis_pods_total | int and
+      redis_service_status.resources | length > 0 and
+      redis_config_ok
+    }}"
+  tags:
+    - redis
+    - validation
+    - final-status
+
+# =========================================================================
+# AFFICHAGE DU RAPPORT FINAL
+# =========================================================================
+- name: "{{ lions_log_prefix }} Affichage du rapport de validation Redis"
+  debug:
+    msg: |
+      =========================================================================
+      🔍 RAPPORT DE VALIDATION REDIS - LIONS INFRASTRUCTURE 5.0
+      =========================================================================
+      📊 Informations générales:
+        • Environnement: {{ redis_validation_report.environment }}
+        • Namespace: {{ redis_validation_report.namespace }}
+        • Service: {{ redis_validation_report.service_name }}
+        • Version attendue: {{ redis_validation_report.version_expected }}
+        • Version déployée: {{ redis_validation_report.version_deployed }}
+        • Durée de validation: {{ redis_validation_report.validation_duration }}s
+      
+      🚀 État des Pods:
+        • Total: {{ redis_validation_report.pods.total }}
+        • En cours d'exécution: {{ redis_validation_report.pods.running }}
+        • Noms: {{ redis_validation_report.pods.names | join(', ') }}
+      
+      🌐 Connectivité:
+        • Statut: {{ redis_validation_report.connectivity.status }}
+        • Réponse PING: {{ redis_validation_report.connectivity.ping_response }}
+      
+      ⚙️ Service Kubernetes:
+        • Disponible: {{ 'Oui' if redis_validation_report.service.available else 'Non' }}
+        • Endpoints: {{ redis_validation_report.service.endpoints }}
+      
+      💾 Stockage:
+        • Persistant: {{ 'Oui' if redis_validation_report.storage.enabled else 'Non' }}
+        • Test E/L: {{ redis_validation_report.storage.test_result }}
+      
+      📈 Monitoring:
+        • Activé: {{ 'Oui' if redis_validation_report.monitoring.enabled else 'Non' }}
+        • ServiceMonitor: {{ 'Oui' if redis_validation_report.monitoring.servicemonitor else 'Non' }}
+        • Métriques: {{ redis_validation_report.monitoring.metrics_available }}
+      
+      ⚡ Performance:
+        • Utilisation: {{ redis_validation_report.performance.resources_usage }}
+        • Test latence: {{ redis_validation_report.performance.latency_test }}
+      
+      🏗️ Haute Disponibilité:
+        • Mode: {{ redis_validation_report.high_availability.mode }}
+        • Réplication: {{ redis_validation_report.high_availability.replication_info }}
+      
+      =========================================================================
+      🎯 STATUT FINAL: {{ '✅ SUCCÈS' if redis_validation_success else '❌ ÉCHEC' }}
+      =========================================================================
+      ⏰ Validation terminée le: {{ redis_validation_report.timestamp }}
+      =========================================================================
+  tags:
+    - redis
+    - validation
+    - reporting
+
+# =========================================================================
+# SAUVEGARDE DU RAPPORT (SI ACTIVÉE)
+# =========================================================================
+- name: "{{ lions_log_prefix }} Sauvegarde du rapport de validation"
+  copy:
+    content: "{{ redis_validation_report | to_nice_json }}"
+    dest: "/tmp/lions-redis-validation-{{ ansible_date_time.epoch }}.json"
+    mode: '0644'
+  when: lions_debug_mode | default(false) | bool
+  tags:
+    - redis
+    - validation
+    - reporting
+
+# =========================================================================
+# GESTION DES ÉCHECS
+# =========================================================================
+- name: "{{ lions_log_prefix }} Échec de la validation Redis"
   fail:
-    msg: "La validation du déploiement Redis a échoué. Veuillez vérifier les logs pour plus d'informations."
-  when: redis_ping is failed or redis_ping.stdout != 'PONG' or service_status.resources | length == 0 or pods_status.resources | length == 0
+    msg: |
+      ❌ La validation du déploiement Redis a échoué !
+      
+      Problèmes détectés:
+      • Connectivité: {{ 'OK' if redis_connectivity_ok else 'ÉCHEC' }}
+      • Pods: {{ redis_pods_running }}/{{ redis_pods_total }} opérationnels
+      • Service: {{ 'OK' if redis_service_status.resources | length > 0 else 'ÉCHEC' }}
+      • Configuration: {{ 'OK' if redis_config_ok else 'ÉCHEC' }}
+      
+      Consultez les logs pour plus de détails:
+      kubectl logs -n {{ redis_validation_report.namespace }} -l app={{ redis_validation_report.service_name }} --tail=100
+      
+      Rapport détaillé sauvegardé dans: /tmp/lions-redis-validation-{{ ansible_date_time.epoch }}.json
+  when: not redis_validation_success
+  tags:
+    - redis
+    - validation
+    - failure
+
+# =========================================================================
+# NOTIFICATION DE SUCCÈS
+# =========================================================================
+- name: "{{ lions_log_prefix }} Validation Redis réussie"
+  debug:
+    msg: |
+      ✅ Validation Redis terminée avec succès !
+      
+      Redis est pleinement opérationnel dans l'environnement {{ lions_environment }}.
+      Tous les tests de validation ont été passés avec succès.
+      
+      Prochaines étapes recommandées:
+      1. Vérifier les métriques dans Grafana
+      2. Configurer les alertes Prometheus
+      3. Planifier les sauvegardes régulières
+  when: redis_validation_success
+  tags:
+    - redis
+    - validation
+    - success

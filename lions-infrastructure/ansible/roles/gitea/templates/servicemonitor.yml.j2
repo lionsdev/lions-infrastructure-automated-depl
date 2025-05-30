@@ -1,46 +1,264 @@
 ---
-# Titre: Template de ServiceMonitor Kubernetes pour Gitea
-# Description: Définit le ServiceMonitor Kubernetes pour Gitea
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# =========================================================================
+# LIONS INFRASTRUCTURE 5.0 - SERVICEMONITOR GITEA
+# =========================================================================
+# Description: Template ServiceMonitor Kubernetes pour le monitoring Gitea
+# Composant: Gitea Git Repository Management
+# Version: 5.0.0
+# Maintainer: DevOps Team LIONS
+# Documentation: https://docs.lions.dev/infrastructure/monitoring/gitea
+# Dépendances: Prometheus Operator, Gitea Service
+# =========================================================================
 
+{% if lions_monitoring_enabled | default(true) | bool and lions_gitea_enabled | default(true) | bool %}
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: "{{ app_name }}"
-  namespace: "{{ app_namespace }}"
+  name: "{{ lions_gitea_servicemonitor_name | default('gitea-metrics') }}"
+  namespace: "{{ lions_gitea_namespace | default('development') }}"
   labels:
-    app: "{{ app_name }}"
-    version: "{{ app_version }}"
-    environment: "{{ app_environment }}"
-    technology: "gitea"
-    prometheus: k8s
+    # Labels standardisés LIONS
+    app.kubernetes.io/name: gitea
+    app.kubernetes.io/instance: "{{ lions_gitea_service_name | default('gitea') }}"
+    app.kubernetes.io/version: "{{ lions_gitea_version | default('1.20.5') }}"
+    app.kubernetes.io/component: git-repository
+    app.kubernetes.io/part-of: lions-infrastructure
+    app.kubernetes.io/managed-by: ansible
+
+    # Labels spécifiques LIONS
+    lions.dev/environment: "{{ lions_environment | default('development') }}"
+    lions.dev/tier: development
+    lions.dev/monitoring-enabled: "true"
+    lions.dev/backup-enabled: "{{ lions_gitea_backup_enabled | default('true') }}"
+
+    # Labels Prometheus
+    prometheus.io/scrape: "true"
+    prometheus.io/instance: "{{ lions_gitea_service_name | default('gitea') }}"
+    monitoring.coreos.com/prometheus: "{{ lions_prometheus_instance | default('kube-prometheus') }}"
+
+    # Labels de release et versioning
+    helm.sh/chart: "gitea-{{ lions_gitea_chart_version | default('1.0.0') }}"
+    version: "{{ lions_gitea_version | default('1.20.5') }}"
+
   annotations:
-    description: "ServiceMonitor pour Gitea {{ app_name }} ({{ app_version }}) en environnement {{ app_environment }}"
+    # Annotations de documentation
+    lions.dev/description: "ServiceMonitor pour le monitoring des métriques Gitea"
+    lions.dev/documentation: "https://docs.lions.dev/infrastructure/monitoring/gitea"
+    lions.dev/support-contact: "{{ lions_support_contact | default('devops@lions.dev') }}"
+    lions.dev/deployment-date: "{{ ansible_date_time.iso8601 }}"
+
+    # Annotations de monitoring
+    prometheus.io/path: "{{ lions_gitea_metrics_path | default('/metrics') }}"
+    prometheus.io/port: "{{ lions_gitea_metrics_port | default('3000') }}"
+    prometheus.io/scheme: "{{ lions_gitea_metrics_scheme | default('http') }}"
+
+    # Annotations de configuration
+    config.kubernetes.io/local-config: "true"
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {
+        "component": "gitea-servicemonitor",
+        "version": "5.0.0",
+        "environment": "{{ lions_environment }}",
+        "timestamp": "{{ ansible_date_time.iso8601 }}"
+      }
+
 spec:
+  # Sélection du service à monitorer
   selector:
     matchLabels:
-      app: "{{ app_name }}"
+      app.kubernetes.io/name: gitea
+      app.kubernetes.io/instance: "{{ lions_gitea_service_name | default('gitea') }}"
+      lions.dev/monitoring-enabled: "true"
+
+  # Sélection du namespace
   namespaceSelector:
     matchNames:
-      - "{{ app_namespace }}"
+      - "{{ lions_gitea_namespace | default('development') }}"
+
+  # Configuration des endpoints de monitoring
   endpoints:
-    - port: http
-      path: "{{ gitea_metrics_path }}"
-      interval: 15s
-      scrapeTimeout: 10s
-      honorLabels: true
+    - port: "{{ lions_gitea_metrics_port_name | default('metrics') }}"
+      path: "{{ lions_gitea_metrics_path | default('/metrics') }}"
+      scheme: "{{ lions_gitea_metrics_scheme | default('http') }}"
+
+      # Configuration des intervalles
+      interval: "{{ lions_gitea_metrics_interval | default('30s') }}"
+      scrapeTimeout: "{{ lions_gitea_metrics_timeout | default('25s') }}"
+
+      # Configuration avancée
+      honorLabels: {{ lions_gitea_metrics_honor_labels | default(true) | bool }}
+      honorTimestamps: {{ lions_gitea_metrics_honor_timestamps | default(true) | bool }}
+
+      # Configuration TLS si activée
+      {% if lions_security_tls_enabled | default(true) | bool %}
+      tlsConfig:
+        serverName: "{{ lions_gitea_service_name | default('gitea') }}.{{ lions_gitea_namespace | default('development') }}.svc.cluster.local"
+        insecureSkipVerify: {{ lions_gitea_metrics_tls_skip_verify | default(false) | bool }}
+        {% if lions_gitea_metrics_ca_file is defined %}
+        caFile: "{{ lions_gitea_metrics_ca_file }}"
+        {% endif %}
+        {% if lions_gitea_metrics_cert_file is defined %}
+        certFile: "{{ lions_gitea_metrics_cert_file }}"
+        keyFile: "{{ lions_gitea_metrics_key_file }}"
+        {% endif %}
+      {% endif %}
+
+      # Configuration de l'authentification si nécessaire
+      {% if lions_gitea_metrics_auth_enabled | default(false) | bool %}
+      basicAuth:
+        username:
+          name: "{{ lions_gitea_metrics_auth_secret | default('gitea-metrics-auth') }}"
+          key: username
+        password:
+          name: "{{ lions_gitea_metrics_auth_secret | default('gitea-metrics-auth') }}"
+          key: password
+      {% endif %}
+
+      # Relabeling des métriques - Optimisé pour Gitea
       metricRelabelings:
+        # Préservation des métriques Gitea core
         - sourceLabels: [__name__]
-          regex: 'gitea_.*'
+          regex: '^gitea_.*'
           action: keep
+
+        # Préservation des métriques Go runtime
         - sourceLabels: [__name__]
-          regex: 'go_.*'
+          regex: '^go_(memstats_|gc_|goroutines|threads)'
           action: keep
+
+        # Préservation des métriques de processus système
         - sourceLabels: [__name__]
-          regex: 'process_.*'
+          regex: '^process_(cpu_seconds_total|resident_memory_bytes|virtual_memory_bytes|open_fds|max_fds|start_time_seconds)'
           action: keep
+
+        # Préservation des métriques HTTP
         - sourceLabels: [__name__]
-          regex: 'promhttp_.*'
+          regex: '^http_(requests_total|request_duration_seconds.*|request_size_bytes.*|response_size_bytes.*)'
           action: keep
+
+        # Préservation des métriques Prometheus client
+        - sourceLabels: [__name__]
+          regex: '^promhttp_(metric_handler_requests_total|metric_handler_requests_in_flight)'
+          action: keep
+
+        # Ajout du label d'environnement
+        - targetLabel: lions_environment
+          replacement: "{{ lions_environment | default('development') }}"
+
+        # Ajout du label de cluster
+        - targetLabel: lions_cluster
+          replacement: "{{ lions_k8s_cluster_name | default('lions-k3s') }}"
+
+        # Ajout du label de région/zone si défini
+        {% if lions_deployment_region is defined %}
+        - targetLabel: lions_region
+          replacement: "{{ lions_deployment_region }}"
+        {% endif %}
+
+        # Normalisation des labels de service
+        - sourceLabels: [service]
+          targetLabel: kubernetes_service
+
+        # Normalisation des labels de pod
+        - sourceLabels: [pod]
+          targetLabel: kubernetes_pod
+
+        # Suppression des métriques de debug si pas en mode debug
+        {% if not (lions_debug_mode | default(false) | bool) %}
+        - sourceLabels: [__name__]
+          regex: '^.*_debug_.*'
+          action: drop
+        {% endif %}
+
+        # Suppression des métriques trop granulaires en production
+        {% if lions_environment == 'production' %}
+        - sourceLabels: [__name__]
+          regex: '^go_memstats_(?!alloc_bytes|sys_bytes|heap_.*|stack_.*)'
+          action: drop
+        {% endif %}
+
+      # Relabeling des targets
+      relabelings:
+        # Préservation du nom du service source
+        - sourceLabels: [__meta_kubernetes_service_name]
+          targetLabel: kubernetes_service_name
+
+        # Préservation du namespace source
+        - sourceLabels: [__meta_kubernetes_namespace]
+          targetLabel: kubernetes_namespace
+
+        # Ajout du label de deployment
+        - sourceLabels: [__meta_kubernetes_service_label_app_kubernetes_io_instance]
+          targetLabel: deployment
+
+        # Ajout du label de version
+        - sourceLabels: [__meta_kubernetes_service_label_app_kubernetes_io_version]
+          targetLabel: version
+
+        # Configuration du job name
+        - targetLabel: __metrics_path__
+          replacement: "{{ lions_gitea_metrics_path | default('/metrics') }}"
+
+        # Configuration de l'adresse cible
+        - sourceLabels: [__address__]
+          targetLabel: __param_target
+        - sourceLabels: [__param_target]
+          targetLabel: instance
+        - targetLabel: __address__
+          replacement: "{{ lions_gitea_service_name | default('gitea') }}.{{ lions_gitea_namespace | default('development') }}.svc.cluster.local:{{ lions_gitea_metrics_port | default('3000') }}"
+
+  # Configuration des limites pour éviter la surcharge
+  {% if lions_environment == 'production' %}
+  sampleLimit: {{ lions_gitea_metrics_sample_limit | default(10000) }}
+  targetLimit: {{ lions_gitea_metrics_target_limit | default(100) }}
+  labelLimit: {{ lions_gitea_metrics_label_limit | default(50) }}
+  labelNameLengthLimit: {{ lions_gitea_metrics_label_name_length_limit | default(200) }}
+  labelValueLengthLimit: {{ lions_gitea_metrics_label_value_length_limit | default(200) }}
+  {% endif %}
+
+{% else %}
+# =========================================================================
+# MONITORING DÉSACTIVÉ
+# =========================================================================
+# Le monitoring ou Gitea est désactivé dans la configuration
+# Conditions:
+# - lions_monitoring_enabled: {{ lions_monitoring_enabled | default(true) }}
+# - lions_gitea_enabled: {{ lions_gitea_enabled | default(true) }}
+# =========================================================================
+{% endif %}
+
+---
+# =========================================================================
+# CONFIGURATION DE SERVICE POUR MÉTRIQUES (si nécessaire)
+# =========================================================================
+{% if lions_monitoring_enabled | default(true) | bool and lions_gitea_enabled | default(true) | bool and lions_gitea_create_metrics_service | default(false) | bool %}
+apiVersion: v1
+kind: Service
+metadata:
+  name: "{{ lions_gitea_service_name | default('gitea') }}-metrics"
+  namespace: "{{ lions_gitea_namespace | default('development') }}"
+  labels:
+    app.kubernetes.io/name: gitea
+    app.kubernetes.io/instance: "{{ lions_gitea_service_name | default('gitea') }}"
+    app.kubernetes.io/version: "{{ lions_gitea_version | default('1.20.5') }}"
+    app.kubernetes.io/component: metrics
+    app.kubernetes.io/part-of: lions-infrastructure
+    lions.dev/environment: "{{ lions_environment | default('development') }}"
+    lions.dev/tier: development
+    lions.dev/monitoring-enabled: "true"
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/path: "{{ lions_gitea_metrics_path | default('/metrics') }}"
+    prometheus.io/port: "{{ lions_gitea_metrics_port | default('3000') }}"
+    lions.dev/description: "Service dédié aux métriques Gitea"
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: gitea
+    app.kubernetes.io/instance: "{{ lions_gitea_service_name | default('gitea') }}"
+  ports:
+    - name: metrics
+      port: {{ lions_gitea_metrics_port | default('3000') }}
+      targetPort: {{ lions_gitea_metrics_port | default('3000') }}
+      protocol: TCP
+{% endif %}
