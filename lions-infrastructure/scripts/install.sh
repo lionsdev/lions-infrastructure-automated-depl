@@ -1,16 +1,11 @@
 #!/bin/bash
 # =============================================================================
-# LIONS Infrastructure - Script d'installation principal
+# LIONS Infrastructure - Script d'installation principal v5.0
 # =============================================================================
-# Titre: Script d'installation de l'infrastructure LIONS sur VPS
-# Description: Orchestre l'installation complète de l'infrastructure LIONS sur un VPS
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-24
-# Version: 2.0.0
-# =============================================================================
-# Changelog:
-# - 2.0.0 (2025-05-24): Mise à jour majeure avec support K3s 1.30, sécurité renforcée
-# - 1.2.0 (2023-05-15): Version initiale stable
+# Description: Script d'installation principal avec variables d'environnement pour l'environnement ${LIONS_ENVIRONMENT:-development}
+# Version: 5.0.0
+# Date: 01/06/2025
+# Auteur: LIONS DevOps Team
 # =============================================================================
 
 # Chargement des variables d'environnement
@@ -22,18 +17,102 @@ if [ -f "${SCRIPT_DIR}/load-env.sh" ]; then
     source "${SCRIPT_DIR}/load-env.sh"
 fi
 
-# Configuration
-readonly ANSIBLE_DIR="${PROJECT_ROOT}/ansible"
-readonly LOG_DIR="./logs/infrastructure"
+# =============================================================================
+# CONFIGURATION DEPUIS VARIABLES D'ENVIRONNEMENT
+# =============================================================================
+# Configuration de base
+readonly LIONS_ENVIRONMENT="${LIONS_ENVIRONMENT:-development}"
+readonly DEFAULT_ENV="${LIONS_ENVIRONMENT}"
+
+# Configuration des chemins
+readonly ANSIBLE_DIR="${LIONS_ANSIBLE_DIR:-${PROJECT_ROOT}/ansible}"
+readonly LOG_DIR="${LIONS_LOG_DIR:-./logs/infrastructure}"
 readonly LOG_FILE="${LOG_DIR}/install-$(date +%Y%m%d-%H%M%S).log"
-readonly DEFAULT_ENV="${LIONS_ENV:-development}"
-readonly BACKUP_DIR="${LOG_DIR}/backups"
-readonly STATE_FILE="${LOG_DIR}/.installation_state"
-readonly LOCK_FILE="/tmp/lions_install.lock"
-readonly REQUIRED_SPACE_MB="${LIONS_REQUIRED_SPACE_MB:-5000}"  # 5 Go d'espace disque requis
-readonly TIMEOUT_SECONDS="${LIONS_TIMEOUT_SECONDS:-1800}"    # 30 minutes de timeout pour les commandes longues
-readonly REQUIRED_PORTS=(${LI ONS_VPS_PORT:-22} 80 443 6443 8080 30000 30001)
-readonly SUDO_ALWAYS_ASK="${LIONS_SUDO_ALWAYS_ASK:-true}"    # Toujours demander le mot de passe pour sudo
+readonly BACKUP_DIR="${LIONS_BACKUP_DIR:-${LOG_DIR}/backups}"
+readonly STATE_FILE="${LIONS_STATE_FILE:-${LOG_DIR}/.installation_state}"
+readonly LOCK_FILE="${LIONS_LOCK_FILE:-/tmp/lions_install.lock}"
+
+# Configuration des ressources et limites
+readonly REQUIRED_SPACE_MB="${LIONS_REQUIRED_SPACE_MB:-5000}"
+readonly TIMEOUT_SECONDS="${LIONS_TIMEOUT_SECONDS:-1800}"
+readonly MAX_RETRIES="${LIONS_MAX_RETRIES:-3}"
+readonly SUDO_ALWAYS_ASK="${LIONS_SUDO_ALWAYS_ASK:-true}"
+
+# Configuration des ports
+readonly VPS_PORT="${LIONS_VPS_PORT:-22}"
+readonly HTTP_PORT="${LIONS_HTTP_PORT:-80}"
+readonly HTTPS_PORT="${LIONS_HTTPS_PORT:-443}"
+readonly K3S_API_PORT="${LIONS_K3S_API_PORT:-6443}"
+readonly APP_PORT_1="${LIONS_APP_PORT_1:-8080}"
+readonly NODEPORT_START="${LIONS_NODEPORT_START:-30000}"
+readonly NODEPORT_END="${LIONS_NODEPORT_END:-32767}"
+readonly REQUIRED_PORTS=(${VPS_PORT} ${HTTP_PORT} ${HTTPS_PORT} ${K3S_API_PORT} ${APP_PORT_1} ${NODEPORT_START} ${NODEPORT_END})
+
+# Configuration du debugging et logging
+readonly DEBUG_MODE="${LIONS_DEBUG_MODE:-false}"
+readonly VERBOSE_MODE="${LIONS_VERBOSE_MODE:-false}"
+readonly LOG_LEVEL="${LIONS_LOG_LEVEL:-INFO}"
+readonly LOG_MAX_SIZE="${LIONS_LOG_MAX_SIZE:-10485760}"  # 10MB
+readonly LOG_RETENTION_DAYS="${LIONS_LOG_RETENTION_DAYS:-7}"
+
+# Configuration Ansible
+readonly ANSIBLE_BECOME_ASK_PASS="${LIONS_ANSIBLE_BECOME_ASK_PASS:-true}"
+readonly ANSIBLE_HOST_KEY_CHECKING="${LIONS_ANSIBLE_HOST_KEY_CHECKING:-false}"
+readonly ANSIBLE_TIMEOUT="${LIONS_ANSIBLE_TIMEOUT:-300}"
+readonly ANSIBLE_SSH_RETRIES="${LIONS_ANSIBLE_SSH_RETRIES:-3}"
+
+# Configuration VPS
+readonly VPS_MEMORY_MIN_GB="${LIONS_VPS_MEMORY_MIN_GB:-2}"
+readonly VPS_CPU_MIN_CORES="${LIONS_VPS_CPU_MIN_CORES:-2}"
+readonly VPS_DISK_MIN_GB="${LIONS_VPS_DISK_MIN_GB:-20}"
+readonly VPS_SSH_TIMEOUT="${LIONS_VPS_SSH_TIMEOUT:-10}"
+readonly VPS_HEALTH_CHECK_INTERVAL="${LIONS_VPS_HEALTH_CHECK_INTERVAL:-30}"
+
+# Configuration K3s
+readonly K3S_VERSION="${LIONS_K3S_VERSION:-v1.30.0+k3s1}"
+readonly K3S_CHANNEL="${LIONS_K3S_CHANNEL:-stable}"
+readonly K3S_TOKEN="${LIONS_K3S_TOKEN:-}"
+readonly K3S_DATASTORE_ENDPOINT="${LIONS_K3S_DATASTORE_ENDPOINT:-}"
+readonly K3S_DISABLE_COMPONENTS="${LIONS_K3S_DISABLE_COMPONENTS:-traefik,servicelb}"
+readonly K3S_NODE_LABELS="${LIONS_K3S_NODE_LABELS:-}"
+readonly K3S_NODE_TAINTS="${LIONS_K3S_NODE_TAINTS:-}"
+
+# Configuration des applications
+readonly GRAFANA_ADMIN_USER="${LIONS_GRAFANA_ADMIN_USER:-admin}"
+readonly GRAFANA_ADMIN_PASSWORD="${LIONS_GRAFANA_ADMIN_PASSWORD:-admin}"
+readonly PROMETHEUS_RETENTION="${LIONS_PROMETHEUS_RETENTION:-15d}"
+readonly ALERTMANAGER_WEBHOOK_URL="${LIONS_ALERTMANAGER_WEBHOOK_URL:-}"
+
+# Configuration de sécurité
+readonly ENABLE_FIREWALL="${LIONS_ENABLE_FIREWALL:-true}"
+readonly ENABLE_FAIL2BAN="${LIONS_ENABLE_FAIL2BAN:-true}"
+readonly SSH_KEY_PATH="${LIONS_SSH_KEY_PATH:-~/.ssh/id_rsa}"
+readonly DISABLE_ROOT_LOGIN="${LIONS_DISABLE_ROOT_LOGIN:-true}"
+
+# Configuration de sauvegarde
+readonly BACKUP_ENABLED="${LIONS_BACKUP_ENABLED:-true}"
+readonly BACKUP_SCHEDULE="${LIONS_BACKUP_SCHEDULE:-0 2 * * *}"
+readonly BACKUP_RETENTION_DAYS="${LIONS_BACKUP_RETENTION_DAYS:-30}"
+readonly BACKUP_STORAGE_PATH="${LIONS_BACKUP_STORAGE_PATH:-/var/backups/lions}"
+
+# Configuration de monitoring
+readonly MONITORING_ENABLED="${LIONS_MONITORING_ENABLED:-true}"
+readonly METRICS_RETENTION="${LIONS_METRICS_RETENTION:-15d}"
+readonly ALERT_MANAGER_ENABLED="${LIONS_ALERT_MANAGER_ENABLED:-true}"
+readonly GRAFANA_ENABLED="${LIONS_GRAFANA_ENABLED:-true}"
+
+# Configuration réseau
+readonly CLUSTER_CIDR="${LIONS_CLUSTER_CIDR:-10.42.0.0/16}"
+readonly SERVICE_CIDR="${LIONS_SERVICE_CIDR:-10.43.0.0/16}"
+readonly CLUSTER_DNS="${LIONS_CLUSTER_DNS:-10.43.0.10}"
+readonly CLUSTER_DOMAIN="${LIONS_CLUSTER_DOMAIN:-cluster.local}"
+
+# Configuration avancée
+readonly SKIP_INIT="${LIONS_SKIP_INIT:-false}"
+readonly TEST_MODE="${LIONS_TEST_MODE:-false}"
+readonly DRY_RUN="${LIONS_DRY_RUN:-false}"
+readonly FORCE_REINSTALL="${LIONS_FORCE_REINSTALL:-false}"
+readonly AUTO_APPROVE="${LIONS_AUTO_APPROVE:-false}"
 
 # Couleurs pour l'affichage
 readonly COLOR_RESET="\033[0m"
@@ -46,12 +125,24 @@ readonly COLOR_CYAN="\033[0;36m"
 readonly COLOR_WHITE="\033[0;37m"
 readonly COLOR_BOLD="\033[1m"
 
-# Variables globales
+# =============================================================================
+# VARIABLES GLOBALES
+# =============================================================================
 INSTALLATION_STEP=""
 LAST_COMMAND=""
 LAST_ERROR=""
 RETRY_COUNT=0
-MAX_RETRIES=3
+debug_mode="${DEBUG_MODE}"
+verbose_mode="${VERBOSE_MODE}"
+test_mode="${TEST_MODE}"
+skip_init="${SKIP_INIT}"
+dry_run="${DRY_RUN}"
+force_reinstall="${FORCE_REINSTALL}"
+auto_approve="${AUTO_APPROVE}"
+
+# Variables d'environnement par défaut (peuvent être surchargées par les arguments)
+environment="${LIONS_ENVIRONMENT}"
+inventory_file="inventories/${environment}/hosts.yml"
 
 # Création des répertoires nécessaires
 mkdir -p "${LOG_DIR}"

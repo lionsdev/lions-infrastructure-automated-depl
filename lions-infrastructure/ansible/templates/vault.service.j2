@@ -1,34 +1,337 @@
+# =============================================================================
+# LIONS Infrastructure - Service HashiCorp Vault v5.0
+# =============================================================================
+# Description: Service systemd pour HashiCorp Vault avec variables d'environnement
+# Environnement: {{ lookup('env', 'LIONS_ENVIRONMENT') | default('development') }}
+# Version: 5.0.0
+# Date: 01/06/2025
+# Auteur: LIONS DevOps Team
+# =============================================================================
+
 [Unit]
-Description=HashiCorp Vault - Un gestionnaire de secrets sécurisé
-Documentation=https://www.vaultproject.io/docs/
+Description={{ lookup('env', 'LIONS_VAULT_SERVICE_DESCRIPTION') | default('LIONS HashiCorp Vault - Gestionnaire de secrets sécurisé') }}
+Documentation={{ lookup('env', 'LIONS_VAULT_DOCUMENTATION_URL') | default('https://www.vaultproject.io/docs/') }}
+
+# Dépendances réseau
 Requires=network-online.target
 After=network-online.target
-ConditionFileNotEmpty={{ vault_config_path }}/vault.hcl
-StartLimitIntervalSec=60
-StartLimitBurst=3
+{% if lookup('env', 'LIONS_VAULT_WAIT_DNS') | default('true') | bool -%}
+After=systemd-resolved.service
+{% endif -%}
+{% if lookup('env', 'LIONS_VAULT_WAIT_TIME_SYNC') | default('true') | bool -%}
+After=systemd-timesyncd.service
+{% endif -%}
+
+# Dépendances optionnelles
+{% if lookup('env', 'LIONS_VAULT_REQUIRES_CONSUL') | default('false') | bool -%}
+After=consul.service
+Requires=consul.service
+{% endif -%}
+{% if lookup('env', 'LIONS_VAULT_REQUIRES_DATABASE') | default('false') | bool -%}
+After={{ lookup('env', 'LIONS_VAULT_DATABASE_SERVICE') | default('postgresql.service') }}
+Wants={{ lookup('env', 'LIONS_VAULT_DATABASE_SERVICE') | default('postgresql.service') }}
+{% endif -%}
+
+# Vérifications de conditions
+ConditionFileNotEmpty={{ lookup('env', 'LIONS_VAULT_CONFIG_PATH') | default('/etc/vault') }}/vault.hcl
+{% if lookup('env', 'LIONS_VAULT_CONDITION_USER_EXISTS') | default('true') | bool -%}
+ConditionUser={{ lookup('env', 'LIONS_VAULT_USER') | default('vault') }}
+{% endif -%}
+{% if lookup('env', 'LIONS_VAULT_CONDITION_DIRECTORY_EXISTS') | default('true') | bool -%}
+ConditionDirectoryNotEmpty={{ lookup('env', 'LIONS_VAULT_DATA_PATH') | default('/vault/data') }}
+{% endif -%}
+
+# Configuration de limitation des redémarrages
+StartLimitIntervalSec={{ lookup('env', 'LIONS_VAULT_START_LIMIT_INTERVAL') | default('60') }}
+StartLimitBurst={{ lookup('env', 'LIONS_VAULT_START_LIMIT_BURST') | default('3') }}
+
+# Configuration de récupération d'échec
+{% if lookup('env', 'LIONS_VAULT_ON_FAILURE_SERVICE') != '' -%}
+OnFailure={{ lookup('env', 'LIONS_VAULT_ON_FAILURE_SERVICE') }}
+{% endif -%}
 
 [Service]
-Type=simple
-User=root
-Group=root
-ProtectSystem=full
-ProtectHome=read-only
-PrivateTmp=yes
-PrivateDevices=yes
-SecureBits=keep-caps
+Type={{ lookup('env', 'LIONS_VAULT_SERVICE_TYPE') | default('notify') }}
+User={{ lookup('env', 'LIONS_VAULT_USER') | default('vault') }}
+Group={{ lookup('env', 'LIONS_VAULT_GROUP') | default('vault') }}
+
+# Configuration des commandes
+ExecStart={{ lookup('env', 'LIONS_VAULT_BINARY_PATH') | default('/usr/local/bin/vault') }} server -config={{ lookup('env', 'LIONS_VAULT_CONFIG_PATH') | default('/etc/vault') }}/vault.hcl{% if lookup('env', 'LIONS_VAULT_ADDITIONAL_ARGS') != '' %} {{ lookup('env', 'LIONS_VAULT_ADDITIONAL_ARGS') }}{% endif %}
+{% if lookup('env', 'LIONS_VAULT_EXEC_START_PRE') != '' -%}
+ExecStartPre={{ lookup('env', 'LIONS_VAULT_EXEC_START_PRE') }}
+{% endif -%}
+{% if lookup('env', 'LIONS_VAULT_EXEC_START_POST') != '' -%}
+ExecStartPost={{ lookup('env', 'LIONS_VAULT_EXEC_START_POST') }}
+{% endif -%}
+ExecReload=/bin/kill --signal {{ lookup('env', 'LIONS_VAULT_RELOAD_SIGNAL') | default('HUP') }} $MAINPID
+{% if lookup('env', 'LIONS_VAULT_EXEC_STOP') != '' -%}
+ExecStop={{ lookup('env', 'LIONS_VAULT_EXEC_STOP') }}
+{% endif -%}
+{% if lookup('env', 'LIONS_VAULT_EXEC_STOP_POST') != '' -%}
+ExecStopPost={{ lookup('env', 'LIONS_VAULT_EXEC_STOP_POST') }}
+{% endif -%}
+
+# Configuration des signaux
+KillMode={{ lookup('env', 'LIONS_VAULT_KILL_MODE') | default('mixed') }}
+KillSignal={{ lookup('env', 'LIONS_VAULT_KILL_SIGNAL') | default('SIGINT') }}
+{% if lookup('env', 'LIONS_VAULT_FINAL_KILL_SIGNAL') != '' -%}
+FinalKillSignal={{ lookup('env', 'LIONS_VAULT_FINAL_KILL_SIGNAL') }}
+{% endif -%}
+
+# Configuration du redémarrage
+Restart={{ lookup('env', 'LIONS_VAULT_RESTART_POLICY') | default('on-failure') }}
+RestartSec={{ lookup('env', 'LIONS_VAULT_RESTART_DELAY') | default('5') }}
+{% if lookup('env', 'LIONS_VAULT_RESTART_PREVENT_EXIT_STATUS') != '' -%}
+RestartPreventExitStatus={{ lookup('env', 'LIONS_VAULT_RESTART_PREVENT_EXIT_STATUS') }}
+{% endif -%}
+{% if lookup('env', 'LIONS_VAULT_RESTART_FORCE_EXIT_STATUS') != '' -%}
+RestartForceExitStatus={{ lookup('env', 'LIONS_VAULT_RESTART_FORCE_EXIT_STATUS') }}
+{% endif -%}
+
+# Configuration des timeouts
+TimeoutStartSec={{ lookup('env', 'LIONS_VAULT_TIMEOUT_START') | default('60') }}
+TimeoutStopSec={{ lookup('env', 'LIONS_VAULT_TIMEOUT_STOP') | default('30') }}
+TimeoutAbortSec={{ lookup('env', 'LIONS_VAULT_TIMEOUT_ABORT') | default('10') }}
+{% if lookup('env', 'LIONS_VAULT_RUNTIME_MAX_SEC') != '' -%}
+RuntimeMaxSec={{ lookup('env', 'LIONS_VAULT_RUNTIME_MAX_SEC') }}
+{% endif -%}
+
+# Configuration des watchdogs
+{% if lookup('env', 'LIONS_VAULT_WATCHDOG_ENABLED') | default('true') | bool -%}
+WatchdogSec={{ lookup('env', 'LIONS_VAULT_WATCHDOG_TIMEOUT') | default('30') }}
+NotifyAccess={{ lookup('env', 'LIONS_VAULT_NOTIFY_ACCESS') | default('main') }}
+{% endif -%}
+
+# =============================================================================
+# CONFIGURATION DE SÉCURITÉ RENFORCÉE
+# =============================================================================
+{% if lookup('env', 'LIONS_VAULT_SECURITY_HARDENING') | default('true') | bool -%}
+# Protection du système de fichiers
+ProtectSystem={{ lookup('env', 'LIONS_VAULT_PROTECT_SYSTEM') | default('strict') }}
+ProtectHome={{ lookup('env', 'LIONS_VAULT_PROTECT_HOME') | default('true') | bool }}
+ProtectKernelTunables={{ lookup('env', 'LIONS_VAULT_PROTECT_KERNEL_TUNABLES') | default('true') | bool }}
+ProtectKernelModules={{ lookup('env', 'LIONS_VAULT_PROTECT_KERNEL_MODULES') | default('true') | bool }}
+ProtectKernelLogs={{ lookup('env', 'LIONS_VAULT_PROTECT_KERNEL_LOGS') | default('true') | bool }}
+ProtectControlGroups={{ lookup('env', 'LIONS_VAULT_PROTECT_CONTROL_GROUPS') | default('true') | bool }}
+ProtectProc={{ lookup('env', 'LIONS_VAULT_PROTECT_PROC') | default('invisible') }}
+ProcSubset={{ lookup('env', 'LIONS_VAULT_PROC_SUBSET') | default('pid') }}
+
+# Isolation des namespaces
+PrivateTmp={{ lookup('env', 'LIONS_VAULT_PRIVATE_TMP') | default('true') | bool }}
+PrivateDevices={{ lookup('env', 'LIONS_VAULT_PRIVATE_DEVICES') | default('true') | bool }}
+PrivateNetwork={{ lookup('env', 'LIONS_VAULT_PRIVATE_NETWORK') | default('false') | bool }}
+PrivateUsers={{ lookup('env', 'LIONS_VAULT_PRIVATE_USERS') | default('false') | bool }}
+PrivateMounts={{ lookup('env', 'LIONS_VAULT_PRIVATE_MOUNTS') | default('true') | bool }}
+PrivateIPC={{ lookup('env', 'LIONS_VAULT_PRIVATE_IPC') | default('true') | bool }}
+
+# Contrôles de privilèges
+NoNewPrivileges={{ lookup('env', 'LIONS_VAULT_NO_NEW_PRIVILEGES') | default('true') | bool }}
+SecureBits={{ lookup('env', 'LIONS_VAULT_SECURE_BITS') | default('keep-caps') }}
+{% if lookup('env', 'LIONS_VAULT_CAPABILITIES') != '' -%}
+CapabilityBoundingSet={{ lookup('env', 'LIONS_VAULT_CAPABILITIES') }}
+AmbientCapabilities={{ lookup('env', 'LIONS_VAULT_CAPABILITIES') }}
+{% else -%}
+CapabilityBoundingSet=CAP_IPC_LOCK CAP_SETUID CAP_SETGID
 AmbientCapabilities=CAP_IPC_LOCK
-NoNewPrivileges=yes
-ExecStart=/usr/local/bin/vault server -config={{ vault_config_path }}/vault.hcl
-ExecReload=/bin/kill --signal HUP $MAINPID
-KillMode=process
-KillSignal=SIGINT
-Restart=on-failure
-RestartSec=5
-TimeoutStopSec=30
-StartLimitInterval=60
-StartLimitBurst=3
-LimitNOFILE=65536
-LimitMEMLOCK=infinity
+{% endif -%}
+
+# Filtrage des appels système
+{% if lookup('env', 'LIONS_VAULT_SYSCALL_FILTER') != '' -%}
+SystemCallFilter={{ lookup('env', 'LIONS_VAULT_SYSCALL_FILTER') }}
+{% else -%}
+SystemCallFilter=@system-service
+SystemCallFilter=~@debug @mount @cpu-emulation @obsolete @privileged @resources
+{% endif -%}
+SystemCallErrorNumber={{ lookup('env', 'LIONS_VAULT_SYSCALL_ERROR_NUMBER') | default('EPERM') }}
+
+# Protection contre les accès non autorisés
+RemoveIPC={{ lookup('env', 'LIONS_VAULT_REMOVE_IPC') | default('true') | bool }}
+RestrictSUIDSGID={{ lookup('env', 'LIONS_VAULT_RESTRICT_SUID_SGID') | default('true') | bool }}
+RestrictRealtime={{ lookup('env', 'LIONS_VAULT_RESTRICT_REALTIME') | default('true') | bool }}
+RestrictNamespaces={{ lookup('env', 'LIONS_VAULT_RESTRICT_NAMESPACES') | default('true') | bool }}
+LockPersonality={{ lookup('env', 'LIONS_VAULT_LOCK_PERSONALITY') | default('true') | bool }}
+MemoryDenyWriteExecute={{ lookup('env', 'LIONS_VAULT_MEMORY_DENY_WRITE_EXECUTE') | default('false') | bool }}
+RestrictAddressFamilies={{ lookup('env', 'LIONS_VAULT_RESTRICT_ADDRESS_FAMILIES') | default('AF_UNIX AF_INET AF_INET6') }}
+
+# Contrôle d'accès au réseau
+{% if lookup('env', 'LIONS_VAULT_IP_ADDRESS_ALLOW') != '' -%}
+IPAddressAllow={{ lookup('env', 'LIONS_VAULT_IP_ADDRESS_ALLOW') }}
+{% endif -%}
+{% if lookup('env', 'LIONS_VAULT_IP_ADDRESS_DENY') != '' -%}
+IPAddressDeny={{ lookup('env', 'LIONS_VAULT_IP_ADDRESS_DENY') }}
+{% endif -%}
+{% endif %}
+
+# =============================================================================
+# CONFIGURATION DES RESSOURCES
+# =============================================================================
+{% if lookup('env', 'LIONS_VAULT_RESOURCE_LIMITS_ENABLED') | default('true') | bool -%}
+# Limites CPU
+{% if lookup('env', 'LIONS_VAULT_CPU_QUOTA') != '' -%}
+CPUQuota={{ lookup('env', 'LIONS_VAULT_CPU_QUOTA') }}
+{% endif -%}
+{% if lookup('env', 'LIONS_VAULT_CPU_WEIGHT') != '' -%}
+CPUWeight={{ lookup('env', 'LIONS_VAULT_CPU_WEIGHT') }}
+{% endif -%}
+{% if lookup('env', 'LIONS_VAULT_CPU_AFFINITY') != '' -%}
+CPUAffinity={{ lookup('env', 'LIONS_VAULT_CPU_AFFINITY') }}
+{% endif -%}
+
+# Limites mémoire
+{% if lookup('env', 'LIONS_VAULT_MEMORY_LIMIT') != '' -%}
+MemoryLimit={{ lookup('env', 'LIONS_VAULT_MEMORY_LIMIT') }}
+{% endif -%}
+{% if lookup('env', 'LIONS_VAULT_MEMORY_SWAP_MAX') != '' -%}
+MemorySwapMax={{ lookup('env', 'LIONS_VAULT_MEMORY_SWAP_MAX') }}
+{% endif -%}
+{% if lookup('env', 'LIONS_VAULT_MEMORY_LOW') != '' -%}
+MemoryLow={{ lookup('env', 'LIONS_VAULT_MEMORY_LOW') }}
+{% endif -%}
+{% if lookup('env', 'LIONS_VAULT_MEMORY_HIGH') != '' -%}
+MemoryHigh={{ lookup('env', 'LIONS_VAULT_MEMORY_HIGH') }}
+{% endif -%}
+{% if lookup('env', 'LIONS_VAULT_MEMORY_MAX') != '' -%}
+MemoryMax={{ lookup('env', 'LIONS_VAULT_MEMORY_MAX') }}
+{% endif -%}
+
+# Limites I/O
+{% if lookup('env', 'LIONS_VAULT_IO_WEIGHT') != '' -%}
+IOWeight={{ lookup('env', 'LIONS_VAULT_IO_WEIGHT') }}
+{% endif -%}
+{% if lookup('env', 'LIONS_VAULT_BLOCK_IO_WEIGHT') != '' -%}
+BlockIOWeight={{ lookup('env', 'LIONS_VAULT_BLOCK_IO_WEIGHT') }}
+{% endif -%}
+{% if lookup('env', 'LIONS_VAULT_IO_READ_BANDWIDTH_MAX') != '' -%}
+IOReadBandwidthMax={{ lookup('env', 'LIONS_VAULT_IO_READ_BANDWIDTH_MAX') }}
+{% endif -%}
+{% if lookup('env', 'LIONS_VAULT_IO_WRITE_BANDWIDTH_MAX') != '' -%}
+IOWriteBandwidthMax={{ lookup('env', 'LIONS_VAULT_IO_WRITE_BANDWIDTH_MAX') }}
+{% endif -%}
+
+# Limites sur les tâches et les descripteurs de fichiers
+TasksMax={{ lookup('env', 'LIONS_VAULT_TASKS_MAX') | default('4096') }}
+LimitNOFILE={{ lookup('env', 'LIONS_VAULT_LIMIT_NOFILE') | default('65536') }}
+LimitNPROC={{ lookup('env', 'LIONS_VAULT_LIMIT_NPROC') | default('4096') }}
+LimitMEMLOCK={{ lookup('env', 'LIONS_VAULT_LIMIT_MEMLOCK') | default('infinity') }}
+{% if lookup('env', 'LIONS_VAULT_LIMIT_CORE') != '' -%}
+LimitCORE={{ lookup('env', 'LIONS_VAULT_LIMIT_CORE') }}
+{% endif -%}
+{% if lookup('env', 'LIONS_VAULT_LIMIT_AS') != '' -%}
+LimitAS={{ lookup('env', 'LIONS_VAULT_LIMIT_AS') }}
+{% endif -%}
+{% endif %}
+
+# =============================================================================
+# CONFIGURATION DU LOGGING
+# =============================================================================
+StandardOutput={{ lookup('env', 'LIONS_VAULT_STDOUT') | default('journal') }}
+StandardError={{ lookup('env', 'LIONS_VAULT_STDERR') | default('journal') }}
+SyslogIdentifier={{ lookup('env', 'LIONS_VAULT_SYSLOG_IDENTIFIER') | default('lions-vault') }}
+SyslogFacility={{ lookup('env', 'LIONS_VAULT_SYSLOG_FACILITY') | default('auth') }}
+SyslogLevel={{ lookup('env', 'LIONS_VAULT_SYSLOG_LEVEL') | default('info') }}
+
+# Configuration du journal
+{% if lookup('env', 'LIONS_VAULT_LOG_EXTRA_FIELDS') | default('true') | bool -%}
+LogExtraFields=LIONS_ENVIRONMENT={{ lookup('env', 'LIONS_ENVIRONMENT') | default('development') }}
+LogExtraFields=LIONS_SERVICE_VERSION=5.0.0
+LogExtraFields=LIONS_SERVICE_TYPE=vault
+{% endif -%}
+{% if lookup('env', 'LIONS_VAULT_LOG_RATE_LIMIT_INTERVAL') != '' -%}
+LogRateLimitIntervalSec={{ lookup('env', 'LIONS_VAULT_LOG_RATE_LIMIT_INTERVAL') }}
+{% endif -%}
+{% if lookup('env', 'LIONS_VAULT_LOG_RATE_LIMIT_BURST') != '' -%}
+LogRateLimitBurst={{ lookup('env', 'LIONS_VAULT_LOG_RATE_LIMIT_BURST') }}
+{% endif -%}
+
+# =============================================================================
+# VARIABLES D'ENVIRONNEMENT
+# =============================================================================
+Environment="VAULT_LOG_LEVEL={{ lookup('env', 'LIONS_VAULT_LOG_LEVEL') | default('INFO') }}"
+Environment="VAULT_LOG_FORMAT={{ lookup('env', 'LIONS_VAULT_LOG_FORMAT') | default('json') }}"
+Environment="VAULT_CLUSTER_ADDR={{ lookup('env', 'LIONS_VAULT_CLUSTER_ADDR') | default('') }}"
+Environment="VAULT_API_ADDR={{ lookup('env', 'LIONS_VAULT_API_ADDR') | default('') }}"
+Environment="VAULT_REDIRECT_ADDR={{ lookup('env', 'LIONS_VAULT_REDIRECT_ADDR') | default('') }}"
+{% if lookup('env', 'LIONS_VAULT_DISABLE_MLOCK') | default('false') | bool -%}
+Environment="VAULT_DISABLE_MLOCK=true"
+{% endif -%}
+{% if lookup('env', 'LIONS_VAULT_MAX_LEASE_TTL') != '' -%}
+Environment="VAULT_MAX_LEASE_TTL={{ lookup('env', 'LIONS_VAULT_MAX_LEASE_TTL') }}"
+{% endif -%}
+{% if lookup('env', 'LIONS_VAULT_DEFAULT_LEASE_TTL') != '' -%}
+Environment="VAULT_DEFAULT_LEASE_TTL={{ lookup('env', 'LIONS_VAULT_DEFAULT_LEASE_TTL') }}"
+{% endif -%}
+{% if lookup('env', 'LIONS_VAULT_LICENSE_PATH') != '' -%}
+Environment="VAULT_LICENSE_PATH={{ lookup('env', 'LIONS_VAULT_LICENSE_PATH') }}"
+{% endif -%}
+
+# Variables d'environnement personnalisées
+Environment="LIONS_ENVIRONMENT={{ lookup('env', 'LIONS_ENVIRONMENT') | default('development') }}"
+Environment="LIONS_SERVICE_NAME=vault"
+Environment="LIONS_SERVICE_VERSION=5.0.0"
+{% if lookup('env', 'LIONS_VAULT_CUSTOM_ENV_VARS') != '' -%}
+{% for env_var in lookup('env', 'LIONS_VAULT_CUSTOM_ENV_VARS').split(',') -%}
+Environment="{{ env_var }}"
+{% endfor -%}
+{% endif %}
+
+# =============================================================================
+# CONFIGURATION DES RÉPERTOIRES ET PERMISSIONS
+# =============================================================================
+# Répertoires d'exécution
+WorkingDirectory={{ lookup('env', 'LIONS_VAULT_WORKING_DIRECTORY') | default('/var/lib/vault') }}
+RootDirectory={{ lookup('env', 'LIONS_VAULT_ROOT_DIRECTORY') | default('') }}
+{% if lookup('env', 'LIONS_VAULT_ROOT_DIRECTORY') != '' -%}
+RootDirectoryStartOnly={{ lookup('env', 'LIONS_VAULT_ROOT_DIRECTORY_START_ONLY') | default('false') | bool }}
+{% endif -%}
+
+# Configuration des répertoires temporaires
+{% if lookup('env', 'LIONS_VAULT_TEMP_PATH') != '' -%}
+Environment="TMPDIR={{ lookup('env', 'LIONS_VAULT_TEMP_PATH') }}"
+{% endif -%}
+{% if lookup('env', 'LIONS_VAULT_CACHE_DIRECTORY') != '' -%}
+CacheDirectory={{ lookup('env', 'LIONS_VAULT_CACHE_DIRECTORY') }}
+CacheDirectoryMode={{ lookup('env', 'LIONS_VAULT_CACHE_DIRECTORY_MODE') | default('0750') }}
+{% endif -%}
+{% if lookup('env', 'LIONS_VAULT_LOGS_DIRECTORY') != '' -%}
+LogsDirectory={{ lookup('env', 'LIONS_VAULT_LOGS_DIRECTORY') }}
+LogsDirectoryMode={{ lookup('env', 'LIONS_VAULT_LOGS_DIRECTORY_MODE') | default('0750') }}
+{% endif -%}
+{% if lookup('env', 'LIONS_VAULT_CONFIGURATION_DIRECTORY') != '' -%}
+ConfigurationDirectory={{ lookup('env', 'LIONS_VAULT_CONFIGURATION_DIRECTORY') }}
+ConfigurationDirectoryMode={{ lookup('env', 'LIONS_VAULT_CONFIGURATION_DIRECTORY_MODE') | default('0750') }}
+{% endif -%}
+{% if lookup('env', 'LIONS_VAULT_STATE_DIRECTORY') != '' -%}
+StateDirectory={{ lookup('env', 'LIONS_VAULT_STATE_DIRECTORY') }}
+StateDirectoryMode={{ lookup('env', 'LIONS_VAULT_STATE_DIRECTORY_MODE') | default('0750') }}
+{% endif -%}
+{% if lookup('env', 'LIONS_VAULT_RUNTIME_DIRECTORY') != '' -%}
+RuntimeDirectory={{ lookup('env', 'LIONS_VAULT_RUNTIME_DIRECTORY') }}
+RuntimeDirectoryMode={{ lookup('env', 'LIONS_VAULT_RUNTIME_DIRECTORY_MODE') | default('0750') }}
+RuntimeDirectoryPreserve={{ lookup('env', 'LIONS_VAULT_RUNTIME_DIRECTORY_PRESERVE') | default('false') | bool }}
+{% endif -%}
+
+# Permissions et propriétés
+{% if lookup('env', 'LIONS_VAULT_UMASK') != '' -%}
+UMask={{ lookup('env', 'LIONS_VAULT_UMASK') }}
+{% endif -%}
+{% if lookup('env', 'LIONS_VAULT_NICE_LEVEL') != '' -%}
+Nice={{ lookup('env', 'LIONS_VAULT_NICE_LEVEL') }}
+{% endif -%}
+{% if lookup('env', 'LIONS_VAULT_IO_SCHEDULING_CLASS') != '' -%}
+IOSchedulingClass={{ lookup('env', 'LIONS_VAULT_IO_SCHEDULING_CLASS') }}
+{% endif -%}
+{% if lookup('env', 'LIONS_VAULT_IO_SCHEDULING_PRIORITY') != '' -%}
+IOSchedulingPriority={{ lookup('env', 'LIONS_VAULT_IO_SCHEDULING_PRIORITY') }}
+{% endif -%}
 
 [Install]
-WantedBy=multi-user.target
+WantedBy={{ lookup('env', 'LIONS_VAULT_WANTED_BY') | default('multi-user.target') }}
+{% if lookup('env', 'LIONS_VAULT_REQUIRED_BY') != '' -%}
+RequiredBy={{ lookup('env', 'LIONS_VAULT_REQUIRED_BY') }}
+{% endif -%}
+{% if lookup('env', 'LIONS_VAULT_ALSO_ENABLE') != '' -%}
+Also={{ lookup('env', 'LIONS_VAULT_ALSO_ENABLE') }}
+{% endif -%}
+{% if lookup('env', 'LIONS_VAULT_DEFAULT_INSTANCE') != '' -%}
+DefaultInstance={{ lookup('env', 'LIONS_VAULT_DEFAULT_INSTANCE') }}
+{% endif -%}

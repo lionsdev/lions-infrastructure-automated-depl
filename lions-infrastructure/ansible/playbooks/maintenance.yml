@@ -1,276 +1,664 @@
 ---
-# Titre: Playbook de maintenance
-# Description: Effectue des tâches de maintenance sur l'infrastructure
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-08
-# Version: 1.0.0
+# ===============================================================================
+# LIONS INFRASTRUCTURE - MAINTENANCE PLAYBOOK v5.0
+# ===============================================================================
+# Description: Effectue des tâches de maintenance sur l'infrastructure avec variables d'environnement
+# Version: 5.0.0
+# Date: 01/06/2025
+# Author: LIONS DevOps Team
+# ===============================================================================
 
-- name: Maintenance de l'infrastructure LIONS
+- name: "Maintenance de l'infrastructure LIONS {{ lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT')) | upper }}"
   hosts: all
   become: true
   gather_facts: true
   
   vars:
-    maintenance_log_file: "/var/log/lions/maintenance/maintenance-{{ ansible_date_time.date }}.log"
+    # =========================================================================
+    # CONFIGURATION DE BASE DEPUIS VARIABLES D'ENVIRONNEMENT
+    # =========================================================================
+    lions_environment: "{{ lookup('env', 'LIONS_ENVIRONMENT') | default('development') }}"
+    lions_project_name: "{{ lookup('env', 'LIONS_PROJECT_NAME') | default('lions-infrastructure') }}"
+    lions_version: "{{ lookup('env', 'LIONS_VERSION') | default('5.0.0') }}"
+    lions_deployment_id: "{{ lookup('env', 'LIONS_DEPLOYMENT_ID') | default(ansible_date_time.epoch) }}"
+    
+    # =========================================================================
+    # CONFIGURATION MAINTENANCE
+    # =========================================================================
+    maintenance_enabled: "{{ lookup('env', 'LIONS_MAINTENANCE_ENABLED') | default('true') | bool }}"
+    maintenance_window: "{{ lookup('env', 'LIONS_MAINTENANCE_WINDOW') | default('02:00-04:00') }}"
+    maintenance_timezone: "{{ lookup('env', 'LIONS_MAINTENANCE_TIMEZONE') | default('UTC') }}"
+    maintenance_log_path: "{{ lookup('env', 'LIONS_LOG_PATH') | default('/var/log/lions') }}/maintenance"
+    maintenance_log_file: "{{ maintenance_log_path }}/maintenance-{{ lions_environment }}-{{ ansible_date_time.date }}.log"
+    maintenance_notification_enabled: "{{ lookup('env', 'LIONS_MAINTENANCE_NOTIFICATION_ENABLED') | default('true') | bool }}"
+    
+    # =========================================================================
+    # CONFIGURATION KUBERNETES
+    # =========================================================================
+    kube_config_path: "{{ lookup('env', 'LIONS_KUBE_CONFIG_PATH') | default(ansible_env.HOME + '/.kube/config') }}"
+    kubectl_timeout: "{{ lookup('env', 'LIONS_KUBECTL_TIMEOUT') | default('5m') }}"
+    namespace_prefix: "{{ lookup('env', 'LIONS_NAMESPACE_PREFIX') | default('lions-' + lions_environment) }}"
+    
+    # =========================================================================
+    # CONFIGURATION NETTOYAGE
+    # =========================================================================
+    auto_update_enabled: "{{ lookup('env', 'LIONS_AUTO_UPDATE_ENABLED') | default('false') | bool }}"
+    cleanup_enabled: "{{ lookup('env', 'LIONS_CRON_CLEANUP_ENABLED') | default('true') | bool }}"
+    log_retention_days: "{{ lookup('env', 'LIONS_LOG_RETENTION_DAYS') | default('30') | int }}"
+    backup_retention_days: "{{ lookup('env', 'LIONS_BACKUP_RETENTION_DAYS') | default('30') | int }}"
+    
+    # =========================================================================
+    # CONFIGURATION DOCKER
+    # =========================================================================
+    docker_cleanup_enabled: "{{ lookup('env', 'LIONS_DOCKER_CLEANUP_ENABLED') | default('true') | bool }}"
+    docker_prune_images: "{{ lookup('env', 'LIONS_DOCKER_PRUNE_IMAGES') | default('true') | bool }}"
+    docker_prune_volumes: "{{ lookup('env', 'LIONS_DOCKER_PRUNE_VOLUMES') | default('true') | bool }}"
+    docker_prune_networks: "{{ lookup('env', 'LIONS_DOCKER_PRUNE_NETWORKS') | default('true') | bool }}"
+    
+    # =========================================================================
+    # CONFIGURATION CERTIFICATS
+    # =========================================================================
+    cert_check_enabled: "{{ lookup('env', 'LIONS_CERT_CHECK_ENABLED') | default('true') | bool }}"
+    cert_expiry_warning_days: "{{ lookup('env', 'LIONS_CERT_EXPIRY_WARNING_DAYS') | default('30') | int }}"
+    cert_auto_renewal: "{{ lookup('env', 'LIONS_CERT_AUTO_RENEWAL') | default('true') | bool }}"
+    
+    # =========================================================================
+    # CONFIGURATION MONITORING
+    # =========================================================================
+    health_check_enabled: "{{ lookup('env', 'LIONS_HEALTH_CHECK_ENABLED') | default('true') | bool }}"
+    disk_usage_threshold: "{{ lookup('env', 'LIONS_DISK_USAGE_THRESHOLD') | default('80') | int }}"
+    memory_usage_threshold: "{{ lookup('env', 'LIONS_MEMORY_USAGE_THRESHOLD') | default('85') | int }}"
+    cpu_usage_threshold: "{{ lookup('env', 'LIONS_CPU_USAGE_THRESHOLD') | default('90') | int }}"
+    
+    # =========================================================================
+    # TÂCHES DE MAINTENANCE CONFIGURABLES
+    # =========================================================================
     maintenance_tasks:
       - name: "Mise à jour des packages système"
-        enabled: true
+        enabled: "{{ auto_update_enabled }}"
+        priority: 1
       - name: "Nettoyage des ressources inutilisées"
-        enabled: true
+        enabled: "{{ cleanup_enabled }}"
+        priority: 2
       - name: "Vérification de l'état du cluster"
-        enabled: true
-      - name: "Rotation des logs"
-        enabled: true
+        enabled: "{{ health_check_enabled }}"
+        priority: 3
+      - name: "Rotation et nettoyage des logs"
+        enabled: "{{ cleanup_enabled }}"
+        priority: 4
       - name: "Vérification des sauvegardes"
-        enabled: true
+        enabled: "{{ lookup('env', 'LIONS_BACKUP_ENABLED') | default('true') | bool }}"
+        priority: 5
       - name: "Vérification des certificats"
-        enabled: true
-  
+        enabled: "{{ cert_check_enabled }}"
+        priority: 6
+      - name: "Nettoyage Docker"
+        enabled: "{{ docker_cleanup_enabled }}"
+        priority: 7
+      - name: "Vérification des ressources système"
+        enabled: "{{ health_check_enabled }}"
+        priority: 8
+      - name: "Optimisation des performances"
+        enabled: "{{ lookup('env', 'LIONS_PERFORMANCE_OPTIMIZATION') | default('false') | bool }}"
+        priority: 9
+
+  environment:
+    KUBECONFIG: "{{ kube_config_path }}"
+    LIONS_ENVIRONMENT: "{{ lions_environment }}"
+    LIONS_MAINTENANCE_ID: "{{ lions_deployment_id }}"
+
+  pre_tasks:
+    # =========================================================================
+    # VALIDATION ET INITIALISATION
+    # =========================================================================
+    - name: "Validation de la configuration de maintenance"
+      assert:
+        that:
+          - maintenance_enabled | bool
+          - lions_environment is defined
+          - maintenance_log_path is defined
+        fail_msg: "Configuration de maintenance invalide"
+        success_msg: "Configuration de maintenance validée pour l'environnement {{ lions_environment }}"
+
+    - name: "Vérification de la fenêtre de maintenance"
+      debug:
+        msg: 
+          - "==============================================================================="
+          - "LIONS INFRASTRUCTURE - MAINTENANCE PROGRAMMÉE"
+          - "==============================================================================="
+          - "Environnement: {{ lions_environment }}"
+          - "Version: {{ lions_version }}"
+          - "Fenêtre de maintenance: {{ maintenance_window }} ({{ maintenance_timezone }})"
+          - "ID de maintenance: {{ lions_deployment_id }}"
+          - "Heure actuelle: {{ ansible_date_time.iso8601 }}"
+          - "Tâches activées: {{ maintenance_tasks | selectattr('enabled') | list | length }}/{{ maintenance_tasks | list | length }}"
+          - "==============================================================================="
+
   tasks:
-    - name: Création du répertoire de logs
+    # =========================================================================
+    # INITIALISATION
+    # =========================================================================
+    - name: "Création des répertoires de maintenance"
       file:
-        path: "/var/log/lions/maintenance"
+        path: "{{ item }}"
         state: directory
         mode: '0755'
-      ignore_errors: yes
-    
-    - name: Affichage du début de la maintenance
-      debug:
-        msg: "Début des tâches de maintenance - {{ ansible_date_time.iso8601 }}"
-    
-    - name: Enregistrement du début de la maintenance
-      lineinfile:
-        path: "{{ maintenance_log_file }}"
-        line: "Début des tâches de maintenance - {{ ansible_date_time.iso8601 }}"
-        create: yes
+        owner: root
+        group: root
+      loop:
+        - "{{ maintenance_log_path }}"
+        - "{{ maintenance_log_path }}/history"
+        - "{{ maintenance_log_path }}/reports"
+      tags: ['maintenance', 'init']
+
+    - name: "Initialisation du log de maintenance"
+      copy:
+        content: |
+          ===============================================================================
+          LIONS INFRASTRUCTURE - LOG DE MAINTENANCE
+          ===============================================================================
+          Environnement: {{ lions_environment }}
+          Version: {{ lions_version }}
+          ID Maintenance: {{ lions_deployment_id }}
+          Date de début: {{ ansible_date_time.iso8601 }}
+          Fenêtre: {{ maintenance_window }} ({{ maintenance_timezone }})
+          Serveur: {{ inventory_hostname }}
+          ===============================================================================
+        dest: "{{ maintenance_log_file }}"
         mode: '0644'
-      ignore_errors: yes
-    
-    # Mise à jour des packages système
-    - name: Mise à jour des packages système
+      tags: ['maintenance', 'init']
+
+    # =========================================================================
+    # TÂCHE 1: MISE À JOUR DES PACKAGES SYSTÈME
+    # =========================================================================
+    - name: "📦 TÂCHE 1 - Mise à jour des packages système"
       block:
-        - name: Mise à jour des packages (Debian/Ubuntu)
+        - name: "Mise à jour de la liste des packages (Debian/Ubuntu)"
           apt:
             update_cache: yes
-            upgrade: dist
+            cache_valid_time: 3600
           when: ansible_os_family == "Debian"
-        
-        - name: Mise à jour des packages (RedHat/CentOS)
-          yum:
+          register: apt_update
+
+        - name: "Mise à jour des packages de sécurité (Debian/Ubuntu)"
+          apt:
+            upgrade: safe
+            autoremove: yes
+            autoclean: yes
+          when: 
+            - ansible_os_family == "Debian"
+            - auto_update_enabled | bool
+          register: apt_upgrade
+
+        - name: "Mise à jour des packages (RedHat/CentOS/Fedora)"
+          dnf:
             name: '*'
             state: latest
-          when: ansible_os_family == "RedHat"
-        
-        - name: Enregistrement de la mise à jour des packages
+            security: yes
+          when: 
+            - ansible_os_family == "RedHat"
+            - auto_update_enabled | bool
+          register: dnf_upgrade
+
+        - name: "Enregistrement des mises à jour"
           lineinfile:
             path: "{{ maintenance_log_file }}"
-            line: "Mise à jour des packages système terminée - {{ ansible_date_time.iso8601 }}"
-            create: yes
-          ignore_errors: yes
+            line: "✅ Mise à jour des packages terminée - {{ ansible_date_time.iso8601 }} - {{ (apt_upgrade.changed | default(false)) or (dnf_upgrade.changed | default(false)) | ternary('Mises à jour installées', 'Aucune mise à jour') }}"
+
       when: maintenance_tasks | selectattr('name', 'equalto', 'Mise à jour des packages système') | selectattr('enabled') | list | length > 0
-      ignore_errors: yes
-    
-    # Nettoyage des ressources inutilisées
-    - name: Nettoyage des ressources inutilisées
+      tags: ['maintenance', 'updates']
+
+    # =========================================================================
+    # TÂCHE 2: NETTOYAGE DES RESSOURCES INUTILISÉES
+    # =========================================================================
+    - name: "🧹 TÂCHE 2 - Nettoyage des ressources inutilisées"
       block:
-        - name: Nettoyage des packages inutilisés (Debian/Ubuntu)
+        - name: "Nettoyage des packages inutilisés (Debian/Ubuntu)"
           apt:
             autoremove: yes
             autoclean: yes
+            purge: yes
           when: ansible_os_family == "Debian"
-        
-        - name: Nettoyage des packages inutilisés (RedHat/CentOS)
-          yum:
+
+        - name: "Nettoyage des packages inutilisés (RedHat/CentOS)"
+          dnf:
             autoremove: yes
           when: ansible_os_family == "RedHat"
-        
-        - name: Nettoyage des images Docker inutilisées
-          shell: docker image prune -af
-          ignore_errors: yes
-          changed_when: false
-          when: ansible_facts.packages.docker is defined or ansible_facts.packages['docker-ce'] is defined
-        
-        - name: Nettoyage des volumes Docker inutilisés
-          shell: docker volume prune -f
-          ignore_errors: yes
-          changed_when: false
-          when: ansible_facts.packages.docker is defined or ansible_facts.packages['docker-ce'] is defined
-        
-        - name: Nettoyage des ressources Kubernetes
+
+        - name: "Nettoyage du cache des packages"
           shell: |
-            kubectl get pods --all-namespaces -o json | jq '.items[] | select(.status.phase == "Succeeded" or .status.phase == "Failed") | "kubectl delete pod \(.metadata.name) -n \(.metadata.namespace)"' | xargs -r bash -c
+            {{ ansible_os_family == 'Debian' | ternary('apt-get clean', 'dnf clean all') }}
+          changed_when: false
+
+        - name: "Nettoyage des pods Kubernetes terminés"
+          shell: |
+            kubectl get pods --all-namespaces --field-selector=status.phase=Succeeded -o json | \
+            jq -r '.items[] | "kubectl delete pod \(.metadata.name) -n \(.metadata.namespace)"' | \
+            head -10 | bash
+          environment:
+            KUBECONFIG: "{{ kube_config_path }}"
           ignore_errors: yes
           changed_when: false
           when: ansible_facts.packages.kubectl is defined
-        
-        - name: Enregistrement du nettoyage des ressources
+
+        - name: "Nettoyage des pods en échec"
+          shell: |
+            kubectl get pods --all-namespaces --field-selector=status.phase=Failed -o json | \
+            jq -r '.items[] | "kubectl delete pod \(.metadata.name) -n \(.metadata.namespace)"' | \
+            head -5 | bash
+          environment:
+            KUBECONFIG: "{{ kube_config_path }}"
+          ignore_errors: yes
+          changed_when: false
+          when: ansible_facts.packages.kubectl is defined
+
+        - name: "Enregistrement du nettoyage"
           lineinfile:
             path: "{{ maintenance_log_file }}"
-            line: "Nettoyage des ressources inutilisées terminé - {{ ansible_date_time.iso8601 }}"
-            create: yes
-          ignore_errors: yes
+            line: "✅ Nettoyage des ressources terminé - {{ ansible_date_time.iso8601 }}"
+
       when: maintenance_tasks | selectattr('name', 'equalto', 'Nettoyage des ressources inutilisées') | selectattr('enabled') | list | length > 0
-      ignore_errors: yes
-    
-    # Vérification de l'état du cluster
-    - name: Vérification de l'état du cluster
+      tags: ['maintenance', 'cleanup']
+
+    # =========================================================================
+    # TÂCHE 3: VÉRIFICATION DE L'ÉTAT DU CLUSTER
+    # =========================================================================
+    - name: "🔍 TÂCHE 3 - Vérification de l'état du cluster"
       block:
-        - name: Vérification des nœuds Kubernetes
-          shell: kubectl get nodes -o wide
+        - name: "Vérification des nœuds Kubernetes"
+          shell: "kubectl get nodes -o wide --no-headers"
+          environment:
+            KUBECONFIG: "{{ kube_config_path }}"
           register: k8s_nodes
+          changed_when: false
+          when: ansible_facts.packages.kubectl is defined
+
+        - name: "Vérification des pods système critiques"
+          shell: |
+            kubectl get pods -n kube-system -o json | \
+            jq -r '.items[] | select(.status.phase != "Running") | "\(.metadata.name): \(.status.phase)"'
+          environment:
+            KUBECONFIG: "{{ kube_config_path }}"
+          register: k8s_system_issues
+          changed_when: false
+          when: ansible_facts.packages.kubectl is defined
+
+        - name: "Vérification des pods de l'application"
+          shell: |
+            kubectl get pods -n {{ namespace_prefix }} -o json | \
+            jq -r '.items[] | select(.status.phase != "Running") | "\(.metadata.name): \(.status.phase)"'
+          environment:
+            KUBECONFIG: "{{ kube_config_path }}"
+          register: k8s_app_issues
           ignore_errors: yes
           changed_when: false
           when: ansible_facts.packages.kubectl is defined
-        
-        - name: Affichage de l'état des nœuds
-          debug:
-            msg: "{{ k8s_nodes.stdout_lines }}"
-          when: k8s_nodes is defined and k8s_nodes.stdout is defined
-        
-        - name: Vérification des pods système
-          shell: kubectl get pods -n kube-system
-          register: k8s_system_pods
-          ignore_errors: yes
+
+        - name: "Vérification des événements critiques"
+          shell: |
+            kubectl get events --all-namespaces --field-selector type=Warning \
+            --sort-by='.lastTimestamp' | tail -10
+          environment:
+            KUBECONFIG: "{{ kube_config_path }}"
+          register: k8s_warnings
           changed_when: false
           when: ansible_facts.packages.kubectl is defined
-        
-        - name: Affichage de l'état des pods système
+
+        - name: "Alertes si problèmes détectés"
           debug:
-            msg: "{{ k8s_system_pods.stdout_lines }}"
-          when: k8s_system_pods is defined and k8s_system_pods.stdout is defined
-        
-        - name: Vérification des pods en erreur
-          shell: kubectl get pods --all-namespaces | grep -v "Running\|Completed"
-          register: k8s_error_pods
-          ignore_errors: yes
-          changed_when: false
-          when: ansible_facts.packages.kubectl is defined
-        
-        - name: Affichage des pods en erreur
-          debug:
-            msg: "{{ k8s_error_pods.stdout_lines }}"
-          when: k8s_error_pods is defined and k8s_error_pods.stdout is defined
-        
-        - name: Enregistrement de la vérification du cluster
+            msg: 
+              - "⚠️  ALERTES CLUSTER DÉTECTÉES:"
+              - "Pods système en erreur: {{ k8s_system_issues.stdout_lines | default([]) | length }}"
+              - "Pods application en erreur: {{ k8s_app_issues.stdout_lines | default([]) | length }}"
+              - "Événements d'avertissement récents: {{ k8s_warnings.stdout_lines | default([]) | length }}"
+          when: 
+            - (k8s_system_issues.stdout_lines | default([]) | length > 0) or 
+              (k8s_app_issues.stdout_lines | default([]) | length > 0)
+
+        - name: "Enregistrement de la vérification cluster"
           lineinfile:
             path: "{{ maintenance_log_file }}"
-            line: "Vérification de l'état du cluster terminée - {{ ansible_date_time.iso8601 }}"
-            create: yes
-          ignore_errors: yes
+            line: "✅ Vérification cluster terminée - {{ ansible_date_time.iso8601 }} - Nœuds: {{ k8s_nodes.stdout_lines | default([]) | length }}, Problèmes: {{ (k8s_system_issues.stdout_lines | default([]) | length) + (k8s_app_issues.stdout_lines | default([]) | length) }}"
+
       when: maintenance_tasks | selectattr('name', 'equalto', 'Vérification de l\'état du cluster') | selectattr('enabled') | list | length > 0
-      ignore_errors: yes
-    
-    # Rotation des logs
-    - name: Rotation des logs
+      tags: ['maintenance', 'cluster-check']
+
+    # =========================================================================
+    # TÂCHE 4: ROTATION ET NETTOYAGE DES LOGS
+    # =========================================================================
+    - name: "📄 TÂCHE 4 - Rotation et nettoyage des logs"
       block:
-        - name: Vérification de l'espace disque
-          shell: df -h
+        - name: "Vérification de l'espace disque"
+          shell: "df -h /"
           register: disk_space
           changed_when: false
-        
-        - name: Affichage de l'espace disque
-          debug:
-            msg: "{{ disk_space.stdout_lines }}"
-        
-        - name: Compression des anciens logs
+
+        - name: "Recherche des logs anciens"
           find:
-            paths: /var/log
+            paths: 
+              - "/var/log"
+              - "{{ maintenance_log_path }}"
             patterns: "*.log"
-            age: 7d
+            age: "{{ log_retention_days }}d"
             recurse: yes
+            size: "+1M"
           register: old_logs
-        
-        - name: Compression des fichiers de log
+
+        - name: "Compression des logs anciens volumineux"
           archive:
             path: "{{ item.path }}"
             dest: "{{ item.path }}.{{ ansible_date_time.date }}.gz"
             remove: yes
-          with_items: "{{ old_logs.files }}"
+            format: gz
+          loop: "{{ old_logs.files[:20] }}"  # Limite à 20 fichiers par exécution
           when: old_logs.matched > 0
-        
-        - name: Enregistrement de la rotation des logs
+
+        - name: "Nettoyage des logs très anciens"
+          find:
+            paths: 
+              - "/var/log"
+              - "{{ maintenance_log_path }}"
+            patterns: "*.gz"
+            age: "{{ (log_retention_days * 2) }}d"
+            recurse: yes
+          register: very_old_logs
+
+        - name: "Suppression des logs très anciens"
+          file:
+            path: "{{ item.path }}"
+            state: absent
+          loop: "{{ very_old_logs.files[:10] }}"  # Limite à 10 fichiers par exécution
+          when: very_old_logs.matched > 0
+
+        - name: "Enregistrement de la rotation des logs"
           lineinfile:
             path: "{{ maintenance_log_file }}"
-            line: "Rotation des logs terminée - {{ ansible_date_time.iso8601 }}"
-            create: yes
-          ignore_errors: yes
-      when: maintenance_tasks | selectattr('name', 'equalto', 'Rotation des logs') | selectattr('enabled') | list | length > 0
-      ignore_errors: yes
-    
-    # Vérification des sauvegardes
-    - name: Vérification des sauvegardes
+            line: "✅ Rotation des logs terminée - {{ ansible_date_time.iso8601 }} - Compressés: {{ old_logs.matched }}, Supprimés: {{ very_old_logs.matched }}"
+
+      when: maintenance_tasks | selectattr('name', 'equalto', 'Rotation et nettoyage des logs') | selectattr('enabled') | list | length > 0
+      tags: ['maintenance', 'logs']
+
+    # =========================================================================
+    # TÂCHE 5: VÉRIFICATION DES SAUVEGARDES
+    # =========================================================================
+    - name: "💾 TÂCHE 5 - Vérification des sauvegardes"
       block:
-        - name: Vérification des sauvegardes récentes
+        - name: "Recherche des sauvegardes récentes"
           find:
-            paths: /var/backups
-            patterns: "*.tar.gz,*.sql.gz,*.dump"
-            age: 2d
+            paths: 
+              - "/var/backups"
+              - "/var/backups/lions"
+            patterns: "*.tar.gz,*.sql.gz,*.dump,*.gpg"
+            age: "-{{ backup_retention_days }}d"
             recurse: yes
           register: recent_backups
-        
-        - name: Affichage des sauvegardes récentes
-          debug:
-            msg: "{{ recent_backups.matched }} sauvegardes récentes trouvées"
-        
-        - name: Avertissement si aucune sauvegarde récente
-          debug:
-            msg: "AVERTISSEMENT: Aucune sauvegarde récente trouvée!"
-          when: recent_backups.matched == 0
-        
-        - name: Enregistrement de la vérification des sauvegardes
-          lineinfile:
-            path: "{{ maintenance_log_file }}"
-            line: "Vérification des sauvegardes terminée - {{ ansible_date_time.iso8601 }}"
-            create: yes
-          ignore_errors: yes
-      when: maintenance_tasks | selectattr('name', 'equalto', 'Vérification des sauvegardes') | selectattr('enabled') | list | length > 0
-      ignore_errors: yes
-    
-    # Vérification des certificats
-    - name: Vérification des certificats
-      block:
-        - name: Vérification des certificats Kubernetes
-          shell: kubectl get certificates --all-namespaces
-          register: k8s_certs
-          ignore_errors: yes
-          changed_when: false
-          when: ansible_facts.packages.kubectl is defined
-        
-        - name: Affichage des certificats
-          debug:
-            msg: "{{ k8s_certs.stdout_lines }}"
-          when: k8s_certs is defined and k8s_certs.stdout is defined
-        
-        - name: Vérification des certificats expirant bientôt
+
+        - name: "Vérification de l'intégrité des sauvegardes"
           shell: |
-            kubectl get certificates --all-namespaces -o json | jq -r '.items[] | select(.status.notAfter != null) | select((.status.notAfter | fromdateiso8601) < (now + 30*24*60*60)) | "\(.metadata.namespace)/\(.metadata.name): Expire le \(.status.notAfter)"'
-          register: expiring_certs
-          ignore_errors: yes
+            if [[ "{{ item.path }}" == *.tar.gz ]]; then
+              tar -tzf "{{ item.path }}" > /dev/null 2>&1 && echo "OK" || echo "CORRUPT"
+            elif [[ "{{ item.path }}" == *.gz ]]; then
+              gunzip -t "{{ item.path }}" 2>&1 && echo "OK" || echo "CORRUPT"
+            else
+              echo "OK"
+            fi
+          loop: "{{ recent_backups.files[:5] }}"  # Vérifie les 5 plus récentes
+          register: backup_integrity
+          when: recent_backups.matched > 0
           changed_when: false
-          when: ansible_facts.packages.kubectl is defined
-        
-        - name: Affichage des certificats expirant bientôt
+
+        - name: "Alerte si aucune sauvegarde récente"
           debug:
-            msg: "{{ expiring_certs.stdout_lines }}"
-          when: expiring_certs is defined and expiring_certs.stdout is defined
-        
-        - name: Enregistrement de la vérification des certificats
+            msg: "⚠️  ALERTE: Aucune sauvegarde récente trouvée (< {{ backup_retention_days }} jours)"
+          when: recent_backups.matched == 0
+
+        - name: "Alerte si sauvegardes corrompues"
+          debug:
+            msg: "⚠️  ALERTE: Sauvegardes corrompues détectées"
+          when: 
+            - backup_integrity is defined
+            - backup_integrity.results | selectattr('stdout', 'equalto', 'CORRUPT') | list | length > 0
+
+        - name: "Enregistrement de la vérification des sauvegardes"
           lineinfile:
             path: "{{ maintenance_log_file }}"
-            line: "Vérification des certificats terminée - {{ ansible_date_time.iso8601 }}"
-            create: yes
+            line: "✅ Vérification sauvegardes terminée - {{ ansible_date_time.iso8601 }} - Trouvées: {{ recent_backups.matched }}, Intègres: {{ backup_integrity.results | default([]) | selectattr('stdout', 'equalto', 'OK') | list | length }}"
+
+      when: maintenance_tasks | selectattr('name', 'equalto', 'Vérification des sauvegardes') | selectattr('enabled') | list | length > 0
+      tags: ['maintenance', 'backup-check']
+
+    # =========================================================================
+    # TÂCHE 6: VÉRIFICATION DES CERTIFICATS
+    # =========================================================================
+    - name: "🔐 TÂCHE 6 - Vérification des certificats"
+      block:
+        - name: "Vérification des certificats Kubernetes"
+          shell: "kubectl get certificates --all-namespaces -o json"
+          environment:
+            KUBECONFIG: "{{ kube_config_path }}"
+          register: k8s_certs_raw
+          changed_when: false
+          when: ansible_facts.packages.kubectl is defined
+
+        - name: "Analyse des certificats expirant bientôt"
+          shell: |
+            echo '{{ k8s_certs_raw.stdout | default("{}") }}' | \
+            jq -r --argjson days {{ cert_expiry_warning_days }} \
+            '.items[]? | select(.status.notAfter != null) | 
+            select((.status.notAfter | fromdateiso8601) < (now + ($days * 24 * 60 * 60))) | 
+            "\(.metadata.namespace)/\(.metadata.name): Expire le \(.status.notAfter)"'
+          register: expiring_certs
+          changed_when: false
+          when: 
+            - k8s_certs_raw is defined
+            - k8s_certs_raw.stdout != ""
+
+        - name: "Vérification des certificats système"
+          shell: |
+            find /etc/ssl/certs /etc/pki/tls/certs -name "*.crt" -o -name "*.pem" 2>/dev/null | \
+            head -10 | while read cert; do
+              if openssl x509 -in "$cert" -noout -checkend {{ cert_expiry_warning_days * 86400 }} 2>/dev/null; then
+                echo "$cert: OK"
+              else
+                echo "$cert: EXPIRING"
+              fi
+            done
+          register: system_certs
+          changed_when: false
           ignore_errors: yes
+
+        - name: "Alerte pour certificats expirant"
+          debug:
+            msg: 
+              - "⚠️  CERTIFICATS EXPIRANT DANS {{ cert_expiry_warning_days }} JOURS:"
+              - "{{ expiring_certs.stdout_lines | default([]) }}"
+          when: 
+            - expiring_certs is defined
+            - expiring_certs.stdout_lines | default([]) | length > 0
+
+        - name: "Enregistrement de la vérification des certificats"
+          lineinfile:
+            path: "{{ maintenance_log_file }}"
+            line: "✅ Vérification certificats terminée - {{ ansible_date_time.iso8601 }} - Expirant: {{ expiring_certs.stdout_lines | default([]) | length }}"
+
       when: maintenance_tasks | selectattr('name', 'equalto', 'Vérification des certificats') | selectattr('enabled') | list | length > 0
-      ignore_errors: yes
-    
-    - name: Affichage de la fin de la maintenance
-      debug:
-        msg: "Fin des tâches de maintenance - {{ ansible_date_time.iso8601 }}"
-    
-    - name: Enregistrement de la fin de la maintenance
+      tags: ['maintenance', 'cert-check']
+
+    # =========================================================================
+    # TÂCHE 7: NETTOYAGE DOCKER
+    # =========================================================================
+    - name: "🐳 TÂCHE 7 - Nettoyage Docker"
+      block:
+        - name: "Vérification de Docker"
+          shell: "docker version"
+          register: docker_version
+          changed_when: false
+          ignore_errors: yes
+
+        - name: "Nettoyage des images Docker inutilisées"
+          shell: "docker image prune -af --filter 'until=24h'"
+          register: docker_image_prune
+          when: 
+            - docker_version.rc == 0
+            - docker_prune_images | bool
+
+        - name: "Nettoyage des volumes Docker inutilisés"
+          shell: "docker volume prune -f"
+          register: docker_volume_prune
+          when: 
+            - docker_version.rc == 0
+            - docker_prune_volumes | bool
+
+        - name: "Nettoyage des réseaux Docker inutilisés"
+          shell: "docker network prune -f"
+          register: docker_network_prune
+          when: 
+            - docker_version.rc == 0
+            - docker_prune_networks | bool
+
+        - name: "Nettoyage du cache de build Docker"
+          shell: "docker builder prune -af"
+          register: docker_builder_prune
+          when: docker_version.rc == 0
+          ignore_errors: yes
+
+        - name: "Enregistrement du nettoyage Docker"
+          lineinfile:
+            path: "{{ maintenance_log_file }}"
+            line: "✅ Nettoyage Docker terminé - {{ ansible_date_time.iso8601 }} - Images: {{ docker_image_prune.changed | default(false) }}, Volumes: {{ docker_volume_prune.changed | default(false) }}"
+
+      when: maintenance_tasks | selectattr('name', 'equalto', 'Nettoyage Docker') | selectattr('enabled') | list | length > 0
+      tags: ['maintenance', 'docker-cleanup']
+
+    # =========================================================================
+    # TÂCHE 8: VÉRIFICATION DES RESSOURCES SYSTÈME
+    # =========================================================================
+    - name: "📊 TÂCHE 8 - Vérification des ressources système"
+      block:
+        - name: "Vérification de l'utilisation du disque"
+          shell: "df -h / | tail -1 | awk '{print $5}' | sed 's/%//'"
+          register: disk_usage
+          changed_when: false
+
+        - name: "Vérification de l'utilisation de la mémoire"
+          shell: "free | grep Mem | awk '{printf \"%.0f\", $3/$2 * 100.0}'"
+          register: memory_usage
+          changed_when: false
+
+        - name: "Vérification de la charge CPU"
+          shell: "top -bn1 | grep 'Cpu(s)' | awk '{print $2}' | sed 's/%us,//'"
+          register: cpu_usage
+          changed_when: false
+
+        - name: "Alerte utilisation disque élevée"
+          debug:
+            msg: "⚠️  ALERTE: Utilisation disque élevée: {{ disk_usage.stdout }}%"
+          when: disk_usage.stdout | int > disk_usage_threshold
+
+        - name: "Alerte utilisation mémoire élevée"
+          debug:
+            msg: "⚠️  ALERTE: Utilisation mémoire élevée: {{ memory_usage.stdout }}%"
+          when: memory_usage.stdout | int > memory_usage_threshold
+
+        - name: "Alerte utilisation CPU élevée"
+          debug:
+            msg: "⚠️  ALERTE: Utilisation CPU élevée: {{ cpu_usage.stdout }}%"
+          when: cpu_usage.stdout | int > cpu_usage_threshold
+
+        - name: "Enregistrement de la vérification des ressources"
+          lineinfile:
+            path: "{{ maintenance_log_file }}"
+            line: "✅ Vérification ressources terminée - {{ ansible_date_time.iso8601 }} - Disque: {{ disk_usage.stdout }}%, RAM: {{ memory_usage.stdout }}%, CPU: {{ cpu_usage.stdout }}%"
+
+      when: maintenance_tasks | selectattr('name', 'equalto', 'Vérification des ressources système') | selectattr('enabled') | list | length > 0
+      tags: ['maintenance', 'resource-check']
+
+    # =========================================================================
+    # FINALISATION ET RAPPORT
+    # =========================================================================
+    - name: "📊 Génération du rapport de maintenance"
+      copy:
+        content: |
+          ===============================================================================
+          LIONS INFRASTRUCTURE - RAPPORT DE MAINTENANCE
+          ===============================================================================
+          Date: {{ ansible_date_time.iso8601 }}
+          Environnement: {{ lions_environment }}
+          Serveur: {{ inventory_hostname }}
+          ID Maintenance: {{ lions_deployment_id }}
+          Fenêtre: {{ maintenance_window }} ({{ maintenance_timezone }})
+          
+          Tâches exécutées: {{ maintenance_tasks | selectattr('enabled') | list | length }}/{{ maintenance_tasks | list | length }}
+          
+          Résultats:
+            - Packages mis à jour: {{ auto_update_enabled }}
+            - Ressources nettoyées: {{ cleanup_enabled }}
+            - Cluster vérifié: {{ health_check_enabled }}
+            - Logs rotés: {{ cleanup_enabled }}
+            - Sauvegardes vérifiées: {{ lookup('env', 'LIONS_BACKUP_ENABLED') | default('true') | bool }}
+            - Certificats vérifiés: {{ cert_check_enabled }}
+            - Docker nettoyé: {{ docker_cleanup_enabled }}
+            - Ressources système vérifiées: {{ health_check_enabled }}
+          
+          Alertes:
+            - Disque: {{ disk_usage.stdout | default('N/A') }}% (seuil: {{ disk_usage_threshold }}%)
+            - Mémoire: {{ memory_usage.stdout | default('N/A') }}% (seuil: {{ memory_usage_threshold }}%)
+            - CPU: {{ cpu_usage.stdout | default('N/A') }}% (seuil: {{ cpu_usage_threshold }}%)
+            - Certificats expirant: {{ expiring_certs.stdout_lines | default([]) | length }}
+            - Sauvegardes récentes: {{ recent_backups.matched | default('N/A') }}
+          
+          ===============================================================================
+        dest: "{{ maintenance_log_path }}/reports/maintenance-report-{{ lions_deployment_id }}.txt"
+        mode: '0644'
+      tags: ['maintenance', 'report']
+
+    - name: "Finalisation du log de maintenance"
       lineinfile:
         path: "{{ maintenance_log_file }}"
-        line: "Fin des tâches de maintenance - {{ ansible_date_time.iso8601 }}"
-        create: yes
-        mode: '0644'
+        line: |
+          ===============================================================================
+          ✅ MAINTENANCE TERMINÉE AVEC SUCCÈS
+          Date de fin: {{ ansible_date_time.iso8601 }}
+          Durée: {{ ((ansible_date_time.epoch | int) - (maintenance_log_file | regex_replace('.*-(\\d{4}-\\d{2}-\\d{2})\\.log', '\\1') | to_datetime('%Y-%m-%d') | int)) // 60 }} minutes
+          Rapport: {{ maintenance_log_path }}/reports/maintenance-report-{{ lions_deployment_id }}.txt
+          ===============================================================================
+      tags: ['maintenance', 'finalize']
+
+  post_tasks:
+    # =========================================================================
+    # NOTIFICATION DE FIN DE MAINTENANCE
+    # =========================================================================
+    - name: "Notification de fin de maintenance"
+      uri:
+        url: "{{ lookup('env', 'LIONS_NOTIFICATION_WEBHOOK_URL') }}"
+        method: POST
+        body_format: json
+        body:
+          text: "✅ Maintenance LIONS {{ lions_environment }} terminée avec succès"
+          environment: "{{ lions_environment }}"
+          server: "{{ inventory_hostname }}"
+          maintenance_id: "{{ lions_deployment_id }}"
+          tasks_executed: "{{ maintenance_tasks | selectattr('enabled') | list | length }}"
+          disk_usage: "{{ disk_usage.stdout | default('N/A') }}%"
+          memory_usage: "{{ memory_usage.stdout | default('N/A') }}%"
+          expiring_certificates: "{{ expiring_certs.stdout_lines | default([]) | length }}"
+          recent_backups: "{{ recent_backups.matched | default('N/A') }}"
+      when: 
+        - lookup('env', 'LIONS_NOTIFICATION_WEBHOOK_URL') != ""
+        - maintenance_notification_enabled | bool
       ignore_errors: yes
+
+  handlers:
+    - name: "Notification d'échec de maintenance"
+      uri:
+        url: "{{ lookup('env', 'LIONS_NOTIFICATION_WEBHOOK_URL') }}"
+        method: POST
+        body_format: json
+        body:
+          text: "❌ Échec de maintenance LIONS {{ lions_environment }} sur {{ inventory_hostname }}"
+          environment: "{{ lions_environment }}"
+          server: "{{ inventory_hostname }}"
+          maintenance_id: "{{ lions_deployment_id }}"
+          error: "{{ ansible_failed_result.msg | default('Unknown error') }}"
+      when: lookup('env', 'LIONS_NOTIFICATION_WEBHOOK_URL') != ""
+      listen: "maintenance failed"

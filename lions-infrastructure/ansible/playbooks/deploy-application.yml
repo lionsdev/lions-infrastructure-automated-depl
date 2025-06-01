@@ -1,128 +1,419 @@
 ---
-# Titre: Playbook de Déploiement d'Applications
-# Description: Déploie une application sur l'infrastructure LIONS
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 1.0.0
+# ===============================================================================
+# LIONS INFRASTRUCTURE - APPLICATION DEPLOYMENT PLAYBOOK v5.0
+# ===============================================================================
+# Description: Déploie une application sur l'infrastructure LIONS avec variables d'environnement
+# Version: 5.0.0
+# Date: 01/06/2025
+# Author: LIONS DevOps Team
+# ===============================================================================
 
-- name: Déploiement d'une application
+- name: "Déploiement d'application LIONS {{ application_name | default('undefined') }} - {{ lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT')) | upper }}"
   hosts: localhost
   connection: local
-  gather_facts: no
+  gather_facts: true
+  
   vars:
-    application_name: "{{ application_name }}"
-    environment: "{{ environment }}"
-    technology: "{{ technology }}"
-    version: "{{ version | default('latest') }}"
-    config_file: "{{ config_file | default('./application.yaml') }}"
-    extra_params: "{{ extra_params | default({}) }}"
-    deployment_timestamp: "{{ deployment_timestamp | default(lookup('pipe', 'date +%Y%m%d%H%M%S')) }}"
-    deployment_user: "{{ deployment_user | default(lookup('env', 'USER')) }}"
-
-    # Variables dérivées
-    namespace: "{{ application_name }}-{{ environment }}"
-    image_name: "registry.{{ environment }}.lions.dev/{{ application_name }}:{{ version }}"
-
-    # Variables spécifiques à l'environnement
-    domain_suffix:
-      production: "lions.dev"
-      staging: "staging.lions.dev"
-      development: "dev.lions.dev"
-
-    # Ressources par défaut
+    # =========================================================================
+    # CONFIGURATION DE BASE DEPUIS VARIABLES D'ENVIRONNEMENT
+    # =========================================================================
+    lions_environment: "{{ lookup('env', 'LIONS_ENVIRONMENT') | default('development') }}"
+    lions_project_name: "{{ lookup('env', 'LIONS_PROJECT_NAME') | default('lions-infrastructure') }}"
+    lions_version: "{{ lookup('env', 'LIONS_VERSION') | default('5.0.0') }}"
+    lions_deployment_id: "{{ lookup('env', 'LIONS_DEPLOYMENT_ID') | default(ansible_date_time.epoch) }}"
+    lions_base_domain: "{{ lookup('env', 'LIONS_BASE_DOMAIN') | default('lions.dev') }}"
+    lions_env_domain: "{{ lookup('env', 'LIONS_ENV_DOMAIN') | default(lions_environment + '.' + lions_base_domain) }}"
+    
+    # =========================================================================
+    # CONFIGURATION D'APPLICATION
+    # =========================================================================
+    application_name: "{{ application_name | default(lookup('env', 'LIONS_APP_NAME')) }}"
+    application_technology: "{{ technology | default(lookup('env', 'LIONS_APP_TECHNOLOGY')) }}"
+    application_version: "{{ version | default(lookup('env', 'LIONS_APP_VERSION')) | default('latest') }}"
+    application_config_file: "{{ config_file | default(lookup('env', 'LIONS_APP_CONFIG_FILE')) | default('./application.yaml') }}"
+    application_extra_params: "{{ extra_params | default({}) }}"
+    
+    # =========================================================================
+    # CONFIGURATION DE DÉPLOIEMENT
+    # =========================================================================
+    deployment_timestamp: "{{ deployment_timestamp | default(ansible_date_time.epoch) }}"
+    deployment_user: "{{ deployment_user | default(lookup('env', 'USER')) | default('ansible') }}"
+    deployment_strategy: "{{ lookup('env', 'LIONS_DEPLOYMENT_STRATEGY') | default('RollingUpdate') }}"
+    deployment_timeout: "{{ lookup('env', 'LIONS_DEPLOYMENT_TIMEOUT') | default('10m') }}"
+    rolling_update_max_surge: "{{ lookup('env', 'LIONS_ROLLING_UPDATE_MAX_SURGE') | default('25%') }}"
+    rolling_update_max_unavailable: "{{ lookup('env', 'LIONS_ROLLING_UPDATE_MAX_UNAVAILABLE') | default('25%') }}"
+    
+    # =========================================================================
+    # CONFIGURATION NAMESPACE ET DOMAINE
+    # =========================================================================
+    namespace_prefix: "{{ lookup('env', 'LIONS_NAMESPACE_PREFIX') | default('lions-' + lions_environment) }}"
+    application_namespace: "{{ namespace_prefix }}-{{ application_name }}"
+    application_domain: "{{ application_name }}.{{ lions_env_domain }}"
+    
+    # =========================================================================
+    # CONFIGURATION REGISTRY
+    # =========================================================================
+    container_registry: "{{ lookup('env', 'LIONS_CONTAINER_REGISTRY') | default(lookup('env', 'LIONS_REGISTRY_DOMAIN')) | default('registry.' + lions_env_domain) }}"
+    registry_username: "{{ lookup('vault', 'secret/lions/' + lions_environment + '/registry:username') | default(lookup('env', 'LIONS_REGISTRY_USERNAME')) | default('registry') }}"
+    registry_password: "{{ lookup('vault', 'secret/lions/' + lions_environment + '/registry:password') | default(lookup('env', 'LIONS_REGISTRY_PASSWORD')) }}"
+    image_pull_policy: "{{ lookup('env', 'LIONS_IMAGE_PULL_POLICY') | default('IfNotPresent') }}"
+    image_pull_secrets: "{{ lookup('env', 'LIONS_IMAGE_PULL_SECRETS') | default('lions-registry-secret') }}"
+    
+    # =========================================================================
+    # CONFIGURATION DES RESSOURCES PAR DÉFAUT
+    # =========================================================================
+    default_cpu_request: "{{ lookup('env', 'LIONS_DEFAULT_CPU_REQUEST') | default('100m') }}"
+    default_cpu_limit: "{{ lookup('env', 'LIONS_DEFAULT_CPU_LIMIT') | default('500m') }}"
+    default_memory_request: "{{ lookup('env', 'LIONS_DEFAULT_MEMORY_REQUEST') | default('256Mi') }}"
+    default_memory_limit: "{{ lookup('env', 'LIONS_DEFAULT_MEMORY_LIMIT') | default('512Mi') }}"
+    
     default_resources:
       requests:
-        cpu: "100m"
-        memory: "256Mi"
+        cpu: "{{ default_cpu_request }}"
+        memory: "{{ default_memory_request }}"
       limits:
-        cpu: "500m"
-        memory: "512Mi"
+        cpu: "{{ default_cpu_limit }}"
+        memory: "{{ default_memory_limit }}"
+    
+    # =========================================================================
+    # CONFIGURATION HPA
+    # =========================================================================
+    hpa_enabled: "{{ lookup('env', 'LIONS_HPA_ENABLED') | default('true') | bool }}"
+    hpa_min_replicas: "{{ lookup('env', 'LIONS_HPA_MIN_REPLICAS') | default('1') | int }}"
+    hpa_max_replicas: "{{ lookup('env', 'LIONS_HPA_MAX_REPLICAS') | default('5') | int }}"
+    hpa_cpu_target: "{{ lookup('env', 'LIONS_HPA_CPU_TARGET') | default('70') | int }}"
+    hpa_memory_target: "{{ lookup('env', 'LIONS_HPA_MEMORY_TARGET') | default('80') | int }}"
+    
+    # =========================================================================
+    # CONFIGURATION KUBERNETES
+    # =========================================================================
+    kube_config_path: "{{ lookup('env', 'LIONS_KUBE_CONFIG_PATH') | default(ansible_env.HOME + '/.kube/config') }}"
+    kubectl_timeout: "{{ lookup('env', 'LIONS_KUBECTL_TIMEOUT') | default('5m') }}"
+    
+    # =========================================================================
+    # CONFIGURATION LOGGING ET MONITORING
+    # =========================================================================
+    log_level: "{{ lookup('env', 'LIONS_LOG_LEVEL') | default('INFO') }}"
+    monitoring_enabled: "{{ lookup('env', 'LIONS_MONITORING_ENABLED') | default('true') | bool }}"
+    deployment_log_path: "{{ lookup('env', 'LIONS_LOG_PATH') | default('/var/log/lions') }}/deployments"
+    
+    # =========================================================================
+    # VARIABLES CALCULÉES
+    # =========================================================================
+    application_image: "{{ container_registry }}/{{ application_name }}:{{ application_version }}"
+    application_labels:
+      app: "{{ application_name }}"
+      version: "{{ application_version }}"
+      environment: "{{ lions_environment }}"
+      technology: "{{ application_technology }}"
+      managed-by: "lions-infrastructure"
+      deployment-id: "{{ lions_deployment_id }}"
 
-  tasks:
-    - name: Affichage des informations de déploiement
+  environment:
+    KUBECONFIG: "{{ kube_config_path }}"
+    LIONS_ENVIRONMENT: "{{ lions_environment }}"
+    LIONS_DEPLOYMENT_ID: "{{ lions_deployment_id }}"
+
+  pre_tasks:
+    # =========================================================================
+    # VALIDATION PRÉ-DÉPLOIEMENT
+    # =========================================================================
+    - name: "Validation de la configuration de déploiement"
+      assert:
+        that:
+          - application_name is defined and application_name != ""
+          - application_technology is defined and application_technology != ""
+          - lions_environment is defined
+          - container_registry is defined
+        fail_msg: "Configuration de déploiement invalide - Paramètres manquants"
+        success_msg: "Configuration de déploiement validée pour {{ application_name }}"
+
+    - name: "Affichage des informations de déploiement"
       debug:
         msg: 
+          - "==============================================================================="
+          - "LIONS INFRASTRUCTURE - DÉPLOIEMENT D'APPLICATION"
+          - "==============================================================================="
           - "Application: {{ application_name }}"
-          - "Environnement: {{ environment }}"
-          - "Technologie: {{ technology }}"
-          - "Version: {{ version }}"
-          - "Namespace: {{ namespace }}"
-          - "Image: {{ image_name }}"
+          - "Technologie: {{ application_technology }}"
+          - "Version: {{ application_version }}"
+          - "Environnement: {{ lions_environment }}"
+          - "Namespace: {{ application_namespace }}"
+          - "Image: {{ application_image }}"
+          - "Domaine: {{ application_domain }}"
+          - "Registry: {{ container_registry }}"
+          - "Utilisateur: {{ deployment_user }}"
+          - "ID Déploiement: {{ lions_deployment_id }}"
+          - "==============================================================================="
 
-    - name: Vérification de l'existence de l'image Docker
-      shell: "kubectl exec -n registry -l app=registry -- /bin/sh -c 'curl -s -f http://localhost:5000/v2/{{ application_name }}/tags/list | grep {{ version }}'"
+  tasks:
+    # =========================================================================
+    # VÉRIFICATION DE L'IMAGE DOCKER
+    # =========================================================================
+    - name: "Vérification de l'accessibilité du registry"
+      uri:
+        url: "https://{{ container_registry }}/v2/"
+        method: GET
+        user: "{{ registry_username }}"
+        password: "{{ registry_password }}"
+        force_basic_auth: yes
+        status_code: [200, 401]
+      register: registry_check
+      when: registry_password is defined and registry_password != ""
+
+    - name: "Vérification de l'existence de l'image Docker"
+      uri:
+        url: "https://{{ container_registry }}/v2/{{ application_name }}/tags/list"
+        method: GET
+        user: "{{ registry_username }}"
+        password: "{{ registry_password }}"
+        force_basic_auth: yes
+        status_code: [200, 404]
       register: image_check
-      ignore_errors: yes
-      changed_when: false
+      when: 
+        - registry_password is defined and registry_password != ""
+        - application_version != 'latest'
 
-    - name: Échec si l'image n'existe pas
-      fail:
-        msg: "L'image {{ image_name }} n'existe pas dans le registre. Veuillez construire et pousser l'image avant le déploiement."
-      when: image_check.rc != 0 and version != 'latest'
+    - name: "Validation de l'existence de l'image"
+      assert:
+        that:
+          - image_check.status == 200
+          - application_version in (image_check.json.tags | default([]))
+        fail_msg: "L'image {{ application_image }} n'existe pas dans le registre"
+        success_msg: "Image {{ application_image }} trouvée dans le registre"
+      when: 
+        - image_check is defined
+        - application_version != 'latest'
 
-    - name: Création du namespace si nécessaire
-      k8s:
+    # =========================================================================
+    # PRÉPARATION DE L'ENVIRONNEMENT
+    # =========================================================================
+    - name: "Création du répertoire de logs de déploiement"
+      file:
+        path: "{{ deployment_log_path }}/history"
+        state: directory
+        mode: '0755'
+      delegate_to: localhost
+      run_once: true
+
+    - name: "Création du namespace d'application"
+      kubernetes.core.k8s:
         state: present
         definition:
           apiVersion: v1
           kind: Namespace
           metadata:
-            name: "{{ namespace }}"
-            labels:
-              name: "{{ namespace }}"
-              environment: "{{ environment }}"
-              technology: "{{ technology }}"
-              app: "{{ application_name }}"
+            name: "{{ application_namespace }}"
+            labels: "{{ application_labels | combine({'component': 'namespace'}) }}"
+            annotations:
+              lions.dev/environment: "{{ lions_environment }}"
+              lions.dev/project: "{{ lions_project_name }}"
+              lions.dev/deployment-timestamp: "{{ deployment_timestamp }}"
+              lions.dev/deployment-user: "{{ deployment_user }}"
 
-    - name: Chargement de la configuration spécifique à la technologie
+    - name: "Création du secret de registry"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: "{{ image_pull_secrets }}"
+            namespace: "{{ application_namespace }}"
+            labels: "{{ application_labels | combine({'component': 'registry-secret'}) }}"
+          type: kubernetes.io/dockerconfigjson
+          data:
+            .dockerconfigjson: "{{ {'auths': {container_registry: {'username': registry_username, 'password': registry_password, 'auth': (registry_username + ':' + registry_password) | b64encode}}} | to_nice_json | b64encode }}"
+      when: registry_password is defined and registry_password != ""
+
+    # =========================================================================
+    # CHARGEMENT DE LA CONFIGURATION TECHNOLOGIQUE
+    # =========================================================================
+    - name: "Chargement de la configuration spécifique à la technologie"
       include_vars:
-        file: "{{ playbook_dir }}/../roles/{{ technology }}/vars/main.yml"
+        file: "{{ playbook_dir }}/../roles/{{ application_technology }}/vars/main.yml"
       ignore_errors: yes
 
-    - name: Inclusion du rôle spécifique à la technologie
-      include_role:
-        name: "{{ technology }}"
-      vars:
-        app_name: "{{ application_name }}"
-        app_namespace: "{{ namespace }}"
-        app_version: "{{ version }}"
-        app_environment: "{{ environment }}"
-        app_domain: "{{ application_name }}.{{ domain_suffix[environment] }}"
-        app_resources: "{{ extra_params.resources | default(default_resources) }}"
-        app_replicas: "{{ extra_params.replicas | default(1) }}"
+    - name: "Vérification de l'existence du rôle technologique"
+      stat:
+        path: "{{ playbook_dir }}/../roles/{{ application_technology }}"
+      register: role_check
 
-    - name: Vérification du déploiement
-      k8s_info:
+    - name: "Échec si le rôle technologique n'existe pas"
+      fail:
+        msg: "Le rôle pour la technologie '{{ application_technology }}' n'existe pas dans {{ playbook_dir }}/../roles/"
+      when: not role_check.stat.exists
+
+    # =========================================================================
+    # DÉPLOIEMENT DE L'APPLICATION
+    # =========================================================================
+    - name: "Déploiement de l'application via le rôle technologique"
+      include_role:
+        name: "{{ application_technology }}"
+      vars:
+        # Variables standardisées pour tous les rôles
+        app_name: "{{ application_name }}"
+        app_namespace: "{{ application_namespace }}"
+        app_version: "{{ application_version }}"
+        app_environment: "{{ lions_environment }}"
+        app_domain: "{{ application_domain }}"
+        app_image: "{{ application_image }}"
+        app_labels: "{{ application_labels }}"
+        app_resources: "{{ application_extra_params.resources | default(default_resources) }}"
+        app_replicas: "{{ application_extra_params.replicas | default(hpa_min_replicas) }}"
+        app_registry_secret: "{{ image_pull_secrets }}"
+        app_deployment_strategy: "{{ deployment_strategy }}"
+        app_rolling_update:
+          maxSurge: "{{ rolling_update_max_surge }}"
+          maxUnavailable: "{{ rolling_update_max_unavailable }}"
+        app_hpa_enabled: "{{ hpa_enabled }}"
+        app_hpa_config:
+          minReplicas: "{{ hpa_min_replicas }}"
+          maxReplicas: "{{ hpa_max_replicas }}"
+          cpuTarget: "{{ hpa_cpu_target }}"
+          memoryTarget: "{{ hpa_memory_target }}"
+        app_monitoring_enabled: "{{ monitoring_enabled }}"
+        app_log_level: "{{ log_level }}"
+        # Variables spécifiques à l'application
+        app_extra_config: "{{ application_extra_params }}"
+
+    # =========================================================================
+    # VÉRIFICATION DU DÉPLOIEMENT
+    # =========================================================================
+    - name: "Vérification du statut du déploiement"
+      kubernetes.core.k8s_info:
         api_version: apps/v1
         kind: Deployment
-        namespace: "{{ namespace }}"
+        namespace: "{{ application_namespace }}"
         name: "{{ application_name }}"
+        wait: true
+        wait_condition:
+          type: Progressing
+          status: "True"
+          reason: NewReplicaSetAvailable
+        wait_timeout: "{{ deployment_timeout | regex_replace('m', '') | int * 60 }}"
       register: deployment_status
-      until: deployment_status.resources[0].status.availableReplicas is defined and deployment_status.resources[0].status.availableReplicas == deployment_status.resources[0].spec.replicas
+
+    - name: "Vérification de la disponibilité des pods"
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        namespace: "{{ application_namespace }}"
+        name: "{{ application_name }}"
+      register: deployment_info
+      until: 
+        - deployment_info.resources | length > 0
+        - deployment_info.resources[0].status.availableReplicas is defined
+        - deployment_info.resources[0].status.availableReplicas == deployment_info.resources[0].spec.replicas
       retries: 30
       delay: 10
+
+    - name: "Vérification de l'accessibilité de l'application"
+      uri:
+        url: "https://{{ application_domain }}/health"
+        method: GET
+        status_code: [200, 404]
+        timeout: 10
+      register: health_check
       ignore_errors: yes
+      when: lookup('env', 'LIONS_HEALTH_CHECK_ENABLED') | default('true') | bool
 
-    - name: Affichage du statut du déploiement
-      debug:
-        msg: "Déploiement terminé avec succès. L'application est accessible à l'adresse: https://{{ application_name }}.{{ domain_suffix[environment] }}"
-      when: deployment_status is succeeded
-
-    - name: Échec si le déploiement a échoué
-      fail:
-        msg: "Le déploiement a échoué. Veuillez vérifier les logs pour plus d'informations."
-      when: deployment_status is failed
-
-    - name: Enregistrement du déploiement dans l'historique
+    # =========================================================================
+    # FINALISATION ET LOGGING
+    # =========================================================================
+    - name: "Génération du rapport de déploiement"
       copy:
         content: |
+          ===============================================================================
+          LIONS INFRASTRUCTURE - RAPPORT DE DÉPLOIEMENT
+          ===============================================================================
           Application: {{ application_name }}
-          Environnement: {{ environment }}
-          Technologie: {{ technology }}
-          Version: {{ version }}
-          Déployé par: {{ deployment_user }}
-          Date: {{ deployment_timestamp }}
-          Statut: Succès
-        dest: "/var/log/lions/deployments/history/{{ application_name }}-{{ environment }}-{{ deployment_timestamp }}.log"
+          Technologie: {{ application_technology }}
+          Version: {{ application_version }}
+          Environnement: {{ lions_environment }}
+          Namespace: {{ application_namespace }}
+          Image: {{ application_image }}
+          Domaine: {{ application_domain }}
+          
+          Déploiement:
+            ID: {{ lions_deployment_id }}
+            Utilisateur: {{ deployment_user }}
+            Timestamp: {{ deployment_timestamp }}
+            Stratégie: {{ deployment_strategy }}
+            Timeout: {{ deployment_timeout }}
+          
+          Ressources:
+            CPU Request: {{ default_cpu_request }}
+            CPU Limit: {{ default_cpu_limit }}
+            Memory Request: {{ default_memory_request }}
+            Memory Limit: {{ default_memory_limit }}
+          
+          HPA:
+            Enabled: {{ hpa_enabled }}
+            Min Replicas: {{ hpa_min_replicas }}
+            Max Replicas: {{ hpa_max_replicas }}
+            CPU Target: {{ hpa_cpu_target }}%
+            Memory Target: {{ hpa_memory_target }}%
+          
+          Statut:
+            Déploiement: {{ 'SUCCESS' if deployment_status is succeeded else 'FAILED' }}
+            Pods Disponibles: {{ deployment_info.resources[0].status.availableReplicas | default(0) }}/{{ deployment_info.resources[0].spec.replicas | default(0) }}
+            Health Check: {{ 'OK' if health_check.status == 200 else 'FAILED' if health_check is defined else 'SKIPPED' }}
+          
+          URL: https://{{ application_domain }}
+          ===============================================================================
+        dest: "{{ deployment_log_path }}/history/{{ application_name }}-{{ lions_environment }}-{{ deployment_timestamp }}.log"
         mode: '0644'
+
+    - name: "Affichage du résultat du déploiement"
+      debug:
+        msg: 
+          - "==============================================================================="
+          - "✅ DÉPLOIEMENT TERMINÉ AVEC SUCCÈS"
+          - "==============================================================================="
+          - "Application {{ application_name }} déployée dans l'environnement {{ lions_environment }}"
+          - "URL: https://{{ application_domain }}"
+          - "Namespace: {{ application_namespace }}"
+          - "Pods disponibles: {{ deployment_info.resources[0].status.availableReplicas | default(0) }}/{{ deployment_info.resources[0].spec.replicas | default(0) }}"
+          - "Rapport de déploiement: {{ deployment_log_path }}/history/{{ application_name }}-{{ lions_environment }}-{{ deployment_timestamp }}.log"
+          - "==============================================================================="
+      when: deployment_status is succeeded
+
+  post_tasks:
+    # =========================================================================
+    # NOTIFICATION DE DÉPLOIEMENT
+    # =========================================================================
+    - name: "Notification de succès du déploiement"
+      uri:
+        url: "{{ lookup('env', 'LIONS_NOTIFICATION_WEBHOOK_URL') }}"
+        method: POST
+        body_format: json
+        body:
+          text: "✅ Déploiement réussi: {{ application_name }} v{{ application_version }} sur {{ lions_environment }}"
+          application: "{{ application_name }}"
+          version: "{{ application_version }}"
+          environment: "{{ lions_environment }}"
+          url: "https://{{ application_domain }}"
+          deployment_id: "{{ lions_deployment_id }}"
+          user: "{{ deployment_user }}"
+      when: 
+        - lookup('env', 'LIONS_NOTIFICATION_WEBHOOK_URL') != ""
+        - deployment_status is succeeded
       ignore_errors: yes
+
+  handlers:
+    - name: "Notification d'échec de déploiement"
+      uri:
+        url: "{{ lookup('env', 'LIONS_NOTIFICATION_WEBHOOK_URL') }}"
+        method: POST
+        body_format: json
+        body:
+          text: "❌ Échec de déploiement: {{ application_name }} v{{ application_version }} sur {{ lions_environment }}"
+          application: "{{ application_name }}"
+          version: "{{ application_version }}"
+          environment: "{{ lions_environment }}"
+          deployment_id: "{{ lions_deployment_id }}"
+          user: "{{ deployment_user }}"
+          error: "{{ ansible_failed_result.msg | default('Unknown error') }}"
+      when: lookup('env', 'LIONS_NOTIFICATION_WEBHOOK_URL') != ""
+      listen: "deployment failed"

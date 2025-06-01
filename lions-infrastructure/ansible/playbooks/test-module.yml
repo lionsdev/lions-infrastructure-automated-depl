@@ -1,17 +1,509 @@
 ---
-# Playbook de test pour vérifier le chargement des modules
-- name: Test de chargement des modules
+# ===============================================================================
+# LIONS INFRASTRUCTURE - TEST MODULE PLAYBOOK v5.0
+# ===============================================================================
+# Description: Teste le chargement des modules et la configuration avec variables d'environnement
+# Version: 5.0.0
+# Date: 01/06/2025
+# Author: LIONS DevOps Team
+# ===============================================================================
+
+- name: "Test des modules LIONS {{ lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT')) | upper }}"
   hosts: localhost
   connection: local
-  gather_facts: no
+  gather_facts: yes
   
-  tasks:
-    - name: Test d'un module simple
+  vars:
+    # =========================================================================
+    # CONFIGURATION DE BASE DEPUIS VARIABLES D'ENVIRONNEMENT
+    # =========================================================================
+    lions_environment: "{{ lookup('env', 'LIONS_ENVIRONMENT') | default('development') }}"
+    lions_project_name: "{{ lookup('env', 'LIONS_PROJECT_NAME') | default('lions-infrastructure') }}"
+    lions_version: "{{ lookup('env', 'LIONS_VERSION') | default('5.0.0') }}"
+    lions_deployment_id: "{{ lookup('env', 'LIONS_DEPLOYMENT_ID') | default(ansible_date_time.epoch) }}"
+    
+    # =========================================================================
+    # CONFIGURATION DE TEST
+    # =========================================================================
+    test_log_path: "{{ lookup('env', 'LIONS_LOG_PATH') | default('/var/log/lions') }}/tests"
+    test_log_file: "{{ test_log_path }}/module-test-{{ lions_environment }}-{{ ansible_date_time.date }}.log"
+    test_timeout: "{{ lookup('env', 'LIONS_TEST_TIMEOUT') | default('5m') }}"
+    test_mode: "{{ lookup('env', 'LIONS_TEST_MODE') | default('false') | bool }}"
+    
+    # =========================================================================
+    # CONFIGURATION KUBERNETES
+    # =========================================================================
+    kube_config_path: "{{ lookup('env', 'LIONS_KUBE_CONFIG_PATH') | default(ansible_env.HOME + '/.kube/config') }}"
+    kubectl_timeout: "{{ lookup('env', 'LIONS_KUBECTL_TIMEOUT') | default('5m') }}"
+    test_namespace: "{{ lookup('env', 'LIONS_TEST_NAMESPACE') | default('lions-test') }}"
+    
+    # =========================================================================
+    # CONFIGURATION VAULT
+    # =========================================================================
+    vault_enabled: "{{ lookup('env', 'LIONS_VAULT_ENABLED') | default('true') | bool }}"
+    vault_addr: "{{ lookup('env', 'LIONS_VAULT_ADDR') | default('') }}"
+    vault_test_enabled: "{{ lookup('env', 'LIONS_VAULT_TEST_ENABLED') | default('false') | bool }}"
+    
+    # =========================================================================
+    # MODULES À TESTER
+    # =========================================================================
+    test_modules:
+      - name: "ansible.builtin"
+        enabled: true
+        critical: true
+        tests:
+          - { module: "debug", test: "basic", description: "Test debug module basique" }
+          - { module: "set_fact", test: "variable", description: "Test set_fact pour variables" }
+          - { module: "shell", test: "command", description: "Test shell command" }
+          - { module: "file", test: "creation", description: "Test création de fichier" }
+      - name: "kubernetes.core"
+        enabled: true
+        critical: true
+        tests:
+          - { module: "k8s_info", test: "cluster", description: "Test info cluster Kubernetes" }
+          - { module: "k8s", test: "resource", description: "Test création ressource K8s" }
+      - name: "community.general"
+        enabled: true
+        critical: false
+        tests:
+          - { module: "uri", test: "http", description: "Test requête HTTP" }
+          - { module: "json_query", test: "jmespath", description: "Test requête JSON" }
+      - name: "community.crypto"
+        enabled: "{{ lookup('env', 'LIONS_TLS_ENABLED') | default('true') | bool }}"
+        critical: false
+        tests:
+          - { module: "openssl_certificate_info", test: "cert", description: "Test info certificat" }
+      - name: "community.hashi_vault"
+        enabled: "{{ vault_enabled and vault_test_enabled }}"
+        critical: false
+        tests:
+          - { module: "hashivault_read", test: "vault", description: "Test lecture Vault" }
+
+  environment:
+    KUBECONFIG: "{{ kube_config_path }}"
+    LIONS_ENVIRONMENT: "{{ lions_environment }}"
+    LIONS_TEST_ID: "{{ lions_deployment_id }}"
+
+  pre_tasks:
+    # =========================================================================
+    # INITIALISATION DES TESTS
+    # =========================================================================
+    - name: "Affichage de la configuration de test"
       debug:
-        msg: "Test de chargement des modules"
-      
-    - name: Test d'un module kubernetes.core
-      kubernetes.core.k8s_info:
-        kind: Pod
-        namespace: default
+        msg:
+          - "==============================================================================="
+          - "LIONS INFRASTRUCTURE - TEST DES MODULES"
+          - "==============================================================================="
+          - "Environnement: {{ lions_environment }}"
+          - "Version: {{ lions_version }}"
+          - "Test ID: {{ lions_deployment_id }}"
+          - "Mode test: {{ test_mode }}"
+          - "Timeout: {{ test_timeout }}"
+          - "Kubernetes: {{ kube_config_path }}"
+          - "Vault: {{ vault_enabled }}"
+          - "Modules à tester: {{ test_modules | selectattr('enabled') | list | length }}/{{ test_modules | list | length }}"
+          - "==============================================================================="
+
+    - name: "Création du répertoire de logs de test"
+      file:
+        path: "{{ test_log_path }}"
+        state: directory
+        mode: '0755'
+      delegate_to: localhost
+
+    - name: "Initialisation du log de test"
+      copy:
+        content: |
+          ===============================================================================
+          LIONS INFRASTRUCTURE - LOG DE TEST DES MODULES
+          ===============================================================================
+          Environnement: {{ lions_environment }}
+          Version: {{ lions_version }}
+          Test ID: {{ lions_deployment_id }}
+          Date de début: {{ ansible_date_time.iso8601 }}
+          Serveur: {{ inventory_hostname }}
+          ===============================================================================
+        dest: "{{ test_log_file }}"
+        mode: '0644'
+
+  tasks:
+    # =========================================================================
+    # TEST 1: MODULES ANSIBLE BUILTIN
+    # =========================================================================
+    - name: "🧪 TEST 1 - Modules ansible.builtin"
+      block:
+        - name: "Test debug - Affichage basique"
+          debug:
+            msg: "✅ Module debug fonctionne correctement"
+          register: test_debug
+
+        - name: "Test set_fact - Création de variable"
+          set_fact:
+            test_variable: "lions_test_{{ ansible_date_time.epoch }}"
+            test_dict: 
+              environment: "{{ lions_environment }}"
+              timestamp: "{{ ansible_date_time.iso8601 }}"
+              version: "{{ lions_version }}"
+          register: test_set_fact
+
+        - name: "Test shell - Commande basique"
+          shell: "echo 'Test shell module - LIONS {{ lions_environment }}'"
+          register: test_shell
+          changed_when: false
+
+        - name: "Test file - Création de fichier temporaire"
+          file:
+            path: "/tmp/lions-test-{{ lions_deployment_id }}.txt"
+            state: touch
+            mode: '0644'
+          register: test_file
+
+        - name: "Vérification des résultats builtin"
+          assert:
+            that:
+              - test_debug is succeeded
+              - test_variable is defined
+              - test_shell is succeeded
+              - test_file is succeeded
+            success_msg: "✅ Tous les modules ansible.builtin fonctionnent"
+            fail_msg: "❌ Échec des tests ansible.builtin"
+
+        - name: "Enregistrement des résultats builtin"
+          lineinfile:
+            path: "{{ test_log_file }}"
+            line: "✅ Test ansible.builtin - SUCCESS - {{ ansible_date_time.iso8601 }}"
+
+      when: test_modules | selectattr('name', 'equalto', 'ansible.builtin') | selectattr('enabled') | list | length > 0
+      tags: ['test', 'builtin']
+
+    # =========================================================================
+    # TEST 2: MODULES KUBERNETES
+    # =========================================================================
+    - name: "🧪 TEST 2 - Modules kubernetes.core"
+      block:
+        - name: "Test k8s_info - Information sur les nœuds"
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: Node
+          register: test_k8s_nodes
+          ignore_errors: yes
+
+        - name: "Test k8s_info - Information sur le namespace par défaut"
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: Namespace
+            name: default
+          register: test_k8s_namespace
+          ignore_errors: yes
+
+        - name: "Test création namespace de test"
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: "{{ test_namespace }}"
+                labels:
+                  test: "lions-module-test"
+                  environment: "{{ lions_environment }}"
+                annotations:
+                  lions.dev/test-id: "{{ lions_deployment_id }}"
+          register: test_k8s_create
+          ignore_errors: yes
+
+        - name: "Test création ConfigMap de test"
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: ConfigMap
+              metadata:
+                name: lions-test-config
+                namespace: "{{ test_namespace }}"
+                labels:
+                  test: "lions-module-test"
+              data:
+                environment: "{{ lions_environment }}"
+                test-id: "{{ lions_deployment_id }}"
+                test-time: "{{ ansible_date_time.iso8601 }}"
+          register: test_k8s_configmap
+          ignore_errors: yes
+          when: test_k8s_create is succeeded
+
+        - name: "Vérification des résultats Kubernetes"
+          debug:
+            msg:
+              - "Nœuds K8s: {{ 'SUCCESS' if test_k8s_nodes is succeeded else 'FAILED' }}"
+              - "Namespace info: {{ 'SUCCESS' if test_k8s_namespace is succeeded else 'FAILED' }}"
+              - "Création namespace: {{ 'SUCCESS' if test_k8s_create is succeeded else 'FAILED' }}"
+              - "Création ConfigMap: {{ 'SUCCESS' if test_k8s_configmap is succeeded else 'FAILED' }}"
+
+        - name: "Enregistrement des résultats Kubernetes"
+          lineinfile:
+            path: "{{ test_log_file }}"
+            line: "{{ test_k8s_nodes is succeeded and test_k8s_namespace is succeeded | ternary('✅', '❌') }} Test kubernetes.core - {{ test_k8s_nodes is succeeded and test_k8s_namespace is succeeded | ternary('SUCCESS', 'FAILED') }} - {{ ansible_date_time.iso8601 }}"
+
+      when: test_modules | selectattr('name', 'equalto', 'kubernetes.core') | selectattr('enabled') | list | length > 0
+      tags: ['test', 'kubernetes']
+
+    # =========================================================================
+    # TEST 3: MODULES COMMUNITY GENERAL
+    # =========================================================================
+    - name: "🧪 TEST 3 - Modules community.general"
+      block:
+        - name: "Test uri - Requête HTTP vers localhost"
+          uri:
+            url: "http://httpbin.org/status/200"
+            method: GET
+            timeout: 10
+            status_code: 200
+          register: test_uri
+          ignore_errors: yes
+
+        - name: "Test uri - Requête vers service Kubernetes (si disponible)"
+          uri:
+            url: "https://kubernetes.default.svc.cluster.local/api/v1"
+            method: GET
+            validate_certs: no
+            timeout: 5
+          register: test_uri_k8s
+          ignore_errors: yes
+
+        - name: "Test json_query - Traitement JSON"
+          set_fact:
+            test_json_data:
+              environment: "{{ lions_environment }}"
+              services:
+                - name: "postgres"
+                  enabled: true
+                - name: "redis"
+                  enabled: true
+                - name: "vault"
+                  enabled: false
+          register: test_json_setup
+
+        - name: "Test json_query - Requête JMESPath"
+          set_fact:
+            enabled_services: "{{ test_json_data | json_query('services[?enabled].name') }}"
+          register: test_json_query
+
+        - name: "Vérification des résultats community.general"
+          debug:
+            msg:
+              - "URI externe: {{ 'SUCCESS' if test_uri is succeeded else 'FAILED' }}"
+              - "URI Kubernetes: {{ 'SUCCESS' if test_uri_k8s is succeeded else 'FAILED' }}"
+              - "JSON Query: {{ 'SUCCESS' if enabled_services | length > 0 else 'FAILED' }}"
+              - "Services activés: {{ enabled_services }}"
+
+        - name: "Enregistrement des résultats community.general"
+          lineinfile:
+            path: "{{ test_log_file }}"
+            line: "{{ test_uri is succeeded and test_json_query is succeeded | ternary('✅', '❌') }} Test community.general - {{ test_uri is succeeded and test_json_query is succeeded | ternary('SUCCESS', 'FAILED') }} - {{ ansible_date_time.iso8601 }}"
+
+      when: test_modules | selectattr('name', 'equalto', 'community.general') | selectattr('enabled') | list | length > 0
+      tags: ['test', 'community']
+
+    # =========================================================================
+    # TEST 4: MODULES CRYPTO
+    # =========================================================================
+    - name: "🧪 TEST 4 - Modules community.crypto"
+      block:
+        - name: "Test création clé privée temporaire"
+          community.crypto.openssl_privatekey:
+            path: "/tmp/lions-test-{{ lions_deployment_id }}.key"
+            type: RSA
+            size: 2048
+          register: test_crypto_key
+          ignore_errors: yes
+
+        - name: "Test création CSR temporaire"
+          community.crypto.openssl_csr:
+            path: "/tmp/lions-test-{{ lions_deployment_id }}.csr"
+            privatekey_path: "/tmp/lions-test-{{ lions_deployment_id }}.key"
+            common_name: "lions-test.{{ lions_environment }}.local"
+            organization_name: "LIONS Infrastructure"
+          register: test_crypto_csr
+          ignore_errors: yes
+          when: test_crypto_key is succeeded
+
+        - name: "Test création certificat auto-signé"
+          community.crypto.x509_certificate:
+            path: "/tmp/lions-test-{{ lions_deployment_id }}.crt"
+            privatekey_path: "/tmp/lions-test-{{ lions_deployment_id }}.key"
+            csr_path: "/tmp/lions-test-{{ lions_deployment_id }}.csr"
+            provider: selfsigned
+          register: test_crypto_cert
+          ignore_errors: yes
+          when: test_crypto_csr is succeeded
+
+        - name: "Test lecture informations certificat"
+          community.crypto.x509_certificate_info:
+            path: "/tmp/lions-test-{{ lions_deployment_id }}.crt"
+          register: test_crypto_info
+          ignore_errors: yes
+          when: test_crypto_cert is succeeded
+
+        - name: "Vérification des résultats crypto"
+          debug:
+            msg:
+              - "Clé privée: {{ 'SUCCESS' if test_crypto_key is succeeded else 'FAILED' }}"
+              - "CSR: {{ 'SUCCESS' if test_crypto_csr is succeeded else 'FAILED' }}"
+              - "Certificat: {{ 'SUCCESS' if test_crypto_cert is succeeded else 'FAILED' }}"
+              - "Info certificat: {{ 'SUCCESS' if test_crypto_info is succeeded else 'FAILED' }}"
+
+        - name: "Enregistrement des résultats crypto"
+          lineinfile:
+            path: "{{ test_log_file }}"
+            line: "{{ test_crypto_key is succeeded | ternary('✅', '❌') }} Test community.crypto - {{ test_crypto_key is succeeded | ternary('SUCCESS', 'FAILED') }} - {{ ansible_date_time.iso8601 }}"
+
+      when: test_modules | selectattr('name', 'equalto', 'community.crypto') | selectattr('enabled') | list | length > 0
+      tags: ['test', 'crypto']
+
+    # =========================================================================
+    # TEST 5: MODULES VAULT (SI ACTIVÉ)
+    # =========================================================================
+    - name: "🧪 TEST 5 - Modules community.hashi_vault"
+      block:
+        - name: "Test connexion Vault"
+          uri:
+            url: "{{ vault_addr }}/v1/sys/health"
+            method: GET
+            timeout: 5
+          register: test_vault_health
+          ignore_errors: yes
+          when: vault_addr != ""
+
+        - name: "Test lecture secret Vault (si configuré)"
+          community.hashi_vault.vault_read:
+            url: "{{ vault_addr }}"
+            path: "secret/lions/{{ lions_environment }}/test"
+          register: test_vault_read
+          ignore_errors: yes
+          when: 
+            - vault_addr != ""
+            - test_vault_health is succeeded
+
+        - name: "Vérification des résultats Vault"
+          debug:
+            msg:
+              - "Vault URL: {{ vault_addr | default('Non configuré') }}"
+              - "Santé Vault: {{ 'SUCCESS' if test_vault_health is succeeded else 'FAILED' }}"
+              - "Lecture secret: {{ 'SUCCESS' if test_vault_read is succeeded else 'FAILED' }}"
+
+        - name: "Enregistrement des résultats Vault"
+          lineinfile:
+            path: "{{ test_log_file }}"
+            line: "{{ test_vault_health is succeeded | ternary('✅', '❌') }} Test community.hashi_vault - {{ test_vault_health is succeeded | ternary('SUCCESS', 'FAILED') }} - {{ ansible_date_time.iso8601 }}"
+
+      when: test_modules | selectattr('name', 'equalto', 'community.hashi_vault') | selectattr('enabled') | list | length > 0
+      tags: ['test', 'vault']
+
+    # =========================================================================
+    # NETTOYAGE ET FINALISATION
+    # =========================================================================
+    - name: "🧹 Nettoyage des ressources de test"
+      block:
+        - name: "Suppression des fichiers temporaires"
+          file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - "/tmp/lions-test-{{ lions_deployment_id }}.txt"
+            - "/tmp/lions-test-{{ lions_deployment_id }}.key"
+            - "/tmp/lions-test-{{ lions_deployment_id }}.csr"
+            - "/tmp/lions-test-{{ lions_deployment_id }}.crt"
+          ignore_errors: yes
+
+        - name: "Suppression du namespace de test"
+          kubernetes.core.k8s:
+            state: absent
+            api_version: v1
+            kind: Namespace
+            name: "{{ test_namespace }}"
+          ignore_errors: yes
+          when: test_k8s_create is defined and test_k8s_create is succeeded
+
+      tags: ['test', 'cleanup']
+
+    # =========================================================================
+    # RAPPORT FINAL
+    # =========================================================================
+    - name: "📊 Génération du rapport de test"
+      copy:
+        content: |
+          ===============================================================================
+          LIONS INFRASTRUCTURE - RAPPORT DE TEST DES MODULES
+          ===============================================================================
+          Date: {{ ansible_date_time.iso8601 }}
+          Environnement: {{ lions_environment }}
+          Test ID: {{ lions_deployment_id }}
+          Serveur: {{ inventory_hostname }}
+          
+          Résultats des tests:
+            - ansible.builtin: {{ test_debug is succeeded and test_shell is succeeded | ternary('SUCCESS', 'FAILED') }}
+            - kubernetes.core: {{ test_k8s_nodes is succeeded | ternary('SUCCESS', 'FAILED') }}
+            - community.general: {{ test_uri is succeeded | ternary('SUCCESS', 'FAILED') }}
+            - community.crypto: {{ test_crypto_key is succeeded | ternary('SUCCESS', 'FAILED') }}
+            - community.hashi_vault: {{ test_vault_health is succeeded | ternary('SUCCESS', 'FAILED') if vault_enabled else 'SKIPPED' }}
+          
+          Configuration:
+            - Kubernetes configuré: {{ test_k8s_nodes is succeeded }}
+            - Vault configuré: {{ vault_enabled and vault_addr != '' }}
+            - Mode test: {{ test_mode }}
+            - Timeout: {{ test_timeout }}
+          
+          Modules critiques: {{ test_modules | selectattr('critical') | selectattr('enabled') | list | length }}
+          Modules optionnels: {{ test_modules | selectattr('critical', 'false') | selectattr('enabled') | list | length }}
+          
+          ===============================================================================
+        dest: "{{ test_log_path }}/module-test-report-{{ lions_deployment_id }}.txt"
+        mode: '0644'
+      tags: ['test', 'report']
+
+    - name: "Finalisation du log de test"
+      lineinfile:
+        path: "{{ test_log_file }}"
+        line: |
+          ===============================================================================
+          ✅ TESTS DES MODULES TERMINÉS
+          Date de fin: {{ ansible_date_time.iso8601 }}
+          Rapport: {{ test_log_path }}/module-test-report-{{ lions_deployment_id }}.txt
+          ===============================================================================
+      tags: ['test', 'finalize']
+
+  post_tasks:
+    # =========================================================================
+    # NOTIFICATION DE FIN DE TEST
+    # =========================================================================
+    - name: "Notification de fin de test"
+      uri:
+        url: "{{ lookup('env', 'LIONS_NOTIFICATION_WEBHOOK_URL') }}"
+        method: POST
+        body_format: json
+        body:
+          text: "🧪 Tests modules LIONS {{ lions_environment }} terminés"
+          environment: "{{ lions_environment }}"
+          test_id: "{{ lions_deployment_id }}"
+          results:
+            builtin: "{{ test_debug is succeeded and test_shell is succeeded | ternary('SUCCESS', 'FAILED') }}"
+            kubernetes: "{{ test_k8s_nodes is succeeded | ternary('SUCCESS', 'FAILED') }}"
+            community: "{{ test_uri is succeeded | ternary('SUCCESS', 'FAILED') }}"
+            crypto: "{{ test_crypto_key is succeeded | ternary('SUCCESS', 'FAILED') }}"
+            vault: "{{ test_vault_health is succeeded | ternary('SUCCESS', 'FAILED') if vault_enabled else 'SKIPPED' }}"
+      when: lookup('env', 'LIONS_NOTIFICATION_WEBHOOK_URL') != ""
       ignore_errors: yes
+
+  handlers:
+    - name: "Notification d'échec de test"
+      uri:
+        url: "{{ lookup('env', 'LIONS_NOTIFICATION_WEBHOOK_URL') }}"
+        method: POST
+        body_format: json
+        body:
+          text: "❌ Échec des tests modules LIONS {{ lions_environment }}"
+          environment: "{{ lions_environment }}"
+          test_id: "{{ lions_deployment_id }}"
+          error: "{{ ansible_failed_result.msg | default('Unknown error') }}"
+      when: lookup('env', 'LIONS_NOTIFICATION_WEBHOOK_URL') != ""
+      listen: "test failed"

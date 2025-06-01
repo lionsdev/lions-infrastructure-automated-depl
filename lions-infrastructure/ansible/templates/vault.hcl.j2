@@ -1,41 +1,385 @@
-# Titre: Configuration de HashiCorp Vault
-# Description: Fichier de configuration pour le serveur Vault
-# Auteur: Équipe LIONS Infrastructure
-# Date: 18/05/2025
-# Version: 1.0.0
+# =============================================================================
+# LIONS Infrastructure - Configuration HashiCorp Vault v5.0
+# =============================================================================
+# Description: Configuration Vault avec variables d'environnement pour l'environnement {{ lookup('env', 'LIONS_ENVIRONMENT') | default('development') }}
+# Version: 5.0.0
+# Date: 01/06/2025
+# Auteur: LIONS DevOps Team
+# =============================================================================
 
-# Configuration du stockage
+# =============================================================================
+# CONFIGURATION DU STOCKAGE
+# =============================================================================
+{% set storage_backend = lookup('env', 'LIONS_VAULT_STORAGE_BACKEND') | default('file') -%}
+{% if storage_backend == 'file' -%}
 storage "file" {
-  path = "{{ vault_storage_path }}"
+  path = "{{ lookup('env', 'LIONS_VAULT_STORAGE_PATH') | default('/vault/data') }}"
+  
+  # Configuration avancée pour le stockage fichier
+  node_id = "{{ lookup('env', 'LIONS_VAULT_NODE_ID') | default(ansible_hostname) }}"
+  {% if lookup('env', 'LIONS_VAULT_DISABLE_CLUSTERING') | default('false') | bool -%}
+  disable_clustering = true
+  {% endif -%}
 }
+{% elif storage_backend == 'consul' -%}
+storage "consul" {
+  address = "{{ lookup('env', 'LIONS_VAULT_CONSUL_ADDRESS') | default('127.0.0.1:8500') }}"
+  path = "{{ lookup('env', 'LIONS_VAULT_CONSUL_PATH') | default('vault') }}"
+  
+  # Configuration Consul
+  {% if lookup('env', 'LIONS_VAULT_CONSUL_TOKEN') != '' -%}
+  token = "{{ lookup('vault', 'secret/lions/' + lookup('env', 'LIONS_ENVIRONMENT') | default('development') + '/consul:token') | default(lookup('env', 'LIONS_VAULT_CONSUL_TOKEN')) }}"
+  {% endif -%}
+  {% if lookup('env', 'LIONS_VAULT_CONSUL_SCHEME') != '' -%}
+  scheme = "{{ lookup('env', 'LIONS_VAULT_CONSUL_SCHEME') | default('http') }}"
+  {% endif -%}
+  {% if lookup('env', 'LIONS_VAULT_CONSUL_TLS_ENABLED') | default('false') | bool -%}
+  tls_ca_file = "{{ lookup('env', 'LIONS_VAULT_CONSUL_TLS_CA_FILE') | default('/etc/ssl/consul/ca.pem') }}"
+  tls_cert_file = "{{ lookup('env', 'LIONS_VAULT_CONSUL_TLS_CERT_FILE') | default('/etc/ssl/consul/client.pem') }}"
+  tls_key_file = "{{ lookup('env', 'LIONS_VAULT_CONSUL_TLS_KEY_FILE') | default('/etc/ssl/consul/client-key.pem') }}"
+  {% endif -%}
+  
+  # Configuration de performance
+  max_parallel = {{ lookup('env', 'LIONS_VAULT_CONSUL_MAX_PARALLEL') | default('128') }}
+  consistency_mode = "{{ lookup('env', 'LIONS_VAULT_CONSUL_CONSISTENCY_MODE') | default('default') }}"
+}
+{% elif storage_backend == 'etcd' -%}
+storage "etcd" {
+  address = "{{ lookup('env', 'LIONS_VAULT_ETCD_ADDRESS') | default('http://127.0.0.1:2379') }}"
+  etcd_api = "{{ lookup('env', 'LIONS_VAULT_ETCD_API_VERSION') | default('v3') }}"
+  path = "{{ lookup('env', 'LIONS_VAULT_ETCD_PATH') | default('/vault/') }}"
+  
+  # Configuration etcd
+  {% if lookup('env', 'LIONS_VAULT_ETCD_USERNAME') != '' -%}
+  username = "{{ lookup('env', 'LIONS_VAULT_ETCD_USERNAME') }}"
+  password = "{{ lookup('vault', 'secret/lions/' + lookup('env', 'LIONS_ENVIRONMENT') | default('development') + '/etcd:password') | default(lookup('env', 'LIONS_VAULT_ETCD_PASSWORD')) }}"
+  {% endif -%}
+  {% if lookup('env', 'LIONS_VAULT_ETCD_TLS_ENABLED') | default('false') | bool -%}
+  tls_ca_file = "{{ lookup('env', 'LIONS_VAULT_ETCD_TLS_CA_FILE') | default('/etc/ssl/etcd/ca.pem') }}"
+  tls_cert_file = "{{ lookup('env', 'LIONS_VAULT_ETCD_TLS_CERT_FILE') | default('/etc/ssl/etcd/client.pem') }}"
+  tls_key_file = "{{ lookup('env', 'LIONS_VAULT_ETCD_TLS_KEY_FILE') | default('/etc/ssl/etcd/client-key.pem') }}"
+  {% endif -%}
+  
+  # Configuration avancée
+  ha_enabled = {{ lookup('env', 'LIONS_VAULT_ETCD_HA_ENABLED') | default('true') | bool }}
+  sync = {{ lookup('env', 'LIONS_VAULT_ETCD_SYNC_ENABLED') | default('true') | bool }}
+}
+{% elif storage_backend == 'raft' -%}
+storage "raft" {
+  path = "{{ lookup('env', 'LIONS_VAULT_RAFT_PATH') | default('/vault/raft') }}"
+  node_id = "{{ lookup('env', 'LIONS_VAULT_NODE_ID') | default(ansible_hostname) }}"
+  
+  # Configuration du cluster Raft
+  {% if lookup('env', 'LIONS_VAULT_RAFT_CLUSTER_ENABLED') | default('true') | bool -%}
+  {% for host in groups['vault_servers'] | default([inventory_hostname]) -%}
+  {% if hostvars[host]['inventory_hostname'] != inventory_hostname -%}
+  retry_join {
+    leader_api_addr = "{{ lookup('env', 'LIONS_VAULT_SCHEME') | default('https') }}://{{ hostvars[host]['ansible_host'] | default(host) }}:{{ lookup('env', 'LIONS_VAULT_PORT') | default('8200') }}"
+    {% if lookup('env', 'LIONS_VAULT_TLS_ENABLED') | default('true') | bool -%}
+    leader_ca_cert_file = "{{ lookup('env', 'LIONS_VAULT_TLS_CA_FILE') | default('/etc/ssl/vault/ca.pem') }}"
+    leader_client_cert_file = "{{ lookup('env', 'LIONS_VAULT_TLS_CERT_FILE') | default('/etc/ssl/vault/vault.pem') }}"
+    leader_client_key_file = "{{ lookup('env', 'LIONS_VAULT_TLS_KEY_FILE') | default('/etc/ssl/vault/vault-key.pem') }}"
+    {% endif -%}
+  }
+  {% endif -%}
+  {% endfor -%}
+  {% endif -%}
+  
+  # Configuration de performance
+  performance_multiplier = {{ lookup('env', 'LIONS_VAULT_RAFT_PERFORMANCE_MULTIPLIER') | default('1') }}
+  max_entry_size = {{ lookup('env', 'LIONS_VAULT_RAFT_MAX_ENTRY_SIZE') | default('1048576') }}
+}
+{% endif %}
 
-# Configuration du listener
+# =============================================================================
+# CONFIGURATION DU LISTENER TCP
+# =============================================================================
 listener "tcp" {
-  address = "0.0.0.0:{{ vault_port }}"
-  {% if vault_tls_enabled %}
+  address = "{{ lookup('env', 'LIONS_VAULT_LISTEN_ADDRESS') | default('0.0.0.0') }}:{{ lookup('env', 'LIONS_VAULT_PORT') | default('8200') }}"
+  
+  # Configuration TLS
+  {% if lookup('env', 'LIONS_VAULT_TLS_ENABLED') | default('true') | bool -%}
   tls_disable = false
-  tls_cert_file = "{{ vault_tls_cert_path }}"
-  tls_key_file = "{{ vault_tls_key_path }}"
-  {% else %}
+  tls_cert_file = "{{ lookup('env', 'LIONS_VAULT_TLS_CERT_FILE') | default('/etc/ssl/vault/vault.pem') }}"
+  tls_key_file = "{{ lookup('env', 'LIONS_VAULT_TLS_KEY_FILE') | default('/etc/ssl/vault/vault-key.pem') }}"
+  {% if lookup('env', 'LIONS_VAULT_TLS_CA_FILE') != '' -%}
+  tls_client_ca_file = "{{ lookup('env', 'LIONS_VAULT_TLS_CA_FILE') | default('/etc/ssl/vault/ca.pem') }}"
+  {% endif -%}
+  
+  # Configuration TLS avancée
+  tls_min_version = "{{ lookup('env', 'LIONS_VAULT_TLS_MIN_VERSION') | default('tls12') }}"
+  tls_cipher_suites = "{{ lookup('env', 'LIONS_VAULT_TLS_CIPHER_SUITES') | default('TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA') }}"
+  {% if lookup('env', 'LIONS_VAULT_TLS_REQUIRE_AND_VERIFY_CLIENT_CERT') | default('false') | bool -%}
+  tls_require_and_verify_client_cert = true
+  {% endif -%}
+  {% if lookup('env', 'LIONS_VAULT_TLS_DISABLE_CLIENT_CERTS') | default('false') | bool -%}
+  tls_disable_client_certs = true
+  {% endif -%}
+  {% else -%}
   tls_disable = true
-  {% endif %}
+  {% endif -%}
+  
+  # Configuration des timeouts
+  max_request_size = {{ lookup('env', 'LIONS_VAULT_MAX_REQUEST_SIZE') | default('33554432') }}
+  max_request_duration = "{{ lookup('env', 'LIONS_VAULT_MAX_REQUEST_DURATION') | default('90s') }}"
+  
+  # Configuration des en-têtes
+  {% if lookup('env', 'LIONS_VAULT_CORS_ENABLED') | default('false') | bool -%}
+  cors_enabled = true
+  cors_allowed_origins = ["{{ lookup('env', 'LIONS_VAULT_CORS_ALLOWED_ORIGINS') | default('*') }}"]
+  cors_allowed_headers = ["{{ lookup('env', 'LIONS_VAULT_CORS_ALLOWED_HEADERS') | default('Content-Type,X-Requested-With,X-Vault-Request,X-Vault-Token') }}"]
+  {% endif -%}
+  
+  # Configuration de la compression
+  {% if lookup('env', 'LIONS_VAULT_HTTP_COMPRESS') | default('true') | bool -%}
+  http_compress = true
+  {% endif -%}
+  
+  # Configuration de mise en cache
+  {% if lookup('env', 'LIONS_VAULT_HTTP_CACHE_CONTROL') != '' -%}
+  http_cache_control = "{{ lookup('env', 'LIONS_VAULT_HTTP_CACHE_CONTROL') }}"
+  {% endif -%}
 }
 
-# Configuration de l'API
-api_addr = "{{ vault_api_addr }}"
+{% if lookup('env', 'LIONS_VAULT_ADDITIONAL_LISTENERS_ENABLED') | default('false') | bool -%}
+# =============================================================================
+# LISTENERS ADDITIONNELS
+# =============================================================================
+{% if lookup('env', 'LIONS_VAULT_UNIX_SOCKET_ENABLED') | default('false') | bool -%}
+listener "unix" {
+  address = "{{ lookup('env', 'LIONS_VAULT_UNIX_SOCKET_PATH') | default('/run/vault.sock') }}"
+  socket_mode = "{{ lookup('env', 'LIONS_VAULT_UNIX_SOCKET_MODE') | default('0600') }}"
+  socket_user = "{{ lookup('env', 'LIONS_VAULT_UNIX_SOCKET_USER') | default('vault') }}"
+  socket_group = "{{ lookup('env', 'LIONS_VAULT_UNIX_SOCKET_GROUP') | default('vault') }}"
+}
+{% endif -%}
+{% endif %}
 
-# Configuration du cluster
-cluster_addr = "{{ vault_cluster_addr }}"
+# =============================================================================
+# CONFIGURATION DE L'API ET DU CLUSTER
+# =============================================================================
+# Adresse de l'API (utilisée par les clients)
+api_addr = "{{ lookup('env', 'LIONS_VAULT_API_ADDR') | default(lookup('env', 'LIONS_VAULT_SCHEME') | default('https') + '://' + ansible_default_ipv4.address + ':' + lookup('env', 'LIONS_VAULT_PORT') | default('8200')) }}"
 
-# Configuration de l'interface utilisateur
-ui = {{ vault_ui_enabled | lower }}
+# Adresse du cluster (utilisée pour la communication inter-nœuds)
+cluster_addr = "{{ lookup('env', 'LIONS_VAULT_CLUSTER_ADDR') | default(lookup('env', 'LIONS_VAULT_SCHEME') | default('https') + '://' + ansible_default_ipv4.address + ':' + (lookup('env', 'LIONS_VAULT_PORT') | default('8200') | int + 1) | string) }}"
 
-# Configuration des logs
-log_level = "info"
-log_format = "json"
+# Nom du cluster (optionnel)
+{% if lookup('env', 'LIONS_VAULT_CLUSTER_NAME') != '' -%}
+cluster_name = "{{ lookup('env', 'LIONS_VAULT_CLUSTER_NAME') | default('lions-vault-' + lookup('env', 'LIONS_ENVIRONMENT') | default('development')) }}"
+{% endif %}
 
-# Configuration des plugins
-plugin_directory = "/usr/local/lib/vault/plugins"
+# =============================================================================
+# CONFIGURATION DE L'INTERFACE UTILISATEUR
+# =============================================================================
+ui = {{ lookup('env', 'LIONS_VAULT_UI_ENABLED') | default('true') | bool }}
+{% if lookup('env', 'LIONS_VAULT_UI_ENABLED') | default('true') | bool -%}
+{% if lookup('env', 'LIONS_VAULT_UI_CONFIG_ENABLED') | default('false') | bool -%}
+ui_config {
+  enabled = true
+  {% if lookup('env', 'LIONS_VAULT_UI_CONTENT_SECURITY_POLICY') != '' -%}
+  content_security_policy = "{{ lookup('env', 'LIONS_VAULT_UI_CONTENT_SECURITY_POLICY') }}"
+  {% endif -%}
+  {% if lookup('env', 'LIONS_VAULT_UI_HEADER_X_FRAME_OPTIONS') != '' -%}
+  header_x_frame_options = "{{ lookup('env', 'LIONS_VAULT_UI_HEADER_X_FRAME_OPTIONS') | default('DENY') }}"
+  {% endif -%}
+}
+{% endif -%}
+{% endif %}
 
-# Configuration des audits
-# Sera configurée après l'initialisation
+# =============================================================================
+# CONFIGURATION DES LOGS
+# =============================================================================
+log_level = "{{ lookup('env', 'LIONS_VAULT_LOG_LEVEL') | default('INFO') }}"
+log_format = "{{ lookup('env', 'LIONS_VAULT_LOG_FORMAT') | default('json') }}"
+{% if lookup('env', 'LIONS_VAULT_LOG_FILE') != '' -%}
+log_file = "{{ lookup('env', 'LIONS_VAULT_LOG_FILE') | default('/var/log/vault/vault.log') }}"
+{% endif -%}
+{% if lookup('env', 'LIONS_VAULT_LOG_ROTATE_ENABLED') | default('true') | bool -%}
+log_rotate_duration = "{{ lookup('env', 'LIONS_VAULT_LOG_ROTATE_DURATION') | default('24h') }}"
+log_rotate_max_files = {{ lookup('env', 'LIONS_VAULT_LOG_ROTATE_MAX_FILES') | default('30') }}
+log_rotate_bytes = {{ lookup('env', 'LIONS_VAULT_LOG_ROTATE_BYTES') | default('104857600') }}
+{% endif -%}
+
+# =============================================================================
+# CONFIGURATION DES PLUGINS
+# =============================================================================
+plugin_directory = "{{ lookup('env', 'LIONS_VAULT_PLUGIN_DIRECTORY') | default('/usr/local/lib/vault/plugins') }}"
+{% if lookup('env', 'LIONS_VAULT_PLUGIN_FILE_UDS_ENABLED') | default('false') | bool -%}
+plugin_file_uds = "{{ lookup('env', 'LIONS_VAULT_PLUGIN_FILE_UDS') | default('/run/vault-plugins') }}"
+{% endif -%}
+
+# =============================================================================
+# CONFIGURATION DE SÉCURITÉ
+# =============================================================================
+# Désactivation du verrouillage mémoire si nécessaire
+{% if lookup('env', 'LIONS_VAULT_DISABLE_MLOCK') | default('false') | bool -%}
+disable_mlock = true
+{% endif -%}
+
+# Configuration de la mise en cache
+{% if lookup('env', 'LIONS_VAULT_DISABLE_CACHE') | default('false') | bool -%}
+disable_cache = true
+{% endif -%}
+
+# Configuration de l'impression
+{% if lookup('env', 'LIONS_VAULT_DISABLE_PRINTABLE_CHECK') | default('false') | bool -%}
+disable_printable_check = true
+{% endif -%}
+
+# Configuration de la surveillance
+{% if lookup('env', 'LIONS_VAULT_DISABLE_CLUSTERING') | default('false') | bool -%}
+disable_clustering = true
+{% endif -%}
+
+# Configuration de performance
+{% if lookup('env', 'LIONS_VAULT_DISABLE_PERFORMANCE_STANDBY') | default('false') | bool -%}
+disable_performance_standby = true
+{% endif -%}
+
+# Configuration du nettoyage automatique
+{% if lookup('env', 'LIONS_VAULT_DISABLE_SEALWRAP') | default('false') | bool -%}
+disable_sealwrap = true
+{% endif -%}
+
+# =============================================================================
+# CONFIGURATION DES MÉTRIQUES ET TÉLÉMÉTRIE
+# =============================================================================
+{% if lookup('env', 'LIONS_VAULT_TELEMETRY_ENABLED') | default('true') | bool -%}
+telemetry {
+  {% if lookup('env', 'LIONS_VAULT_TELEMETRY_STATSITE_ADDRESS') != '' -%}
+  statsite_address = "{{ lookup('env', 'LIONS_VAULT_TELEMETRY_STATSITE_ADDRESS') }}"
+  {% endif -%}
+  {% if lookup('env', 'LIONS_VAULT_TELEMETRY_STATSD_ADDRESS') != '' -%}
+  statsd_address = "{{ lookup('env', 'LIONS_VAULT_TELEMETRY_STATSD_ADDRESS') }}"
+  {% endif -%}
+  {% if lookup('env', 'LIONS_VAULT_TELEMETRY_PROMETHEUS_RETENTION_TIME') != '' -%}
+  prometheus_retention_time = "{{ lookup('env', 'LIONS_VAULT_TELEMETRY_PROMETHEUS_RETENTION_TIME') | default('24h') }}"
+  {% endif -%}
+  {% if lookup('env', 'LIONS_VAULT_TELEMETRY_DISABLE_HOSTNAME') | default('false') | bool -%}
+  disable_hostname = true
+  {% endif -%}
+  usage_gauge_period = "{{ lookup('env', 'LIONS_VAULT_TELEMETRY_USAGE_GAUGE_PERIOD') | default('10m') }}"
+  maximum_gauge_cardinality = {{ lookup('env', 'LIONS_VAULT_TELEMETRY_MAXIMUM_GAUGE_CARDINALITY') | default('500') }}
+  
+  # Configuration Circonus
+  {% if lookup('env', 'LIONS_VAULT_TELEMETRY_CIRCONUS_API_TOKEN') != '' -%}
+  circonus_api_token = "{{ lookup('env', 'LIONS_VAULT_TELEMETRY_CIRCONUS_API_TOKEN') }}"
+  circonus_api_app = "{{ lookup('env', 'LIONS_VAULT_TELEMETRY_CIRCONUS_API_APP') | default('vault') }}"
+  circonus_api_url = "{{ lookup('env', 'LIONS_VAULT_TELEMETRY_CIRCONUS_API_URL') | default('https://api.circonus.com/v2') }}"
+  circonus_submission_interval = "{{ lookup('env', 'LIONS_VAULT_TELEMETRY_CIRCONUS_SUBMISSION_INTERVAL') | default('10s') }}"
+  circonus_submission_url = "{{ lookup('env', 'LIONS_VAULT_TELEMETRY_CIRCONUS_SUBMISSION_URL') }}"
+  {% endif -%}
+  
+  # Configuration DogStatsD
+  {% if lookup('env', 'LIONS_VAULT_TELEMETRY_DOGSTATSD_ADDR') != '' -%}
+  dogstatsd_addr = "{{ lookup('env', 'LIONS_VAULT_TELEMETRY_DOGSTATSD_ADDR') }}"
+  dogstatsd_tags = ["{{ lookup('env', 'LIONS_VAULT_TELEMETRY_DOGSTATSD_TAGS') | default('environment:' + lookup('env', 'LIONS_ENVIRONMENT') | default('development') + ',service:vault') }}"]
+  {% endif -%}
+}
+{% endif %}
+
+# =============================================================================
+# CONFIGURATION DU SCEAU (SEAL)
+# =============================================================================
+{% set seal_type = lookup('env', 'LIONS_VAULT_SEAL_TYPE') | default('shamir') -%}
+{% if seal_type == 'awskms' -%}
+seal "awskms" {
+  region = "{{ lookup('env', 'LIONS_VAULT_AWSKMS_REGION') | default('us-west-2') }}"
+  kms_key_id = "{{ lookup('env', 'LIONS_VAULT_AWSKMS_KEY_ID') }}"
+  {% if lookup('env', 'LIONS_VAULT_AWSKMS_ENDPOINT') != '' -%}
+  endpoint = "{{ lookup('env', 'LIONS_VAULT_AWSKMS_ENDPOINT') }}"
+  {% endif -%}
+  {% if lookup('env', 'LIONS_VAULT_AWSKMS_ACCESS_KEY') != '' -%}
+  access_key = "{{ lookup('env', 'LIONS_VAULT_AWSKMS_ACCESS_KEY') }}"
+  secret_key = "{{ lookup('vault', 'secret/lions/' + lookup('env', 'LIONS_ENVIRONMENT') | default('development') + '/aws:secret_key') | default(lookup('env', 'LIONS_VAULT_AWSKMS_SECRET_KEY')) }}"
+  {% endif -%}
+}
+{% elif seal_type == 'azurekeyvault' -%}
+seal "azurekeyvault" {
+  tenant_id = "{{ lookup('env', 'LIONS_VAULT_AZURE_TENANT_ID') }}"
+  client_id = "{{ lookup('env', 'LIONS_VAULT_AZURE_CLIENT_ID') }}"
+  client_secret = "{{ lookup('vault', 'secret/lions/' + lookup('env', 'LIONS_ENVIRONMENT') | default('development') + '/azure:client_secret') | default(lookup('env', 'LIONS_VAULT_AZURE_CLIENT_SECRET')) }}"
+  vault_name = "{{ lookup('env', 'LIONS_VAULT_AZURE_VAULT_NAME') }}"
+  key_name = "{{ lookup('env', 'LIONS_VAULT_AZURE_KEY_NAME') }}"
+  {% if lookup('env', 'LIONS_VAULT_AZURE_ENVIRONMENT') != '' -%}
+  environment = "{{ lookup('env', 'LIONS_VAULT_AZURE_ENVIRONMENT') | default('AzurePublicCloud') }}"
+  {% endif -%}
+}
+{% elif seal_type == 'gcpckms' -%}
+seal "gcpckms" {
+  project = "{{ lookup('env', 'LIONS_VAULT_GCP_PROJECT') }}"
+  region = "{{ lookup('env', 'LIONS_VAULT_GCP_REGION') | default('global') }}"
+  key_ring = "{{ lookup('env', 'LIONS_VAULT_GCP_KEY_RING') }}"
+  crypto_key = "{{ lookup('env', 'LIONS_VAULT_GCP_CRYPTO_KEY') }}"
+  {% if lookup('env', 'LIONS_VAULT_GCP_CREDENTIALS') != '' -%}
+  credentials = "{{ lookup('env', 'LIONS_VAULT_GCP_CREDENTIALS') }}"
+  {% endif -%}
+}
+{% elif seal_type == 'pkcs11' -%}
+seal "pkcs11" {
+  lib = "{{ lookup('env', 'LIONS_VAULT_PKCS11_LIB') }}"
+  slot = "{{ lookup('env', 'LIONS_VAULT_PKCS11_SLOT') | default('0') }}"
+  pin = "{{ lookup('vault', 'secret/lions/' + lookup('env', 'LIONS_ENVIRONMENT') | default('development') + '/pkcs11:pin') | default(lookup('env', 'LIONS_VAULT_PKCS11_PIN')) }}"
+  key_label = "{{ lookup('env', 'LIONS_VAULT_PKCS11_KEY_LABEL') }}"
+  {% if lookup('env', 'LIONS_VAULT_PKCS11_KEY_ID') != '' -%}
+  key_id = "{{ lookup('env', 'LIONS_VAULT_PKCS11_KEY_ID') }}"
+  {% endif -%}
+  {% if lookup('env', 'LIONS_VAULT_PKCS11_HMAC_KEY_LABEL') != '' -%}
+  hmac_key_label = "{{ lookup('env', 'LIONS_VAULT_PKCS11_HMAC_KEY_LABEL') }}"
+  {% endif -%}
+  {% if lookup('env', 'LIONS_VAULT_PKCS11_GENERATE_KEY') | default('false') | bool -%}
+  generate_key = true
+  {% endif -%}
+}
+{% endif %}
+
+# =============================================================================
+# CONFIGURATION DES ENTRÉES (ENTROPY)
+# =============================================================================
+{% if lookup('env', 'LIONS_VAULT_ENTROPY_AUGMENTATION_ENABLED') | default('false') | bool -%}
+entropy "seal" {
+  mode = "{{ lookup('env', 'LIONS_VAULT_ENTROPY_MODE') | default('augmentation') }}"
+}
+{% endif %}
+
+# =============================================================================
+# CONFIGURATION DES CACHE DE REQUÊTES (optionnel)
+# =============================================================================
+{% if lookup('env', 'LIONS_VAULT_REQUEST_CACHE_ENABLED') | default('false') | bool -%}
+cache {
+  size = "{{ lookup('env', 'LIONS_VAULT_CACHE_SIZE') | default('128') }}"
+}
+{% endif %}
+
+# =============================================================================
+# CONFIGURATION AVANCÉE DU PID ET DES LIMITES
+# =============================================================================
+{% if lookup('env', 'LIONS_VAULT_PID_FILE') != '' -%}
+pid_file = "{{ lookup('env', 'LIONS_VAULT_PID_FILE') | default('/run/vault/vault.pid') }}"
+{% endif -%}
+
+{% if lookup('env', 'LIONS_VAULT_MAX_LEASE_TTL') != '' -%}
+max_lease_ttl = "{{ lookup('env', 'LIONS_VAULT_MAX_LEASE_TTL') | default('768h') }}"
+{% endif -%}
+
+{% if lookup('env', 'LIONS_VAULT_DEFAULT_LEASE_TTL') != '' -%}
+default_lease_ttl = "{{ lookup('env', 'LIONS_VAULT_DEFAULT_LEASE_TTL') | default('768h') }}"
+{% endif -%}
+
+# =============================================================================
+# CONFIGURATION D'EXPÉRIMENTATION (à utiliser avec précaution)
+# =============================================================================
+{% if lookup('env', 'LIONS_VAULT_EXPERIMENTS_ENABLED') | default('false') | bool -%}
+experiments = ["{{ lookup('env', 'LIONS_VAULT_EXPERIMENTS') | default('') }}"]
+{% endif -%}
+
+# =============================================================================
+# COMMENTAIRES POUR LA CONFIGURATION POST-INITIALISATION
+# =============================================================================
+# Les éléments suivants seront configurés après l'initialisation de Vault :
+# - Auth methods (userpass, ldap, oidc, etc.)
+# - Secret engines (kv, database, pki, etc.)
+# - Policies
+# - Audit devices
+# - Periodic functions

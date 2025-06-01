@@ -1,308 +1,386 @@
 ---
-# Titre: Playbook de sauvegarde
-# Description: Effectue des sauvegardes des données critiques
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-08
-# Version: 1.0.0
+# ===============================================================================
+# LIONS INFRASTRUCTURE - BACKUP PLAYBOOK v5.0
+# ===============================================================================
+# Description: Effectue des sauvegardes des données critiques avec variables d'environnement
+# Version: 5.0.0
+# Date: 01/06/2025
+# Author: LIONS DevOps Team
+# ===============================================================================
 
-- name: Sauvegarde des données de l'infrastructure LIONS
+- name: "Sauvegarde des données de l'infrastructure LIONS {{ lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT')) | upper }}"
   hosts: all
   become: true
   gather_facts: true
-
+  
   vars:
+    # =========================================================================
+    # CONFIGURATION DE BASE DEPUIS VARIABLES D'ENVIRONNEMENT
+    # =========================================================================
+    lions_environment: "{{ lookup('env', 'LIONS_ENVIRONMENT') | default('development') }}"
+    lions_project_name: "{{ lookup('env', 'LIONS_PROJECT_NAME') | default('lions-infrastructure') }}"
+    lions_version: "{{ lookup('env', 'LIONS_VERSION') | default('5.0.0') }}"
+    lions_deployment_id: "{{ lookup('env', 'LIONS_DEPLOYMENT_ID') | default(ansible_date_time.epoch) }}"
+    
+    # =========================================================================
+    # CONFIGURATION DE SAUVEGARDE
+    # =========================================================================
     backup_timestamp: "{{ ansible_date_time.date }}_{{ ansible_date_time.hour }}{{ ansible_date_time.minute }}{{ ansible_date_time.second }}"
-    backup_root_dir: "/var/backups/lions"
-    backup_dir: "{{ backup_root_dir }}/{{ backup_timestamp }}"
-    backup_log_file: "/var/log/lions/backups/backup-{{ backup_timestamp }}.log"
-    backup_retention_days: 7
+    backup_root_dir: "{{ lookup('env', 'LIONS_BACKUP_ROOT_DIR') | default('/var/backups/lions') }}"
+    backup_dir: "{{ backup_root_dir }}/{{ lions_environment }}/{{ backup_timestamp }}"
+    backup_log_file: "{{ lookup('env', 'LIONS_LOG_PATH') | default('/var/log/lions') }}/backups/backup-{{ lions_environment }}-{{ backup_timestamp }}.log"
+    backup_retention_days: "{{ lookup('env', 'LIONS_BACKUP_RETENTION_DAYS') | default('30') | int }}"
+    backup_enabled: "{{ lookup('env', 'LIONS_BACKUP_ENABLED') | default('true') | bool }}"
+    backup_encryption_enabled: "{{ lookup('env', 'LIONS_BACKUP_ENCRYPTION_ENABLED') | default('true') | bool }}"
+    backup_compression_level: "{{ lookup('env', 'LIONS_BACKUP_COMPRESSION_LEVEL') | default('6') | int }}"
+    
+    # =========================================================================
+    # CONFIGURATION STOCKAGE S3 (OPTIONNEL)
+    # =========================================================================
+    backup_s3_enabled: "{{ lookup('env', 'LIONS_BACKUP_S3_ENABLED') | default('false') | bool }}"
+    backup_s3_bucket: "{{ lookup('env', 'LIONS_BACKUP_S3_BUCKET') | default('') }}"
+    backup_s3_region: "{{ lookup('env', 'LIONS_BACKUP_S3_REGION') | default('') }}"
+    backup_s3_endpoint: "{{ lookup('env', 'LIONS_BACKUP_S3_ENDPOINT') | default('') }}"
+    
+    # =========================================================================
+    # CONFIGURATION KUBERNETES
+    # =========================================================================
+    kube_config_path: "{{ lookup('env', 'LIONS_KUBE_CONFIG_PATH') | default(ansible_env.HOME + '/.kube/config') }}"
+    kubectl_timeout: "{{ lookup('env', 'LIONS_KUBECTL_TIMEOUT') | default('5m') }}"
+    backup_namespace_prefix: "{{ lookup('env', 'LIONS_NAMESPACE_PREFIX') | default('lions-' + lions_environment) }}"
+    
+    # =========================================================================
+    # CONFIGURATION BASE DE DONNÉES
+    # =========================================================================
+    postgres_enabled: "{{ lookup('env', 'LIONS_POSTGRES_ENABLED') | default('true') | bool }}"
+    postgres_username: "{{ lookup('vault', 'secret/lions/' + lions_environment + '/postgres:username') | default(lookup('env', 'LIONS_POSTGRES_USERNAME')) | default('lions_user') }}"
+    postgres_backup_format: "{{ lookup('env', 'LIONS_POSTGRES_BACKUP_FORMAT') | default('custom') }}"
+    
+    # =========================================================================
+    # COMPOSANTS DE SAUVEGARDE
+    # =========================================================================
     backup_components:
       - name: "Bases de données PostgreSQL"
-        enabled: true
+        enabled: "{{ postgres_enabled }}"
+        priority: 1
       - name: "Volumes persistants Kubernetes"
-        enabled: true
+        enabled: "{{ lookup('env', 'LIONS_BACKUP_PVC_ENABLED') | default('true') | bool }}"
+        priority: 2
       - name: "Configurations Kubernetes"
-        enabled: true
+        enabled: "{{ lookup('env', 'LIONS_BACKUP_K8S_CONFIG_ENABLED') | default('true') | bool }}"
+        priority: 3
       - name: "Certificats et secrets"
-        enabled: true
+        enabled: "{{ lookup('env', 'LIONS_BACKUP_CERTS_ENABLED') | default('true') | bool }}"
+        priority: 4
+      - name: "HashiCorp Vault"
+        enabled: "{{ lookup('env', 'LIONS_VAULT_ENABLED') | default('true') | bool }}"
+        priority: 5
+
+  environment:
+    KUBECONFIG: "{{ kube_config_path }}"
+    LIONS_ENVIRONMENT: "{{ lions_environment }}"
+    LIONS_BACKUP_ID: "{{ lions_deployment_id }}"
 
   tasks:
-    - name: Création des répertoires de sauvegarde et de logs
+    # =========================================================================
+    # VALIDATION ET INITIALISATION
+    # =========================================================================
+    - name: "Validation de la configuration de sauvegarde"
+      assert:
+        that:
+          - backup_enabled | bool
+          - lions_environment is defined
+          - backup_root_dir is defined
+        fail_msg: "Configuration de sauvegarde invalide"
+        success_msg: "Configuration de sauvegarde validée pour l'environnement {{ lions_environment }}"
+
+    - name: "Création des répertoires de sauvegarde et de logs"
       file:
         path: "{{ item }}"
         state: directory
         mode: '0750'
-      with_items:
+        owner: root
+        group: root
+      loop:
         - "{{ backup_root_dir }}"
+        - "{{ backup_root_dir }}/{{ lions_environment }}"
         - "{{ backup_dir }}"
         - "{{ backup_dir }}/databases"
         - "{{ backup_dir }}/kubernetes"
         - "{{ backup_dir }}/certificates"
-        - "/var/log/lions/backups"
-      ignore_errors: yes
+        - "{{ backup_dir }}/vault"
+        - "{{ backup_log_file | dirname }}"
+      tags: ['backup', 'init']
 
-    - name: Affichage du début de la sauvegarde
-      debug:
-        msg: "Début des tâches de sauvegarde - {{ ansible_date_time.iso8601 }}"
-
-    - name: Enregistrement du début de la sauvegarde
-      lineinfile:
-        path: "{{ backup_log_file }}"
-        line: "Début des tâches de sauvegarde - {{ ansible_date_time.iso8601 }}"
-        create: yes
+    - name: "Initialisation du fichier de log de sauvegarde"
+      copy:
+        content: |
+          ===============================================================================
+          LIONS INFRASTRUCTURE BACKUP LOG
+          ===============================================================================
+          Environment: {{ lions_environment }}
+          Version: {{ lions_version }}
+          Backup ID: {{ lions_deployment_id }}
+          Start Time: {{ ansible_date_time.iso8601 }}
+          Backup Directory: {{ backup_dir }}
+          ===============================================================================
+        dest: "{{ backup_log_file }}"
         mode: '0640'
-      ignore_errors: yes
+      tags: ['backup', 'init']
 
-    # Sauvegarde des bases de données PostgreSQL
-    - name: Sauvegarde des bases de données PostgreSQL
+    # =========================================================================
+    # SAUVEGARDE DES BASES DE DONNÉES POSTGRESQL
+    # =========================================================================
+    - name: "Sauvegarde des bases de données PostgreSQL"
       block:
-        - name: Récupération de la liste des namespaces avec PostgreSQL
-          shell: kubectl get pods --all-namespaces -l technology=postgres -o jsonpath='{range .items[*]}{.metadata.namespace}{"\n"}{end}' | sort | uniq
+        - name: "Récupération des namespaces avec PostgreSQL"
+          shell: |
+            kubectl get pods --all-namespaces \
+              -l technology=postgres \
+              -o jsonpath='{range .items[*]}{.metadata.namespace}{"\n"}{end}' | \
+              sort | uniq
           register: postgres_namespaces
           changed_when: false
-          ignore_errors: yes
+          environment:
+            KUBECONFIG: "{{ kube_config_path }}"
+          tags: ['backup', 'postgres']
 
-        - name: Affichage des namespaces PostgreSQL
-          debug:
-            msg: "Namespaces PostgreSQL trouvés: {{ postgres_namespaces.stdout_lines }}"
-          when: postgres_namespaces.stdout != ""
-
-        - name: Sauvegarde de chaque base de données PostgreSQL
-          block:
-            - name: Récupération des pods PostgreSQL dans le namespace
-              shell: kubectl get pods -n {{ item }} -l technology=postgres -o jsonpath='{.items[0].metadata.name}'
-              register: postgres_pod
-              changed_when: false
-
-            - name: Récupération de la liste des bases de données
-              shell: kubectl exec -n {{ item }} {{ postgres_pod.stdout }} -- psql -U postgres -t -c "SELECT datname FROM pg_database WHERE datname NOT IN ('template0', 'template1', 'postgres')"
-              register: postgres_databases
-              changed_when: false
-
-            - name: Sauvegarde de chaque base de données
-              shell: |
-                kubectl exec -n {{ item }} {{ postgres_pod.stdout }} -- pg_dump -U postgres -Fc {{ db | trim }} > {{ backup_dir }}/databases/{{ item }}-{{ db | trim }}-{{ backup_timestamp }}.dump
-              with_items: "{{ postgres_databases.stdout_lines }}"
-              loop_control:
-                loop_var: db
-              register: postgres_backup_results
-              ignore_errors: yes
-
-            - name: Enregistrement des résultats de sauvegarde PostgreSQL
-              lineinfile:
-                path: "{{ backup_log_file }}"
-                line: "Sauvegarde PostgreSQL pour {{ item.item }} - {{ 'Succès' if item.rc == 0 else 'Échec' }}"
-                create: yes
-              with_items: "{{ postgres_backup_results.results }}"
-              ignore_errors: yes
-          when: postgres_pod.stdout is defined and postgres_pod.stdout != ""
+        - name: "Sauvegarde de chaque base de données PostgreSQL"
+          include_tasks: "{{ playbook_dir }}/../tasks/backup-postgres-database.yml"
+          vars:
+            namespace: "{{ item }}"
+            backup_target_dir: "{{ backup_dir }}/databases"
+            backup_timestamp: "{{ backup_timestamp }}"
           loop: "{{ postgres_namespaces.stdout_lines }}"
-          ignore_errors: yes
+          when: 
+            - postgres_namespaces.stdout != ""
+            - item != ""
+          tags: ['backup', 'postgres']
 
-        - name: Enregistrement de la sauvegarde PostgreSQL
+        - name: "Enregistrement de la sauvegarde PostgreSQL"
           lineinfile:
             path: "{{ backup_log_file }}"
-            line: "Sauvegarde des bases de données PostgreSQL terminée - {{ ansible_date_time.iso8601 }}"
-            create: yes
-          ignore_errors: yes
+            line: "✅ Sauvegarde PostgreSQL terminée - {{ ansible_date_time.iso8601 }}"
+          tags: ['backup', 'postgres']
+
       when: backup_components | selectattr('name', 'equalto', 'Bases de données PostgreSQL') | selectattr('enabled') | list | length > 0
-      ignore_errors: yes
+      tags: ['backup', 'postgres']
 
-
-    # Sauvegarde des volumes persistants Kubernetes
-    - name: Sauvegarde des volumes persistants Kubernetes
+    # =========================================================================
+    # SAUVEGARDE DES VOLUMES PERSISTANTS KUBERNETES
+    # =========================================================================
+    - name: "Sauvegarde des volumes persistants Kubernetes"
       block:
-        - name: Récupération de la liste des PVCs
-          shell: kubectl get pvc --all-namespaces -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\n"}{end}'
+        - name: "Récupération de la liste des PVCs"
+          shell: |
+            kubectl get pvc --all-namespaces \
+              -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\n"}{end}'
           register: kubernetes_pvcs
           changed_when: false
-          ignore_errors: yes
+          environment:
+            KUBECONFIG: "{{ kube_config_path }}"
+          tags: ['backup', 'pvc']
 
-        - name: Affichage des PVCs
-          debug:
-            msg: "PVCs trouvés: {{ kubernetes_pvcs.stdout_lines }}"
-          when: kubernetes_pvcs.stdout != ""
+        - name: "Sauvegarde des PVCs via snapshots"
+          include_tasks: "{{ playbook_dir }}/../tasks/backup-pvc-snapshot.yml"
+          vars:
+            pvc_info: "{{ item }}"
+            backup_target_dir: "{{ backup_dir }}/kubernetes"
+            backup_timestamp: "{{ backup_timestamp }}"
+            snapshot_class: "{{ lookup('env', 'LIONS_SNAPSHOT_CLASS') | default('csi-snapshot') }}"
+          loop: "{{ kubernetes_pvcs.stdout_lines }}"
+          when: 
+            - kubernetes_pvcs.stdout != ""
+            - item != ""
+            - lookup('env', 'LIONS_SNAPSHOTS_ENABLED') | default('true') | bool
+          tags: ['backup', 'pvc']
 
-        - name: Création d'un pod de sauvegarde pour chaque PVC
-          shell: |
-            NS=$(echo "{{ item }}" | cut -d'/' -f1)
-            PVC=$(echo "{{ item }}" | cut -d'/' -f2)
-            cat <<EOF | kubectl apply -f -
-            apiVersion: v1
-            kind: Pod
-            metadata:
-              name: backup-${PVC}
-              namespace: ${NS}
-              labels:
-                app: backup-pod
-            spec:
-              volumes:
-                - name: data
-                  persistentVolumeClaim:
-                    claimName: ${PVC}
-                - name: backup
-                  emptyDir: {}
-              containers:
-                - name: backup
-                  image: busybox
-                  command: ["sh", "-c", "tar -czf /backup/${PVC}.tar.gz -C /data ."]
-                  volumeMounts:
-                    - name: data
-                      mountPath: /data
-                    - name: backup
-                      mountPath: /backup
-              restartPolicy: Never
-            EOF
-          with_items: "{{ kubernetes_pvcs.stdout_lines }}"
-          register: backup_pods_creation
-          ignore_errors: yes
-
-        - name: Attente de la fin des pods de sauvegarde
-          shell: |
-            NS=$(echo "{{ item.item }}" | cut -d'/' -f1)
-            PVC=$(echo "{{ item.item }}" | cut -d'/' -f2)
-            kubectl wait --for=condition=complete --timeout=300s pod/backup-${PVC} -n ${NS} || kubectl wait --for=condition=failed --timeout=10s pod/backup-${PVC} -n ${NS} || true
-          with_items: "{{ backup_pods_creation.results }}"
-          when: item is succeeded
-          ignore_errors: yes
-
-        - name: Copie des sauvegardes des PVCs
-          shell: |
-            NS=$(echo "{{ item.item }}" | cut -d'/' -f1)
-            PVC=$(echo "{{ item.item }}" | cut -d'/' -f2)
-            kubectl cp ${NS}/backup-${PVC}:/backup/${PVC}.tar.gz {{ backup_dir }}/kubernetes/${NS}-${PVC}-{{ backup_timestamp }}.tar.gz
-          with_items: "{{ backup_pods_creation.results }}"
-          when: item is succeeded
-          register: pvc_backup_results
-          ignore_errors: yes
-
-        - name: Suppression des pods de sauvegarde
-          shell: |
-            NS=$(echo "{{ item.item.item }}" | cut -d'/' -f1)
-            PVC=$(echo "{{ item.item.item }}" | cut -d'/' -f2)
-            kubectl delete pod backup-${PVC} -n ${NS}
-          with_items: "{{ pvc_backup_results.results }}"
-          when: item is succeeded
-          ignore_errors: yes
-
-        - name: Enregistrement de la sauvegarde des volumes persistants
+        - name: "Enregistrement de la sauvegarde des volumes persistants"
           lineinfile:
             path: "{{ backup_log_file }}"
-            line: "Sauvegarde des volumes persistants Kubernetes terminée - {{ ansible_date_time.iso8601 }}"
-            create: yes
-          ignore_errors: yes
+            line: "✅ Sauvegarde des volumes persistants terminée - {{ ansible_date_time.iso8601 }}"
+          tags: ['backup', 'pvc']
+
       when: backup_components | selectattr('name', 'equalto', 'Volumes persistants Kubernetes') | selectattr('enabled') | list | length > 0
-      ignore_errors: yes
+      tags: ['backup', 'pvc']
 
-    # Sauvegarde des configurations Kubernetes
-    - name: Sauvegarde des configurations Kubernetes
+    # =========================================================================
+    # SAUVEGARDE DES CONFIGURATIONS KUBERNETES
+    # =========================================================================
+    - name: "Sauvegarde des configurations Kubernetes"
       block:
-        - name: Sauvegarde des namespaces
-          shell: kubectl get namespaces -o yaml > {{ backup_dir }}/kubernetes/namespaces-{{ backup_timestamp }}.yaml
-          changed_when: false
-          ignore_errors: yes
-
-        - name: Sauvegarde des deployments
-          shell: kubectl get deployments --all-namespaces -o yaml > {{ backup_dir }}/kubernetes/deployments-{{ backup_timestamp }}.yaml
-          changed_when: false
-          ignore_errors: yes
-
-        - name: Sauvegarde des statefulsets
-          shell: kubectl get statefulsets --all-namespaces -o yaml > {{ backup_dir }}/kubernetes/statefulsets-{{ backup_timestamp }}.yaml
-          changed_when: false
-          ignore_errors: yes
-
-        - name: Sauvegarde des daemonsets
-          shell: kubectl get daemonsets --all-namespaces -o yaml > {{ backup_dir }}/kubernetes/daemonsets-{{ backup_timestamp }}.yaml
-          changed_when: false
-          ignore_errors: yes
-
-        - name: Sauvegarde des services
-          shell: kubectl get services --all-namespaces -o yaml > {{ backup_dir }}/kubernetes/services-{{ backup_timestamp }}.yaml
-          changed_when: false
-          ignore_errors: yes
-
-        - name: Sauvegarde des ingresses
-          shell: kubectl get ingresses --all-namespaces -o yaml > {{ backup_dir }}/kubernetes/ingresses-{{ backup_timestamp }}.yaml
-          changed_when: false
-          ignore_errors: yes
-
-        - name: Sauvegarde des configmaps
-          shell: kubectl get configmaps --all-namespaces -o yaml > {{ backup_dir }}/kubernetes/configmaps-{{ backup_timestamp }}.yaml
-          changed_when: false
-          ignore_errors: yes
-
-        - name: Enregistrement de la sauvegarde des configurations Kubernetes
-          lineinfile:
-            path: "{{ backup_log_file }}"
-            line: "Sauvegarde des configurations Kubernetes terminée - {{ ansible_date_time.iso8601 }}"
-            create: yes
-          ignore_errors: yes
-      when: backup_components | selectattr('name', 'equalto', 'Configurations Kubernetes') | selectattr('enabled') | list | length > 0
-      ignore_errors: yes
-
-    # Sauvegarde des certificats et secrets
-    - name: Sauvegarde des certificats et secrets
-      block:
-        - name: Sauvegarde des certificats
-          shell: kubectl get certificates --all-namespaces -o yaml > {{ backup_dir }}/certificates/certificates-{{ backup_timestamp }}.yaml
-          changed_when: false
-          ignore_errors: yes
-
-        - name: Sauvegarde des secrets (sans les valeurs)
+        - name: "Sauvegarde des ressources Kubernetes"
           shell: |
-            kubectl get secrets --all-namespaces -o json | jq '.items[] |= (del(.data) | .metadata.managedFields = [])' > {{ backup_dir }}/certificates/secrets-structure-{{ backup_timestamp }}.json
-          changed_when: false
+            kubectl get {{ item.resource }} --all-namespaces -o yaml > \
+              {{ backup_dir }}/kubernetes/{{ item.name }}-{{ backup_timestamp }}.yaml
+          loop:
+            - { resource: "namespaces", name: "namespaces" }
+            - { resource: "deployments", name: "deployments" }
+            - { resource: "statefulsets", name: "statefulsets" }
+            - { resource: "daemonsets", name: "daemonsets" }
+            - { resource: "services", name: "services" }
+            - { resource: "ingresses", name: "ingresses" }
+            - { resource: "configmaps", name: "configmaps" }
+            - { resource: "persistentvolumeclaims", name: "pvcs" }
+            - { resource: "persistentvolumes", name: "pvs" }
+          environment:
+            KUBECONFIG: "{{ kube_config_path }}"
           ignore_errors: yes
+          tags: ['backup', 'k8s-config']
 
-        - name: Enregistrement de la sauvegarde des certificats et secrets
+        - name: "Enregistrement de la sauvegarde des configurations Kubernetes"
           lineinfile:
             path: "{{ backup_log_file }}"
-            line: "Sauvegarde des certificats et secrets terminée - {{ ansible_date_time.iso8601 }}"
-            create: yes
-          ignore_errors: yes
-      when: backup_components | selectattr('name', 'equalto', 'Certificats et secrets') | selectattr('enabled') | list | length > 0
-      ignore_errors: yes
+            line: "✅ Sauvegarde des configurations Kubernetes terminée - {{ ansible_date_time.iso8601 }}"
+          tags: ['backup', 'k8s-config']
 
-    # Compression de la sauvegarde
-    - name: Compression de la sauvegarde
+      when: backup_components | selectattr('name', 'equalto', 'Configurations Kubernetes') | selectattr('enabled') | list | length > 0
+      tags: ['backup', 'k8s-config']
+
+    # =========================================================================
+    # SAUVEGARDE DES CERTIFICATS ET SECRETS
+    # =========================================================================
+    - name: "Sauvegarde des certificats et secrets"
+      block:
+        - name: "Sauvegarde des certificats"
+          shell: |
+            kubectl get certificates --all-namespaces -o yaml > \
+              {{ backup_dir }}/certificates/certificates-{{ backup_timestamp }}.yaml
+          environment:
+            KUBECONFIG: "{{ kube_config_path }}"
+          ignore_errors: yes
+          tags: ['backup', 'certs']
+
+        - name: "Sauvegarde de la structure des secrets (sans les valeurs)"
+          shell: |
+            kubectl get secrets --all-namespaces -o json | \
+            jq '.items[] |= (del(.data) | .metadata.managedFields = [])' > \
+              {{ backup_dir }}/certificates/secrets-structure-{{ backup_timestamp }}.json
+          environment:
+            KUBECONFIG: "{{ kube_config_path }}"
+          ignore_errors: yes
+          tags: ['backup', 'certs']
+
+        - name: "Enregistrement de la sauvegarde des certificats et secrets"
+          lineinfile:
+            path: "{{ backup_log_file }}"
+            line: "✅ Sauvegarde des certificats et secrets terminée - {{ ansible_date_time.iso8601 }}"
+          tags: ['backup', 'certs']
+
+      when: backup_components | selectattr('name', 'equalto', 'Certificats et secrets') | selectattr('enabled') | list | length > 0
+      tags: ['backup', 'certs']
+
+    # =========================================================================
+    # SAUVEGARDE HASHICORP VAULT
+    # =========================================================================
+    - name: "Sauvegarde HashiCorp Vault"
+      block:
+        - name: "Sauvegarde Vault via API"
+          include_tasks: "{{ playbook_dir }}/../tasks/backup-vault.yml"
+          vars:
+            vault_addr: "{{ lookup('env', 'LIONS_VAULT_ADDR') }}"
+            vault_namespace: "{{ lookup('env', 'LIONS_VAULT_NAMESPACE') | default('vault-system') }}"
+            backup_target_dir: "{{ backup_dir }}/vault"
+            backup_timestamp: "{{ backup_timestamp }}"
+          when: 
+            - lookup('env', 'LIONS_VAULT_ENABLED') | default('true') | bool
+            - lookup('env', 'LIONS_VAULT_ADDR') != ""
+          tags: ['backup', 'vault']
+
+        - name: "Enregistrement de la sauvegarde Vault"
+          lineinfile:
+            path: "{{ backup_log_file }}"
+            line: "✅ Sauvegarde HashiCorp Vault terminée - {{ ansible_date_time.iso8601 }}"
+          tags: ['backup', 'vault']
+
+      when: backup_components | selectattr('name', 'equalto', 'HashiCorp Vault') | selectattr('enabled') | list | length > 0
+      tags: ['backup', 'vault']
+
+    # =========================================================================
+    # COMPRESSION ET CHIFFREMENT
+    # =========================================================================
+    - name: "Compression de la sauvegarde"
       archive:
         path: "{{ backup_dir }}"
-        dest: "{{ backup_root_dir }}/lions-backup-{{ backup_timestamp }}.tar.gz"
+        dest: "{{ backup_root_dir }}/{{ lions_environment }}/lions-{{ lions_environment }}-backup-{{ backup_timestamp }}.tar.gz"
         format: gz
-      ignore_errors: yes
+        mode: '0640'
+        remove: true
+      register: backup_archive
+      tags: ['backup', 'compress']
 
-    # Nettoyage des anciennes sauvegardes
-    - name: Nettoyage des anciennes sauvegardes
+    - name: "Chiffrement de la sauvegarde"
+      shell: |
+        gpg --cipher-algo AES256 --compress-algo 2 --symmetric \
+          --output {{ backup_archive.dest }}.gpg \
+          --passphrase "{{ lookup('vault', 'secret/lions/' + lions_environment + '/backup:encryption_key') | default(lookup('env', 'LIONS_BACKUP_ENCRYPTION_KEY')) }}" \
+          --batch --yes \
+          {{ backup_archive.dest }}
+        rm -f {{ backup_archive.dest }}
+      when: 
+        - backup_encryption_enabled | bool
+        - backup_archive is succeeded
+        - lookup('vault', 'secret/lions/' + lions_environment + '/backup:encryption_key') != "" or lookup('env', 'LIONS_BACKUP_ENCRYPTION_KEY') != ""
+      tags: ['backup', 'encrypt']
+
+    # =========================================================================
+    # STOCKAGE S3 (OPTIONNEL)
+    # =========================================================================
+    - name: "Upload vers S3"
+      aws_s3:
+        bucket: "{{ backup_s3_bucket }}"
+        object: "{{ lions_environment }}/{{ backup_archive.dest | basename }}"
+        src: "{{ backup_archive.dest }}"
+        mode: put
+        region: "{{ backup_s3_region }}"
+        endpoint_url: "{{ backup_s3_endpoint if backup_s3_endpoint else omit }}"
+      when: 
+        - backup_s3_enabled | bool
+        - backup_s3_bucket != ""
+        - backup_archive is succeeded
+      tags: ['backup', 's3']
+
+    # =========================================================================
+    # NETTOYAGE ET FINALISATION
+    # =========================================================================
+    - name: "Nettoyage des anciennes sauvegardes"
       find:
-        paths: "{{ backup_root_dir }}"
-        patterns: "lions-backup-*.tar.gz"
+        paths: "{{ backup_root_dir }}/{{ lions_environment }}"
+        patterns: "lions-{{ lions_environment }}-backup-*.tar.gz*"
         age: "{{ backup_retention_days }}d"
         recurse: no
       register: old_backups
+      tags: ['backup', 'cleanup']
 
-    - name: Suppression des anciennes sauvegardes
+    - name: "Suppression des anciennes sauvegardes"
       file:
         path: "{{ item.path }}"
         state: absent
-      with_items: "{{ old_backups.files }}"
+      loop: "{{ old_backups.files }}"
       when: old_backups.matched > 0
-      ignore_errors: yes
+      tags: ['backup', 'cleanup']
 
-    - name: Nettoyage des répertoires de sauvegarde temporaires
-      file:
-        path: "{{ backup_dir }}"
-        state: absent
-      ignore_errors: yes
-
-    - name: Affichage de la fin de la sauvegarde
-      debug:
-        msg: "Fin des tâches de sauvegarde - {{ ansible_date_time.iso8601 }}"
-
-    - name: Enregistrement de la fin de la sauvegarde
+    - name: "Finalisation du log de sauvegarde"
       lineinfile:
         path: "{{ backup_log_file }}"
-        line: "Fin des tâches de sauvegarde - {{ ansible_date_time.iso8601 }}"
-        create: yes
-        mode: '0640'
-      ignore_errors: yes
+        line: |
+          ===============================================================================
+          ✅ SAUVEGARDE TERMINÉE AVEC SUCCÈS
+          End Time: {{ ansible_date_time.iso8601 }}
+          Backup File: {{ backup_archive.dest if backup_archive is succeeded else 'FAILED' }}
+          Duration: {{ ((ansible_date_time.epoch | int) - (backup_timestamp | regex_replace('.*_([0-9]{6}).*', '\\1') | int)) // 60 }} minutes
+          ===============================================================================
+      tags: ['backup', 'finalize']
+
+  handlers:
+    - name: "Notification d'échec de sauvegarde"
+      uri:
+        url: "{{ lookup('env', 'LIONS_NOTIFICATION_WEBHOOK_URL') }}"
+        method: POST
+        body_format: json
+        body:
+          text: "❌ Échec de sauvegarde LIONS {{ lions_environment }} - {{ ansible_date_time.iso8601 }}"
+          environment: "{{ lions_environment }}"
+          backup_id: "{{ lions_deployment_id }}"
+      when: lookup('env', 'LIONS_NOTIFICATION_WEBHOOK_URL') != ""
+      listen: "backup failed"

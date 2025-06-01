@@ -1,67 +1,216 @@
 #!/bin/bash
 # =============================================================================
-# LIONS Infrastructure - Script de récupération automatique K3s
+# LIONS Infrastructure - Script de récupération automatique K3s v5.0
 # =============================================================================
-# Titre: Script de récupération automatique pour les nœuds K3s
-# Description: Surveille l'état des nœuds K3s et prend des mesures correctives
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-25
-# Version: 1.0.0
+# Description: Script de récupération automatique pour les nœuds K3s avec variables d'environnement
+# Environnement: {{ lookup('env', 'LIONS_ENVIRONMENT') | default('development') }}
+# Version: 5.0.0
+# Date: 01/06/2025
+# Auteur: LIONS DevOps Team
 # =============================================================================
 
-# Configuration
-KUBECONFIG="{{ k3s_kubeconfig }}"
-LOG_FILE="/var/log/k3s-recovery.log"
-ALERT_FILE="/var/run/k3s-health-alert"
-RECOVERY_LOCK="/var/run/k3s-recovery.lock"
-RECOVERY_HISTORY="/var/log/k3s-recovery-history.log"
-NODE_NAME="$(hostname)"
-API_SERVER="https://{{ k3s_api_lb_host }}:{{ k3s_api_lb_port }}"
-MAX_RECOVERY_ATTEMPTS=3
-RECOVERY_ATTEMPT_FILE="/var/run/k3s-recovery-attempts"
-RECOVERY_INTERVAL=300  # 5 minutes entre les tentatives de récupération
-{% if inventory_hostname in groups['k3s_servers'] %}
-NODE_TYPE="server"
-{% else %}
-NODE_TYPE="agent"
-{% endif %}
+set -euo pipefail
 
-# Fonction de logging
+# =============================================================================
+# CONFIGURATION DEPUIS VARIABLES D'ENVIRONNEMENT
+# =============================================================================
+# Configuration de base
+readonly LIONS_ENVIRONMENT="${LIONS_ENVIRONMENT:-{{ lookup('env', 'LIONS_ENVIRONMENT') | default('development') }}}"
+readonly LIONS_NODE_TYPE="{{ 'server' if inventory_hostname in groups['k3s_servers'] | default([]) else 'agent' }}"
+readonly LIONS_NODE_NAME="${HOSTNAME:-$(hostname)}"
+
+# Configuration des chemins
+readonly KUBECONFIG="{{ lookup('env', 'LIONS_KUBE_CONFIG_PATH') | default('/etc/rancher/k3s/k3s.yaml') }}"
+readonly LOG_FILE="${LIONS_AUTO_RECOVERY_LOG_FILE:-{{ lookup('env', 'LIONS_LOG_PATH') | default('/var/log/lions') }}/k3s-auto-recovery.log}"
+readonly ALERT_FILE="${LIONS_AUTO_RECOVERY_ALERT_FILE:-{{ lookup('env', 'LIONS_AUTO_RECOVERY_ALERT_FILE') | default('/var/run/k3s-health-alert') }}}"
+readonly RECOVERY_LOCK="${LIONS_AUTO_RECOVERY_LOCK_FILE:-{{ lookup('env', 'LIONS_AUTO_RECOVERY_LOCK_FILE') | default('/var/run/k3s-recovery.lock') }}}"
+readonly RECOVERY_HISTORY="${LIONS_AUTO_RECOVERY_HISTORY_FILE:-{{ lookup('env', 'LIONS_AUTO_RECOVERY_HISTORY_FILE') | default('/var/log/lions/k3s-recovery-history.log') }}}"
+readonly RECOVERY_ATTEMPT_FILE="${LIONS_AUTO_RECOVERY_ATTEMPT_FILE:-{{ lookup('env', 'LIONS_AUTO_RECOVERY_ATTEMPT_FILE') | default('/var/run/k3s-recovery-attempts') }}}"
+readonly RECOVERY_STATE_FILE="${LIONS_AUTO_RECOVERY_STATE_FILE:-{{ lookup('env', 'LIONS_AUTO_RECOVERY_STATE_FILE') | default('/var/run/k3s-recovery-state') }}}"
+
+# Configuration des API et endpoints
+readonly API_SERVER="${LIONS_K3S_API_SERVER:-{{ lookup('env', 'LIONS_K3S_API_LB_HOST') | default('localhost') }}:{{ lookup('env', 'LIONS_K3S_API_LB_PORT') | default('6443') }}}"
+readonly NOTIFICATION_WEBHOOK="${LIONS_NOTIFICATION_WEBHOOK_URL:-{{ lookup('env', 'LIONS_NOTIFICATION_WEBHOOK_URL') | default('') }}}"
+readonly ADMIN_EMAIL="${LIONS_ADMIN_EMAIL:-{{ lookup('env', 'LIONS_ADMIN_EMAIL') | default('admin@' + lookup('env', 'LIONS_BASE_DOMAIN') | default('lions.dev')) }}}"
+
+# Configuration des seuils et temporisations
+readonly MAX_RECOVERY_ATTEMPTS="${LIONS_AUTO_RECOVERY_MAX_RETRIES:-{{ lookup('env', 'LIONS_AUTO_RECOVERY_MAX_RETRIES') | default('3') }}}"
+readonly RECOVERY_INTERVAL="${LIONS_AUTO_RECOVERY_CHECK_INTERVAL:-{{ lookup('env', 'LIONS_AUTO_RECOVERY_CHECK_INTERVAL') | default('30') }}}"
+readonly RECOVERY_COOLDOWN="${LIONS_AUTO_RECOVERY_COOLDOWN:-{{ lookup('env', 'LIONS_AUTO_RECOVERY_COOLDOWN') | default('300') }}}"
+readonly LOCK_TIMEOUT="${LIONS_AUTO_RECOVERY_LOCK_TIMEOUT:-{{ lookup('env', 'LIONS_AUTO_RECOVERY_LOCK_TIMEOUT') | default('3600') }}}"
+readonly SERVICE_START_TIMEOUT="${LIONS_AUTO_RECOVERY_SERVICE_START_TIMEOUT:-{{ lookup('env', 'LIONS_AUTO_RECOVERY_SERVICE_START_TIMEOUT') | default('60') }}}"
+readonly NODE_STATUS_TIMEOUT="${LIONS_AUTO_RECOVERY_NODE_STATUS_TIMEOUT:-{{ lookup('env', 'LIONS_AUTO_RECOVERY_NODE_STATUS_TIMEOUT') | default('120') }}}"
+
+# Configuration des stratégies de récupération
+readonly ENABLE_SERVICE_RESTART="${LIONS_AUTO_RECOVERY_ENABLE_SERVICE_RESTART:-{{ lookup('env', 'LIONS_AUTO_RECOVERY_ENABLE_SERVICE_RESTART') | default('true') }}}"
+readonly ENABLE_RESOURCE_CLEANUP="${LIONS_AUTO_RECOVERY_ENABLE_RESOURCE_CLEANUP:-{{ lookup('env', 'LIONS_AUTO_RECOVERY_ENABLE_RESOURCE_CLEANUP') | default('true') }}}"
+readonly ENABLE_NODE_RESET="${LIONS_AUTO_RECOVERY_ENABLE_NODE_RESET:-{{ lookup('env', 'LIONS_AUTO_RECOVERY_ENABLE_NODE_RESET') | default('false') }}}"
+readonly ENABLE_NETWORK_RESET="${LIONS_AUTO_RECOVERY_ENABLE_NETWORK_RESET:-{{ lookup('env', 'LIONS_AUTO_RECOVERY_ENABLE_NETWORK_RESET') | default('false') }}}"
+
+# Configuration de logging
+readonly LOG_LEVEL="${LIONS_AUTO_RECOVERY_LOG_LEVEL:-{{ lookup('env', 'LIONS_AUTO_RECOVERY_LOG_LEVEL') | default('INFO') }}}"
+readonly LOG_MAX_SIZE="${LIONS_AUTO_RECOVERY_LOG_MAX_SIZE:-{{ lookup('env', 'LIONS_AUTO_RECOVERY_LOG_MAX_SIZE') | default('10485760') }}}"  # 10MB
+readonly LOG_RETENTION_DAYS="${LIONS_AUTO_RECOVERY_LOG_RETENTION_DAYS:-{{ lookup('env', 'LIONS_AUTO_RECOVERY_LOG_RETENTION_DAYS') | default('7') }}}"
+
+# Configuration de monitoring et health checks
+readonly HEALTH_CHECK_ENABLED="${LIONS_AUTO_RECOVERY_HEALTH_CHECK_ENABLED:-{{ lookup('env', 'LIONS_AUTO_RECOVERY_HEALTH_CHECK_ENABLED') | default('true') }}}"
+readonly METRICS_ENABLED="${LIONS_AUTO_RECOVERY_METRICS_ENABLED:-{{ lookup('env', 'LIONS_AUTO_RECOVERY_METRICS_ENABLED') | default('true') }}}"
+readonly METRICS_FILE="${LIONS_AUTO_RECOVERY_METRICS_FILE:-{{ lookup('env', 'LIONS_AUTO_RECOVERY_METRICS_FILE') | default('/var/run/k3s-recovery-metrics') }}}"
+
+# Configuration des services K3s
+readonly K3S_SERVICE_NAME="${LIONS_K3S_SERVICE_NAME:-k3s$([ "${LIONS_NODE_TYPE}" = "agent" ] && echo "-agent" || echo "")}"
+readonly K3S_DATA_DIR="${LIONS_K3S_DATA_DIR:-{{ lookup('env', 'LIONS_K3S_DATA_DIR') | default('/var/lib/rancher/k3s') }}}"
+readonly K3S_BACKUP_DIR="${LIONS_K3S_BACKUP_DIR:-{{ lookup('env', 'LIONS_K3S_BACKUP_DIR') | default('/var/backups/k3s') }}}"
+
+# =============================================================================
+# VARIABLES GLOBALES
+# =============================================================================
+declare -A RECOVERY_STRATEGIES
+declare -g SCRIPT_PID=$$
+declare -g RECOVERY_START_TIME=0
+declare -g LAST_SUCCESSFUL_CHECK=0
+
+# =============================================================================
+# FONCTIONS UTILITAIRES
+# =============================================================================
+
+# Fonction de logging avancée avec niveaux
 log() {
     local level="$1"
     local message="$2"
     local timestamp
-    timestamp="$(date +"%Y-%m-%d %H:%M:%S")"
+    timestamp="$(date '+%Y-%m-%d %H:%M:%S %Z')"
+    local log_entry="[${timestamp}] [${level}] [PID:${SCRIPT_PID}] [${LIONS_NODE_TYPE}:${LIONS_NODE_NAME}] ${message}"
     
-    echo "[${timestamp}] [${level}] ${message}" >> "${LOG_FILE}"
-    
-    # Affichage sur la console si le niveau est ERROR, ALERT ou RECOVERY
-    if [[ "${level}" == "ERROR" || "${level}" == "ALERT" || "${level}" == "RECOVERY" ]]; then
-        echo "[${timestamp}] [${level}] ${message}" >&2
+    # Gestion de la rotation des logs
+    if [[ -f "${LOG_FILE}" ]] && [[ $(stat -f%z "${LOG_FILE}" 2>/dev/null || stat -c%s "${LOG_FILE}" 2>/dev/null || echo 0) -gt ${LOG_MAX_SIZE} ]]; then
+        mv "${LOG_FILE}" "${LOG_FILE}.$(date +%Y%m%d_%H%M%S)"
+        find "$(dirname "${LOG_FILE}")" -name "$(basename "${LOG_FILE}").*" -mtime +${LOG_RETENTION_DAYS} -delete 2>/dev/null || true
     fi
     
-    # Ajout au journal d'historique si c'est une action de récupération
+    # Écriture du log
+    echo "${log_entry}" >> "${LOG_FILE}"
+    
+    # Affichage selon le niveau et la configuration
+    case "${level}" in
+        "ERROR"|"ALERT"|"RECOVERY")
+            echo "${log_entry}" >&2
+            ;;
+        "INFO"|"DEBUG")
+            [[ "${LOG_LEVEL}" == "DEBUG" ]] && echo "${log_entry}"
+            ;;
+    esac
+    
+    # Ajout à l'historique pour les actions de récupération
     if [[ "${level}" == "RECOVERY" ]]; then
         echo "[${timestamp}] ${message}" >> "${RECOVERY_HISTORY}"
     fi
+    
+    # Envoi vers syslog si disponible
+    if command -v logger &>/dev/null; then
+        logger -t "lions-k3s-recovery" -p daemon.info "${level}: ${message}"
+    fi
 }
+
+# Fonction pour valider les variables d'environnement critiques
+validate_environment() {
+    local validation_errors=0
+    
+    # Vérification des chemins critiques
+    for path in "$(dirname "${LOG_FILE}")" "$(dirname "${RECOVERY_LOCK}")" "$(dirname "${RECOVERY_ATTEMPT_FILE}")"; do
+        if [[ ! -d "${path}" ]]; then
+            mkdir -p "${path}" || {
+                echo "ERREUR: Impossible de créer le répertoire ${path}" >&2
+                ((validation_errors++))
+            }
+        fi
+    done
+    
+    # Vérification des valeurs numériques
+    for var in MAX_RECOVERY_ATTEMPTS RECOVERY_INTERVAL RECOVERY_COOLDOWN LOCK_TIMEOUT; do
+        local value="${!var}"
+        if ! [[ "${value}" =~ ^[0-9]+$ ]]; then
+            echo "ERREUR: ${var} doit être un nombre entier (valeur actuelle: ${value})" >&2
+            ((validation_errors++))
+        fi
+    done
+    
+    # Vérification des valeurs booléennes
+    for var in ENABLE_SERVICE_RESTART ENABLE_RESOURCE_CLEANUP ENABLE_NODE_RESET HEALTH_CHECK_ENABLED; do
+        local value="${!var}"
+        if [[ "${value}" != "true" && "${value}" != "false" ]]; then
+            echo "ERREUR: ${var} doit être 'true' ou 'false' (valeur actuelle: ${value})" >&2
+            ((validation_errors++))
+        fi
+    done
+    
+    return ${validation_errors}
+}
+
+# Fonction pour initialiser les métriques
+init_metrics() {
+    if [[ "${METRICS_ENABLED}" == "true" ]]; then
+        cat > "${METRICS_FILE}" << EOF
+# LIONS K3s Auto Recovery Metrics
+# Environment: ${LIONS_ENVIRONMENT}
+# Node: ${LIONS_NODE_NAME}
+# Type: ${LIONS_NODE_TYPE}
+# Started: $(date -Iseconds)
+lions_k3s_recovery_started_timestamp $(date +%s)
+lions_k3s_recovery_max_attempts ${MAX_RECOVERY_ATTEMPTS}
+lions_k3s_recovery_interval_seconds ${RECOVERY_INTERVAL}
+lions_k3s_recovery_cooldown_seconds ${RECOVERY_COOLDOWN}
+EOF
+    fi
+}
+
+# Fonction pour mettre à jour les métriques
+update_metrics() {
+    local metric_name="$1"
+    local metric_value="$2"
+    local metric_help="${3:-}"
+    
+    if [[ "${METRICS_ENABLED}" == "true" && -f "${METRICS_FILE}" ]]; then
+        # Suppression de l'ancienne valeur si elle existe
+        sed -i "/^${metric_name} /d" "${METRICS_FILE}" 2>/dev/null || true
+        
+        # Ajout de la nouvelle valeur
+        {
+            [[ -n "${metric_help}" ]] && echo "# ${metric_help}"
+            echo "${metric_name} ${metric_value}"
+        } >> "${METRICS_FILE}"
+    fi
+}
+
+# =============================================================================
+# FONCTIONS DE GESTION DES VERROUS
+# =============================================================================
 
 # Fonction pour vérifier si une récupération est déjà en cours
 is_recovery_in_progress() {
     if [[ -f "${RECOVERY_LOCK}" ]]; then
+        local lock_pid
         local lock_time
-        lock_time=$(stat -c %Y "${RECOVERY_LOCK}" 2>/dev/null)
+        lock_pid=$(head -n1 "${RECOVERY_LOCK}" 2>/dev/null || echo "")
+        lock_time=$(stat -c %Y "${RECOVERY_LOCK}" 2>/dev/null || echo "0")
         local current_time
         current_time=$(date +%s)
         local elapsed_time=$((current_time - lock_time))
         
-        # Si le verrou existe depuis plus d'une heure, on considère qu'il est obsolète
-        if [[ ${elapsed_time} -gt 3600 ]]; then
+        # Vérification si le processus existe encore
+        if [[ -n "${lock_pid}" ]] && kill -0 "${lock_pid}" 2>/dev/null; then
+            log "DEBUG" "Récupération en cours par le processus ${lock_pid}"
+            return 0
+        fi
+        
+        # Vérification de l'âge du verrou
+        if [[ ${elapsed_time} -gt ${LOCK_TIMEOUT} ]]; then
             log "WARNING" "Verrou de récupération obsolète détecté (${elapsed_time}s), suppression"
             rm -f "${RECOVERY_LOCK}"
             return 1
         fi
         
+        log "DEBUG" "Verrou de récupération actif depuis ${elapsed_time}s"
         return 0
     fi
     
@@ -70,42 +219,69 @@ is_recovery_in_progress() {
 
 # Fonction pour créer un verrou de récupération
 create_recovery_lock() {
-    touch "${RECOVERY_LOCK}"
+    echo "${SCRIPT_PID}" > "${RECOVERY_LOCK}"
+    log "DEBUG" "Verrou de récupération créé (PID: ${SCRIPT_PID})"
 }
 
 # Fonction pour supprimer le verrou de récupération
 remove_recovery_lock() {
-    rm -f "${RECOVERY_LOCK}"
+    if [[ -f "${RECOVERY_LOCK}" ]]; then
+        local lock_pid
+        lock_pid=$(head -n1 "${RECOVERY_LOCK}" 2>/dev/null || echo "")
+        if [[ "${lock_pid}" == "${SCRIPT_PID}" ]]; then
+            rm -f "${RECOVERY_LOCK}"
+            log "DEBUG" "Verrou de récupération supprimé"
+        else
+            log "WARNING" "Tentative de suppression d'un verrou appartenant à un autre processus (${lock_pid})"
+        fi
+    fi
 }
+
+# =============================================================================
+# FONCTIONS DE GESTION DES TENTATIVES
+# =============================================================================
 
 # Fonction pour incrémenter le compteur de tentatives de récupération
 increment_recovery_attempts() {
+    local count=0
     if [[ -f "${RECOVERY_ATTEMPT_FILE}" ]]; then
-        local count
-        count=$(cat "${RECOVERY_ATTEMPT_FILE}")
-        count=$((count + 1))
-        echo "${count}" > "${RECOVERY_ATTEMPT_FILE}"
-    else
-        echo "1" > "${RECOVERY_ATTEMPT_FILE}"
+        count=$(cat "${RECOVERY_ATTEMPT_FILE}" 2>/dev/null || echo "0")
     fi
+    count=$((count + 1))
+    echo "${count}" > "${RECOVERY_ATTEMPT_FILE}"
+    
+    # Mise à jour des métriques
+    update_metrics "lions_k3s_recovery_attempts_total" "${count}" "Total number of recovery attempts"
+    
+    log "DEBUG" "Compteur de tentatives de récupération: ${count}/${MAX_RECOVERY_ATTEMPTS}"
 }
 
 # Fonction pour réinitialiser le compteur de tentatives de récupération
 reset_recovery_attempts() {
     echo "0" > "${RECOVERY_ATTEMPT_FILE}"
+    update_metrics "lions_k3s_recovery_attempts_total" "0" "Total number of recovery attempts"
+    log "DEBUG" "Compteur de tentatives de récupération réinitialisé"
+}
+
+# Fonction pour obtenir le nombre de tentatives
+get_recovery_attempts() {
+    if [[ -f "${RECOVERY_ATTEMPT_FILE}" ]]; then
+        cat "${RECOVERY_ATTEMPT_FILE}" 2>/dev/null || echo "0"
+    else
+        echo "0"
+    fi
 }
 
 # Fonction pour vérifier si le nombre de tentatives dépasse le seuil
 check_recovery_threshold() {
-    if [[ -f "${RECOVERY_ATTEMPT_FILE}" ]]; then
-        local count
-        count=$(cat "${RECOVERY_ATTEMPT_FILE}")
-        if [[ "${count}" -ge "${MAX_RECOVERY_ATTEMPTS}" ]]; then
-            return 0  # Seuil dépassé
-        fi
-    fi
-    return 1  # Seuil non dépassé
+    local count
+    count=$(get_recovery_attempts)
+    [[ "${count}" -ge "${MAX_RECOVERY_ATTEMPTS}" ]]
 }
+
+# =============================================================================
+# FONCTIONS DE GESTION DES ALERTES
+# =============================================================================
 
 # Fonction pour vérifier si une alerte est active
 is_alert_active() {
@@ -115,209 +291,651 @@ is_alert_active() {
 # Fonction pour obtenir la raison de l'alerte
 get_alert_reason() {
     if [[ -f "${ALERT_FILE}" ]]; then
-        cat "${ALERT_FILE}"
+        cat "${ALERT_FILE}" 2>/dev/null || echo "Raison inconnue"
     else
-        echo "Raison inconnue"
+        echo "Aucune alerte active"
     fi
 }
 
-# Fonction pour vérifier l'état du service K3s
-check_k3s_service() {
-    systemctl is-active --quiet k3s{% if NODE_TYPE == "agent" %}-agent{% endif %}
-    return $?
+# Fonction pour créer une alerte
+create_alert() {
+    local reason="$1"
+    echo "${reason}" > "${ALERT_FILE}"
+    log "ALERT" "Alerte créée: ${reason}"
 }
 
-# Fonction pour redémarrer le service K3s
-restart_k3s_service() {
-    log "RECOVERY" "Redémarrage du service K3s{% if NODE_TYPE == "agent" %}-agent{% endif %}"
-    systemctl restart k3s{% if NODE_TYPE == "agent" %}-agent{% endif %}
-    sleep 30  # Attente pour que le service démarre
+# Fonction pour supprimer une alerte
+clear_alert() {
+    if [[ -f "${ALERT_FILE}" ]]; then
+        rm -f "${ALERT_FILE}"
+        log "INFO" "Alerte supprimée"
+    fi
+}
+
+# =============================================================================
+# FONCTIONS DE VÉRIFICATION DE L'ÉTAT
+# =============================================================================
+
+# Fonction pour vérifier l'état du service K3s
+check_k3s_service() {
+    local service_active
+    service_active=$(systemctl is-active "${K3S_SERVICE_NAME}" 2>/dev/null || echo "inactive")
     
-    if check_k3s_service; then
-        log "RECOVERY" "Service K3s{% if NODE_TYPE == "agent" %}-agent{% endif %} redémarré avec succès"
+    if [[ "${service_active}" == "active" ]]; then
+        log "DEBUG" "Service ${K3S_SERVICE_NAME} actif"
         return 0
     else
-        log "ERROR" "Échec du redémarrage du service K3s{% if NODE_TYPE == "agent" %}-agent{% endif %}"
+        log "WARNING" "Service ${K3S_SERVICE_NAME} inactif (état: ${service_active})"
         return 1
     fi
 }
 
 # Fonction pour vérifier l'état du nœud dans le cluster
 check_node_status() {
+    if [[ ! -f "${KUBECONFIG}" ]]; then
+        log "ERROR" "Fichier kubeconfig non trouvé: ${KUBECONFIG}"
+        return 1
+    fi
+    
     local node_status
-    node_status=$(kubectl --kubeconfig="${KUBECONFIG}" get node "${NODE_NAME}" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+    node_status=$(timeout "${NODE_STATUS_TIMEOUT}" kubectl --kubeconfig="${KUBECONFIG}" get node "${LIONS_NODE_NAME}" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
     
     if [[ "${node_status}" == "True" ]]; then
+        log "DEBUG" "Nœud ${LIONS_NODE_NAME} prêt dans le cluster"
+        LAST_SUCCESSFUL_CHECK=$(date +%s)
         return 0
     else
+        log "WARNING" "Nœud ${LIONS_NODE_NAME} non prêt dans le cluster (état: ${node_status})"
         return 1
     fi
 }
 
-# Fonction pour nettoyer les ressources du nœud
-clean_node_resources() {
-    log "RECOVERY" "Nettoyage des ressources du nœud"
+# Fonction pour vérifier la connectivité réseau
+check_network_connectivity() {
+    local api_host
+    api_host=$(echo "${API_SERVER}" | cut -d: -f1)
+    local api_port
+    api_port=$(echo "${API_SERVER}" | cut -d: -f2)
     
-    # Nettoyage du cache containerd
-    if [[ -d /var/lib/rancher/k3s/agent/containerd ]]; then
-        log "RECOVERY" "Nettoyage du cache containerd"
-        systemctl stop k3s{% if NODE_TYPE == "agent" %}-agent{% endif %}
-        rm -rf /var/lib/rancher/k3s/agent/containerd/io.containerd.content.v1.content/ingest/*
-        systemctl start k3s{% if NODE_TYPE == "agent" %}-agent{% endif %}
+    if timeout 10 nc -z "${api_host}" "${api_port}" 2>/dev/null; then
+        log "DEBUG" "Connectivité réseau vers ${API_SERVER} OK"
+        return 0
+    else
+        log "WARNING" "Connectivité réseau vers ${API_SERVER} échouée"
+        return 1
+    fi
+}
+
+# Fonction pour vérifier l'état des pods critiques
+check_critical_pods() {
+    if [[ ! -f "${KUBECONFIG}" ]]; then
+        return 1
     fi
     
-    # Nettoyage des journaux
-    log "RECOVERY" "Rotation des journaux"
-    journalctl --vacuum-time=1d
+    local failed_pods
+    failed_pods=$(timeout 30 kubectl --kubeconfig="${KUBECONFIG}" get pods --all-namespaces --field-selector=status.phase=Failed --no-headers 2>/dev/null | wc -l || echo "999")
+    
+    if [[ "${failed_pods}" -gt 10 ]]; then
+        log "WARNING" "Nombre élevé de pods en échec détecté: ${failed_pods}"
+        return 1
+    else
+        log "DEBUG" "État des pods acceptable (échecs: ${failed_pods})"
+        return 0
+    fi
+}
+
+# =============================================================================
+# FONCTIONS DE RÉCUPÉRATION
+# =============================================================================
+
+# Fonction pour redémarrer le service K3s
+restart_k3s_service() {
+    log "RECOVERY" "Redémarrage du service ${K3S_SERVICE_NAME}"
+    
+    # Sauvegarde de l'état avant redémarrage
+    systemctl status "${K3S_SERVICE_NAME}" > "${K3S_BACKUP_DIR}/service-status-$(date +%Y%m%d_%H%M%S).log" 2>&1 || true
+    
+    # Redémarrage du service
+    if systemctl restart "${K3S_SERVICE_NAME}"; then
+        log "RECOVERY" "Commande de redémarrage du service ${K3S_SERVICE_NAME} envoyée"
+    else
+        log "ERROR" "Échec de l'envoi de la commande de redémarrage pour ${K3S_SERVICE_NAME}"
+        return 1
+    fi
+    
+    # Attente du démarrage
+    local wait_time=0
+    while [[ ${wait_time} -lt ${SERVICE_START_TIMEOUT} ]]; do
+        if check_k3s_service; then
+            log "RECOVERY" "Service ${K3S_SERVICE_NAME} redémarré avec succès en ${wait_time}s"
+            update_metrics "lions_k3s_recovery_service_restart_duration_seconds" "${wait_time}" "Time taken to restart K3s service"
+            return 0
+        fi
+        sleep 5
+        wait_time=$((wait_time + 5))
+    done
+    
+    log "ERROR" "Timeout lors du redémarrage du service ${K3S_SERVICE_NAME} (${SERVICE_START_TIMEOUT}s)"
+    return 1
+}
+
+# Fonction pour nettoyer les ressources du nœud
+clean_node_resources() {
+    log "RECOVERY" "Nettoyage des ressources du nœud ${LIONS_NODE_NAME}"
+    
+    # Création du répertoire de sauvegarde
+    mkdir -p "${K3S_BACKUP_DIR}"
+    
+    # Arrêt du service K3s
+    log "RECOVERY" "Arrêt temporaire du service ${K3S_SERVICE_NAME}"
+    systemctl stop "${K3S_SERVICE_NAME}" || {
+        log "WARNING" "Impossible d'arrêter proprement le service ${K3S_SERVICE_NAME}"
+    }
+    
+    # Nettoyage du cache containerd
+    if [[ -d "${K3S_DATA_DIR}/agent/containerd" ]]; then
+        log "RECOVERY" "Nettoyage du cache containerd"
+        find "${K3S_DATA_DIR}/agent/containerd/io.containerd.content.v1.content/ingest/" -type f -delete 2>/dev/null || true
+    fi
+    
+    # Nettoyage des journaux système
+    log "RECOVERY" "Rotation des journaux système"
+    journalctl --vacuum-time=1d --quiet || true
     
     # Nettoyage des fichiers temporaires
     log "RECOVERY" "Nettoyage des fichiers temporaires"
-    find /tmp -type f -atime +7 -delete
+    find /tmp -type f -name "*k3s*" -mtime +1 -delete 2>/dev/null || true
     
+    # Nettoyage de la mémoire cache
+    if [[ -w /proc/sys/vm/drop_caches ]]; then
+        log "RECOVERY" "Vidage du cache système"
+        sync && echo 1 > /proc/sys/vm/drop_caches || true
+    fi
+    
+    # Redémarrage du service
+    log "RECOVERY" "Redémarrage du service ${K3S_SERVICE_NAME} après nettoyage"
+    if systemctl start "${K3S_SERVICE_NAME}"; then
+        log "RECOVERY" "Service ${K3S_SERVICE_NAME} redémarré après nettoyage"
+        return 0
+    else
+        log "ERROR" "Échec du redémarrage du service ${K3S_SERVICE_NAME} après nettoyage"
+        return 1
+    fi
+}
+
+# Fonction pour réinitialiser le réseau
+reset_network() {
+    if [[ "${ENABLE_NETWORK_RESET}" != "true" ]]; then
+        log "INFO" "Réinitialisation réseau désactivée par configuration"
+        return 0
+    fi
+    
+    log "RECOVERY" "Réinitialisation de la configuration réseau"
+    
+    # Sauvegarde de la configuration réseau
+    ip route show > "${K3S_BACKUP_DIR}/routes-$(date +%Y%m%d_%H%M%S).backup" 2>/dev/null || true
+    
+    # Nettoyage des interfaces CNI
+    for interface in $(ip link show | grep -E 'cni|flannel|weave' | cut -d: -f2 | tr -d ' '); do
+        log "RECOVERY" "Suppression de l'interface ${interface}"
+        ip link delete "${interface}" 2>/dev/null || true
+    done
+    
+    # Nettoyage des règles iptables liées à K3s
+    iptables-save | grep -v K3S | iptables-restore 2>/dev/null || true
+    
+    log "RECOVERY" "Réinitialisation réseau terminée"
     return 0
 }
 
 # Fonction pour réinitialiser le nœud (mesure drastique)
 reset_node() {
-    log "RECOVERY" "Réinitialisation du nœud (mesure drastique)"
+    if [[ "${ENABLE_NODE_RESET}" != "true" ]]; then
+        log "ERROR" "Réinitialisation du nœud désactivée par configuration"
+        return 1
+    fi
     
-    # Sauvegarde des fichiers importants
-    log "RECOVERY" "Sauvegarde des fichiers importants"
-    mkdir -p /var/backups/k3s
-    cp "${KUBECONFIG}" /var/backups/k3s/
+    log "RECOVERY" "Réinitialisation complète du nœud ${LIONS_NODE_NAME} (mesure drastique)"
+    
+    # Sauvegarde des fichiers critiques
+    log "RECOVERY" "Sauvegarde des fichiers critiques"
+    mkdir -p "${K3S_BACKUP_DIR}/emergency-$(date +%Y%m%d_%H%M%S)"
+    cp "${KUBECONFIG}" "${K3S_BACKUP_DIR}/emergency-$(date +%Y%m%d_%H%M%S)/" 2>/dev/null || true
     
     # Arrêt du service K3s
-    log "RECOVERY" "Arrêt du service K3s{% if NODE_TYPE == "agent" %}-agent{% endif %}"
-    systemctl stop k3s{% if NODE_TYPE == "agent" %}-agent{% endif %}
+    log "RECOVERY" "Arrêt du service ${K3S_SERVICE_NAME}"
+    systemctl stop "${K3S_SERVICE_NAME}"
     
-    # Suppression des données K3s
-    log "RECOVERY" "Suppression des données K3s"
-    rm -rf /var/lib/rancher/k3s/agent/containerd
+    # Suppression des données K3s (prudent)
+    log "RECOVERY" "Suppression sélective des données K3s"
+    rm -rf "${K3S_DATA_DIR}/agent/containerd" 2>/dev/null || true
+    rm -rf "${K3S_DATA_DIR}/server/logs" 2>/dev/null || true
+    
+    # Réinitialisation réseau
+    reset_network
     
     # Redémarrage du service K3s
-    log "RECOVERY" "Redémarrage du service K3s{% if NODE_TYPE == "agent" %}-agent{% endif %}"
-    systemctl start k3s{% if NODE_TYPE == "agent" %}-agent{% endif %}
+    log "RECOVERY" "Redémarrage du service ${K3S_SERVICE_NAME} après réinitialisation"
+    systemctl start "${K3S_SERVICE_NAME}"
     
     return 0
+}
+
+# =============================================================================
+# FONCTIONS DE NOTIFICATION
+# =============================================================================
+
+# Fonction pour envoyer une notification webhook
+send_webhook_notification() {
+    local message="$1"
+    local severity="${2:-warning}"
+    local attempts="${3:-0}"
+    
+    if [[ -z "${NOTIFICATION_WEBHOOK}" ]]; then
+        log "DEBUG" "Aucun webhook configuré pour les notifications"
+        return 0
+    fi
+    
+    local payload
+    payload=$(cat << EOF
+{
+    "text": "${message}",
+    "environment": "${LIONS_ENVIRONMENT}",
+    "node_name": "${LIONS_NODE_NAME}",
+    "node_type": "${LIONS_NODE_TYPE}",
+    "severity": "${severity}",
+    "timestamp": "$(date -Iseconds)",
+    "recovery_attempts": "${attempts}",
+    "max_attempts": "${MAX_RECOVERY_ATTEMPTS}",
+    "service": "k3s-auto-recovery"
+}
+EOF
+)
+    
+    if curl -s -X POST -H "Content-Type: application/json" -d "${payload}" "${NOTIFICATION_WEBHOOK}" >/dev/null 2>&1; then
+        log "INFO" "Notification webhook envoyée avec succès"
+    else
+        log "WARNING" "Échec de l'envoi de la notification webhook"
+    fi
+}
+
+# Fonction pour envoyer un email (si disponible)
+send_email_notification() {
+    local subject="$1"
+    local message="$2"
+    local attempts="${3:-0}"
+    
+    if ! command -v mail &>/dev/null; then
+        log "DEBUG" "Commande mail non disponible pour l'envoi d'emails"
+        return 0
+    fi
+    
+    local email_body
+    email_body=$(cat << EOF
+Alerte K3s Auto Recovery
+
+Nœud: ${LIONS_NODE_NAME} (${LIONS_NODE_TYPE})
+Environnement: ${LIONS_ENVIRONMENT}
+Timestamp: $(date)
+
+${message}
+
+Tentatives de récupération: ${attempts}/${MAX_RECOVERY_ATTEMPTS}
+
+Logs disponibles:
+- Journal principal: ${LOG_FILE}
+- Historique de récupération: ${RECOVERY_HISTORY}
+- Métriques: ${METRICS_FILE}
+
+API Server: ${API_SERVER}
+Service K3s: ${K3S_SERVICE_NAME}
+
+---
+LIONS Infrastructure Auto Recovery v5.0
+EOF
+)
+    
+    if echo "${email_body}" | mail -s "${subject}" "${ADMIN_EMAIL}" 2>/dev/null; then
+        log "INFO" "Notification email envoyée à ${ADMIN_EMAIL}"
+    else
+        log "WARNING" "Échec de l'envoi de l'email à ${ADMIN_EMAIL}"
+    fi
 }
 
 # Fonction pour notifier les administrateurs
 notify_administrators() {
     local reason="$1"
-    local attempts="$2"
+    local attempts="${2:-0}"
+    local severity="${3:-critical}"
     
     log "ALERT" "Notification des administrateurs: ${reason} (tentatives: ${attempts})"
     
-    # Envoi d'un e-mail (si configuré)
-    if command -v mail &>/dev/null; then
-        echo "Alerte K3s sur le nœud ${NODE_NAME} (${NODE_TYPE})
-
-Raison: ${reason}
-Tentatives de récupération: ${attempts}/${MAX_RECOVERY_ATTEMPTS}
-Horodatage: $(date)
-
-Consultez les journaux pour plus de détails:
-- Journal de santé: ${LOG_FILE}
-- Journal de récupération: ${RECOVERY_HISTORY}
-" | mail -s "ALERTE K3s: ${NODE_NAME}" {{ lookup('env', 'LIONS_ADMIN_EMAIL') | default('admin@example.com') }}
-    fi
+    local subject="ALERTE K3s: ${LIONS_NODE_NAME} (${LIONS_ENVIRONMENT})"
+    local message="Intervention manuelle requise sur le nœud ${LIONS_NODE_NAME}. Raison: ${reason}"
     
-    return 0
+    # Envoi de notifications en parallèle
+    send_webhook_notification "${message}" "${severity}" "${attempts}" &
+    send_email_notification "${subject}" "${message}" "${attempts}" &
+    
+    # Attente de la fin des notifications (max 30s)
+    local notification_timeout=30
+    local notification_start
+    notification_start=$(date +%s)
+    
+    while [[ $(jobs -r | wc -l) -gt 0 ]] && [[ $(($(date +%s) - notification_start)) -lt ${notification_timeout} ]]; do
+        sleep 1
+    done
+    
+    # Arrêt des notifications en cours si timeout
+    if [[ $(jobs -r | wc -l) -gt 0 ]]; then
+        log "WARNING" "Timeout des notifications, arrêt des processus en cours"
+        kill $(jobs -p) 2>/dev/null || true
+    fi
 }
+
+# =============================================================================
+# STRATÉGIES DE RÉCUPÉRATION
+# =============================================================================
+
+# Initialisation des stratégies de récupération
+init_recovery_strategies() {
+    RECOVERY_STRATEGIES[1]="service_restart"
+    RECOVERY_STRATEGIES[2]="resource_cleanup"
+    RECOVERY_STRATEGIES[3]="network_reset"
+    RECOVERY_STRATEGIES[4]="node_reset"
+}
+
+# Fonction pour exécuter une stratégie de récupération
+execute_recovery_strategy() {
+    local strategy="$1"
+    local attempt="$2"
+    
+    log "RECOVERY" "Exécution de la stratégie: ${strategy} (tentative ${attempt})"
+    
+    case "${strategy}" in
+        "service_restart")
+            if [[ "${ENABLE_SERVICE_RESTART}" == "true" ]]; then
+                restart_k3s_service
+            else
+                log "INFO" "Stratégie service_restart désactivée"
+                return 1
+            fi
+            ;;
+        "resource_cleanup")
+            if [[ "${ENABLE_RESOURCE_CLEANUP}" == "true" ]]; then
+                clean_node_resources
+            else
+                log "INFO" "Stratégie resource_cleanup désactivée"
+                return 1
+            fi
+            ;;
+        "network_reset")
+            if [[ "${ENABLE_NETWORK_RESET}" == "true" ]]; then
+                reset_network && restart_k3s_service
+            else
+                log "INFO" "Stratégie network_reset désactivée"
+                return 1
+            fi
+            ;;
+        "node_reset")
+            if [[ "${ENABLE_NODE_RESET}" == "true" ]]; then
+                reset_node
+            else
+                log "INFO" "Stratégie node_reset désactivée"
+                return 1
+            fi
+            ;;
+        *)
+            log "ERROR" "Stratégie de récupération inconnue: ${strategy}"
+            return 1
+            ;;
+    esac
+}
+
+# =============================================================================
+# FONCTION PRINCIPALE DE RÉCUPÉRATION
+# =============================================================================
 
 # Fonction pour effectuer la récupération
 perform_recovery() {
     local reason="$1"
     
-    log "RECOVERY" "Début de la procédure de récupération pour le nœud ${NODE_NAME} (${NODE_TYPE})"
+    RECOVERY_START_TIME=$(date +%s)
+    log "RECOVERY" "Début de la procédure de récupération pour le nœud ${LIONS_NODE_NAME} (${LIONS_NODE_TYPE})"
     log "RECOVERY" "Raison: ${reason}"
+    
+    # Mise à jour des métriques
+    update_metrics "lions_k3s_recovery_started_timestamp" "${RECOVERY_START_TIME}" "Timestamp when recovery started"
+    update_metrics "lions_k3s_recovery_in_progress" "1" "Recovery currently in progress"
     
     # Vérification du nombre de tentatives
     increment_recovery_attempts
     local attempts
-    attempts=$(cat "${RECOVERY_ATTEMPT_FILE}")
+    attempts=$(get_recovery_attempts)
     
     log "RECOVERY" "Tentative de récupération ${attempts}/${MAX_RECOVERY_ATTEMPTS}"
     
-    # Stratégie de récupération progressive
-    case ${attempts} in
-        1)
-            # Première tentative: redémarrage simple du service
-            log "RECOVERY" "Stratégie: redémarrage du service"
-            restart_k3s_service
-            ;;
-        2)
-            # Deuxième tentative: nettoyage des ressources et redémarrage
-            log "RECOVERY" "Stratégie: nettoyage des ressources et redémarrage"
-            clean_node_resources
-            restart_k3s_service
-            ;;
-        3)
-            # Troisième tentative: réinitialisation du nœud
-            log "RECOVERY" "Stratégie: réinitialisation du nœud"
-            reset_node
-            ;;
-        *)
-            # Tentatives supplémentaires: notification des administrateurs
-            log "ERROR" "Nombre maximum de tentatives atteint, intervention manuelle requise"
-            notify_administrators "${reason}" "${attempts}"
-            return 1
-            ;;
-    esac
+    # Sélection de la stratégie selon le nombre de tentatives
+    local strategy="${RECOVERY_STRATEGIES[${attempts}]:-notification_only}"
     
-    # Vérification du résultat de la récupération
-    sleep 60  # Attente pour que les changements prennent effet
-    
-    if check_k3s_service && check_node_status; then
-        log "RECOVERY" "Récupération réussie pour le nœud ${NODE_NAME}"
-        reset_recovery_attempts
-        rm -f "${ALERT_FILE}"
-        return 0
-    else
-        log "ERROR" "Échec de la récupération pour le nœud ${NODE_NAME}"
-        
-        # Si le seuil est dépassé, notification des administrateurs
-        if check_recovery_threshold; then
-            notify_administrators "${reason}" "${attempts}"
-        fi
-        
+    if [[ "${strategy}" == "notification_only" ]] || [[ ${attempts} -gt ${MAX_RECOVERY_ATTEMPTS} ]]; then
+        log "ERROR" "Nombre maximum de tentatives atteint ou stratégie épuisée, intervention manuelle requise"
+        notify_administrators "${reason}" "${attempts}" "critical"
+        update_metrics "lions_k3s_recovery_in_progress" "0" "Recovery currently in progress"
         return 1
     fi
+    
+    # Exécution de la stratégie de récupération
+    if execute_recovery_strategy "${strategy}" "${attempts}"; then
+        log "RECOVERY" "Stratégie ${strategy} exécutée avec succès"
+        
+        # Attente pour que les changements prennent effet
+        log "RECOVERY" "Attente de stabilisation (${NODE_STATUS_TIMEOUT}s)"
+        sleep 10
+        
+        # Vérification du résultat avec plusieurs tentatives
+        local verification_attempts=0
+        local max_verification_attempts=6
+        
+        while [[ ${verification_attempts} -lt ${max_verification_attempts} ]]; do
+            if check_k3s_service && check_node_status; then
+                local recovery_duration=$(($(date +%s) - RECOVERY_START_TIME))
+                log "RECOVERY" "Récupération réussie pour le nœud ${LIONS_NODE_NAME} en ${recovery_duration}s"
+                
+                # Mise à jour des métriques de succès
+                update_metrics "lions_k3s_recovery_in_progress" "0" "Recovery currently in progress"
+                update_metrics "lions_k3s_recovery_success_timestamp" "$(date +%s)" "Timestamp of last successful recovery"
+                update_metrics "lions_k3s_recovery_duration_seconds" "${recovery_duration}" "Duration of last recovery"
+                update_metrics "lions_k3s_recovery_strategy_used" "${attempts}" "Strategy number used for last recovery"
+                
+                # Réinitialisation des compteurs et alertes
+                reset_recovery_attempts
+                clear_alert
+                
+                # Notification de succès
+                send_webhook_notification "Récupération réussie du nœud ${LIONS_NODE_NAME}" "info" "${attempts}" &
+                
+                return 0
+            fi
+            
+            verification_attempts=$((verification_attempts + 1))
+            log "DEBUG" "Vérification de récupération ${verification_attempts}/${max_verification_attempts}"
+            sleep 10
+        done
+        
+        log "ERROR" "Échec de la vérification après récupération pour le nœud ${LIONS_NODE_NAME}"
+    else
+        log "ERROR" "Échec de l'exécution de la stratégie ${strategy}"
+    fi
+    
+    # Mise à jour des métriques d'échec
+    update_metrics "lions_k3s_recovery_in_progress" "0" "Recovery currently in progress"
+    update_metrics "lions_k3s_recovery_failed_timestamp" "$(date +%s)" "Timestamp of last failed recovery"
+    
+    # Notification si seuil proche ou atteint
+    if [[ ${attempts} -ge $((MAX_RECOVERY_ATTEMPTS - 1)) ]]; then
+        local severity="critical"
+        [[ ${attempts} -lt ${MAX_RECOVERY_ATTEMPTS} ]] && severity="warning"
+        notify_administrators "${reason}" "${attempts}" "${severity}"
+    fi
+    
+    return 1
 }
 
-# Fonction principale
-main() {
-    # Vérification si une récupération est déjà en cours
-    if is_recovery_in_progress; then
-        log "INFO" "Une procédure de récupération est déjà en cours, sortie"
-        return 0
-    fi
+# =============================================================================
+# FONCTION DE SURVEILLANCE CONTINUE
+# =============================================================================
+
+# Fonction de surveillance continue
+continuous_monitoring() {
+    log "INFO" "Démarrage de la surveillance continue (intervalle: ${RECOVERY_INTERVAL}s)"
     
-    # Vérification si une alerte est active
-    if ! is_alert_active; then
-        # Pas d'alerte, rien à faire
-        return 0
-    fi
+    local last_cooldown_check=0
     
-    # Création du verrou de récupération
-    create_recovery_lock
-    
-    # Récupération de la raison de l'alerte
-    local reason
-    reason=$(get_alert_reason)
-    
-    # Exécution de la procédure de récupération
-    perform_recovery "${reason}"
-    local recovery_result=$?
-    
-    # Suppression du verrou de récupération
+    while true; do
+        local current_time
+        current_time=$(date +%s)
+        
+        # Vérification du cooldown
+        local time_since_last_attempt=$((current_time - last_cooldown_check))
+        if [[ ${time_since_last_attempt} -lt ${RECOVERY_COOLDOWN} ]]; then
+            log "DEBUG" "Cooldown actif, attente de $((RECOVERY_COOLDOWN - time_since_last_attempt))s"
+            sleep $((RECOVERY_COOLDOWN - time_since_last_attempt))
+            continue
+        fi
+        
+        # Vérification si récupération en cours
+        if is_recovery_in_progress; then
+            log "DEBUG" "Récupération en cours par un autre processus, attente"
+            sleep "${RECOVERY_INTERVAL}"
+            continue
+        fi
+        
+        # Vérifications de santé
+        local health_issues=()
+        
+        if [[ "${HEALTH_CHECK_ENABLED}" == "true" ]]; then
+            # Vérification du service K3s
+            if ! check_k3s_service; then
+                health_issues+=("Service K3s inactif")
+            fi
+            
+            # Vérification de l'état du nœud dans le cluster
+            if ! check_node_status; then
+                health_issues+=("Nœud non prêt dans le cluster")
+            fi
+            
+            # Vérification de la connectivité réseau
+            if ! check_network_connectivity; then
+                health_issues+=("Connectivité réseau défaillante")
+            fi
+            
+            # Vérification des pods critiques
+            if ! check_critical_pods; then
+                health_issues+=("Pods critiques en échec")
+            fi
+        fi
+        
+        # Traitement des problèmes détectés
+        if [[ ${#health_issues[@]} -gt 0 ]]; then
+            local issue_description="${health_issues[*]}"
+            log "WARNING" "Problèmes détectés: ${issue_description}"
+            
+            # Création d'une alerte si pas déjà présente
+            if ! is_alert_active; then
+                create_alert "${issue_description}"
+            fi
+            
+            # Déclenchement de la récupération
+            create_recovery_lock
+            if perform_recovery "${issue_description}"; then
+                log "INFO" "Récupération réussie, reprise de la surveillance normale"
+            else
+                log "ERROR" "Échec de la récupération, reprise de la surveillance avec alertes actives"
+            fi
+            remove_recovery_lock
+            
+            last_cooldown_check=$(date +%s)
+        else
+            # Tout va bien, suppression d'alertes éventuelles
+            if is_alert_active; then
+                clear_alert
+                log "INFO" "Problèmes résolus, alerte supprimée"
+            fi
+            
+            # Mise à jour des métriques de santé
+            update_metrics "lions_k3s_recovery_last_check_timestamp" "${current_time}" "Timestamp of last health check"
+            update_metrics "lions_k3s_recovery_healthy" "1" "Node is currently healthy"
+        fi
+        
+        sleep "${RECOVERY_INTERVAL}"
+    done
+}
+
+# =============================================================================
+# GESTION DES SIGNAUX
+# =============================================================================
+
+# Fonction de nettoyage à l'arrêt
+cleanup_on_exit() {
+    log "INFO" "Arrêt du script de récupération automatique K3s"
     remove_recovery_lock
-    
-    return ${recovery_result}
+    update_metrics "lions_k3s_recovery_stopped_timestamp" "$(date +%s)" "Timestamp when recovery script stopped"
+    exit 0
 }
 
-# Boucle principale du service
-while true; do
-    main
-    sleep ${RECOVERY_INTERVAL}
-done
+# Configuration des handlers de signaux
+trap cleanup_on_exit SIGTERM SIGINT
+trap 'log "DEBUG" "Signal HUP reçu, rechargement de la configuration"' SIGHUP
+
+# =============================================================================
+# FONCTION PRINCIPALE
+# =============================================================================
+
+main() {
+    log "INFO" "Démarrage du script de récupération automatique K3s v5.0"
+    log "INFO" "Environnement: ${LIONS_ENVIRONMENT}, Nœud: ${LIONS_NODE_NAME} (${LIONS_NODE_TYPE})"
+    log "INFO" "PID: ${SCRIPT_PID}, Configuration validée"
+    
+    # Validation de l'environnement
+    if ! validate_environment; then
+        log "ERROR" "Validation de l'environnement échouée, arrêt du script"
+        exit 1
+    fi
+    
+    # Initialisation des composants
+    init_recovery_strategies
+    init_metrics
+    
+    # Création des répertoires nécessaires
+    mkdir -p "${K3S_BACKUP_DIR}" "$(dirname "${LOG_FILE}")" "$(dirname "${RECOVERY_HISTORY}")"
+    
+    # Mode de fonctionnement
+    if [[ "${1:-}" == "--once" ]]; then
+        log "INFO" "Mode unique: vérification et récupération si nécessaire"
+        
+        # Vérification si une alerte est active
+        if is_alert_active; then
+            local reason
+            reason=$(get_alert_reason)
+            create_recovery_lock
+            perform_recovery "${reason}"
+            local result=$?
+            remove_recovery_lock
+            exit ${result}
+        else
+            log "INFO" "Aucune alerte active, aucune action requise"
+            exit 0
+        fi
+    else
+        log "INFO" "Mode surveillance continue"
+        continuous_monitoring
+    fi
+}
+
+# =============================================================================
+# POINT D'ENTRÉE
+# =============================================================================
+
+# Exécution de la fonction principale avec tous les arguments
+main "$@"

@@ -1,107 +1,215 @@
 # =============================================================================
-# LIONS Infrastructure - Configuration HAProxy pour K3s
+# LIONS Infrastructure - Configuration HAProxy pour K3s v5.0
 # =============================================================================
-# Titre: Configuration HAProxy pour le load balancing des serveurs K3s
-# Description: Équilibre la charge entre les serveurs K3s pour la haute disponibilité
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-25
-# Version: 1.0.0
+# Titre: Configuration HAProxy pour le load balancing des serveurs K3s avec variables d'environnement
+# Description: Équilibre la charge entre les serveurs K3s pour la haute disponibilité avec configuration DevOps avancée
+# Auteur: LIONS DevOps Team
+# Date: 01/06/2025
+# Version: 5.0.0
 # =============================================================================
+
+# Configuration HAProxy pour l'environnement {{ lookup('env', 'LIONS_ENVIRONMENT') | default('development') }}
+# Serveurs K3s: {{ groups['k3s_servers'] | length if groups['k3s_servers'] is defined else 0 }}
+# Agents K3s: {{ groups['k3s_agents'] | default([]) | length }}
+# Logging: {{ lookup('env', 'LIONS_HAPROXY_LOG_LEVEL') | default('info') }}
 
 global
-    log /dev/log local0
+    # Configuration de logging
+    log /dev/log local0 {{ lookup('env', 'LIONS_HAPROXY_LOG_LEVEL') | default('info') }}
     log /dev/log local1 notice
-    chroot /var/lib/haproxy
-    stats socket /run/haproxy/admin.sock mode 660 level admin expose-fd listeners
-    stats timeout 30s
-    user haproxy
-    group haproxy
+    chroot {{ lookup('env', 'LIONS_HAPROXY_CHROOT_DIR') | default('/var/lib/haproxy') }}
+    
+    # Configuration des sockets et stats
+    stats socket {{ lookup('env', 'LIONS_HAPROXY_STATS_SOCKET') | default('/run/haproxy/admin.sock') }} mode 660 level admin expose-fd listeners
+    stats timeout {{ lookup('env', 'LIONS_HAPROXY_STATS_TIMEOUT') | default('30s') }}
+    
+    # Configuration utilisateur/groupe
+    user {{ lookup('env', 'LIONS_HAPROXY_USER') | default('haproxy') }}
+    group {{ lookup('env', 'LIONS_HAPROXY_GROUP') | default('haproxy') }}
     daemon
-
-    # SSL/TLS configuration
-    ssl-default-bind-options no-sslv3 no-tlsv10 no-tlsv11
-    ssl-default-bind-ciphersuites TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256
-    ssl-default-bind-ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305
-    tune.ssl.default-dh-param 2048
+    
+    # Configuration mémoire et performance
+    nbproc {{ lookup('env', 'LIONS_HAPROXY_NBPROC') | default('1') }}
+    nbthread {{ lookup('env', 'LIONS_HAPROXY_NBTHREAD') | default('4') }}
+    maxconn {{ lookup('env', 'LIONS_HAPROXY_GLOBAL_MAXCONN') | default('4096') }}
+    
+    # Configuration SSL/TLS renforcée
+    ssl-default-bind-options no-sslv3 no-tlsv10 no-tlsv11 {{ lookup('env', 'LIONS_HAPROXY_SSL_OPTIONS') | default('') }}
+    ssl-default-bind-ciphersuites {{ lookup('env', 'LIONS_HAPROXY_TLS13_CIPHERS') | default('TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256') }}
+    ssl-default-bind-ciphers {{ lookup('env', 'LIONS_HAPROXY_TLS12_CIPHERS') | default('ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305') }}
+    tune.ssl.default-dh-param {{ lookup('env', 'LIONS_HAPROXY_DH_PARAM_SIZE') | default('2048') }}
+    
+    # Configuration des buffers et timeouts
+    tune.bufsize {{ lookup('env', 'LIONS_HAPROXY_BUFSIZE') | default('16384') }}
+    tune.maxrewrite {{ lookup('env', 'LIONS_HAPROXY_MAXREWRITE') | default('1024') }}
 
 defaults
     log     global
-    mode    tcp
-    option  tcplog
+    mode    {{ lookup('env', 'LIONS_HAPROXY_DEFAULT_MODE') | default('tcp') }}
+    option  {{ lookup('env', 'LIONS_HAPROXY_DEFAULT_MODE') | default('tcp') }}log
     option  dontlognull
-    timeout connect 5000
-    timeout client  50000
-    timeout server  50000
-    errorfile 400 /etc/haproxy/errors/400.http
-    errorfile 403 /etc/haproxy/errors/403.http
-    errorfile 408 /etc/haproxy/errors/408.http
-    errorfile 500 /etc/haproxy/errors/500.http
-    errorfile 502 /etc/haproxy/errors/502.http
-    errorfile 503 /etc/haproxy/errors/503.http
-    errorfile 504 /etc/haproxy/errors/504.http
+    option  log-health-checks
+    {% if lookup('env', 'LIONS_HAPROXY_REDISPATCH_ENABLED') | default('true') | bool -%}
+    option  redispatch
+    {% endif -%}
+    
+    # Timeouts configurables
+    timeout connect {{ lookup('env', 'LIONS_HAPROXY_TIMEOUT_CONNECT') | default('5s') }}
+    timeout client  {{ lookup('env', 'LIONS_HAPROXY_TIMEOUT_CLIENT') | default('50s') }}
+    timeout server  {{ lookup('env', 'LIONS_HAPROXY_TIMEOUT_SERVER') | default('50s') }}
+    timeout tunnel  {{ lookup('env', 'LIONS_HAPROXY_TIMEOUT_TUNNEL') | default('1h') }}
+    timeout http-keep-alive {{ lookup('env', 'LIONS_HAPROXY_TIMEOUT_HTTP_KEEP_ALIVE') | default('1s') }}
+    timeout check   {{ lookup('env', 'LIONS_HAPROXY_TIMEOUT_CHECK') | default('10s') }}
+    
+    # Pages d'erreur personnalisées
+    {% set error_pages_dir = lookup('env', 'LIONS_HAPROXY_ERROR_PAGES_DIR') | default('/etc/haproxy/errors') -%}
+    errorfile 400 {{ error_pages_dir }}/400.http
+    errorfile 403 {{ error_pages_dir }}/403.http
+    errorfile 408 {{ error_pages_dir }}/408.http
+    errorfile 500 {{ error_pages_dir }}/500.http
+    errorfile 502 {{ error_pages_dir }}/502.http
+    errorfile 503 {{ error_pages_dir }}/503.http
+    errorfile 504 {{ error_pages_dir }}/504.http
+    
+    # Configuration de retry et maxconn
+    retries {{ lookup('env', 'LIONS_HAPROXY_RETRIES') | default('3') }}
+    maxconn {{ lookup('env', 'LIONS_HAPROXY_DEFAULT_MAXCONN') | default('2000') }}
 
-# Stats page
+# =============================================================================
+# INTERFACE DE STATISTIQUES ET MONITORING
+# =============================================================================
+{% if lookup('env', 'LIONS_HAPROXY_STATS_ENABLED') | default('true') | bool -%}
 listen stats
-    bind *:9000
+    bind *:{{ lookup('env', 'LIONS_HAPROXY_STATS_PORT') | default('9000') }}{% if lookup('env', 'LIONS_HAPROXY_STATS_SSL_ENABLED') | default('false') | bool %} ssl crt {{ lookup('env', 'LIONS_HAPROXY_STATS_SSL_CERT') | default('/etc/haproxy/certs/stats.pem') }}{% endif %}
     mode http
     stats enable
-    stats uri /
-    stats refresh 10s
-    stats auth admin:{{ lookup('env', 'LIONS_HAPROXY_STATS_PASSWORD') | default('StrongPassword123!') }}
+    stats uri {{ lookup('env', 'LIONS_HAPROXY_STATS_URI') | default('/') }}
+    stats refresh {{ lookup('env', 'LIONS_HAPROXY_STATS_REFRESH') | default('10s') }}
+    stats admin {{ lookup('env', 'LIONS_HAPROXY_STATS_ADMIN_ENABLED') | default('if TRUE') }}
+    {% set stats_users = lookup('env', 'LIONS_HAPROXY_STATS_USERS') | default('admin:' + lookup('vault', 'secret/lions/' + lookup('env', 'LIONS_ENVIRONMENT') | default('development') + '/haproxy:stats_password') | default(lookup('env', 'LIONS_HAPROXY_STATS_PASSWORD')) | default('StrongPassword123!')) -%}
+    {% for user_pass in stats_users.split(',') -%}
+    stats auth {{ user_pass }}
+    {% endfor -%}
+    stats hide-version
+    stats realm "{{ lookup('env', 'LIONS_HAPROXY_STATS_REALM') | default('LIONS HAProxy Statistics') }}"
+{% endif %}
 
-# K3s API Server
+# =============================================================================
+# FRONTEND ET BACKEND K3S API SERVER (HAUTE DISPONIBILITÉ)
+# =============================================================================
 frontend k3s-api
-    bind *:{{ k3s_api_lb_port }}
-    option tcplog
+    bind *:{{ lookup('env', 'LIONS_K3S_API_LB_PORT') | default('6443') }}{% if lookup('env', 'LIONS_K3S_API_SSL_PASSTHROUGH') | default('true') | bool %} transparent{% endif %}
     mode tcp
+    option tcplog
+    {% if lookup('env', 'LIONS_HAPROXY_LOG_SEPARATE_ERRORS') | default('true') | bool -%}
+    option log-separate-errors
+    {% endif -%}
+    tcp-request connection track-sc0 src
+    {% if lookup('env', 'LIONS_HAPROXY_RATE_LIMIT_ENABLED') | default('true') | bool -%}
+    tcp-request connection reject if { sc_conn_rate(0) gt {{ lookup('env', 'LIONS_HAPROXY_RATE_LIMIT_CONN_RATE') | default('20') }} }
+    {% endif -%}
     default_backend k3s-api-backend
 
-# K3s API Backend
 backend k3s-api-backend
     mode tcp
+    balance {{ lookup('env', 'LIONS_HAPROXY_K3S_BALANCE_METHOD') | default('roundrobin') }}
     option tcp-check
-    balance roundrobin
-    default-server inter 10s downinter 5s rise 2 fall 2 slowstart 60s maxconn 250 maxqueue 256 weight 100
+    tcp-check connect
+    tcp-check send-binary 474554202f20485454502f312e310d0a0d0a
+    tcp-check expect binary 485454502f312e31
     
-    # K3s Servers
-    {% for host in groups['k3s_servers'] %}
-    server {{ hostvars[host]['inventory_hostname'] }} {{ hostvars[host]['ansible_host'] }}:6443 check
+    # Configuration des serveurs par défaut
+    default-server inter {{ lookup('env', 'LIONS_HAPROXY_K3S_CHECK_INTERVAL') | default('10s') }} \
+                   downinter {{ lookup('env', 'LIONS_HAPROXY_K3S_DOWN_INTERVAL') | default('5s') }} \
+                   rise {{ lookup('env', 'LIONS_HAPROXY_K3S_RISE_COUNT') | default('2') }} \
+                   fall {{ lookup('env', 'LIONS_HAPROXY_K3S_FALL_COUNT') | default('3') }} \
+                   slowstart {{ lookup('env', 'LIONS_HAPROXY_K3S_SLOWSTART') | default('60s') }} \
+                   maxconn {{ lookup('env', 'LIONS_HAPROXY_K3S_SERVER_MAXCONN') | default('250') }} \
+                   maxqueue {{ lookup('env', 'LIONS_HAPROXY_K3S_SERVER_MAXQUEUE') | default('256') }} \
+                   weight {{ lookup('env', 'LIONS_HAPROXY_K3S_SERVER_WEIGHT') | default('100') }}
+    
+    # Serveurs K3s depuis l'inventaire Ansible
+    {% for host in groups['k3s_servers'] -%}
+    {% set host_vars = hostvars[host] -%}
+    {% set host_ip = host_vars['ansible_host'] | default(host_vars['ansible_default_ipv4']['address']) | default(host) -%}
+    {% set host_port = lookup('env', 'LIONS_K3S_API_INTERNAL_PORT') | default('6443') -%}
+    {% set backup_status = 'backup' if loop.index > (lookup('env', 'LIONS_HAPROXY_K3S_PRIMARY_SERVERS') | default('2') | int) else '' -%}
+    server {{ host_vars['inventory_hostname'] | default(host) }} {{ host_ip }}:{{ host_port }} check {{ backup_status }}
     {% endfor %}
 
-# HTTP Frontend (optional, for web services)
+# =============================================================================
+# FRONTENDS ET BACKENDS HTTP/HTTPS (OPTIONNELS)
+# =============================================================================
+{% if lookup('env', 'LIONS_HAPROXY_HTTP_ENABLED') | default('true') | bool -%}
 frontend http-frontend
-    bind *:80
+    bind *:{{ lookup('env', 'LIONS_HAPROXY_HTTP_PORT') | default('80') }}
     mode http
+    option httplog
     option forwardfor
+    {% if lookup('env', 'LIONS_HAPROXY_HTTP_REDIRECT_HTTPS') | default('true') | bool -%}
+    # Redirection automatique vers HTTPS
+    redirect scheme https code 301 if !{ ssl_fc }
+    {% else -%}
+    # Utilisation du backend HTTP
     default_backend http-backend
+    {% endif %}
+{% endif %}
 
-# HTTPS Frontend (optional, for web services)
+{% if lookup('env', 'LIONS_HAPROXY_HTTPS_ENABLED') | default('true') | bool -%}
 frontend https-frontend
-    bind *:443 ssl crt /etc/haproxy/certs/
+    bind *:{{ lookup('env', 'LIONS_HAPROXY_HTTPS_PORT') | default('443') }} ssl crt {{ lookup('env', 'LIONS_HAPROXY_SSL_CERT_DIR') | default('/etc/haproxy/certs/') }}
     mode http
+    option httplog
     option forwardfor
+    {% if lookup('env', 'LIONS_HAPROXY_HTTPS_HSTS_ENABLED') | default('true') | bool -%}
+    # Configuration HSTS
+    http-response set-header Strict-Transport-Security "max-age={{ lookup('env', 'LIONS_HAPROXY_HSTS_MAX_AGE') | default('31536000') }}; includeSubDomains; preload"
+    {% endif -%}
+    {% if lookup('env', 'LIONS_HAPROXY_SECURITY_HEADERS_ENABLED') | default('true') | bool -%}
+    # En-têtes de sécurité
+    http-response set-header X-Frame-Options DENY
+    http-response set-header X-Content-Type-Options nosniff
+    http-response set-header X-XSS-Protection "1; mode=block"
+    http-response set-header Referrer-Policy strict-origin-when-cross-origin
+    {% endif -%}
     default_backend https-backend
+{% endif %}
 
-# HTTP Backend (optional, for web services)
+{% if lookup('env', 'LIONS_HAPROXY_HTTP_ENABLED') | default('true') | bool and not (lookup('env', 'LIONS_HAPROXY_HTTP_REDIRECT_HTTPS') | default('true') | bool) -%}
 backend http-backend
     mode http
-    balance roundrobin
-    option httpchk GET /healthz
-    http-check expect status 200
+    balance {{ lookup('env', 'LIONS_HAPROXY_HTTP_BALANCE_METHOD') | default('roundrobin') }}
+    option httpchk GET {{ lookup('env', 'LIONS_HAPROXY_HTTP_HEALTH_PATH') | default('/healthz') }}
+    http-check expect status {{ lookup('env', 'LIONS_HAPROXY_HTTP_HEALTH_STATUS') | default('200') }}
     
-    # K3s Agents (assuming they run ingress controllers)
-    {% for host in groups['k3s_agents'] %}
-    server {{ hostvars[host]['inventory_hostname'] }} {{ hostvars[host]['ansible_host'] }}:80 check
+    default-server inter {{ lookup('env', 'LIONS_HAPROXY_HTTP_CHECK_INTERVAL') | default('30s') }} \
+                   rise {{ lookup('env', 'LIONS_HAPROXY_HTTP_RISE_COUNT') | default('2') }} \
+                   fall {{ lookup('env', 'LIONS_HAPROXY_HTTP_FALL_COUNT') | default('3') }}
+    
+    # Serveurs ingress (agents K3s ou serveurs dédiés)
+    {% for host in groups['k3s_agents'] | default(groups['k3s_servers'][:2]) -%}
+    {% set host_vars = hostvars[host] -%}
+    {% set host_ip = host_vars['ansible_host'] | default(host_vars['ansible_default_ipv4']['address']) | default(host) -%}
+    server {{ host_vars['inventory_hostname'] | default(host) }}-http {{ host_ip }}:{{ lookup('env', 'LIONS_HAPROXY_HTTP_BACKEND_PORT') | default('80') }} check
     {% endfor %}
+{% endif %}
 
-# HTTPS Backend (optional, for web services)
+{% if lookup('env', 'LIONS_HAPROXY_HTTPS_ENABLED') | default('true') | bool -%}
 backend https-backend
     mode http
-    balance roundrobin
-    option httpchk GET /healthz
-    http-check expect status 200
+    balance {{ lookup('env', 'LIONS_HAPROXY_HTTPS_BALANCE_METHOD') | default('roundrobin') }}
+    option httpchk GET {{ lookup('env', 'LIONS_HAPROXY_HTTPS_HEALTH_PATH') | default('/healthz') }}
+    http-check expect status {{ lookup('env', 'LIONS_HAPROXY_HTTPS_HEALTH_STATUS') | default('200') }}
     
-    # K3s Agents (assuming they run ingress controllers)
-    {% for host in groups['k3s_agents'] %}
-    server {{ hostvars[host]['inventory_hostname'] }} {{ hostvars[host]['ansible_host'] }}:443 check ssl verify none
+    default-server inter {{ lookup('env', 'LIONS_HAPROXY_HTTPS_CHECK_INTERVAL') | default('30s') }} \
+                   rise {{ lookup('env', 'LIONS_HAPROXY_HTTPS_RISE_COUNT') | default('2') }} \
+                   fall {{ lookup('env', 'LIONS_HAPROXY_HTTPS_FALL_COUNT') | default('3') }} \
+                   {% if lookup('env', 'LIONS_HAPROXY_HTTPS_SSL_VERIFY') | default('false') | bool %}check ssl verify required ca-file {{ lookup('env', 'LIONS_HAPROXY_CA_FILE') | default('/etc/ssl/certs/ca-certificates.crt') }}{% else %}check ssl verify none{% endif %}
+    
+    # Serveurs ingress (agents K3s ou serveurs dédiés)
+    {% for host in groups['k3s_agents'] | default(groups['k3s_servers'][:2]) -%}
+    {% set host_vars = hostvars[host] -%}
+    {% set host_ip = host_vars['ansible_host'] | default(host_vars['ansible_default_ipv4']['address']) | default(host) -%}
+    server {{ host_vars['inventory_hostname'] | default(host) }}-https {{ host_ip }}:{{ lookup('env', 'LIONS_HAPROXY_HTTPS_BACKEND_PORT') | default('443') }} {{ 'check ssl verify none' if not (lookup('env', 'LIONS_HAPROXY_HTTPS_SSL_VERIFY') | default('false') | bool) else 'check ssl verify required' }}
     {% endfor %}
+{% endif %}

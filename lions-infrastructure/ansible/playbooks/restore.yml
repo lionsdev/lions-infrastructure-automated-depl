@@ -1,364 +1,614 @@
 ---
-# Titre: Playbook de restauration
-# Description: Restaure les données à partir des sauvegardes
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-08
-# Version: 1.0.0
+# ===============================================================================
+# LIONS INFRASTRUCTURE - RESTORE PLAYBOOK v5.0
+# ===============================================================================
+# Description: Restaure les données à partir des sauvegardes avec variables d'environnement
+# Version: 5.0.0
+# Date: 01/06/2025
+# Author: LIONS DevOps Team
+# ===============================================================================
 
-- name: Restauration des données de l'infrastructure LIONS
+- name: "Restauration des données LIONS {{ lions_environment | default(lookup('env', 'LIONS_ENVIRONMENT')) | upper }}"
   hosts: all
   become: true
   gather_facts: true
-
+  
   vars:
+    # =========================================================================
+    # CONFIGURATION DE BASE DEPUIS VARIABLES D'ENVIRONNEMENT
+    # =========================================================================
+    lions_environment: "{{ lookup('env', 'LIONS_ENVIRONMENT') | default('development') }}"
+    lions_project_name: "{{ lookup('env', 'LIONS_PROJECT_NAME') | default('lions-infrastructure') }}"
+    lions_version: "{{ lookup('env', 'LIONS_VERSION') | default('5.0.0') }}"
+    lions_deployment_id: "{{ lookup('env', 'LIONS_DEPLOYMENT_ID') | default(ansible_date_time.epoch) }}"
+    
+    # =========================================================================
+    # CONFIGURATION DE RESTAURATION
+    # =========================================================================
     restore_timestamp: "{{ ansible_date_time.date }}_{{ ansible_date_time.hour }}{{ ansible_date_time.minute }}{{ ansible_date_time.second }}"
-    backup_root_dir: "/var/backups/lions"
-    restore_log_file: "/var/log/lions/restores/restore-{{ restore_timestamp }}.log"
-    backup_file: ""  # À spécifier via --extra-vars
-    restore_temp_dir: "/tmp/lions-restore-{{ restore_timestamp }}"
+    backup_root_dir: "{{ lookup('env', 'LIONS_BACKUP_ROOT_DIR') | default('/var/backups/lions') }}"
+    restore_log_path: "{{ lookup('env', 'LIONS_LOG_PATH') | default('/var/log/lions') }}/restores"
+    restore_log_file: "{{ restore_log_path }}/restore-{{ lions_environment }}-{{ restore_timestamp }}.log"
+    restore_temp_dir: "/tmp/lions-restore-{{ lions_deployment_id }}"
+    
+    # Fichier de sauvegarde à restaurer (obligatoire)
+    backup_file: "{{ backup_file | default(lookup('env', 'LIONS_RESTORE_BACKUP_FILE')) }}"
+    backup_encryption_enabled: "{{ lookup('env', 'LIONS_BACKUP_ENCRYPTION_ENABLED') | default('true') | bool }}"
+    backup_encryption_key: "{{ lookup('vault', 'secret/lions/' + lions_environment + '/backup:encryption_key') | default(lookup('env', 'LIONS_BACKUP_ENCRYPTION_KEY')) }}"
+    
+    # =========================================================================
+    # CONFIGURATION KUBERNETES
+    # =========================================================================
+    kube_config_path: "{{ lookup('env', 'LIONS_KUBE_CONFIG_PATH') | default(ansible_env.HOME + '/.kube/config') }}"
+    kubectl_timeout: "{{ lookup('env', 'LIONS_KUBECTL_TIMEOUT') | default('5m') }}"
+    namespace_prefix: "{{ lookup('env', 'LIONS_NAMESPACE_PREFIX') | default('lions-' + lions_environment) }}"
+    
+    # =========================================================================
+    # CONFIGURATION BASE DE DONNÉES
+    # =========================================================================
+    postgres_enabled: "{{ lookup('env', 'LIONS_POSTGRES_ENABLED') | default('true') | bool }}"
+    postgres_username: "{{ lookup('vault', 'secret/lions/' + lions_environment + '/postgres:username') | default(lookup('env', 'LIONS_POSTGRES_USERNAME')) | default('lions_user') }}"
+    postgres_admin_password: "{{ lookup('vault', 'secret/lions/' + lions_environment + '/postgres:admin_password') | default(lookup('env', 'LIONS_POSTGRES_ADMIN_PASSWORD')) }}"
+    postgres_backup_format: "{{ lookup('env', 'LIONS_POSTGRES_BACKUP_FORMAT') | default('custom') }}"
+    
+    # =========================================================================
+    # CONFIGURATION VAULT
+    # =========================================================================
+    vault_enabled: "{{ lookup('env', 'LIONS_VAULT_ENABLED') | default('true') | bool }}"
+    vault_addr: "{{ lookup('env', 'LIONS_VAULT_ADDR') }}"
+    vault_namespace: "{{ lookup('env', 'LIONS_VAULT_NAMESPACE') | default('vault-system') }}"
+    
+    # =========================================================================
+    # MODES DE RESTAURATION
+    # =========================================================================
+    restore_mode: "{{ restore_mode | default(lookup('env', 'LIONS_RESTORE_MODE')) | default('selective') }}"  # selective, full, data-only
+    restore_force: "{{ restore_force | default(lookup('env', 'LIONS_RESTORE_FORCE')) | default('false') | bool }}"
+    restore_verify: "{{ lookup('env', 'LIONS_RESTORE_VERIFY') | default('true') | bool }}"
+    restore_dry_run: "{{ restore_dry_run | default(lookup('env', 'LIONS_RESTORE_DRY_RUN')) | default('false') | bool }}"
+    
+    # =========================================================================
+    # COMPOSANTS DE RESTAURATION CONFIGURABLES
+    # =========================================================================
     restore_components:
       - name: "Bases de données PostgreSQL"
-        enabled: true
+        enabled: "{{ postgres_enabled and (restore_mode in ['full', 'data-only']) }}"
+        priority: 1
+        critical: true
       - name: "Volumes persistants Kubernetes"
-        enabled: true
+        enabled: "{{ lookup('env', 'LIONS_RESTORE_PVC_ENABLED') | default('true') | bool and (restore_mode in ['full', 'data-only']) }}"
+        priority: 2
+        critical: true
       - name: "Configurations Kubernetes"
-        enabled: false  # Désactivé par défaut pour éviter les conflits
+        enabled: "{{ lookup('env', 'LIONS_RESTORE_K8S_CONFIG_ENABLED') | default('false') | bool and restore_mode == 'full' }}"
+        priority: 3
+        critical: false
       - name: "Certificats et secrets"
-        enabled: false  # Désactivé par défaut pour des raisons de sécurité
+        enabled: "{{ lookup('env', 'LIONS_RESTORE_CERTS_ENABLED') | default('false') | bool and restore_mode == 'full' }}"
+        priority: 4
+        critical: false
+      - name: "HashiCorp Vault"
+        enabled: "{{ vault_enabled and lookup('env', 'LIONS_RESTORE_VAULT_ENABLED') | default('false') | bool and restore_mode == 'full' }}"
+        priority: 5
+        critical: false
 
-  tasks:
-    - name: Vérification du fichier de sauvegarde
+  environment:
+    KUBECONFIG: "{{ kube_config_path }}"
+    LIONS_ENVIRONMENT: "{{ lions_environment }}"
+    LIONS_RESTORE_ID: "{{ lions_deployment_id }}"
+
+  pre_tasks:
+    # =========================================================================
+    # VALIDATION PRÉ-RESTAURATION
+    # =========================================================================
+    - name: "Validation de la configuration de restauration"
+      assert:
+        that:
+          - backup_file is defined and backup_file != ""
+          - lions_environment is defined
+          - restore_log_path is defined
+        fail_msg: "Configuration de restauration invalide - Fichier de sauvegarde requis"
+        success_msg: "Configuration de restauration validée pour l'environnement {{ lions_environment }}"
+
+    - name: "Vérification de l'existence du fichier de sauvegarde"
       stat:
         path: "{{ backup_file }}"
       register: backup_file_stat
       failed_when: not backup_file_stat.stat.exists
 
-    - name: Création des répertoires de restauration et de logs
+    - name: "Affichage des informations de restauration"
+      debug:
+        msg:
+          - "==============================================================================="
+          - "LIONS INFRASTRUCTURE - RESTAURATION DE DONNÉES"
+          - "==============================================================================="
+          - "Environnement: {{ lions_environment }}"
+          - "Version: {{ lions_version }}"
+          - "Fichier de sauvegarde: {{ backup_file }}"
+          - "Taille: {{ (backup_file_stat.stat.size / 1048576) | round(2) }} MB"
+          - "Mode de restauration: {{ restore_mode }}"
+          - "Dry run: {{ restore_dry_run }}"
+          - "Force: {{ restore_force }}"
+          - "Vérification: {{ restore_verify }}"
+          - "ID de restauration: {{ lions_deployment_id }}"
+          - "Composants activés: {{ restore_components | selectattr('enabled') | list | length }}/{{ restore_components | list | length }}"
+          - "==============================================================================="
+
+    - name: "Confirmation de restauration (si pas en mode force)"
+      pause:
+        prompt: |
+          ⚠️  ATTENTION: OPÉRATION DE RESTAURATION CRITIQUE ⚠️
+          
+          Vous êtes sur le point de restaurer des données dans l'environnement {{ lions_environment }}.
+          Cette opération peut ÉCRASER les données existantes et causer des interruptions de service.
+          
+          Fichier de sauvegarde: {{ backup_file }}
+          Mode: {{ restore_mode }}
+          
+          Êtes-vous absolument certain de vouloir continuer? (yes/no)
+      register: restore_confirmation
+      when: not restore_force | bool
+
+    - name: "Validation de la confirmation"
+      fail:
+        msg: "Restauration annulée par l'utilisateur"
+      when: 
+        - not restore_force | bool
+        - restore_confirmation.user_input | lower != 'yes'
+
+  tasks:
+    # =========================================================================
+    # INITIALISATION
+    # =========================================================================
+    - name: "Création des répertoires de restauration"
       file:
         path: "{{ item }}"
         state: directory
         mode: '0750'
-      with_items:
+        owner: root
+        group: root
+      loop:
+        - "{{ restore_log_path }}"
         - "{{ restore_temp_dir }}"
         - "{{ restore_temp_dir }}/databases"
         - "{{ restore_temp_dir }}/kubernetes"
         - "{{ restore_temp_dir }}/certificates"
-        - "/var/log/lions/restores"
-      ignore_errors: yes
+        - "{{ restore_temp_dir }}/vault"
+      tags: ['restore', 'init']
 
-    - name: Affichage du début de la restauration
-      debug:
-        msg: "Début des tâches de restauration - {{ ansible_date_time.iso8601 }}"
+    - name: "Initialisation du log de restauration"
+      copy:
+        content: |
+          ===============================================================================
+          LIONS INFRASTRUCTURE - LOG DE RESTAURATION
+          ===============================================================================
+          Environnement: {{ lions_environment }}
+          Version: {{ lions_version }}
+          ID Restauration: {{ lions_deployment_id }}
+          Date de début: {{ ansible_date_time.iso8601 }}
+          Fichier source: {{ backup_file }}
+          Mode: {{ restore_mode }}
+          Dry Run: {{ restore_dry_run }}
+          Force: {{ restore_force }}
+          ===============================================================================
+        dest: "{{ restore_log_file }}"
+        mode: '0644'
+      tags: ['restore', 'init']
 
-    - name: Enregistrement du début de la restauration
-      lineinfile:
-        path: "{{ restore_log_file }}"
-        line: "Début des tâches de restauration - {{ ansible_date_time.iso8601 }}"
-        create: yes
-        mode: '0640'
-      ignore_errors: yes
+    # =========================================================================
+    # DÉCHIFFREMENT ET EXTRACTION
+    # =========================================================================
+    - name: "Déchiffrement de la sauvegarde (si chiffrée)"
+      shell: |
+        if [[ "{{ backup_file }}" == *.gpg ]]; then
+          gpg --decrypt --batch --passphrase "{{ backup_encryption_key }}" \
+            --output "{{ restore_temp_dir }}/backup.tar.gz" \
+            "{{ backup_file }}"
+          echo "{{ restore_temp_dir }}/backup.tar.gz"
+        else
+          echo "{{ backup_file }}"
+        fi
+      register: decrypted_backup
+      when: 
+        - backup_encryption_enabled | bool
+        - backup_encryption_key is defined and backup_encryption_key != ""
+      tags: ['restore', 'decrypt']
 
-    - name: Extraction de l'archive de sauvegarde
+    - name: "Détermination du fichier à extraire"
+      set_fact:
+        source_backup_file: "{{ decrypted_backup.stdout | default(backup_file) }}"
+      tags: ['restore', 'extract']
+
+    - name: "Extraction de l'archive de sauvegarde"
       unarchive:
-        src: "{{ backup_file }}"
+        src: "{{ source_backup_file }}"
         dest: "{{ restore_temp_dir }}"
         remote_src: yes
+        creates: "{{ restore_temp_dir }}/extracted"
       register: extract_result
+      tags: ['restore', 'extract']
 
-    - name: Recherche du répertoire de sauvegarde extrait
+    - name: "Marquage de l'extraction"
+      file:
+        path: "{{ restore_temp_dir }}/extracted"
+        state: touch
+      when: extract_result is succeeded
+      tags: ['restore', 'extract']
+
+    - name: "Recherche du répertoire de sauvegarde extrait"
       find:
         paths: "{{ restore_temp_dir }}"
         file_type: directory
         recurse: no
+        excludes: "databases,kubernetes,certificates,vault"
       register: extracted_dirs
+      tags: ['restore', 'extract']
 
-    - name: Définition du chemin de la sauvegarde
+    - name: "Détermination du chemin de la sauvegarde"
       set_fact:
         backup_path: "{{ extracted_dirs.files[0].path if extracted_dirs.matched > 0 else restore_temp_dir }}"
+      tags: ['restore', 'extract']
 
-    # Restauration des bases de données PostgreSQL
-    - name: Restauration des bases de données PostgreSQL
+    # =========================================================================
+    # RESTAURATION DES BASES DE DONNÉES POSTGRESQL
+    # =========================================================================
+    - name: "💾 RESTAURATION 1 - Bases de données PostgreSQL"
       block:
-        - name: Recherche des fichiers de sauvegarde PostgreSQL
+        - name: "Recherche des sauvegardes PostgreSQL"
           find:
             paths: "{{ backup_path }}/databases"
-            patterns: "*.dump"
+            patterns: "*.dump,*.sql,*.sql.gz"
             recurse: no
           register: postgres_dumps
 
-        - name: Affichage des sauvegardes PostgreSQL trouvées
-          debug:
-            msg: "Sauvegardes PostgreSQL trouvées: {{ postgres_dumps.files | map(attribute='path') | list }}"
-
-        - name: Extraction des informations de namespace et de base de données
+        - name: "Parsing des informations de restauration PostgreSQL"
           set_fact:
-            postgres_restore_info: "{{ postgres_restore_info | default([]) + [{'namespace': item.path | basename | regex_replace('^([^-]+)-([^-]+)-.*$', '\\1'), 'database': item.path | basename | regex_replace('^([^-]+)-([^-]+)-.*$', '\\2'), 'file': item.path}] }}"
-          with_items: "{{ postgres_dumps.files }}"
-          loop_control:
-            label: "{{ item.path | basename }}"
+            postgres_restore_list: >-
+              {{
+                postgres_dumps.files | map('regex_replace', '^.*/([^-]+)-([^-]+)-.*\\.(dump|sql)(\\.gz)?$', '{"namespace": "\\1", "database": "\\2", "file": "\\g<0>", "format": "\\3"}') |
+                map('from_json') | list
+              }}
 
-        - name: Restauration de chaque base de données PostgreSQL
-          block:
-            - name: Récupération des pods PostgreSQL dans le namespace
-              shell: kubectl get pods -n {{ item.namespace }} -l technology=postgres -o jsonpath='{.items[0].metadata.name}'
-              register: postgres_pod
-              changed_when: false
-              ignore_errors: yes
+        - name: "Restauration de chaque base PostgreSQL"
+          include_tasks: "{{ playbook_dir }}/../tasks/restore-postgres-database.yml"
+          vars:
+            db_namespace: "{{ item.namespace }}"
+            db_name: "{{ item.database }}"
+            db_backup_file: "{{ item.file }}"
+            db_format: "{{ item.format }}"
+            db_admin_user: "postgres"
+            db_admin_password: "{{ postgres_admin_password }}"
+            dry_run: "{{ restore_dry_run }}"
+          loop: "{{ postgres_restore_list }}"
+          when: 
+            - postgres_restore_list | length > 0
+            - not restore_dry_run | bool or item.database != ""
 
-            - name: Vérification de l'existence de la base de données
-              shell: kubectl exec -n {{ item.namespace }} {{ postgres_pod.stdout }} -- psql -U postgres -lqt | cut -d \| -f 1 | grep -qw {{ item.database }}
-              register: db_exists
-              ignore_errors: yes
-              changed_when: false
-
-            - name: Création de la base de données si elle n'existe pas
-              shell: kubectl exec -n {{ item.namespace }} {{ postgres_pod.stdout }} -- psql -U postgres -c "CREATE DATABASE {{ item.database }}"
-              when: db_exists.rc != 0
-              ignore_errors: yes
-
-            - name: Copie du fichier de sauvegarde vers le pod
-              shell: kubectl cp {{ item.file }} {{ item.namespace }}/{{ postgres_pod.stdout }}:/tmp/{{ item.database }}.dump
-              ignore_errors: yes
-
-            - name: Restauration de la base de données
-              shell: kubectl exec -n {{ item.namespace }} {{ postgres_pod.stdout }} -- pg_restore -U postgres -d {{ item.database }} -c /tmp/{{ item.database }}.dump
-              register: postgres_restore_result
-              ignore_errors: yes
-
-            - name: Nettoyage du fichier temporaire
-              shell: kubectl exec -n {{ item.namespace }} {{ postgres_pod.stdout }} -- rm /tmp/{{ item.database }}.dump
-              ignore_errors: yes
-
-            - name: Enregistrement du résultat de la restauration
-              lineinfile:
-                path: "{{ restore_log_file }}"
-                line: "Restauration PostgreSQL pour {{ item.namespace }}/{{ item.database }} - {{ 'Succès' if postgres_restore_result.rc == 0 else 'Échec' }}"
-                create: yes
-              ignore_errors: yes
-          when: postgres_pod.stdout is defined and postgres_pod.stdout != ""
-          loop: "{{ postgres_restore_info }}"
-          loop_control:
-            label: "{{ item.namespace }}/{{ item.database }}"
-
-        - name: Enregistrement de la restauration PostgreSQL
+        - name: "Enregistrement de la restauration PostgreSQL"
           lineinfile:
             path: "{{ restore_log_file }}"
-            line: "Restauration des bases de données PostgreSQL terminée - {{ ansible_date_time.iso8601 }}"
-            create: yes
-          ignore_errors: yes
+            line: "✅ Restauration PostgreSQL terminée - {{ ansible_date_time.iso8601 }} - Bases restaurées: {{ postgres_restore_list | length }}"
+
       when: restore_components | selectattr('name', 'equalto', 'Bases de données PostgreSQL') | selectattr('enabled') | list | length > 0
-      ignore_errors: yes
+      tags: ['restore', 'postgres']
 
-
-    # Restauration des volumes persistants Kubernetes
-    - name: Restauration des volumes persistants Kubernetes
+    # =========================================================================
+    # RESTAURATION DES VOLUMES PERSISTANTS KUBERNETES
+    # =========================================================================
+    - name: "📁 RESTAURATION 2 - Volumes persistants Kubernetes"
       block:
-        - name: Recherche des fichiers de sauvegarde des volumes
+        - name: "Recherche des sauvegardes de volumes"
           find:
             paths: "{{ backup_path }}/kubernetes"
-            patterns: "*.tar.gz"
+            patterns: "*-pvc-*.tar.gz,*-volume-*.tar.gz"
             recurse: no
           register: volume_backups
 
-        - name: Affichage des sauvegardes de volumes trouvées
-          debug:
-            msg: "Sauvegardes de volumes trouvées: {{ volume_backups.files | map(attribute='path') | list }}"
-
-        - name: Extraction des informations de namespace et de PVC
+        - name: "Parsing des informations de volumes"
           set_fact:
-            volume_restore_info: "{{ volume_restore_info | default([]) + [{'namespace': item.path | basename | regex_replace('^([^-]+)-([^-]+)-.*$', '\\1'), 'pvc': item.path | basename | regex_replace('^([^-]+)-([^-]+)-.*$', '\\2'), 'file': item.path}] }}"
-          with_items: "{{ volume_backups.files }}"
-          loop_control:
-            label: "{{ item.path | basename }}"
+            volume_restore_list: >-
+              {{
+                volume_backups.files | map('regex_replace', '^.*/([^-]+)-([^-]+)-.*\\.tar\\.gz$', '{"namespace": "\\1", "pvc": "\\2", "file": "\\g<0>"}') |
+                map('from_json') | list
+              }}
 
-        - name: Restauration de chaque volume persistant
-          block:
-            - name: Vérification de l'existence du PVC
-              shell: kubectl get pvc {{ item.pvc }} -n {{ item.namespace }}
-              register: pvc_exists
-              ignore_errors: yes
-              changed_when: false
+        - name: "Restauration de chaque volume via snapshots"
+          include_tasks: "{{ playbook_dir }}/../tasks/restore-pvc-volume.yml"
+          vars:
+            pvc_namespace: "{{ item.namespace }}"
+            pvc_name: "{{ item.pvc }}"
+            pvc_backup_file: "{{ item.file }}"
+            snapshot_class: "{{ lookup('env', 'LIONS_SNAPSHOT_CLASS') | default('csi-snapshot') }}"
+            dry_run: "{{ restore_dry_run }}"
+            force_restore: "{{ restore_force }}"
+          loop: "{{ volume_restore_list }}"
+          when: 
+            - volume_restore_list | length > 0
+            - not restore_dry_run | bool or item.pvc != ""
 
-            - name: Création d'un pod de restauration
-              shell: |
-                cat <<EOF | kubectl apply -f -
-                apiVersion: v1
-                kind: Pod
-                metadata:
-                  name: restore-{{ item.pvc }}
-                  namespace: {{ item.namespace }}
-                  labels:
-                    app: restore-pod
-                spec:
-                  volumes:
-                    - name: data
-                      persistentVolumeClaim:
-                        claimName: {{ item.pvc }}
-                    - name: backup
-                      emptyDir: {}
-                  containers:
-                    - name: restore
-                      image: busybox
-                      command: ["sh", "-c", "while true; do sleep 3600; done"]
-                      volumeMounts:
-                        - name: data
-                          mountPath: /data
-                        - name: backup
-                          mountPath: /backup
-                  restartPolicy: Never
-                EOF
-              when: pvc_exists.rc == 0
-              ignore_errors: yes
-              register: restore_pod_creation
-
-            - name: Attente de la création du pod de restauration
-              shell: kubectl wait --for=condition=ready --timeout=60s pod/restore-{{ item.pvc }} -n {{ item.namespace }}
-              when: restore_pod_creation is succeeded
-              ignore_errors: yes
-              register: pod_ready
-
-            - name: Copie de l'archive vers le pod
-              shell: kubectl cp {{ item.file }} {{ item.namespace }}/restore-{{ item.pvc }}:/backup/backup.tar.gz
-              when: pod_ready is succeeded
-              ignore_errors: yes
-              register: copy_result
-
-            - name: Extraction de l'archive dans le volume
-              shell: |
-                kubectl exec -n {{ item.namespace }} restore-{{ item.pvc }} -- sh -c "rm -rf /data/* && tar -xzf /backup/backup.tar.gz -C /data"
-              when: copy_result is succeeded
-              ignore_errors: yes
-              register: extract_volume_result
-
-            - name: Suppression du pod de restauration
-              shell: kubectl delete pod restore-{{ item.pvc }} -n {{ item.namespace }}
-              when: restore_pod_creation is succeeded
-              ignore_errors: yes
-
-            - name: Enregistrement du résultat de la restauration
-              lineinfile:
-                path: "{{ restore_log_file }}"
-                line: "Restauration du volume {{ item.namespace }}/{{ item.pvc }} - {{ 'Succès' if extract_volume_result is succeeded else 'Échec' }}"
-                create: yes
-              ignore_errors: yes
-          when: pvc_exists.rc is defined
-          loop: "{{ volume_restore_info }}"
-          loop_control:
-            label: "{{ item.namespace }}/{{ item.pvc }}"
-
-        - name: Enregistrement de la restauration des volumes
+        - name: "Enregistrement de la restauration des volumes"
           lineinfile:
             path: "{{ restore_log_file }}"
-            line: "Restauration des volumes persistants terminée - {{ ansible_date_time.iso8601 }}"
-            create: yes
-          ignore_errors: yes
-      when: restore_components | selectattr('name', 'equalto', 'Volumes persistants Kubernetes') | selectattr('enabled') | list | length > 0
-      ignore_errors: yes
+            line: "✅ Restauration volumes terminée - {{ ansible_date_time.iso8601 }} - Volumes restaurés: {{ volume_restore_list | length }}"
 
-    # Restauration des configurations Kubernetes
-    - name: Restauration des configurations Kubernetes
+      when: restore_components | selectattr('name', 'equalto', 'Volumes persistants Kubernetes') | selectattr('enabled') | list | length > 0
+      tags: ['restore', 'volumes']
+
+    # =========================================================================
+    # RESTAURATION DES CONFIGURATIONS KUBERNETES
+    # =========================================================================
+    - name: "⚙️ RESTAURATION 3 - Configurations Kubernetes"
       block:
-        - name: Recherche des fichiers de configuration Kubernetes
+        - name: "Recherche des configurations Kubernetes"
           find:
             paths: "{{ backup_path }}/kubernetes"
-            patterns: "*.yaml"
-            excludes: "*secrets*,*certificates*"
+            patterns: "*.yaml,*.yml"
+            excludes: "*secret*,*certificate*"
             recurse: no
           register: k8s_configs
 
-        - name: Affichage des configurations trouvées
-          debug:
-            msg: "Configurations Kubernetes trouvées: {{ k8s_configs.files | map(attribute='path') | list }}"
+        - name: "Validation des configurations avant restauration"
+          shell: "kubectl apply --dry-run=client -f {{ item.path }}"
+          loop: "{{ k8s_configs.files }}"
+          register: config_validation
+          ignore_errors: yes
+          when: 
+            - k8s_configs.matched > 0
+            - restore_verify | bool
 
-        - name: Demande de confirmation pour la restauration des configurations
+        - name: "Demande de confirmation pour configurations critiques"
           pause:
-            prompt: "ATTENTION: La restauration des configurations Kubernetes peut causer des conflits avec les ressources existantes. Êtes-vous sûr de vouloir continuer? (yes/no)"
-          register: confirmation
+            prompt: |
+              ⚠️  ATTENTION: RESTAURATION DE CONFIGURATIONS KUBERNETES ⚠️
+              
+              {{ k8s_configs.matched }} configurations trouvées.
+              La restauration peut créer des conflits avec les ressources existantes.
+              
+              Continuer? (yes/no)
+          register: config_confirmation
+          when: 
+            - k8s_configs.matched > 0
+            - not restore_force | bool
+            - not restore_dry_run | bool
 
-        - name: Restauration des configurations Kubernetes
-          shell: kubectl apply -f {{ item.path }}
-          with_items: "{{ k8s_configs.files }}"
-          when: confirmation.user_input | lower == 'yes'
+        - name: "Restauration des configurations Kubernetes"
+          shell: "kubectl apply -f {{ item.path }}"
+          loop: "{{ k8s_configs.files }}"
           register: k8s_restore_results
+          when: 
+            - k8s_configs.matched > 0
+            - not restore_dry_run | bool
+            - restore_force | bool or (config_confirmation.user_input | default('no') | lower == 'yes')
           ignore_errors: yes
 
-        - name: Enregistrement des résultats de restauration
+        - name: "Enregistrement de la restauration des configurations"
           lineinfile:
             path: "{{ restore_log_file }}"
-            line: "Restauration de {{ item.item.path | basename }} - {{ 'Succès' if item.rc == 0 else 'Échec' }}"
-            create: yes
-          with_items: "{{ k8s_restore_results.results }}"
-          when: k8s_restore_results is defined
-          ignore_errors: yes
+            line: "✅ Restauration configurations K8s terminée - {{ ansible_date_time.iso8601 }} - Fichiers: {{ k8s_configs.matched }}"
 
-        - name: Enregistrement de la restauration des configurations
-          lineinfile:
-            path: "{{ restore_log_file }}"
-            line: "Restauration des configurations Kubernetes terminée - {{ ansible_date_time.iso8601 }}"
-            create: yes
-          ignore_errors: yes
       when: restore_components | selectattr('name', 'equalto', 'Configurations Kubernetes') | selectattr('enabled') | list | length > 0
-      ignore_errors: yes
+      tags: ['restore', 'k8s-config']
 
-    # Restauration des certificats et secrets
-    - name: Restauration des certificats et secrets
+    # =========================================================================
+    # RESTAURATION DES CERTIFICATS ET SECRETS
+    # =========================================================================
+    - name: "🔐 RESTAURATION 4 - Certificats et secrets"
       block:
-        - name: Recherche des fichiers de certificats et secrets
+        - name: "Recherche des certificats et secrets"
           find:
             paths: "{{ backup_path }}/certificates"
-            patterns: "certificates-*.yaml"
+            patterns: "certificates-*.yaml,secrets-*.json"
             recurse: no
           register: cert_files
 
-        - name: Affichage des certificats trouvés
-          debug:
-            msg: "Certificats trouvés: {{ cert_files.files | map(attribute='path') | list }}"
-
-        - name: Demande de confirmation pour la restauration des certificats
+        - name: "Demande de confirmation pour certificats"
           pause:
-            prompt: "ATTENTION: La restauration des certificats peut causer des problèmes de sécurité. Êtes-vous sûr de vouloir continuer? (yes/no)"
+            prompt: |
+              🔒 ATTENTION: RESTAURATION DE CERTIFICATS ET SECRETS 🔒
+              
+              {{ cert_files.matched }} fichiers de certificats/secrets trouvés.
+              La restauration de certificats peut compromettre la sécurité.
+              
+              ÊTES-VOUS ABSOLUMENT CERTAIN? (YES en majuscules pour confirmer)
           register: cert_confirmation
+          when: 
+            - cert_files.matched > 0
+            - not restore_force | bool
+            - not restore_dry_run | bool
 
-        - name: Restauration des certificats
-          shell: kubectl apply -f {{ item.path }}
-          with_items: "{{ cert_files.files }}"
-          when: cert_confirmation.user_input | lower == 'yes'
+        - name: "Restauration sélective des certificats"
+          shell: "kubectl apply -f {{ item.path }}"
+          loop: "{{ cert_files.files }}"
           register: cert_restore_results
+          when: 
+            - cert_files.matched > 0
+            - not restore_dry_run | bool
+            - restore_force | bool or (cert_confirmation.user_input | default('no') == 'YES')
+            - '"certificate" in item.path'
           ignore_errors: yes
 
-        - name: Enregistrement des résultats de restauration des certificats
+        - name: "Enregistrement de la restauration des certificats"
           lineinfile:
             path: "{{ restore_log_file }}"
-            line: "Restauration de {{ item.item.path | basename }} - {{ 'Succès' if item.rc == 0 else 'Échec' }}"
-            create: yes
-          with_items: "{{ cert_restore_results.results }}"
-          when: cert_restore_results is defined
-          ignore_errors: yes
+            line: "✅ Restauration certificats terminée - {{ ansible_date_time.iso8601 }} - Restaurés: {{ cert_restore_results.results | default([]) | selectattr('rc', 'equalto', 0) | list | length }}"
 
-        - name: Enregistrement de la restauration des certificats
-          lineinfile:
-            path: "{{ restore_log_file }}"
-            line: "Restauration des certificats terminée - {{ ansible_date_time.iso8601 }}"
-            create: yes
-          ignore_errors: yes
       when: restore_components | selectattr('name', 'equalto', 'Certificats et secrets') | selectattr('enabled') | list | length > 0
-      ignore_errors: yes
+      tags: ['restore', 'certs']
 
-    # Nettoyage
-    - name: Nettoyage des fichiers temporaires
+    # =========================================================================
+    # RESTAURATION HASHICORP VAULT
+    # =========================================================================
+    - name: "🔑 RESTAURATION 5 - HashiCorp Vault"
+      block:
+        - name: "Recherche des sauvegardes Vault"
+          find:
+            paths: "{{ backup_path }}/vault"
+            patterns: "vault-*.json,vault-*.snapshot"
+            recurse: no
+          register: vault_backups
+
+        - name: "Restauration Vault via API"
+          include_tasks: "{{ playbook_dir }}/../tasks/restore-vault.yml"
+          vars:
+            vault_backup_file: "{{ item.path }}"
+            vault_target_addr: "{{ vault_addr }}"
+            vault_target_namespace: "{{ vault_namespace }}"
+            dry_run: "{{ restore_dry_run }}"
+          loop: "{{ vault_backups.files }}"
+          when: 
+            - vault_backups.matched > 0
+            - vault_addr is defined and vault_addr != ""
+
+        - name: "Enregistrement de la restauration Vault"
+          lineinfile:
+            path: "{{ restore_log_file }}"
+            line: "✅ Restauration Vault terminée - {{ ansible_date_time.iso8601 }} - Fichiers: {{ vault_backups.matched }}"
+
+      when: restore_components | selectattr('name', 'equalto', 'HashiCorp Vault') | selectattr('enabled') | list | length > 0
+      tags: ['restore', 'vault']
+
+    # =========================================================================
+    # VÉRIFICATION POST-RESTAURATION
+    # =========================================================================
+    - name: "🔍 Vérification post-restauration"
+      block:
+        - name: "Vérification de l'état du cluster"
+          shell: "kubectl get nodes --no-headers | wc -l"
+          register: cluster_nodes
+          environment:
+            KUBECONFIG: "{{ kube_config_path }}"
+
+        - name: "Vérification des pods critiques"
+          shell: |
+            kubectl get pods --all-namespaces -l app.kubernetes.io/part-of=lions \
+            --field-selector=status.phase=Running --no-headers | wc -l
+          register: running_pods
+          environment:
+            KUBECONFIG: "{{ kube_config_path }}"
+
+        - name: "Test de connectivité des services"
+          uri:
+            url: "https://{{ item }}/health"
+            method: GET
+            status_code: [200, 404, 503]
+            timeout: 10
+          loop:
+            - "{{ lookup('env', 'LIONS_KEYCLOAK_DOMAIN') | default('keycloak.' + lions_env_domain) }}"
+            - "{{ lookup('env', 'LIONS_GITEA_DOMAIN') | default('gitea.' + lions_env_domain) }}"
+          register: service_health
+          ignore_errors: yes
+          when: restore_verify | bool
+
+        - name: "Rapport de vérification"
+          debug:
+            msg:
+              - "==============================================================================="
+              - "RAPPORT DE VÉRIFICATION POST-RESTAURATION"
+              - "==============================================================================="
+              - "Nœuds du cluster: {{ cluster_nodes.stdout }}"
+              - "Pods LIONS en cours d'exécution: {{ running_pods.stdout }}"
+              - "Services testés: {{ service_health.results | default([]) | length }}"
+              - "Services accessibles: {{ service_health.results | default([]) | selectattr('status', 'defined') | selectattr('status', 'equalto', 200) | list | length }}"
+              - "==============================================================================="
+
+      when: restore_verify | bool
+      tags: ['restore', 'verify']
+
+    # =========================================================================
+    # FINALISATION ET NETTOYAGE
+    # =========================================================================
+    - name: "Génération du rapport de restauration"
+      copy:
+        content: |
+          ===============================================================================
+          LIONS INFRASTRUCTURE - RAPPORT DE RESTAURATION
+          ===============================================================================
+          Date: {{ ansible_date_time.iso8601 }}
+          Environnement: {{ lions_environment }}
+          ID Restauration: {{ lions_deployment_id }}
+          Fichier source: {{ backup_file }}
+          Taille source: {{ (backup_file_stat.stat.size / 1048576) | round(2) }} MB
+          
+          Configuration:
+            Mode: {{ restore_mode }}
+            Dry Run: {{ restore_dry_run }}
+            Force: {{ restore_force }}
+            Vérification: {{ restore_verify }}
+          
+          Composants restaurés:
+            - PostgreSQL: {{ restore_components | selectattr('name', 'equalto', 'Bases de données PostgreSQL') | selectattr('enabled') | list | length > 0 }}
+            - Volumes K8s: {{ restore_components | selectattr('name', 'equalto', 'Volumes persistants Kubernetes') | selectattr('enabled') | list | length > 0 }}
+            - Configurations K8s: {{ restore_components | selectattr('name', 'equalto', 'Configurations Kubernetes') | selectattr('enabled') | list | length > 0 }}
+            - Certificats: {{ restore_components | selectattr('name', 'equalto', 'Certificats et secrets') | selectattr('enabled') | list | length > 0 }}
+            - Vault: {{ restore_components | selectattr('name', 'equalto', 'HashiCorp Vault') | selectattr('enabled') | list | length > 0 }}
+          
+          Résultats de vérification:
+            - Nœuds cluster: {{ cluster_nodes.stdout | default('N/A') }}
+            - Pods LIONS actifs: {{ running_pods.stdout | default('N/A') }}
+            - Services accessibles: {{ service_health.results | default([]) | selectattr('status', 'equalto', 200) | list | length }}/{{ service_health.results | default([]) | length }}
+          
+          ===============================================================================
+        dest: "{{ restore_log_path }}/restore-report-{{ lions_deployment_id }}.txt"
+        mode: '0644'
+      tags: ['restore', 'report']
+
+    - name: "Nettoyage des fichiers temporaires"
       file:
-        path: "{{ restore_temp_dir }}"
+        path: "{{ item }}"
         state: absent
+      loop:
+        - "{{ restore_temp_dir }}"
+        - "{{ restore_temp_dir }}/backup.tar.gz"
       ignore_errors: yes
+      tags: ['restore', 'cleanup']
 
-    - name: Affichage de la fin de la restauration
-      debug:
-        msg: "Fin des tâches de restauration - {{ ansible_date_time.iso8601 }}"
-
-    - name: Enregistrement de la fin de la restauration
+    - name: "Finalisation du log de restauration"
       lineinfile:
         path: "{{ restore_log_file }}"
-        line: "Fin des tâches de restauration - {{ ansible_date_time.iso8601 }}"
-        create: yes
-        mode: '0640'
+        line: |
+          ===============================================================================
+          ✅ RESTAURATION TERMINÉE AVEC SUCCÈS
+          Date de fin: {{ ansible_date_time.iso8601 }}
+          Durée: {{ ((ansible_date_time.epoch | int) - (restore_timestamp | regex_replace('.*_([0-9]{6}).*', '\\1') | int)) // 60 }} minutes
+          Rapport: {{ restore_log_path }}/restore-report-{{ lions_deployment_id }}.txt
+          ===============================================================================
+      tags: ['restore', 'finalize']
+
+  post_tasks:
+    # =========================================================================
+    # NOTIFICATION DE FIN DE RESTAURATION
+    # =========================================================================
+    - name: "Notification de succès de restauration"
+      uri:
+        url: "{{ lookup('env', 'LIONS_NOTIFICATION_WEBHOOK_URL') }}"
+        method: POST
+        body_format: json
+        body:
+          text: "✅ Restauration LIONS {{ lions_environment }} terminée avec succès"
+          environment: "{{ lions_environment }}"
+          backup_file: "{{ backup_file | basename }}"
+          restore_mode: "{{ restore_mode }}"
+          restore_id: "{{ lions_deployment_id }}"
+          dry_run: "{{ restore_dry_run }}"
+          components_restored: "{{ restore_components | selectattr('enabled') | list | length }}"
+          cluster_nodes: "{{ cluster_nodes.stdout | default('N/A') }}"
+          running_pods: "{{ running_pods.stdout | default('N/A') }}"
+      when: 
+        - lookup('env', 'LIONS_NOTIFICATION_WEBHOOK_URL') != ""
+        - not restore_dry_run | bool
       ignore_errors: yes
+
+  handlers:
+    - name: "Notification d'échec de restauration"
+      uri:
+        url: "{{ lookup('env', 'LIONS_NOTIFICATION_WEBHOOK_URL') }}"
+        method: POST
+        body_format: json
+        body:
+          text: "❌ Échec de restauration LIONS {{ lions_environment }}"
+          environment: "{{ lions_environment }}"
+          backup_file: "{{ backup_file | basename }}"
+          restore_mode: "{{ restore_mode }}"
+          restore_id: "{{ lions_deployment_id }}"
+          error: "{{ ansible_failed_result.msg | default('Unknown error') }}"
+      when: lookup('env', 'LIONS_NOTIFICATION_WEBHOOK_URL') != ""
+      listen: "restore failed"

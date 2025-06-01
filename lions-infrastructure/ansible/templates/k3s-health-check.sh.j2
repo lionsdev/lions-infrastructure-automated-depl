@@ -1,77 +1,217 @@
 #!/bin/bash
 # =============================================================================
-# LIONS Infrastructure - Script de vérification de santé K3s
+# LIONS Infrastructure - Script de vérification de santé K3s v5.0
 # =============================================================================
-# Titre: Script de vérification de santé pour les nœuds K3s
-# Description: Vérifie l'état des nœuds K3s et détecte les problèmes potentiels
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-25
-# Version: 1.0.0
+# Description: Script de vérification de santé pour les nœuds K3s avec variables d'environnement
+# Environnement: {{ lookup('env', 'LIONS_ENVIRONMENT') | default('development') }}
+# Version: 5.0.0
+# Date: 01/06/2025
+# Auteur: LIONS DevOps Team
 # =============================================================================
 
-# Configuration
-KUBECONFIG="{{ k3s_kubeconfig }}"
-LOG_FILE="/var/log/k3s-health.log"
-ALERT_FILE="/var/run/k3s-health-alert"
-MAX_ERRORS=3
-ERROR_COUNT_FILE="/var/run/k3s-health-errors"
-NODE_NAME="$(hostname)"
-API_SERVER="https://{{ k3s_api_lb_host }}:{{ k3s_api_lb_port }}"
-{% if inventory_hostname in groups['k3s_servers'] %}
-NODE_TYPE="server"
-{% else %}
-NODE_TYPE="agent"
-{% endif %}
+set -euo pipefail
 
-# Fonction de logging
+# =============================================================================
+# CONFIGURATION DEPUIS VARIABLES D'ENVIRONNEMENT
+# =============================================================================
+# Configuration de base
+readonly LIONS_ENVIRONMENT="${LIONS_ENVIRONMENT:-{{ lookup('env', 'LIONS_ENVIRONMENT') | default('development') }}}"
+readonly LIONS_NODE_TYPE="{{ 'server' if inventory_hostname in groups['k3s_servers'] | default([]) else 'agent' }}"
+readonly LIONS_NODE_NAME="${HOSTNAME:-$(hostname)}"
+
+# Configuration des chemins
+readonly KUBECONFIG="{{ lookup('env', 'LIONS_KUBE_CONFIG_PATH') | default('/etc/rancher/k3s/k3s.yaml') }}"
+readonly LOG_FILE="${LIONS_HEALTH_CHECK_LOG_FILE:-{{ lookup('env', 'LIONS_LOG_PATH') | default('/var/log/lions') }}/k3s-health.log}"
+readonly ALERT_FILE="${LIONS_HEALTH_CHECK_ALERT_FILE:-{{ lookup('env', 'LIONS_HEALTH_CHECK_ALERT_FILE') | default('/var/run/k3s-health-alert') }}}"
+readonly ERROR_COUNT_FILE="${LIONS_HEALTH_CHECK_ERROR_COUNT_FILE:-{{ lookup('env', 'LIONS_HEALTH_CHECK_ERROR_COUNT_FILE') | default('/var/run/k3s-health-errors') }}}"
+readonly METRICS_FILE="${LIONS_HEALTH_CHECK_METRICS_FILE:-{{ lookup('env', 'LIONS_HEALTH_CHECK_METRICS_FILE') | default('/var/run/k3s-health-metrics') }}}"
+readonly HISTORY_FILE="${LIONS_HEALTH_CHECK_HISTORY_FILE:-{{ lookup('env', 'LIONS_HEALTH_CHECK_HISTORY_FILE') | default('/var/log/lions/k3s-health-history.log') }}}"
+
+# Configuration des API et endpoints
+readonly API_SERVER="${LIONS_K3S_API_SERVER:-{{ lookup('env', 'LIONS_K3S_API_LB_HOST') | default('localhost') }}:{{ lookup('env', 'LIONS_K3S_API_LB_PORT') | default('6443') }}}"
+readonly NOTIFICATION_WEBHOOK="${LIONS_NOTIFICATION_WEBHOOK_URL:-{{ lookup('env', 'LIONS_NOTIFICATION_WEBHOOK_URL') | default('') }}}"
+
+# Configuration des seuils et limites
+readonly MAX_ERRORS="${LIONS_HEALTH_CHECK_MAX_ERRORS:-{{ lookup('env', 'LIONS_HEALTH_CHECK_MAX_ERRORS') | default('3') }}}"
+readonly CPU_THRESHOLD="${LIONS_HEALTH_CHECK_CPU_THRESHOLD:-{{ lookup('env', 'LIONS_HEALTH_CHECK_CPU_THRESHOLD') | default('90') }}}"
+readonly MEMORY_THRESHOLD="${LIONS_HEALTH_CHECK_MEMORY_THRESHOLD:-{{ lookup('env', 'LIONS_HEALTH_CHECK_MEMORY_THRESHOLD') | default('90') }}}"
+readonly DISK_THRESHOLD="${LIONS_HEALTH_CHECK_DISK_THRESHOLD:-{{ lookup('env', 'LIONS_HEALTH_CHECK_DISK_THRESHOLD') | default('90') }}}"
+readonly INODE_THRESHOLD="${LIONS_HEALTH_CHECK_INODE_THRESHOLD:-{{ lookup('env', 'LIONS_HEALTH_CHECK_INODE_THRESHOLD') | default('90') }}}"
+readonly LOAD_THRESHOLD="${LIONS_HEALTH_CHECK_LOAD_THRESHOLD:-{{ lookup('env', 'LIONS_HEALTH_CHECK_LOAD_THRESHOLD') | default('10') }}}"
+
+# Configuration des timeouts
+readonly API_TIMEOUT="${LIONS_HEALTH_CHECK_API_TIMEOUT:-{{ lookup('env', 'LIONS_HEALTH_CHECK_API_TIMEOUT') | default('10') }}}"
+readonly KUBECTL_TIMEOUT="${LIONS_HEALTH_CHECK_KUBECTL_TIMEOUT:-{{ lookup('env', 'LIONS_HEALTH_CHECK_KUBECTL_TIMEOUT') | default('30') }}}"
+readonly NETWORK_TIMEOUT="${LIONS_HEALTH_CHECK_NETWORK_TIMEOUT:-{{ lookup('env', 'LIONS_HEALTH_CHECK_NETWORK_TIMEOUT') | default('5') }}}"
+
+# Configuration des checks
+readonly CHECK_SERVICE_ENABLED="${LIONS_HEALTH_CHECK_SERVICE_ENABLED:-{{ lookup('env', 'LIONS_HEALTH_CHECK_SERVICE_ENABLED') | default('true') }}}"
+readonly CHECK_API_ENABLED="${LIONS_HEALTH_CHECK_API_ENABLED:-{{ lookup('env', 'LIONS_HEALTH_CHECK_API_ENABLED') | default('true') }}}"
+readonly CHECK_NODE_STATUS_ENABLED="${LIONS_HEALTH_CHECK_NODE_STATUS_ENABLED:-{{ lookup('env', 'LIONS_HEALTH_CHECK_NODE_STATUS_ENABLED') | default('true') }}}"
+readonly CHECK_RESOURCES_ENABLED="${LIONS_HEALTH_CHECK_RESOURCES_ENABLED:-{{ lookup('env', 'LIONS_HEALTH_CHECK_RESOURCES_ENABLED') | default('true') }}}"
+readonly CHECK_LOGS_ENABLED="${LIONS_HEALTH_CHECK_LOGS_ENABLED:-{{ lookup('env', 'LIONS_HEALTH_CHECK_LOGS_ENABLED') | default('true') }}}"
+readonly CHECK_NETWORK_ENABLED="${LIONS_HEALTH_CHECK_NETWORK_ENABLED:-{{ lookup('env', 'LIONS_HEALTH_CHECK_NETWORK_ENABLED') | default('true') }}}"
+readonly CHECK_PODS_ENABLED="${LIONS_HEALTH_CHECK_PODS_ENABLED:-{{ lookup('env', 'LIONS_HEALTH_CHECK_PODS_ENABLED') | default('true') }}}"
+readonly CHECK_STORAGE_ENABLED="${LIONS_HEALTH_CHECK_STORAGE_ENABLED:-{{ lookup('env', 'LIONS_HEALTH_CHECK_STORAGE_ENABLED') | default('true') }}}"
+
+# Configuration de logging
+readonly LOG_LEVEL="${LIONS_HEALTH_CHECK_LOG_LEVEL:-{{ lookup('env', 'LIONS_HEALTH_CHECK_LOG_LEVEL') | default('INFO') }}}"
+readonly LOG_MAX_SIZE="${LIONS_HEALTH_CHECK_LOG_MAX_SIZE:-{{ lookup('env', 'LIONS_HEALTH_CHECK_LOG_MAX_SIZE') | default('10485760') }}}"  # 10MB
+readonly LOG_RETENTION_DAYS="${LIONS_HEALTH_CHECK_LOG_RETENTION_DAYS:-{{ lookup('env', 'LIONS_HEALTH_CHECK_LOG_RETENTION_DAYS') | default('7') }}}"
+readonly METRICS_ENABLED="${LIONS_HEALTH_CHECK_METRICS_ENABLED:-{{ lookup('env', 'LIONS_HEALTH_CHECK_METRICS_ENABLED') | default('true') }}}"
+
+# Configuration des services K3s
+readonly K3S_SERVICE_NAME="${LIONS_K3S_SERVICE_NAME:-k3s$([ "${LIONS_NODE_TYPE}" = "agent" ] && echo "-agent" || echo "")}"
+
+# Configuration des logs d'erreur
+readonly ERROR_LOG_WINDOW="${LIONS_HEALTH_CHECK_ERROR_LOG_WINDOW:-{{ lookup('env', 'LIONS_HEALTH_CHECK_ERROR_LOG_WINDOW') | default('5 minutes ago') }}}"
+readonly ERROR_LOG_THRESHOLD="${LIONS_HEALTH_CHECK_ERROR_LOG_THRESHOLD:-{{ lookup('env', 'LIONS_HEALTH_CHECK_ERROR_LOG_THRESHOLD') | default('10') }}}"
+
+# =============================================================================
+# VARIABLES GLOBALES
+# =============================================================================
+declare -g SCRIPT_PID=$$
+declare -g CHECK_START_TIME=0
+declare -g TOTAL_CHECKS=0
+declare -g FAILED_CHECKS=0
+declare -A CHECK_RESULTS
+
+# =============================================================================
+# FONCTIONS UTILITAIRES
+# =============================================================================
+
+# Fonction de logging avancée avec niveaux
 log() {
     local level="$1"
     local message="$2"
     local timestamp
-    timestamp="$(date +"%Y-%m-%d %H:%M:%S")"
+    timestamp="$(date '+%Y-%m-%d %H:%M:%S %Z')"
+    local log_entry="[${timestamp}] [${level}] [PID:${SCRIPT_PID}] [${LIONS_NODE_TYPE}:${LIONS_NODE_NAME}] ${message}"
     
-    echo "[${timestamp}] [${level}] ${message}" >> "${LOG_FILE}"
+    # Gestion de la rotation des logs
+    if [[ -f "${LOG_FILE}" ]] && [[ $(stat -f%z "${LOG_FILE}" 2>/dev/null || stat -c%s "${LOG_FILE}" 2>/dev/null || echo 0) -gt ${LOG_MAX_SIZE} ]]; then
+        mv "${LOG_FILE}" "${LOG_FILE}.$(date +%Y%m%d_%H%M%S)"
+        find "$(dirname "${LOG_FILE}")" -name "$(basename "${LOG_FILE}").*" -mtime +${LOG_RETENTION_DAYS} -delete 2>/dev/null || true
+    fi
     
-    # Affichage sur la console si le niveau est ERROR ou ALERT
-    if [[ "${level}" == "ERROR" || "${level}" == "ALERT" ]]; then
-        echo "[${timestamp}] [${level}] ${message}" >&2
+    # Écriture du log
+    echo "${log_entry}" >> "${LOG_FILE}"
+    
+    # Affichage selon le niveau et la configuration
+    case "${level}" in
+        "ERROR"|"ALERT"|"CRITICAL")
+            echo "${log_entry}" >&2
+            ;;
+        "WARNING")
+            [[ "${LOG_LEVEL}" != "ERROR" ]] && echo "${log_entry}" >&2
+            ;;
+        "INFO"|"DEBUG")
+            [[ "${LOG_LEVEL}" == "DEBUG" ]] && echo "${log_entry}"
+            ;;
+    esac
+    
+    # Ajout à l'historique pour les événements importants
+    if [[ "${level}" =~ ^(ERROR|ALERT|CRITICAL)$ ]]; then
+        echo "[${timestamp}] ${message}" >> "${HISTORY_FILE}"
+    fi
+    
+    # Envoi vers syslog si disponible
+    if command -v logger &>/dev/null; then
+        logger -t "lions-k3s-health" -p daemon.info "${level}: ${message}"
     fi
 }
 
+# Fonction pour initialiser les métriques
+init_metrics() {
+    if [[ "${METRICS_ENABLED}" == "true" ]]; then
+        cat > "${METRICS_FILE}" << EOF
+# LIONS K3s Health Check Metrics
+# Environment: ${LIONS_ENVIRONMENT}
+# Node: ${LIONS_NODE_NAME}
+# Type: ${LIONS_NODE_TYPE}
+# Started: $(date -Iseconds)
+lions_k3s_health_check_started_timestamp $(date +%s)
+lions_k3s_health_check_max_errors ${MAX_ERRORS}
+lions_k3s_health_check_cpu_threshold ${CPU_THRESHOLD}
+lions_k3s_health_check_memory_threshold ${MEMORY_THRESHOLD}
+lions_k3s_health_check_disk_threshold ${DISK_THRESHOLD}
+EOF
+    fi
+}
+
+# Fonction pour mettre à jour les métriques
+update_metrics() {
+    local metric_name="$1"
+    local metric_value="$2"
+    local metric_help="${3:-}"
+    
+    if [[ "${METRICS_ENABLED}" == "true" && -f "${METRICS_FILE}" ]]; then
+        # Suppression de l'ancienne valeur si elle existe
+        sed -i "/^${metric_name} /d" "${METRICS_FILE}" 2>/dev/null || true
+        
+        # Ajout de la nouvelle valeur
+        {
+            [[ -n "${metric_help}" ]] && echo "# ${metric_help}"
+            echo "${metric_name} ${metric_value}"
+        } >> "${METRICS_FILE}"
+    fi
+}
+
+# =============================================================================
+# FONCTIONS DE GESTION DES ERREURS
+# =============================================================================
+
 # Fonction pour incrémenter le compteur d'erreurs
 increment_error_count() {
+    local count=0
     if [[ -f "${ERROR_COUNT_FILE}" ]]; then
-        local count
-        count=$(cat "${ERROR_COUNT_FILE}")
-        count=$((count + 1))
-        echo "${count}" > "${ERROR_COUNT_FILE}"
-    else
-        echo "1" > "${ERROR_COUNT_FILE}"
+        count=$(cat "${ERROR_COUNT_FILE}" 2>/dev/null || echo "0")
     fi
+    count=$((count + 1))
+    echo "${count}" > "${ERROR_COUNT_FILE}"
+    
+    # Mise à jour des métriques
+    update_metrics "lions_k3s_health_errors_total" "${count}" "Total number of health check errors"
+    
+    log "DEBUG" "Compteur d'erreurs: ${count}/${MAX_ERRORS}"
 }
 
 # Fonction pour réinitialiser le compteur d'erreurs
 reset_error_count() {
     echo "0" > "${ERROR_COUNT_FILE}"
+    update_metrics "lions_k3s_health_errors_total" "0" "Total number of health check errors"
+    log "DEBUG" "Compteur d'erreurs réinitialisé"
+}
+
+# Fonction pour obtenir le nombre d'erreurs
+get_error_count() {
+    if [[ -f "${ERROR_COUNT_FILE}" ]]; then
+        cat "${ERROR_COUNT_FILE}" 2>/dev/null || echo "0"
+    else
+        echo "0"
+    fi
 }
 
 # Fonction pour vérifier si le nombre d'erreurs dépasse le seuil
 check_error_threshold() {
-    if [[ -f "${ERROR_COUNT_FILE}" ]]; then
-        local count
-        count=$(cat "${ERROR_COUNT_FILE}")
-        if [[ "${count}" -ge "${MAX_ERRORS}" ]]; then
-            return 0  # Seuil dépassé
-        fi
-    fi
-    return 1  # Seuil non dépassé
+    local count
+    count=$(get_error_count)
+    [[ "${count}" -ge "${MAX_ERRORS}" ]]
 }
+
+# =============================================================================
+# FONCTIONS DE GESTION DES ALERTES
+# =============================================================================
 
 # Fonction pour créer une alerte
 create_alert() {
     local reason="$1"
     echo "${reason}" > "${ALERT_FILE}"
     log "ALERT" "Alerte créée: ${reason}"
+    update_metrics "lions_k3s_health_alert_active" "1" "Health alert is currently active"
+    
+    # Notification webhook si configurée
+    send_webhook_notification "Health Alert: ${reason}" "warning"
 }
 
 # Fonction pour supprimer une alerte
@@ -79,159 +219,512 @@ clear_alert() {
     if [[ -f "${ALERT_FILE}" ]]; then
         rm -f "${ALERT_FILE}"
         log "INFO" "Alerte supprimée"
+        update_metrics "lions_k3s_health_alert_active" "0" "Health alert is currently active"
     fi
 }
 
+# Fonction pour vérifier si une alerte est active
+is_alert_active() {
+    [[ -f "${ALERT_FILE}" ]]
+}
+
+# =============================================================================
+# FONCTIONS DE NOTIFICATION
+# =============================================================================
+
+# Fonction pour envoyer une notification webhook
+send_webhook_notification() {
+    local message="$1"
+    local severity="${2:-info}"
+    
+    if [[ -z "${NOTIFICATION_WEBHOOK}" ]]; then
+        log "DEBUG" "Aucun webhook configuré pour les notifications"
+        return 0
+    fi
+    
+    local payload
+    payload=$(cat << EOF
+{
+    "text": "${message}",
+    "environment": "${LIONS_ENVIRONMENT}",
+    "node_name": "${LIONS_NODE_NAME}",
+    "node_type": "${LIONS_NODE_TYPE}",
+    "severity": "${severity}",
+    "timestamp": "$(date -Iseconds)",
+    "service": "k3s-health-check",
+    "check_results": {
+        "total_checks": ${TOTAL_CHECKS},
+        "failed_checks": ${FAILED_CHECKS},
+        "error_count": $(get_error_count)
+    }
+}
+EOF
+)
+    
+    if curl -s -X POST -H "Content-Type: application/json" -d "${payload}" "${NOTIFICATION_WEBHOOK}" >/dev/null 2>&1; then
+        log "DEBUG" "Notification webhook envoyée avec succès"
+    else
+        log "WARNING" "Échec de l'envoi de la notification webhook"
+    fi
+}
+
+# =============================================================================
+# FONCTIONS DE VÉRIFICATION DE SANTÉ
+# =============================================================================
+
 # Fonction pour vérifier l'état du service K3s
 check_k3s_service() {
-    log "INFO" "Vérification du service K3s"
+    log "DEBUG" "Vérification du service K3s"
+    ((TOTAL_CHECKS++))
     
-    if ! systemctl is-active --quiet k3s{% if NODE_TYPE == "agent" %}-agent{% endif %}; then
-        log "ERROR" "Le service K3s{% if NODE_TYPE == "agent" %}-agent{% endif %} n'est pas en cours d'exécution"
+    local service_active
+    service_active=$(systemctl is-active "${K3S_SERVICE_NAME}" 2>/dev/null || echo "inactive")
+    local service_enabled
+    service_enabled=$(systemctl is-enabled "${K3S_SERVICE_NAME}" 2>/dev/null || echo "disabled")
+    
+    if [[ "${service_active}" != "active" ]]; then
+        log "ERROR" "Le service ${K3S_SERVICE_NAME} n'est pas actif (état: ${service_active})"
+        CHECK_RESULTS["service_status"]="FAILED"
+        update_metrics "lions_k3s_health_service_active" "0" "K3s service is active"
         increment_error_count
+        ((FAILED_CHECKS++))
         return 1
     fi
     
-    log "INFO" "Le service K3s{% if NODE_TYPE == "agent" %}-agent{% endif %} est en cours d'exécution"
+    if [[ "${service_enabled}" != "enabled" ]]; then
+        log "WARNING" "Le service ${K3S_SERVICE_NAME} n'est pas activé au démarrage"
+    fi
+    
+    log "INFO" "Le service ${K3S_SERVICE_NAME} est actif"
+    CHECK_RESULTS["service_status"]="OK"
+    update_metrics "lions_k3s_health_service_active" "1" "K3s service is active"
     return 0
 }
 
 # Fonction pour vérifier la connectivité à l'API Kubernetes
 check_api_connectivity() {
-    log "INFO" "Vérification de la connectivité à l'API Kubernetes"
+    log "DEBUG" "Vérification de la connectivité à l'API Kubernetes"
+    ((TOTAL_CHECKS++))
     
-    if ! curl -s --insecure --max-time 10 "${API_SERVER}/healthz" | grep -q "ok"; then
-        log "ERROR" "Impossible de se connecter à l'API Kubernetes"
+    # Test de connectivité TCP
+    local api_host
+    api_host=$(echo "${API_SERVER}" | cut -d: -f1)
+    local api_port
+    api_port=$(echo "${API_SERVER}" | cut -d: -f2)
+    
+    if ! timeout "${NETWORK_TIMEOUT}" nc -z "${api_host}" "${api_port}" 2>/dev/null; then
+        log "ERROR" "Impossible de se connecter au port ${api_port} sur ${api_host}"
+        CHECK_RESULTS["api_connectivity"]="FAILED"
+        update_metrics "lions_k3s_health_api_reachable" "0" "K3s API server is reachable"
         increment_error_count
+        ((FAILED_CHECKS++))
+        return 1
+    fi
+    
+    # Test de l'endpoint /healthz
+    if ! timeout "${API_TIMEOUT}" curl -s --insecure --max-time "${API_TIMEOUT}" "${API_SERVER}/healthz" | grep -q "ok"; then
+        log "ERROR" "L'endpoint /healthz de l'API Kubernetes ne répond pas correctement"
+        CHECK_RESULTS["api_health"]="FAILED"
+        update_metrics "lions_k3s_health_api_healthy" "0" "K3s API server health endpoint responds"
+        increment_error_count
+        ((FAILED_CHECKS++))
         return 1
     fi
     
     log "INFO" "Connectivité à l'API Kubernetes OK"
+    CHECK_RESULTS["api_connectivity"]="OK"
+    CHECK_RESULTS["api_health"]="OK"
+    update_metrics "lions_k3s_health_api_reachable" "1" "K3s API server is reachable"
+    update_metrics "lions_k3s_health_api_healthy" "1" "K3s API server health endpoint responds"
     return 0
 }
 
 # Fonction pour vérifier l'état du nœud dans le cluster
 check_node_status() {
-    log "INFO" "Vérification de l'état du nœud dans le cluster"
+    log "DEBUG" "Vérification de l'état du nœud dans le cluster"
+    ((TOTAL_CHECKS++))
     
-    local node_status
-    node_status=$(kubectl --kubeconfig="${KUBECONFIG}" get node "${NODE_NAME}" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
-    
-    if [[ "${node_status}" != "True" ]]; then
-        log "ERROR" "Le nœud n'est pas prêt dans le cluster (status: ${node_status:-Unknown})"
+    if [[ ! -f "${KUBECONFIG}" ]]; then
+        log "ERROR" "Fichier kubeconfig non trouvé: ${KUBECONFIG}"
+        CHECK_RESULTS["node_status"]="FAILED"
         increment_error_count
+        ((FAILED_CHECKS++))
         return 1
     fi
     
-    log "INFO" "Le nœud est prêt dans le cluster"
+    local node_status
+    node_status=$(timeout "${KUBECTL_TIMEOUT}" kubectl --kubeconfig="${KUBECONFIG}" get node "${LIONS_NODE_NAME}" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
+    
+    if [[ "${node_status}" != "True" ]]; then
+        log "ERROR" "Le nœud n'est pas prêt dans le cluster (status: ${node_status})"
+        CHECK_RESULTS["node_status"]="FAILED"
+        update_metrics "lions_k3s_health_node_ready" "0" "Node is ready in the cluster"
+        increment_error_count
+        ((FAILED_CHECKS++))
+        return 1
+    fi
+    
+    # Vérification des conditions additionnelles du nœud
+    local node_conditions
+    node_conditions=$(timeout "${KUBECTL_TIMEOUT}" kubectl --kubeconfig="${KUBECONFIG}" get node "${LIONS_NODE_NAME}" -o jsonpath='{.status.conditions[*].type}' 2>/dev/null || echo "")
+    
+    log "INFO" "Le nœud est prêt dans le cluster (conditions: ${node_conditions})"
+    CHECK_RESULTS["node_status"]="OK"
+    update_metrics "lions_k3s_health_node_ready" "1" "Node is ready in the cluster"
     return 0
 }
 
 # Fonction pour vérifier l'utilisation des ressources
 check_resource_usage() {
-    log "INFO" "Vérification de l'utilisation des ressources"
+    log "DEBUG" "Vérification de l'utilisation des ressources"
+    ((TOTAL_CHECKS++))
+    
+    local issues_found=false
     
     # Vérification de l'utilisation du CPU
     local cpu_usage
-    cpu_usage=$(top -bn1 | grep "Cpu(s)" | awk '{print $2 + $4}')
+    cpu_usage=$(top -bn1 | grep "Cpu(s)" | awk '{print $2 + $4}' | cut -d'%' -f1 || echo "0")
+    update_metrics "lions_k3s_health_cpu_usage_percent" "${cpu_usage}" "CPU usage percentage"
     
-    if (( $(echo "${cpu_usage} > 90" | bc -l) )); then
+    if (( $(echo "${cpu_usage} > ${CPU_THRESHOLD}" | bc -l 2>/dev/null || echo "0") )); then
         log "WARNING" "Utilisation élevée du CPU: ${cpu_usage}%"
+        issues_found=true
     fi
     
     # Vérification de l'utilisation de la mémoire
     local mem_usage
-    mem_usage=$(free | grep Mem | awk '{print $3/$2 * 100.0}')
+    mem_usage=$(free | grep Mem | awk '{printf "%.1f", $3/$2 * 100.0}' || echo "0")
+    update_metrics "lions_k3s_health_memory_usage_percent" "${mem_usage}" "Memory usage percentage"
     
-    if (( $(echo "${mem_usage} > 90" | bc -l) )); then
+    if (( $(echo "${mem_usage} > ${MEMORY_THRESHOLD}" | bc -l 2>/dev/null || echo "0") )); then
         log "WARNING" "Utilisation élevée de la mémoire: ${mem_usage}%"
+        issues_found=true
     fi
     
     # Vérification de l'espace disque
     local disk_usage
-    disk_usage=$(df -h / | awk 'NR==2 {print $5}' | sed 's/%//')
+    disk_usage=$(df -h / | awk 'NR==2 {print $5}' | sed 's/%//' || echo "0")
+    update_metrics "lions_k3s_health_disk_usage_percent" "${disk_usage}" "Disk usage percentage"
     
-    if [[ "${disk_usage}" -gt 90 ]]; then
+    if [[ "${disk_usage}" -gt "${DISK_THRESHOLD}" ]]; then
         log "WARNING" "Espace disque faible: ${disk_usage}%"
+        issues_found=true
     fi
     
-    return 0
+    # Vérification des inodes
+    local inode_usage
+    inode_usage=$(df -i / | awk 'NR==2 {print $5}' | sed 's/%//' || echo "0")
+    update_metrics "lions_k3s_health_inode_usage_percent" "${inode_usage}" "Inode usage percentage"
+    
+    if [[ "${inode_usage}" -gt "${INODE_THRESHOLD}" ]]; then
+        log "WARNING" "Utilisation élevée des inodes: ${inode_usage}%"
+        issues_found=true
+    fi
+    
+    # Vérification de la charge système
+    local load_avg
+    load_avg=$(uptime | awk -F'load average:' '{print $2}' | awk '{print $1}' | sed 's/,//' || echo "0")
+    update_metrics "lions_k3s_health_load_average" "${load_avg}" "System load average"
+    
+    if (( $(echo "${load_avg} > ${LOAD_THRESHOLD}" | bc -l 2>/dev/null || echo "0") )); then
+        log "WARNING" "Charge système élevée: ${load_avg}"
+        issues_found=true
+    fi
+    
+    if [[ "${issues_found}" == "true" ]]; then
+        CHECK_RESULTS["resource_usage"]="WARNING"
+        ((FAILED_CHECKS++))
+        return 1
+    else
+        CHECK_RESULTS["resource_usage"]="OK"
+        return 0
+    fi
 }
 
 # Fonction pour vérifier les journaux d'erreurs
 check_error_logs() {
-    log "INFO" "Vérification des journaux d'erreurs"
+    log "DEBUG" "Vérification des journaux d'erreurs"
+    ((TOTAL_CHECKS++))
     
     local error_count
-    error_count=$(journalctl -u k3s{% if NODE_TYPE == "agent" %}-agent{% endif %} -p err --since "5 minutes ago" | wc -l)
+    error_count=$(journalctl -u "${K3S_SERVICE_NAME}" -p err --since "${ERROR_LOG_WINDOW}" --no-pager | wc -l || echo "0")
+    update_metrics "lions_k3s_health_recent_errors" "${error_count}" "Number of recent errors in logs"
     
-    if [[ "${error_count}" -gt 10 ]]; then
+    if [[ "${error_count}" -gt "${ERROR_LOG_THRESHOLD}" ]]; then
         log "WARNING" "Nombre élevé d'erreurs dans les journaux: ${error_count}"
+        CHECK_RESULTS["error_logs"]="WARNING"
+        ((FAILED_CHECKS++))
         return 1
     fi
     
+    CHECK_RESULTS["error_logs"]="OK"
     return 0
 }
 
 # Fonction pour vérifier la connectivité réseau
 check_network_connectivity() {
-    log "INFO" "Vérification de la connectivité réseau"
+    log "DEBUG" "Vérification de la connectivité réseau"
+    ((TOTAL_CHECKS++))
+    
+    local connectivity_issues=0
+    local total_nodes=0
     
     # Vérification de la connectivité aux autres nœuds
-    {% for host in groups['k3s_cluster'] %}
-    {% if hostvars[host]['inventory_hostname'] != inventory_hostname %}
-    if ! ping -c 1 -W 2 {{ hostvars[host]['ansible_host'] }} &>/dev/null; then
-        log "WARNING" "Impossible de joindre le nœud {{ hostvars[host]['inventory_hostname'] }} ({{ hostvars[host]['ansible_host'] }})"
+    {% for host in groups['k3s_cluster'] | default([]) -%}
+    {% if hostvars[host]['inventory_hostname'] != inventory_hostname -%}
+    ((total_nodes++))
+    if ! timeout "${NETWORK_TIMEOUT}" ping -c 1 -W 2 {{ hostvars[host]['ansible_host'] | default(host) }} &>/dev/null; then
+        log "WARNING" "Impossible de joindre le nœud {{ hostvars[host]['inventory_hostname'] | default(host) }} ({{ hostvars[host]['ansible_host'] | default(host) }})"
+        ((connectivity_issues++))
     fi
-    {% endif %}
+    {% endif -%}
     {% endfor %}
     
+    # Vérification de la résolution DNS
+    if ! nslookup kubernetes.default.svc.cluster.local &>/dev/null; then
+        log "WARNING" "Problème de résolution DNS pour kubernetes.default.svc.cluster.local"
+        ((connectivity_issues++))
+    fi
+    
+    update_metrics "lions_k3s_health_network_connectivity_issues" "${connectivity_issues}" "Number of network connectivity issues"
+    
+    if [[ "${connectivity_issues}" -gt 0 ]]; then
+        CHECK_RESULTS["network_connectivity"]="WARNING"
+        ((FAILED_CHECKS++))
+        return 1
+    fi
+    
+    CHECK_RESULTS["network_connectivity"]="OK"
     return 0
 }
+
+# Fonction pour vérifier l'état des pods critiques
+check_critical_pods() {
+    log "DEBUG" "Vérification de l'état des pods critiques"
+    ((TOTAL_CHECKS++))
+    
+    if [[ ! -f "${KUBECONFIG}" ]]; then
+        log "WARNING" "Impossible de vérifier les pods - kubeconfig non disponible"
+        CHECK_RESULTS["critical_pods"]="SKIPPED"
+        return 0
+    fi
+    
+    # Vérification des pods en échec
+    local failed_pods
+    failed_pods=$(timeout "${KUBECTL_TIMEOUT}" kubectl --kubeconfig="${KUBECONFIG}" get pods --all-namespaces --field-selector=status.phase=Failed --no-headers 2>/dev/null | wc -l || echo "0")
+    update_metrics "lions_k3s_health_failed_pods" "${failed_pods}" "Number of failed pods"
+    
+    # Vérification des pods système
+    local system_pods_not_ready
+    system_pods_not_ready=$(timeout "${KUBECTL_TIMEOUT}" kubectl --kubeconfig="${KUBECONFIG}" get pods -n kube-system --no-headers 2>/dev/null | awk '$3 != "Running" && $3 != "Completed" {count++} END {print count+0}' || echo "0")
+    update_metrics "lions_k3s_health_system_pods_not_ready" "${system_pods_not_ready}" "Number of system pods not ready"
+    
+    if [[ "${failed_pods}" -gt 10 ]] || [[ "${system_pods_not_ready}" -gt 5 ]]; then
+        log "WARNING" "Problèmes détectés avec les pods (échecs: ${failed_pods}, système non prêt: ${system_pods_not_ready})"
+        CHECK_RESULTS["critical_pods"]="WARNING"
+        ((FAILED_CHECKS++))
+        return 1
+    fi
+    
+    CHECK_RESULTS["critical_pods"]="OK"
+    return 0
+}
+
+# Fonction pour vérifier l'état du stockage
+check_storage_health() {
+    log "DEBUG" "Vérification de l'état du stockage"
+    ((TOTAL_CHECKS++))
+    
+    # Vérification des volumes persistants
+    if [[ -f "${KUBECONFIG}" ]]; then
+        local pv_issues
+        pv_issues=$(timeout "${KUBECTL_TIMEOUT}" kubectl --kubeconfig="${KUBECONFIG}" get pv --no-headers 2>/dev/null | awk '$5 != "Bound" {count++} END {print count+0}' || echo "0")
+        update_metrics "lions_k3s_health_pv_issues" "${pv_issues}" "Number of persistent volume issues"
+        
+        if [[ "${pv_issues}" -gt 0 ]]; then
+            log "WARNING" "Problèmes détectés avec les volumes persistants: ${pv_issues}"
+            CHECK_RESULTS["storage_health"]="WARNING"
+            ((FAILED_CHECKS++))
+            return 1
+        fi
+    fi
+    
+    # Vérification de l'I/O disque
+    local io_wait
+    io_wait=$(iostat -c 1 1 2>/dev/null | awk 'NR==4 {print $4}' || echo "0")
+    update_metrics "lions_k3s_health_io_wait_percent" "${io_wait}" "IO wait percentage"
+    
+    if (( $(echo "${io_wait} > 50" | bc -l 2>/dev/null || echo "0") )); then
+        log "WARNING" "I/O wait élevé: ${io_wait}%"
+        CHECK_RESULTS["storage_health"]="WARNING"
+        ((FAILED_CHECKS++))
+        return 1
+    fi
+    
+    CHECK_RESULTS["storage_health"]="OK"
+    return 0
+}
+
+# =============================================================================
+# FONCTION PRINCIPALE DE VÉRIFICATION
+# =============================================================================
 
 # Fonction principale
 main() {
-    log "INFO" "Démarrage de la vérification de santé pour le nœud ${NODE_NAME} (type: ${NODE_TYPE})"
+    CHECK_START_TIME=$(date +%s)
+    TOTAL_CHECKS=0
+    FAILED_CHECKS=0
     
-    local has_error=false
+    log "INFO" "Démarrage de la vérification de santé pour le nœud ${LIONS_NODE_NAME} (type: ${LIONS_NODE_TYPE})"
     
-    # Vérification du service K3s
-    if ! check_k3s_service; then
-        has_error=true
+    # Initialisation des métriques
+    init_metrics
+    update_metrics "lions_k3s_health_check_started_timestamp" "${CHECK_START_TIME}" "Timestamp when health check started"
+    
+    # Création des répertoires nécessaires
+    mkdir -p "$(dirname "${LOG_FILE}")" "$(dirname "${HISTORY_FILE}")" "$(dirname "${ALERT_FILE}")"
+    
+    local has_critical_error=false
+    
+    # Vérifications activées conditionnellement
+    if [[ "${CHECK_SERVICE_ENABLED}" == "true" ]]; then
+        if ! check_k3s_service; then
+            has_critical_error=true
+        fi
     fi
     
-    # Vérification de la connectivité à l'API
-    if ! check_api_connectivity; then
-        has_error=true
+    if [[ "${CHECK_API_ENABLED}" == "true" ]]; then
+        if ! check_api_connectivity; then
+            has_critical_error=true
+        fi
     fi
     
-    # Vérification de l'état du nœud
-    if ! check_node_status; then
-        has_error=true
+    if [[ "${CHECK_NODE_STATUS_ENABLED}" == "true" ]]; then
+        if ! check_node_status; then
+            has_critical_error=true
+        fi
     fi
     
-    # Vérification des ressources
-    check_resource_usage
+    # Vérifications non critiques
+    [[ "${CHECK_RESOURCES_ENABLED}" == "true" ]] && check_resource_usage
+    [[ "${CHECK_LOGS_ENABLED}" == "true" ]] && check_error_logs
+    [[ "${CHECK_NETWORK_ENABLED}" == "true" ]] && check_network_connectivity
+    [[ "${CHECK_PODS_ENABLED}" == "true" ]] && check_critical_pods
+    [[ "${CHECK_STORAGE_ENABLED}" == "true" ]] && check_storage_health
     
-    # Vérification des journaux d'erreurs
-    check_error_logs
+    # Calcul des métriques finales
+    local check_duration=$(($(date +%s) - CHECK_START_TIME))
+    local success_rate=0
+    if [[ ${TOTAL_CHECKS} -gt 0 ]]; then
+        success_rate=$(( (TOTAL_CHECKS - FAILED_CHECKS) * 100 / TOTAL_CHECKS ))
+    fi
     
-    # Vérification de la connectivité réseau
-    check_network_connectivity
+    update_metrics "lions_k3s_health_check_duration_seconds" "${check_duration}" "Duration of health check"
+    update_metrics "lions_k3s_health_check_total" "${TOTAL_CHECKS}" "Total number of health checks performed"
+    update_metrics "lions_k3s_health_check_failed" "${FAILED_CHECKS}" "Number of failed health checks"
+    update_metrics "lions_k3s_health_check_success_rate_percent" "${success_rate}" "Health check success rate percentage"
     
     # Gestion des alertes
-    if [[ "${has_error}" == "true" ]]; then
+    if [[ "${has_critical_error}" == "true" ]]; then
         if check_error_threshold; then
-            create_alert "Problèmes détectés sur le nœud ${NODE_NAME} (${NODE_TYPE})"
+            create_alert "Problèmes critiques détectés sur le nœud ${LIONS_NODE_NAME} (${LIONS_NODE_TYPE})"
         fi
+        log "ERROR" "Vérification de santé terminée avec des erreurs critiques (${FAILED_CHECKS}/${TOTAL_CHECKS} échecs)"
+        return 1
     else
+        if [[ "${FAILED_CHECKS}" -gt 0 ]]; then
+            log "WARNING" "Vérification de santé terminée avec des avertissements (${FAILED_CHECKS}/${TOTAL_CHECKS} échecs)"
+        else
+            log "INFO" "Vérification de santé terminée avec succès (${TOTAL_CHECKS} vérifications)"
+        fi
         clear_alert
         reset_error_count
+        return 0
     fi
-    
-    log "INFO" "Fin de la vérification de santé pour le nœud ${NODE_NAME}"
-    return 0
 }
 
-# Exécution de la fonction principale
-main "$@"
+# =============================================================================
+# FONCTIONS D'AIDE ET DE RAPPORTS
+# =============================================================================
+
+# Fonction pour afficher un rapport de santé détaillé
+generate_health_report() {
+    cat << EOF
+===============================================================================
+LIONS K3s Health Check Report
+===============================================================================
+Node: ${LIONS_NODE_NAME} (${LIONS_NODE_TYPE})
+Environment: ${LIONS_ENVIRONMENT}
+Timestamp: $(date -Iseconds)
+Check Duration: ${check_duration:-0}s
+
+Results Summary:
+Total Checks: ${TOTAL_CHECKS}
+Failed Checks: ${FAILED_CHECKS}
+Success Rate: ${success_rate:-0}%
+Error Count: $(get_error_count)/${MAX_ERRORS}
+
+Check Results:
+$(for check in "${!CHECK_RESULTS[@]}"; do
+    printf "  %-20s: %s\n" "${check}" "${CHECK_RESULTS[$check]}"
+done | sort)
+
+Alert Status: $(is_alert_active && echo "ACTIVE" || echo "NONE")
+
+Thresholds:
+  CPU: ${CPU_THRESHOLD}%
+  Memory: ${MEMORY_THRESHOLD}%
+  Disk: ${DISK_THRESHOLD}%
+  Load: ${LOAD_THRESHOLD}
+
+Files:
+  Log: ${LOG_FILE}
+  Metrics: ${METRICS_FILE}
+  History: ${HISTORY_FILE}
+===============================================================================
+EOF
+}
+
+# =============================================================================
+# GESTION DES ARGUMENTS
+# =============================================================================
+
+# Gestion des arguments de ligne de commande
+case "${1:-}" in
+    "--report"|"-r")
+        main && generate_health_report
+        ;;
+    "--metrics"|"-m")
+        if [[ -f "${METRICS_FILE}" ]]; then
+            cat "${METRICS_FILE}"
+        else
+            echo "# No metrics file found"
+        fi
+        ;;
+    "--help"|"-h")
+        cat << EOF
+LIONS K3s Health Check Script v5.0
+
+Usage: $0 [options]
+
+Options:
+  --report, -r    Run health check and generate detailed report
+  --metrics, -m   Display current metrics
+  --help, -h      Show this help message
+
+Environment Variables:
+  LIONS_ENVIRONMENT              Environment name (default: development)
+  LIONS_HEALTH_CHECK_LOG_LEVEL   Log level (default: INFO)
+  LIONS_HEALTH_CHECK_MAX_ERRORS  Maximum errors before alert (default: 3)
+  LIONS_HEALTH_CHECK_*_THRESHOLD Various thresholds (CPU, Memory, Disk, etc.)
+  LIONS_HEALTH_CHECK_*_ENABLED   Enable/disable specific checks
+  LIONS_NOTIFICATION_WEBHOOK_URL Webhook URL for notifications
+
+For more information, see the LIONS Infrastructure documentation.
+EOF
+        ;;
+    *)
+        # Exécution normale
+        main "$@"
+        ;;
+esac

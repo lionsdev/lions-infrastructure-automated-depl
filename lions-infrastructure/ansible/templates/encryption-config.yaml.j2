@@ -1,24 +1,70 @@
 # =============================================================================
-# LIONS Infrastructure - Configuration de chiffrement K3s
+# LIONS Infrastructure - Configuration de chiffrement K3s v5.0
 # =============================================================================
-# Titre: Configuration de chiffrement des secrets Kubernetes
-# Description: Définit la configuration pour le chiffrement des secrets au repos
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-24
-# Version: 1.0.0
+# Titre: Configuration de chiffrement des secrets Kubernetes avec variables d'environnement
+# Description: Définit la configuration pour le chiffrement des secrets au repos avec gestion DevOps avancée
+# Auteur: LIONS DevOps Team
+# Date: 01/06/2025
+# Version: 5.0.0
 # =============================================================================
+
+# Configuration du chiffrement pour l'environnement {{ lookup('env', 'LIONS_ENVIRONMENT') | default('development') }}
+# Provider: {{ lookup('env', 'LIONS_ENCRYPTION_PROVIDER') | default('aescbc') }}
+# Rotation activée: {{ lookup('env', 'LIONS_ENCRYPTION_KEY_ROTATION_ENABLED') | default('true') | bool }}
 
 apiVersion: apiserver.config.k8s.io/v1
 kind: EncryptionConfiguration
 resources:
   - resources:
       - secrets
+      {% if lookup('env', 'LIONS_ENCRYPTION_CONFIG_MAPS_ENABLED') | default('false') | bool -%}
+      - configmaps
+      {% endif -%}
+      {% if lookup('env', 'LIONS_ENCRYPTION_EVENTS_ENABLED') | default('false') | bool -%}
+      - events
+      {% endif -%}
     providers:
-      # Utilise AESCBC pour le chiffrement des secrets
+      {% set encryption_provider = lookup('env', 'LIONS_ENCRYPTION_PROVIDER') | default('aescbc') -%}
+      {% if encryption_provider == 'aescbc' -%}
+      # Provider AESCBC pour le chiffrement AES-256-CBC
       - aescbc:
           keys:
-            - name: key1
-              # Génère une clé aléatoire unique pour chaque installation
-              secret: "{{ lookup('password', '/dev/null chars=hexdigits length=32') | b64encode }}"
-      # Conserve l'identité pour la compatibilité descendante
+            {% set key_rotation_enabled = lookup('env', 'LIONS_ENCRYPTION_KEY_ROTATION_ENABLED') | default('true') | bool -%}
+            {% if key_rotation_enabled -%}
+            # Clé active ({{ lookup('env', 'LIONS_ENCRYPTION_CURRENT_KEY_NAME') | default('key-' + ansible_date_time.date) }})
+            - name: "{{ lookup('env', 'LIONS_ENCRYPTION_CURRENT_KEY_NAME') | default('key-' + ansible_date_time.date) }}"
+              secret: "{{ lookup('vault', 'secret/lions/' + lookup('env', 'LIONS_ENVIRONMENT') | default('development') + '/encryption:current_key') | default(lookup('env', 'LIONS_ENCRYPTION_CURRENT_KEY')) | default(lookup('password', '/dev/null chars=hexdigits length=64')) | b64encode }}"
+            {% if lookup('env', 'LIONS_ENCRYPTION_PREVIOUS_KEY') != '' -%}
+            # Clé précédente pour la compatibilité lors de la rotation
+            - name: "{{ lookup('env', 'LIONS_ENCRYPTION_PREVIOUS_KEY_NAME') | default('key-previous') }}"
+              secret: "{{ lookup('vault', 'secret/lions/' + lookup('env', 'LIONS_ENVIRONMENT') | default('development') + '/encryption:previous_key') | default(lookup('env', 'LIONS_ENCRYPTION_PREVIOUS_KEY')) | b64encode }}"
+            {% endif -%}
+            {% else -%}
+            # Clé statique pour environnement de développement
+            - name: "{{ lookup('env', 'LIONS_ENCRYPTION_KEY_NAME') | default('lions-static-key') }}"
+              secret: "{{ lookup('vault', 'secret/lions/' + lookup('env', 'LIONS_ENVIRONMENT') | default('development') + '/encryption:static_key') | default(lookup('env', 'LIONS_ENCRYPTION_STATIC_KEY')) | default('YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFh') }}"
+            {% endif %}
+      {% elif encryption_provider == 'aesgcm' -%}
+      # Provider AESGCM pour le chiffrement AES-256-GCM (plus sécurisé)
+      - aesgcm:
+          keys:
+            - name: "{{ lookup('env', 'LIONS_ENCRYPTION_CURRENT_KEY_NAME') | default('gcm-key-' + ansible_date_time.date) }}"
+              secret: "{{ lookup('vault', 'secret/lions/' + lookup('env', 'LIONS_ENVIRONMENT') | default('development') + '/encryption:gcm_key') | default(lookup('env', 'LIONS_ENCRYPTION_GCM_KEY')) | default(lookup('password', '/dev/null chars=hexdigits length=64')) | b64encode }}"
+      {% elif encryption_provider == 'secretbox' -%}
+      # Provider Secretbox pour le chiffrement NaCl/libsodium
+      - secretbox:
+          keys:
+            - name: "{{ lookup('env', 'LIONS_ENCRYPTION_CURRENT_KEY_NAME') | default('secretbox-key-' + ansible_date_time.date) }}"
+              secret: "{{ lookup('vault', 'secret/lions/' + lookup('env', 'LIONS_ENVIRONMENT') | default('development') + '/encryption:secretbox_key') | default(lookup('env', 'LIONS_ENCRYPTION_SECRETBOX_KEY')) | default(lookup('password', '/dev/null chars=hexdigits length=64')) | b64encode }}"
+      {% elif encryption_provider == 'kms' -%}
+      # Provider KMS pour le chiffrement via service externe
+      - kms:
+          name: "{{ lookup('env', 'LIONS_KMS_PROVIDER_NAME') | default('lions-kms') }}"
+          endpoint: "{{ lookup('env', 'LIONS_KMS_ENDPOINT') | default('unix:///tmp/socketfile.sock') }}"
+          cachesize: {{ lookup('env', 'LIONS_KMS_CACHE_SIZE') | default('1000') | int }}
+          timeout: "{{ lookup('env', 'LIONS_KMS_TIMEOUT') | default('3s') }}"
+      {% endif -%}
+      {% if lookup('env', 'LIONS_ENCRYPTION_IDENTITY_FALLBACK_ENABLED') | default('true') | bool -%}
+      # Provider d'identité pour la compatibilité descendante et les données non chiffrées
       - identity: {}
+      {% endif %}

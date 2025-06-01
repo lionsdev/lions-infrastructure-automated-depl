@@ -1,40 +1,159 @@
+# =============================================================================
+# LIONS Infrastructure - Service K3s Auto Recovery v5.0
+# =============================================================================
+# Description: Service systemd pour la récupération automatique de K3s avec variables d'environnement
+# Environnement: {{ lookup('env', 'LIONS_ENVIRONMENT') | default('development') }}
+# Version: 5.0.0
+# Date: 01/06/2025
+# Auteur: LIONS DevOps Team
+# =============================================================================
+
 [Unit]
-Description=K3s Auto Recovery Service
-Documentation=https://github.com/k3s-io/k3s
+Description={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_SERVICE_DESCRIPTION') | default('LIONS K3s Auto Recovery Service') }}
+Documentation={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_DOCUMENTATION') | default('https://github.com/k3s-io/k3s') }}
+
+# Dépendances réseau
 After=network-online.target
 Wants=network-online.target
-{% if inventory_hostname in groups['k3s_servers'] %}
-After=k3s.service
-Requires=k3s.service
-{% else %}
-After=k3s-agent.service
-Requires=k3s-agent.service
+{% if lookup('env', 'LIONS_K3S_AUTO_RECOVERY_WAIT_DNS') | default('true') | bool -%}
+After=systemd-resolved.service
+{% endif -%}
+
+# Dépendances K3s selon le type de nœud
+{% if inventory_hostname in groups['k3s_servers'] | default([]) -%}
+After={{ lookup('env', 'LIONS_K3S_SERVER_SERVICE_NAME') | default('k3s.service') }}
+Requires={{ lookup('env', 'LIONS_K3S_SERVER_SERVICE_NAME') | default('k3s.service') }}
+{% else -%}
+After={{ lookup('env', 'LIONS_K3S_AGENT_SERVICE_NAME') | default('k3s-agent.service') }}
+Requires={{ lookup('env', 'LIONS_K3S_AGENT_SERVICE_NAME') | default('k3s-agent.service') }}
 {% endif %}
 
+# Configuration de la récupération d'échec
+{% if lookup('env', 'LIONS_K3S_AUTO_RECOVERY_DEPENDENCY_FAILURE_ACTION') | default('true') | bool -%}
+OnFailure={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_FAILURE_SERVICE') | default('k3s-recovery-alert.service') }}
+{% endif -%}
+
 [Service]
-Type=simple
-User=root
-Group=root
-ExecStart=/usr/local/bin/k3s-auto-recovery.sh
-Restart=always
-RestartSec=10
-TimeoutStartSec=0
-TimeoutStopSec=30
+Type={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_SERVICE_TYPE') | default('simple') }}
+User={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_USER') | default('root') }}
+Group={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_GROUP') | default('root') }}
 
-# Security settings
-ProtectSystem=full
-ProtectHome=true
-PrivateTmp=true
-NoNewPrivileges=true
+# Configuration des commandes de démarrage
+ExecStart={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_SCRIPT_PATH') | default('/usr/local/bin/k3s-auto-recovery.sh') }}
+{% if lookup('env', 'LIONS_K3S_AUTO_RECOVERY_PRE_START_SCRIPT') != '' -%}
+ExecStartPre={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_PRE_START_SCRIPT') }}
+{% endif -%}
+{% if lookup('env', 'LIONS_K3S_AUTO_RECOVERY_POST_START_SCRIPT') != '' -%}
+ExecStartPost={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_POST_START_SCRIPT') }}
+{% endif -%}
+{% if lookup('env', 'LIONS_K3S_AUTO_RECOVERY_STOP_SCRIPT') != '' -%}
+ExecStop={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_STOP_SCRIPT') }}
+{% endif -%}
 
-# Resource limits
-CPUQuota=20%
-MemoryLimit=256M
+# Configuration du redémarrage
+Restart={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_RESTART_POLICY') | default('always') }}
+RestartSec={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_RESTART_DELAY') | default('10') }}
+StartLimitInterval={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_START_LIMIT_INTERVAL') | default('60') }}
+StartLimitBurst={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_START_LIMIT_BURST') | default('5') }}
 
-# Logging
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=k3s-auto-recovery
+# Configuration des timeouts
+TimeoutStartSec={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_TIMEOUT_START') | default('0') }}
+TimeoutStopSec={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_TIMEOUT_STOP') | default('30') }}
+TimeoutAbortSec={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_TIMEOUT_ABORT') | default('10') }}
+
+# Configuration des watchdogs
+{% if lookup('env', 'LIONS_K3S_AUTO_RECOVERY_WATCHDOG_ENABLED') | default('true') | bool -%}
+WatchdogSec={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_WATCHDOG_TIMEOUT') | default('30') }}
+NotifyAccess={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_NOTIFY_ACCESS') | default('main') }}
+{% endif -%}
+
+# =============================================================================
+# CONFIGURATION DE SÉCURITÉ RENFORCÉE
+# =============================================================================
+{% if lookup('env', 'LIONS_K3S_AUTO_RECOVERY_SECURITY_HARDENING') | default('true') | bool -%}
+# Protection du système de fichiers
+ProtectSystem={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_PROTECT_SYSTEM') | default('strict') }}
+ProtectHome={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_PROTECT_HOME') | default('true') | bool }}
+ProtectKernelTunables={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_PROTECT_KERNEL_TUNABLES') | default('true') | bool }}
+ProtectKernelModules={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_PROTECT_KERNEL_MODULES') | default('true') | bool }}
+ProtectControlGroups={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_PROTECT_CONTROL_GROUPS') | default('true') | bool }}
+
+# Isolation des namespaces
+PrivateTmp={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_PRIVATE_TMP') | default('true') | bool }}
+PrivateDevices={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_PRIVATE_DEVICES') | default('false') | bool }}
+PrivateNetwork={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_PRIVATE_NETWORK') | default('false') | bool }}
+
+# Contrôles de privilèges
+NoNewPrivileges={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_NO_NEW_PRIVILEGES') | default('true') | bool }}
+{% if lookup('env', 'LIONS_K3S_AUTO_RECOVERY_CAPABILITIES') != '' -%}
+CapabilityBoundingSet={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_CAPABILITIES') }}
+AmbientCapabilities={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_CAPABILITIES') }}
+{% endif -%}
+
+# Filtrage des appels système
+{% if lookup('env', 'LIONS_K3S_AUTO_RECOVERY_SYSCALL_FILTER') != '' -%}
+SystemCallFilter={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_SYSCALL_FILTER') }}
+{% endif -%}
+{% endif %}
+
+# =============================================================================
+# CONFIGURATION DES RESSOURCES
+# =============================================================================
+{% if lookup('env', 'LIONS_K3S_AUTO_RECOVERY_RESOURCE_LIMITS_ENABLED') | default('true') | bool -%}
+# Limites CPU
+CPUQuota={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_CPU_QUOTA') | default('20%') }}
+CPUWeight={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_CPU_WEIGHT') | default('100') }}
+{% if lookup('env', 'LIONS_K3S_AUTO_RECOVERY_CPU_AFFINITY') != '' -%}
+CPUAffinity={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_CPU_AFFINITY') }}
+{% endif -%}
+
+# Limites mémoire
+MemoryLimit={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_MEMORY_LIMIT') | default('256M') }}
+MemorySwapMax={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_MEMORY_SWAP_MAX') | default('0') }}
+
+# Limites I/O
+{% if lookup('env', 'LIONS_K3S_AUTO_RECOVERY_IO_WEIGHT') != '' -%}
+IOWeight={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_IO_WEIGHT') }}
+{% endif -%}
+{% if lookup('env', 'LIONS_K3S_AUTO_RECOVERY_BLOCK_IO_WEIGHT') != '' -%}
+BlockIOWeight={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_BLOCK_IO_WEIGHT') }}
+{% endif -%}
+
+# Limites sur les tâches
+TasksMax={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_TASKS_MAX') | default('20') }}
+{% endif %}
+
+# =============================================================================
+# CONFIGURATION DU LOGGING
+# =============================================================================
+StandardOutput={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_STDOUT') | default('journal') }}
+StandardError={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_STDERR') | default('journal') }}
+SyslogIdentifier={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_SYSLOG_IDENTIFIER') | default('lions-k3s-auto-recovery') }}
+SyslogFacility={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_SYSLOG_FACILITY') | default('daemon') }}
+SyslogLevel={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_SYSLOG_LEVEL') | default('info') }}
+
+# Configuration du journal
+{% if lookup('env', 'LIONS_K3S_AUTO_RECOVERY_LOG_EXTRA_FIELDS') | default('true') | bool -%}
+LogExtraFields=LIONS_ENVIRONMENT={{ lookup('env', 'LIONS_ENVIRONMENT') | default('development') }}
+LogExtraFields=LIONS_NODE_TYPE={% if inventory_hostname in groups['k3s_servers'] | default([]) %}server{% else %}agent{% endif %}
+LogExtraFields=LIONS_SERVICE_VERSION=5.0.0
+{% endif -%}
+
+# =============================================================================
+# VARIABLES D'ENVIRONNEMENT
+# =============================================================================
+Environment="LIONS_ENVIRONMENT={{ lookup('env', 'LIONS_ENVIRONMENT') | default('development') }}"
+Environment="LIONS_NODE_TYPE={% if inventory_hostname in groups['k3s_servers'] | default([]) %}server{% else %}agent{% endif %}"
+Environment="LIONS_AUTO_RECOVERY_LOG_LEVEL={{ lookup('env', 'LIONS_AUTO_RECOVERY_LOG_LEVEL') | default('INFO') }}"
+Environment="LIONS_AUTO_RECOVERY_CHECK_INTERVAL={{ lookup('env', 'LIONS_AUTO_RECOVERY_CHECK_INTERVAL') | default('30') }}"
+Environment="LIONS_AUTO_RECOVERY_MAX_RETRIES={{ lookup('env', 'LIONS_AUTO_RECOVERY_MAX_RETRIES') | default('3') }}"
+Environment="LIONS_AUTO_RECOVERY_COOLDOWN={{ lookup('env', 'LIONS_AUTO_RECOVERY_COOLDOWN') | default('300') }}"
+{% if lookup('env', 'LIONS_NOTIFICATION_WEBHOOK_URL') != '' -%}
+Environment="LIONS_NOTIFICATION_WEBHOOK_URL={{ lookup('env', 'LIONS_NOTIFICATION_WEBHOOK_URL') }}"
+{% endif -%}
 
 [Install]
-WantedBy=multi-user.target
+WantedBy={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_WANTED_BY') | default('multi-user.target') }}
+{% if lookup('env', 'LIONS_K3S_AUTO_RECOVERY_ALSO_ENABLE') != '' -%}
+Also={{ lookup('env', 'LIONS_K3S_AUTO_RECOVERY_ALSO_ENABLE') }}
+{% endif -%}

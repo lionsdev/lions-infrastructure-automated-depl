@@ -1,28 +1,85 @@
 #!/bin/bash
-# Titre: Script de Déploiement Unifié - Version Production
-# Description: Permet aux développeurs de déployer des applications en une seule commande
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-07
-# Version: 2.1.0
+# =============================================================================
+# LIONS Infrastructure - Script de déploiement principal v5.0
+# =============================================================================
+# Description: Script de déploiement avec variables d'environnement pour l'environnement ${LIONS_ENVIRONMENT:-development}
+# Version: 5.0.0
+# Date: 01/06/2025
+# Auteur: LIONS DevOps Team
+# =============================================================================
 
 # Activation du mode strict
 set -euo pipefail
 
-# Configuration
+# =============================================================================
+# CONFIGURATION DEPUIS VARIABLES D'ENVIRONNEMENT
+# =============================================================================
+# Configuration de base
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly CONFIG_DIR="${SCRIPT_DIR}/../config"
-readonly LOG_DIR="/var/log/lions/deployments"
+readonly LIONS_ENVIRONMENT="${LIONS_ENVIRONMENT:-development}"
+readonly PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# Configuration des chemins
+readonly CONFIG_DIR="${LIONS_CONFIG_DIR:-${SCRIPT_DIR}/../config}"
+readonly LOG_DIR="${LIONS_DEPLOY_LOG_DIR:-/var/log/lions/deployments}"
 readonly LOG_FILE="${LOG_DIR}/deploy-$(date +%Y%m%d-%H%M%S).log"
-readonly ANSIBLE_PLAYBOOK="${SCRIPT_DIR}/../ansible/playbooks/deploy-application.yml"
-readonly APPLICATIONS_CATALOG="${SCRIPT_DIR}/../applications/catalog"
-readonly LOG_HISTORY_DIR="${LOG_DIR}/history"
-readonly BACKUP_DIR="${LOG_DIR}/backups"
+readonly ANSIBLE_DIR="${LIONS_ANSIBLE_DIR:-${PROJECT_ROOT}/ansible}"
+readonly ANSIBLE_PLAYBOOK="${LIONS_DEPLOY_PLAYBOOK:-${ANSIBLE_DIR}/playbooks/deploy-application.yml}"
+readonly APPLICATIONS_CATALOG="${LIONS_APPLICATIONS_CATALOG:-${PROJECT_ROOT}/applications/catalog}"
+readonly LOG_HISTORY_DIR="${LIONS_LOG_HISTORY_DIR:-${LOG_DIR}/history}"
+readonly BACKUP_DIR="${LIONS_DEPLOY_BACKUP_DIR:-${LOG_DIR}/backups}"
 
-# Environnements disponibles
-readonly ENVIRONMENTS=("production" "staging" "development")
+# Configuration des environnements et technologies
+readonly DEFAULT_ENVIRONMENT="${LIONS_DEFAULT_ENVIRONMENT:-development}"
+readonly ENVIRONMENTS="${LIONS_SUPPORTED_ENVIRONMENTS:-production,staging,development}"
+readonly TECHNOLOGIES="${LIONS_SUPPORTED_TECHNOLOGIES:-quarkus,primefaces,primereact,angular,nodejs,python}"
 
-# Technologies supportées
-readonly TECHNOLOGIES=("quarkus" "primefaces" "primereact")
+# Configuration du déploiement
+readonly DEFAULT_VERSION="${LIONS_DEFAULT_VERSION:-latest}"
+readonly DEFAULT_REGISTRY="${LIONS_DEFAULT_REGISTRY:-registry.lions.dev}"
+readonly REGISTRY_NAMESPACE="${LIONS_REGISTRY_NAMESPACE:-lions}"
+readonly DEPLOYMENT_TIMEOUT="${LIONS_DEPLOYMENT_TIMEOUT:-600}"
+readonly ROLLBACK_ENABLED="${LIONS_ROLLBACK_ENABLED:-true}"
+readonly AUTO_SCALING_ENABLED="${LIONS_AUTO_SCALING_ENABLED:-true}"
+
+# Configuration de sécurité
+readonly SECURITY_SCANNING="${LIONS_SECURITY_SCANNING:-true}"
+readonly VULNERABILITY_THRESHOLD="${LIONS_VULNERABILITY_THRESHOLD:-high}"
+readonly FORCE_HTTPS="${LIONS_FORCE_HTTPS:-true}"
+readonly ENABLE_RBAC="${LIONS_ENABLE_RBAC:-true}"
+
+# Configuration de monitoring
+readonly MONITORING_ENABLED="${LIONS_MONITORING_ENABLED:-true}"
+readonly METRICS_ENABLED="${LIONS_METRICS_ENABLED:-true}"
+readonly ALERTS_ENABLED="${LIONS_ALERTS_ENABLED:-true}"
+readonly HEALTH_CHECK_ENABLED="${LIONS_HEALTH_CHECK_ENABLED:-true}"
+
+# Configuration des logs
+readonly LOG_LEVEL="${LIONS_LOG_LEVEL:-INFO}"
+readonly LOG_RETENTION_DAYS="${LIONS_LOG_RETENTION_DAYS:-30}"
+readonly DEBUG_MODE="${LIONS_DEBUG_MODE:-false}"
+readonly VERBOSE_MODE="${LIONS_VERBOSE_MODE:-false}"
+
+# Configuration réseau
+readonly INGRESS_CLASS="${LIONS_INGRESS_CLASS:-nginx}"
+readonly TLS_ENABLED="${LIONS_TLS_ENABLED:-true}"
+readonly CERT_MANAGER_ENABLED="${LIONS_CERT_MANAGER_ENABLED:-true}"
+readonly LOAD_BALANCER_TYPE="${LIONS_LOAD_BALANCER_TYPE:-ClusterIP}"
+
+# Configuration de base de données
+readonly DB_MIGRATION_ENABLED="${LIONS_DB_MIGRATION_ENABLED:-true}"
+readonly DB_BACKUP_BEFORE_DEPLOY="${LIONS_DB_BACKUP_BEFORE_DEPLOY:-true}"
+readonly DB_CONNECTION_TIMEOUT="${LIONS_DB_CONNECTION_TIMEOUT:-30}"
+
+# Configuration de notification
+readonly NOTIFICATION_ENABLED="${LIONS_NOTIFICATION_ENABLED:-false}"
+readonly WEBHOOK_URL="${LIONS_WEBHOOK_URL:-}"
+readonly SLACK_CHANNEL="${LIONS_SLACK_CHANNEL:-#deployments}"
+readonly EMAIL_NOTIFICATIONS="${LIONS_EMAIL_NOTIFICATIONS:-false}"
+
+# Conversion des chaînes séparées par des virgules en tableaux
+IFS=',' read -ra ENVIRONMENTS_ARRAY <<< "${ENVIRONMENTS}"
+IFS=',' read -ra TECHNOLOGIES_ARRAY <<< "${TECHNOLOGIES}"
 
 # Couleurs pour l'affichage
 readonly COLOR_RESET="\033[0m"
@@ -64,7 +121,7 @@ function afficher_logo() {
     echo -e "${GRADIENT3}    ║    ${GRADIENT3}█     █ █  █ █  █ █  ██    █    █  █  ██ █    █  █${GRADIENT2}   ║"
     echo -e "${GRADIENT3}    ║    ${GRADIENT3}█████ █ ████ ████ █   █ ████   ███ █   █ █    ████${GRADIENT1}   ║"
     echo -e "${GRADIENT1}    ╚══════════════════════════════════════════════════════════════════╝${COLOR_RESET}"
-    echo -e "${COLOR_YELLOW}${COLOR_BOLD}        Infrastructure de Déploiement Automatisé v2.0.0${COLOR_RESET}"
+    echo -e "${COLOR_YELLOW}${COLOR_BOLD}        Infrastructure de Déploiement Automatisé v5.0.0${COLOR_RESET}"
     echo -e "${GRADIENT2}       ─────────────────────────────────────────────────${COLOR_RESET}\n"
 }
 
@@ -129,12 +186,12 @@ ${COLOR_YELLOW}${COLOR_BOLD}Usage:${COLOR_RESET}
     $0 [options] <nom_application>
 
 ${COLOR_YELLOW}${COLOR_BOLD}Options:${COLOR_RESET}
-    ${COLOR_GREEN}-e, --environment <env>${COLOR_RESET}   Environnement cible (production, staging, development)
-                             Par défaut: development
-    ${COLOR_GREEN}-t, --technology <tech>${COLOR_RESET}   Technologie utilisée (quarkus, primefaces, primereact)
+    ${COLOR_GREEN}-e, --environment <env>${COLOR_RESET}   Environnement cible (${ENVIRONMENTS})
+                             Par défaut: ${DEFAULT_ENVIRONMENT}
+    ${COLOR_GREEN}-t, --technology <tech>${COLOR_RESET}   Technologie utilisée (${TECHNOLOGIES})
                              Par défaut: détection automatique
     ${COLOR_GREEN}-v, --version <version>${COLOR_RESET}   Version spécifique à déployer
-                             Par défaut: latest
+                             Par défaut: ${DEFAULT_VERSION}
     ${COLOR_GREEN}-f, --file <fichier>${COLOR_RESET}      Fichier de configuration spécifique
                              Par défaut: application.yaml dans le répertoire courant
     ${COLOR_GREEN}-p, --params <params>${COLOR_RESET}     Paramètres additionnels pour le déploiement (format JSON)
@@ -472,14 +529,18 @@ EOF
     rm -f "${vars_file}"
 }
 
-# Parsing des arguments
+# =============================================================================
+# VARIABLES GLOBALES ET PARSING DES ARGUMENTS
+# =============================================================================
+# Variables par défaut (peuvent être surchargées par les arguments en ligne de commande)
 app_name=""
-environment="development"
+environment="${DEFAULT_ENVIRONMENT}"
 technology=""
-version="latest"
-config_file="./application.yaml"
-extra_params="{}"
-debug_mode="false"
+version="${DEFAULT_VERSION}"
+config_file="${LIONS_DEFAULT_CONFIG_FILE:-./application.yaml}"
+extra_params="${LIONS_DEFAULT_EXTRA_PARAMS:-{}}"
+debug_mode="${DEBUG_MODE}"
+verbose_mode="${VERBOSE_MODE}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
