@@ -2737,6 +2737,23 @@ function is_local_execution() {
         return 0
     fi
 
+    # Vérification si on est déjà connecté via SSH (en vérifiant la variable SSH_CONNECTION)
+    if [[ -n "${SSH_CONNECTION}" ]]; then
+        # Extraire l'adresse IP du serveur SSH depuis SSH_CONNECTION
+        local ssh_server_ip=$(echo "${SSH_CONNECTION}" | awk '{print $3}')
+
+        # Si l'adresse IP du serveur SSH correspond à l'hôte cible, on est déjà connecté
+        if [[ "${ssh_server_ip}" == "${target_host}" ]]; then
+            return 0
+        fi
+
+        # Vérifier également si l'hôte cible est résolu vers l'adresse IP du serveur SSH
+        local resolved_ip=$(getent hosts "${target_host}" 2>/dev/null | awk '{print $1}' | head -1)
+        if [[ -n "${resolved_ip}" && "${resolved_ip}" == "${ssh_server_ip}" ]]; then
+            return 0
+        fi
+    fi
+
     # Ce n'est pas une exécution locale
     return 1
 }
@@ -2956,21 +2973,35 @@ EOF
         # Vérification si l'utilisateur peut exécuter des commandes locales sans SSH
         local sudo_check=$(sudo -n true 2>/dev/null && echo "true" || echo "false")
 
-        log "DEBUG" "Résultats des vérifications alternatives: IP locale=${local_ip_check}, Hostname=${hostname_check}, Sudo=${sudo_check}"
+        # Vérification si on est déjà connecté via SSH au VPS
+        local ssh_connection_check="false"
+        if [[ -n "${SSH_CONNECTION}" ]]; then
+            local ssh_server_ip=$(echo "${SSH_CONNECTION}" | awk '{print $3}')
+            local resolved_ip=$(getent hosts "${ansible_host}" 2>/dev/null | awk '{print $1}' | head -1)
 
-        if [[ "${local_ip_check}" == "true" || "${hostname_check}" == "true" || "${ansible_host}" == "localhost" || "${ansible_host}" == "127.0.0.1" ]]; then
+            if [[ "${ssh_server_ip}" == "${ansible_host}" || 
+                  (-n "${resolved_ip}" && "${resolved_ip}" == "${ssh_server_ip}") ]]; then
+                ssh_connection_check="true"
+            fi
+        fi
+
+        log "DEBUG" "Résultats des vérifications alternatives: IP locale=${local_ip_check}, Hostname=${hostname_check}, Sudo=${sudo_check}, SSH Connection=${ssh_connection_check}"
+
+        if [[ "${local_ip_check}" == "true" || "${hostname_check}" == "true" || 
+              "${ansible_host}" == "localhost" || "${ansible_host}" == "127.0.0.1" ||
+              "${ssh_connection_check}" == "true" ]]; then
             IS_LOCAL_EXECUTION=true
-            log "INFO" "Détection alternative d'exécution locale réussie: le script est exécuté directement sur le VPS cible"
+            log "INFO" "Détection alternative d'exécution locale réussie: le script est exécuté directement sur le VPS cible ou via une connexion SSH existante"
             log "INFO" "Les commandes SSH seront remplacées par des commandes locales"
         else
             # Demander à l'utilisateur si le script est exécuté localement
             log "WARNING" "Impossible de déterminer automatiquement si le script est exécuté localement sur le VPS cible"
-            log "INFO" "Êtes-vous en train d'exécuter ce script directement sur le VPS cible? (o/n)"
+            log "INFO" "Êtes-vous en train d'exécuter ce script directement sur le VPS cible ou via une connexion SSH existante? (o/n)"
             read -r user_response
 
             if [[ "${user_response}" =~ ^[oO][uU]?[iI]?$ || "${user_response}" =~ ^[yY][eE]?[sS]?$ ]]; then
                 IS_LOCAL_EXECUTION=true
-                log "INFO" "Configuration manuelle pour exécution locale: le script est exécuté directement sur le VPS cible"
+                log "INFO" "Configuration manuelle pour exécution locale: le script est exécuté directement sur le VPS cible ou via une connexion SSH existante"
                 log "INFO" "Les commandes SSH seront remplacées par des commandes locales"
             else
                 IS_LOCAL_EXECUTION=false
@@ -3045,14 +3076,44 @@ function open_required_ports() {
             log "SUCCESS" "UFW installé et activé avec succès"
         fi
     else
-        # Vérification de la connexion SSH
-        if ! ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p "${target_port}" "${ansible_user}@${target_host}" "echo 'Test de connexion'" &>/dev/null; then
-            log "ERROR" "Impossible de se connecter au VPS via SSH pour ouvrir les ports"
-            return 1
+        # Vérification si on est déjà connecté via SSH
+        local already_connected=false
+        if [[ -n "${SSH_CONNECTION}" ]]; then
+            local ssh_server_ip=$(echo "${SSH_CONNECTION}" | awk '{print $3}')
+            local resolved_ip=$(getent hosts "${target_host}" 2>/dev/null | awk '{print $1}' | head -1)
+
+            if [[ "${ssh_server_ip}" == "${target_host}" || 
+                  (-n "${resolved_ip}" && "${resolved_ip}" == "${ssh_server_ip}") ]]; then
+                already_connected=true
+                log "INFO" "Connexion SSH existante détectée, pas besoin de vérifier la connexion"
+            fi
+        fi
+
+        # Vérification de la connexion SSH seulement si pas déjà connecté
+        if [[ "${already_connected}" != "true" ]]; then
+            if ! ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p "${target_port}" "${ansible_user}@${target_host}" "echo 'Test de connexion'" &>/dev/null; then
+                log "ERROR" "Impossible de se connecter au VPS via SSH pour ouvrir les ports"
+                return 1
+            fi
         fi
 
         # Vérification que UFW est installé et actif
-        if ! ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p "${target_port}" "${ansible_user}@${target_host}" "command -v ufw &>/dev/null && systemctl is-active --quiet ufw" &>/dev/null; then
+        local ufw_check_cmd="command -v ufw &>/dev/null && systemctl is-active --quiet ufw"
+        local ufw_installed=false
+
+        if [[ "${already_connected}" == "true" ]]; then
+            # Si déjà connecté via SSH, exécuter la commande directement
+            if eval "${ufw_check_cmd}" &>/dev/null; then
+                ufw_installed=true
+            fi
+        else
+            # Sinon, utiliser SSH pour vérifier
+            if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p "${target_port}" "${ansible_user}@${target_host}" "${ufw_check_cmd}" &>/dev/null; then
+                ufw_installed=true
+            fi
+        fi
+
+        if [[ "${ufw_installed}" != "true" ]]; then
             log "WARNING" "UFW n'est pas installé ou n'est pas actif sur le VPS"
             log "INFO" "Tentative d'installation et d'activation de UFW..."
 
@@ -5310,21 +5371,34 @@ function initialiser_vps() {
 function check_k3s_logs() {
     log "INFO" "Vérification des journaux du service K3s..."
 
-    # Vérifier si on peut accéder au VPS
-    if ! ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "echo 'Connexion réussie'" &>/dev/null; then
-        log "ERROR" "Impossible de se connecter au VPS pour vérifier les journaux K3s"
-        return 1
-    fi
-
-    # Afficher les 20 dernières lignes des journaux K3s
     local k3s_logs
-    k3s_logs=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo journalctl -u k3s -n 20 --no-pager" 2>/dev/null || echo "Impossible de récupérer les journaux")
-    log "INFO" "Dernières lignes des journaux K3s:"
-    echo "${k3s_logs}"
-
-    # Rechercher des erreurs spécifiques
     local error_logs
-    error_logs=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo journalctl -u k3s -n 100 | grep -i 'error\|failed\|fatal'" 2>/dev/null || echo "")
+
+    if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+        # Exécution locale
+        # Afficher les 20 dernières lignes des journaux K3s
+        k3s_logs=$(sudo journalctl -u k3s -n 20 --no-pager 2>/dev/null || echo "Impossible de récupérer les journaux")
+        log "INFO" "Dernières lignes des journaux K3s:"
+        echo "${k3s_logs}"
+
+        # Rechercher des erreurs spécifiques
+        error_logs=$(sudo journalctl -u k3s -n 100 | grep -i 'error\|failed\|fatal' 2>/dev/null || echo "")
+    else
+        # Exécution distante
+        # Vérifier si on peut accéder au VPS
+        if ! ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "echo 'Connexion réussie'" &>/dev/null; then
+            log "ERROR" "Impossible de se connecter au VPS pour vérifier les journaux K3s"
+            return 1
+        fi
+
+        # Afficher les 20 dernières lignes des journaux K3s
+        k3s_logs=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo journalctl -u k3s -n 20 --no-pager" 2>/dev/null || echo "Impossible de récupérer les journaux")
+        log "INFO" "Dernières lignes des journaux K3s:"
+        echo "${k3s_logs}"
+
+        # Rechercher des erreurs spécifiques
+        error_logs=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "sudo journalctl -u k3s -n 100 | grep -i 'error\|failed\|fatal'" 2>/dev/null || echo "")
+    fi
 
     if [[ -n "${error_logs}" ]]; then
         log "WARNING" "Des erreurs ont été détectées dans les journaux K3s"
@@ -5340,16 +5414,39 @@ function check_k3s_logs() {
 function check_k3s_system_resources() {
     log "INFO" "Vérification des ressources système pour K3s..."
 
-    # Vérifier si on peut accéder au VPS
-    if ! ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "echo 'Connexion réussie'" &>/dev/null; then
-        log "ERROR" "Impossible de se connecter au VPS pour vérifier les ressources système"
-        return 1
+    local disk_usage
+    local free_mem
+    local load_avg
+
+    if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+        # Exécution locale
+        # Vérifier l'espace disque
+        disk_usage=$(df -h / | awk 'NR==2 {print $5}' | sed 's/%//' 2>/dev/null || echo "Erreur")
+
+        # Vérifier la mémoire
+        free_mem=$(free -m | awk 'NR==2 {print $4}' 2>/dev/null || echo "Erreur")
+
+        # Vérifier la charge CPU
+        load_avg=$(cat /proc/loadavg | awk '{print $1}' 2>/dev/null || echo "Erreur")
+    else
+        # Exécution distante
+        # Vérifier si on peut accéder au VPS
+        if ! ssh -o BatchMode=yes -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "echo 'Connexion réussie'" &>/dev/null; then
+            log "ERROR" "Impossible de se connecter au VPS pour vérifier les ressources système"
+            return 1
+        fi
+
+        # Vérifier l'espace disque
+        disk_usage=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "df -h / | awk 'NR==2 {print \$5}' | sed 's/%//'" 2>/dev/null || echo "Erreur")
+
+        # Vérifier la mémoire
+        free_mem=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "free -m | awk 'NR==2 {print \$4}'" 2>/dev/null || echo "Erreur")
+
+        # Vérifier la charge CPU
+        load_avg=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "cat /proc/loadavg | awk '{print \$1}'" 2>/dev/null || echo "Erreur")
     fi
 
-    # Vérifier l'espace disque
-    local disk_usage
-    disk_usage=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "df -h / | awk 'NR==2 {print \$5}' | sed 's/%//'" 2>/dev/null || echo "Erreur")
-
+    # Analyse des résultats pour l'espace disque
     if [[ "${disk_usage}" == "Erreur" ]]; then
         log "ERROR" "Impossible de vérifier l'espace disque"
     elif [[ "${disk_usage}" -gt 90 ]]; then
@@ -5360,10 +5457,7 @@ function check_k3s_system_resources() {
         log "SUCCESS" "Espace disque suffisant: ${disk_usage}%"
     fi
 
-    # Vérifier la mémoire
-    local free_mem
-    free_mem=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "free -m | awk 'NR==2 {print \$4}'" 2>/dev/null || echo "Erreur")
-
+    # Analyse des résultats pour la mémoire
     if [[ "${free_mem}" == "Erreur" ]]; then
         log "ERROR" "Impossible de vérifier la mémoire disponible"
     elif [[ "${free_mem}" -lt 512 ]]; then
@@ -5374,10 +5468,7 @@ function check_k3s_system_resources() {
         log "SUCCESS" "Mémoire disponible suffisante: ${free_mem} MB"
     fi
 
-    # Vérifier la charge CPU
-    local load_avg
-    load_avg=$(ssh -o ConnectTimeout=5 -p "${ansible_port}" "${ansible_user}@${ansible_host}" "cat /proc/loadavg | awk '{print \$1}'" 2>/dev/null || echo "Erreur")
-
+    # Analyse des résultats pour la charge CPU
     if [[ "${load_avg}" == "Erreur" ]]; then
         log "ERROR" "Impossible de vérifier la charge CPU"
     elif (( $(echo "${load_avg} > 2.0" | bc -l) )); then
