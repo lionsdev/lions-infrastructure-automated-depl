@@ -4,7 +4,7 @@
 # =============================================================================
 # Description: Script d'installation principal avec variables d'environnement pour l'environnement ${LIONS_ENVIRONMENT:-development}
 # Version: 5.0.0
-# Date: 01/06/2025
+# Date: 02/06/2023
 # Auteur: LIONS DevOps Team
 # =============================================================================
 
@@ -5205,7 +5205,7 @@ function initialiser_vps() {
     local ansible_cmd="ansible-playbook -i \"${inventory_path}\" \"${playbook_path}\""
 
     # Ajout des options supplémentaires configurables
-    if [[ "${LIONS_ANSIBLE_ASK_BECOME_PASS:-true}" == "true" ]]; then
+    if [[ "${LIONS_ANSIBLE_ASK_BECOME_PASS:-true}" == "true" && "${IS_LOCAL_EXECUTION}" != "true" ]]; then
         ansible_cmd="${ansible_cmd} --ask-become-pass"
     fi
 
@@ -5689,7 +5689,12 @@ function reinstall_k3s() {
         return 1
     fi
 
-    local ansible_cmd="ansible-playbook -i \"${inventory_path}\" \"${playbook_path}\" --ask-become-pass"
+    local ansible_cmd="ansible-playbook -i \"${inventory_path}\" \"${playbook_path}\""
+
+    # Ajouter l'option --ask-become-pass seulement si l'exécution n'est pas locale
+    if [[ "${IS_LOCAL_EXECUTION}" != "true" ]]; then
+        ansible_cmd="${ansible_cmd} --ask-become-pass"
+    fi
 
     if [[ "${debug_mode}" == "true" ]]; then
         ansible_cmd="${ansible_cmd} -vvv"
@@ -5886,7 +5891,12 @@ function installer_vault() {
         fi
     fi
 
-    local ansible_cmd="ansible-playbook -i \"${inventory_path}\" \"${playbook_path}\" --ask-become-pass"
+    local ansible_cmd="ansible-playbook -i \"${inventory_path}\" \"${playbook_path}\""
+
+    # Ajouter l'option --ask-become-pass seulement si l'exécution n'est pas locale
+    if [[ "${IS_LOCAL_EXECUTION}" != "true" ]]; then
+        ansible_cmd="${ansible_cmd} --ask-become-pass"
+    fi
 
     if [[ "${debug_mode}" == "true" ]]; then
         ansible_cmd="${ansible_cmd} -vvv"
@@ -6049,7 +6059,12 @@ function installer_k3s() {
         fi
     fi
 
-    local ansible_cmd="ansible-playbook -i \"${inventory_path}\" \"${playbook_path}\" --ask-become-pass"
+    local ansible_cmd="ansible-playbook -i \"${inventory_path}\" \"${playbook_path}\""
+
+    # Ajouter l'option --ask-become-pass seulement si l'exécution n'est pas locale
+    if [[ "${IS_LOCAL_EXECUTION}" != "true" ]]; then
+        ansible_cmd="${ansible_cmd} --ask-become-pass"
+    fi
 
     if [[ "${debug_mode}" == "true" ]]; then
         ansible_cmd="${ansible_cmd} -vvv"
@@ -7883,7 +7898,12 @@ else
         fi
     fi
 
-    ansible_cmd="ansible-playbook -i \"${ANSIBLE_DIR}/${inventory_file}\" \"${playbook_path}\" --extra-vars \"target_env=${environment}\" --ask-become-pass"
+    ansible_cmd="ansible-playbook -i \"${ANSIBLE_DIR}/${inventory_file}\" \"${playbook_path}\" --extra-vars \"target_env=${environment}\""
+
+    # Ajouter l'option --ask-become-pass seulement si l'exécution n'est pas locale
+    if [[ "${IS_LOCAL_EXECUTION}" != "true" ]]; then
+        ansible_cmd="${ansible_cmd} --ask-become-pass"
+    fi
 
     if [[ "${debug_mode}" == "true" ]]; then
         ansible_cmd="${ansible_cmd} -vvv"

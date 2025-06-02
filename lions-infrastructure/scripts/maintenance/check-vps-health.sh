@@ -4,7 +4,7 @@
 # =============================================================================
 # Description: Vérifie l'état de santé et l'utilisation des ressources du VPS
 # Version: 5.0.0
-# Date: 01/06/2025
+# Date: 02/06/2023
 # Auteur: LIONS DevOps Team
 # =============================================================================
 

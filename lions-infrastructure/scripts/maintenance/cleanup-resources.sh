@@ -4,7 +4,7 @@
 # =============================================================================
 # Description: Nettoie les ressources inutilisées dans le cluster Kubernetes
 # Version: 5.0.0
-# Date: 01/06/2025
+# Date: 02/06/2023
 # Auteur: LIONS DevOps Team
 # =============================================================================
 
