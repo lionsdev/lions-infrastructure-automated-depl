@@ -21,6 +21,55 @@ ANSIBLE_DIR="${PROJECT_ROOT}/ansible"
 LOG_DIR="${SCRIPT_DIR}/logs/applications"
 ENVIRONMENT="${1:-development}"
 
+# Détection d'exécution locale
+IS_LOCAL_EXECUTION=false
+
+# Fonction pour détecter si le script est exécuté sur le VPS cible
+function is_local_execution() {
+    local target_host="$1"
+
+    # Si l'hôte cible est localhost ou 127.0.0.1, c'est une exécution locale
+    if [[ "${target_host}" == "localhost" || "${target_host}" == "127.0.0.1" ]]; then
+        return 0
+    fi
+
+    # Récupération des adresses IP locales
+    local local_ips=$(ip -o -4 addr show | awk '{print $4}' | cut -d/ -f1 | tr '\n' ' ' 2>/dev/null || echo "")
+
+    # Si l'hôte cible est une des adresses IP locales, c'est une exécution locale
+    for ip in ${local_ips}; do
+        if [[ "${target_host}" == "${ip}" ]]; then
+            return 0
+        fi
+    done
+
+    # Vérification du nom d'hôte
+    local hostname=$(hostname -f 2>/dev/null || hostname 2>/dev/null || echo "")
+    if [[ -n "${hostname}" && "${target_host}" == "${hostname}" ]]; then
+        return 0
+    fi
+
+    # Vérification si on est déjà connecté via SSH (en vérifiant la variable SSH_CONNECTION)
+    if [[ -n "${SSH_CONNECTION}" ]]; then
+        # Extraire l'adresse IP du serveur SSH depuis SSH_CONNECTION
+        local ssh_server_ip=$(echo "${SSH_CONNECTION}" | awk '{print $3}')
+
+        # Si l'adresse IP du serveur SSH correspond à l'hôte cible, on est déjà connecté
+        if [[ "${ssh_server_ip}" == "${target_host}" ]]; then
+            return 0
+        fi
+
+        # Vérifier également si l'hôte cible est résolu vers l'adresse IP du serveur SSH
+        local resolved_ip=$(getent hosts "${target_host}" 2>/dev/null | awk '{print $1}' | head -1)
+        if [[ -n "${resolved_ip}" && "${resolved_ip}" == "${ssh_server_ip}" ]]; then
+            return 0
+        fi
+    fi
+
+    # Ce n'est pas une exécution locale
+    return 1
+}
+
 # Création des répertoires de logs
 mkdir -p "${LOG_DIR}"
 
@@ -49,6 +98,22 @@ echo -e "${BLUE}  ════════════════════�
 # Vérification des prérequis
 echo -e "${GREEN}[INFO]${NC} Vérification des prérequis..."
 
+# Détection d'exécution locale
+target_host="localhost"
+# Si on a un inventaire Ansible, on peut extraire l'hôte cible
+if [[ -f "${ANSIBLE_DIR}/inventories/${ENVIRONMENT}/hosts.yml" ]]; then
+    target_host=$(grep -A10 "hosts:" "${ANSIBLE_DIR}/inventories/${ENVIRONMENT}/hosts.yml" | grep "ansible_host:" | head -1 | awk -F': ' '{print $2}' | tr -d ' ' 2>/dev/null || echo "localhost")
+fi
+
+if is_local_execution "${target_host}"; then
+    IS_LOCAL_EXECUTION=true
+    echo -e "${GREEN}[INFO]${NC} Détection d'exécution locale: le script est exécuté directement sur le VPS cible ou via une connexion SSH existante"
+    echo -e "${GREEN}[INFO]${NC} Les commandes SSH seront remplacées par des commandes locales"
+else
+    IS_LOCAL_EXECUTION=false
+    echo -e "${GREEN}[INFO]${NC} Détection d'exécution distante: le script est exécuté depuis une machine différente du VPS cible"
+fi
+
 # Vérification de kubectl
 if ! command -v kubectl &> /dev/null; then
     echo -e "${RED}[ERROR]${NC} kubectl n'est pas installé ou n'est pas dans le PATH"
@@ -72,9 +137,20 @@ echo -e "${GREEN}[INFO]${NC} Déploiement des services pour l'environnement: ${E
 
 # Exécution du playbook Ansible
 echo -e "${GREEN}[INFO]${NC} Exécution du playbook de déploiement des services..."
-ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy-application-services.yml" \
-    --extra-vars "target_env=${ENVIRONMENT}" \
-    --ask-become-pass
+
+# Construction de la commande Ansible
+ansible_cmd="ansible-playbook \"${ANSIBLE_DIR}/playbooks/deploy-application-services.yml\" --extra-vars \"target_env=${ENVIRONMENT}\""
+
+# Si exécution locale, utiliser la connexion locale
+if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+    ansible_cmd="${ansible_cmd} -c local"
+    echo -e "${GREEN}[INFO]${NC} Utilisation de la connexion locale pour Ansible"
+else
+    ansible_cmd="${ansible_cmd} --ask-become-pass"
+fi
+
+# Exécution de la commande
+eval ${ansible_cmd}
 
 # Vérification du déploiement
 echo -e "${GREEN}[INFO]${NC} Vérification du déploiement..."
@@ -98,15 +174,15 @@ SERVICES=(
 # Vérification des services
 for service in "${SERVICES[@]}"; do
     namespace="${service}-${ENVIRONMENT}"
-    
+
     echo -e "${GREEN}[INFO]${NC} Vérification du service ${service} dans le namespace ${namespace}..."
-    
+
     # Vérification du namespace
     if ! kubectl get namespace "${namespace}" &> /dev/null; then
         echo -e "${YELLOW}[WARNING]${NC} Le namespace ${namespace} n'existe pas"
         continue
     fi
-    
+
     # Vérification des pods
     pods=$(kubectl get pods -n "${namespace}" -o jsonpath='{.items[*].metadata.name}')
     if [[ -z "${pods}" ]]; then
@@ -114,7 +190,7 @@ for service in "${SERVICES[@]}"; do
     else
         echo -e "${GREEN}[SUCCESS]${NC} Pods trouvés dans le namespace ${namespace}: ${pods}"
     fi
-    
+
     # Vérification des services
     services=$(kubectl get services -n "${namespace}" -o jsonpath='{.items[*].metadata.name}')
     if [[ -z "${services}" ]]; then
@@ -122,7 +198,7 @@ for service in "${SERVICES[@]}"; do
     else
         echo -e "${GREEN}[SUCCESS]${NC} Services trouvés dans le namespace ${namespace}: ${services}"
     fi
-    
+
     # Vérification des ingress
     ingresses=$(kubectl get ingress -n "${namespace}" -o jsonpath='{.items[*].metadata.name}')
     if [[ -z "${ingresses}" ]]; then
@@ -148,15 +224,15 @@ INGRESSES=(
 # Vérification des ingress
 for ingress_info in "${INGRESSES[@]}"; do
     IFS=':' read -r ingress namespace <<< "${ingress_info}"
-    
+
     echo -e "${GREEN}[INFO]${NC} Vérification de l'ingress ${ingress} dans le namespace ${namespace}..."
-    
+
     # Vérification du namespace
     if ! kubectl get namespace "${namespace}" &> /dev/null; then
         echo -e "${YELLOW}[WARNING]${NC} Le namespace ${namespace} n'existe pas"
         continue
     fi
-    
+
     # Vérification de l'ingress
     if ! kubectl get ingress "${ingress}" -n "${namespace}" &> /dev/null; then
         echo -e "${YELLOW}[WARNING]${NC} L'ingress ${ingress} n'existe pas dans le namespace ${namespace}"

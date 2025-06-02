@@ -673,6 +673,11 @@ function handle_error() {
                     # Tentative avec des options plus sûres pour Ansible
                     local ansible_cmd="ansible-playbook -i \"${ANSIBLE_DIR}/${inventory_file}\" \"${ANSIBLE_DIR}/playbooks/init-vps.yml\" --forks=1 --timeout=60"
 
+                    # Si exécution locale, utiliser la connexion locale
+                    if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+                        ansible_cmd="${ansible_cmd} -c local"
+                    fi
+
                     # Ajouter l'option --ask-become-pass seulement si l'exécution n'est pas locale
                     if [[ "${IS_LOCAL_EXECUTION}" != "true" ]]; then
                         ansible_cmd="${ansible_cmd} --ask-become-pass"
@@ -689,6 +694,11 @@ function handle_error() {
                     log "INFO" "Tentative de reprise avec des options plus sûres..."
                     # Tentative avec des options plus sûres pour Ansible
                     local ansible_cmd="ansible-playbook -i \"${ANSIBLE_DIR}/${inventory_file}\" \"${ANSIBLE_DIR}/playbooks/install-k3s.yml\" --forks=1 --timeout=60"
+
+                    # Si exécution locale, utiliser la connexion locale
+                    if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+                        ansible_cmd="${ansible_cmd} -c local"
+                    fi
 
                     # Ajouter l'option --ask-become-pass seulement si l'exécution n'est pas locale
                     if [[ "${IS_LOCAL_EXECUTION}" != "true" ]]; then
@@ -5285,6 +5295,11 @@ function initialiser_vps() {
     # Construction de la commande Ansible avec options configurables
     local ansible_cmd="ansible-playbook -i \"${inventory_path}\" \"${playbook_path}\""
 
+    # Si exécution locale, utiliser la connexion locale
+    if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+        ansible_cmd="${ansible_cmd} -c local"
+    fi
+
     # Ajout des options supplémentaires configurables
     if [[ "${LIONS_ANSIBLE_ASK_BECOME_PASS:-true}" == "true" && "${IS_LOCAL_EXECUTION}" != "true" ]]; then
         ansible_cmd="${ansible_cmd} --ask-become-pass"
@@ -5802,6 +5817,11 @@ function reinstall_k3s() {
 
     local ansible_cmd="ansible-playbook -i \"${inventory_path}\" \"${playbook_path}\""
 
+    # Si exécution locale, utiliser la connexion locale
+    if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+        ansible_cmd="${ansible_cmd} -c local"
+    fi
+
     # Ajouter l'option --ask-become-pass seulement si l'exécution n'est pas locale
     if [[ "${IS_LOCAL_EXECUTION}" != "true" ]]; then
         ansible_cmd="${ansible_cmd} --ask-become-pass"
@@ -6004,6 +6024,11 @@ function installer_vault() {
 
     local ansible_cmd="ansible-playbook -i \"${inventory_path}\" \"${playbook_path}\""
 
+    # Si exécution locale, utiliser la connexion locale
+    if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+        ansible_cmd="${ansible_cmd} -c local"
+    fi
+
     # Ajouter l'option --ask-become-pass seulement si l'exécution n'est pas locale
     if [[ "${IS_LOCAL_EXECUTION}" != "true" ]]; then
         ansible_cmd="${ansible_cmd} --ask-become-pass"
@@ -6171,6 +6196,11 @@ function installer_k3s() {
     fi
 
     local ansible_cmd="ansible-playbook -i \"${inventory_path}\" \"${playbook_path}\""
+
+    # Si exécution locale, utiliser la connexion locale
+    if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+        ansible_cmd="${ansible_cmd} -c local"
+    fi
 
     # Ajouter l'option --ask-become-pass seulement si l'exécution n'est pas locale
     if [[ "${IS_LOCAL_EXECUTION}" != "true" ]]; then
@@ -8010,6 +8040,11 @@ else
     fi
 
     ansible_cmd="ansible-playbook -i \"${ANSIBLE_DIR}/${inventory_file}\" \"${playbook_path}\" --extra-vars \"target_env=${environment}\""
+
+    # Si exécution locale, utiliser la connexion locale
+    if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+        ansible_cmd="${ansible_cmd} -c local"
+    fi
 
     # Ajouter l'option --ask-become-pass seulement si l'exécution n'est pas locale
     if [[ "${IS_LOCAL_EXECUTION}" != "true" ]]; then

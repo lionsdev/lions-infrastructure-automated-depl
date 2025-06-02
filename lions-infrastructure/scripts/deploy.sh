@@ -77,6 +77,55 @@ readonly WEBHOOK_URL="${LIONS_WEBHOOK_URL:-}"
 readonly SLACK_CHANNEL="${LIONS_SLACK_CHANNEL:-#deployments}"
 readonly EMAIL_NOTIFICATIONS="${LIONS_EMAIL_NOTIFICATIONS:-false}"
 
+# Détection d'exécution locale
+IS_LOCAL_EXECUTION=false
+
+# Fonction pour détecter si le script est exécuté sur le VPS cible
+function is_local_execution() {
+    local target_host="$1"
+
+    # Si l'hôte cible est localhost ou 127.0.0.1, c'est une exécution locale
+    if [[ "${target_host}" == "localhost" || "${target_host}" == "127.0.0.1" ]]; then
+        return 0
+    fi
+
+    # Récupération des adresses IP locales
+    local local_ips=$(ip -o -4 addr show | awk '{print $4}' | cut -d/ -f1 | tr '\n' ' ' 2>/dev/null || echo "")
+
+    # Si l'hôte cible est une des adresses IP locales, c'est une exécution locale
+    for ip in ${local_ips}; do
+        if [[ "${target_host}" == "${ip}" ]]; then
+            return 0
+        fi
+    done
+
+    # Vérification du nom d'hôte
+    local hostname=$(hostname -f 2>/dev/null || hostname 2>/dev/null || echo "")
+    if [[ -n "${hostname}" && "${target_host}" == "${hostname}" ]]; then
+        return 0
+    fi
+
+    # Vérification si on est déjà connecté via SSH (en vérifiant la variable SSH_CONNECTION)
+    if [[ -n "${SSH_CONNECTION}" ]]; then
+        # Extraire l'adresse IP du serveur SSH depuis SSH_CONNECTION
+        local ssh_server_ip=$(echo "${SSH_CONNECTION}" | awk '{print $3}')
+
+        # Si l'adresse IP du serveur SSH correspond à l'hôte cible, on est déjà connecté
+        if [[ "${ssh_server_ip}" == "${target_host}" ]]; then
+            return 0
+        fi
+
+        # Vérifier également si l'hôte cible est résolu vers l'adresse IP du serveur SSH
+        local resolved_ip=$(getent hosts "${target_host}" 2>/dev/null | awk '{print $1}' | head -1)
+        if [[ -n "${resolved_ip}" && "${resolved_ip}" == "${ssh_server_ip}" ]]; then
+            return 0
+        fi
+    fi
+
+    # Ce n'est pas une exécution locale
+    return 1
+}
+
 # Conversion des chaînes séparées par des virgules en tableaux
 IFS=',' read -ra ENVIRONMENTS_ARRAY <<< "${ENVIRONMENTS}"
 IFS=',' read -ra TECHNOLOGIES_ARRAY <<< "${TECHNOLOGIES}"
@@ -254,6 +303,22 @@ function creer_sauvegarde() {
 # Fonction de vérification des prérequis
 function verifier_prerequis() {
     log "STEP" "Vérification des prérequis pour le déploiement"
+
+    # Détection d'exécution locale
+    local target_host="localhost"
+    # Si on a un inventaire Ansible, on peut extraire l'hôte cible
+    if [[ -f "${ANSIBLE_DIR}/inventories/${environment}/hosts.yml" ]]; then
+        target_host=$(grep -A10 "hosts:" "${ANSIBLE_DIR}/inventories/${environment}/hosts.yml" | grep "ansible_host:" | head -1 | awk -F': ' '{print $2}' | tr -d ' ' 2>/dev/null || echo "localhost")
+    fi
+
+    if is_local_execution "${target_host}"; then
+        IS_LOCAL_EXECUTION=true
+        log "INFO" "Détection d'exécution locale: le script est exécuté directement sur le VPS cible ou via une connexion SSH existante"
+        log "INFO" "Les commandes SSH seront remplacées par des commandes locales"
+    else
+        IS_LOCAL_EXECUTION=false
+        log "INFO" "Détection d'exécution distante: le script est exécuté depuis une machine différente du VPS cible"
+    fi
 
     # Vérification d'Ansible
     if ! command -v ansible-playbook &> /dev/null; then
@@ -435,7 +500,17 @@ EOF
     fi
 
     # Commande Ansible avec les options appropriées
-    local ansible_cmd="ansible-playbook ${ANSIBLE_PLAYBOOK} --extra-vars @${vars_file} --ask-become-pass"
+    local ansible_cmd="ansible-playbook ${ANSIBLE_PLAYBOOK} --extra-vars @${vars_file}"
+
+    # Si exécution locale, utiliser la connexion locale
+    if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
+        ansible_cmd="${ansible_cmd} -c local"
+    fi
+
+    # Ajouter l'option --ask-become-pass seulement si l'exécution n'est pas locale
+    if [[ "${IS_LOCAL_EXECUTION}" != "true" ]]; then
+        ansible_cmd="${ansible_cmd} --ask-become-pass"
+    fi
 
     # Activation du mode verbeux si debug est activé
     if [[ "${debug_mode}" == "true" ]]; then
