@@ -1,20 +1,31 @@
 #!/bin/bash
-# Titre: Script de vérification de santé du VPS
+# =============================================================================
+# LIONS Infrastructure - Script de vérification de santé du VPS v5.0
+# =============================================================================
 # Description: Vérifie l'état de santé et l'utilisation des ressources du VPS
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2023-05-15
-# Version: 1.0.0
+# Version: 5.0.0
+# Date: 01/06/2025
+# Auteur: LIONS DevOps Team
+# =============================================================================
 
 set -euo pipefail
 
-# Configuration
+# Chargement des variables d'environnement
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-readonly ANSIBLE_DIR="${PROJECT_ROOT}/ansible"
-readonly LOG_DIR="./logs/maintenance"
+
+# Chargement des variables d'environnement depuis le fichier .env
+if [ -f "${PROJECT_ROOT}/.env" ]; then
+    source "${PROJECT_ROOT}/.env"
+fi
+
+# Configuration depuis variables d'environnement
+readonly LIONS_ENVIRONMENT="${LIONS_ENVIRONMENT:-development}"
+readonly ANSIBLE_DIR="${LIONS_ANSIBLE_DIR:-${PROJECT_ROOT}/ansible}"
+readonly LOG_DIR="${LIONS_MAINTENANCE_LOG_DIR:-${PROJECT_ROOT}/scripts/logs/maintenance}"
 readonly LOG_FILE="${LOG_DIR}/health-check-$(date +%Y%m%d-%H%M%S).log"
 readonly REPORT_FILE="${LOG_DIR}/health-report-$(date +%Y%m%d).html"
-readonly DEFAULT_ENV="development"
+readonly DEFAULT_ENV="${LIONS_ENVIRONMENT}"
 
 # Couleurs pour l'affichage
 readonly COLOR_RESET="\033[0m"
@@ -108,7 +119,10 @@ function verifier_connectivite() {
     local vps_port=$(grep -A2 "contabo-vps" "${ANSIBLE_DIR}/${inventory_file}" | grep "ansible_port" | awk -F': ' '{print $2}')
 
     # Vérification de la connectivité SSH
-    if ssh -q -o BatchMode=yes -o ConnectTimeout=5 -p "${vps_port}" "lionsdevadmin@${vps_ip}" exit &>/dev/null; then
+    local vps_user="${LIONS_VPS_USER:-lionsdevadmin}"
+    local ssh_timeout="${LIONS_VPS_SSH_TIMEOUT:-5}"
+
+    if ssh -q -o BatchMode=yes -o ConnectTimeout=${ssh_timeout} -p "${vps_port}" "${vps_user}@${vps_ip}" exit &>/dev/null; then
         log "SUCCESS" "Connexion SSH au VPS réussie (${vps_ip}:${vps_port})"
     else
         log "ERROR" "Impossible de se connecter au VPS via SSH (${vps_ip}:${vps_port})"
@@ -116,10 +130,13 @@ function verifier_connectivite() {
     fi
 
     # Vérification de la connectivité HTTP
-    if curl -s --head --request GET "http://${vps_ip}:30000" | grep "200 OK" > /dev/null; then
-        log "SUCCESS" "Connexion HTTP à Grafana réussie (http://${vps_ip}:30000)"
+    local grafana_port="${LIONS_GRAFANA_PORT:-30000}"
+    local grafana_protocol="${LIONS_GRAFANA_PROTOCOL:-http}"
+
+    if curl -s --head --request GET "${grafana_protocol}://${vps_ip}:${grafana_port}" | grep "200 OK" > /dev/null; then
+        log "SUCCESS" "Connexion HTTP à Grafana réussie (${grafana_protocol}://${vps_ip}:${grafana_port})"
     else
-        log "WARNING" "Impossible de se connecter à Grafana via HTTP (http://${vps_ip}:30000)"
+        log "WARNING" "Impossible de se connecter à Grafana via HTTP (${grafana_protocol}://${vps_ip}:${grafana_port})"
     fi
 }
 
@@ -142,18 +159,21 @@ function verifier_ressources_systeme() {
     local disk_usage=$(grep "/dev/sda" /tmp/vps_resources.txt | head -1 | awk '{print $5}' | sed 's/%//')
 
     # Évaluation de l'utilisation des ressources
-    if (( $(echo "${cpu_usage} > 80" | bc -l) )); then
-        log "WARNING" "Utilisation CPU élevée: ${cpu_usage}%"
+    local cpu_threshold="${LIONS_CPU_THRESHOLD:-80}"
+    local disk_threshold="${LIONS_DISK_THRESHOLD:-80}"
+
+    if (( $(echo "${cpu_usage} > ${cpu_threshold}" | bc -l) )); then
+        log "WARNING" "Utilisation CPU élevée: ${cpu_usage}% (seuil: ${cpu_threshold}%)"
     else
-        log "SUCCESS" "Utilisation CPU normale: ${cpu_usage}%"
+        log "SUCCESS" "Utilisation CPU normale: ${cpu_usage}% (seuil: ${cpu_threshold}%)"
     fi
 
     log "INFO" "Utilisation mémoire: ${mem_usage} / ${mem_total}"
 
-    if (( disk_usage > 80 )); then
-        log "WARNING" "Utilisation disque élevée: ${disk_usage}%"
+    if (( disk_usage > ${disk_threshold} )); then
+        log "WARNING" "Utilisation disque élevée: ${disk_usage}% (seuil: ${disk_threshold}%)"
     else
-        log "SUCCESS" "Utilisation disque normale: ${disk_usage}%"
+        log "SUCCESS" "Utilisation disque normale: ${disk_usage}% (seuil: ${disk_threshold}%)"
     fi
 }
 
@@ -326,10 +346,10 @@ EOF
 }
 
 # Parsing des arguments
-environment="${DEFAULT_ENV}"
-inventory_file="inventories/${DEFAULT_ENV}/hosts.yml"
-generate_report="false"
-debug_mode="false"
+environment="${LIONS_ENVIRONMENT:-${DEFAULT_ENV}}"
+inventory_file="${LIONS_INVENTORY_FILE:-inventories/${environment}/hosts.yml}"
+generate_report="${LIONS_GENERATE_REPORT:-false}"
+debug_mode="${LIONS_DEBUG_MODE:-false}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -370,7 +390,7 @@ echo -e " | |    | | | | |  \| \__ \   | ||  \| | |_ | | | |/ _ \  "
 echo -e " | |___ | | |_| | |\  |__) |  | || |\  |  _|| |_| / ___ \ "
 echo -e " |_____|___\___/|_| \_|____/  |___|_| \_|_|   \___/_/   \_\\"
 echo -e "${COLOR_RESET}"
-echo -e "${COLOR_YELLOW}${COLOR_BOLD}  Vérification de Santé du VPS - v1.0.0${COLOR_RESET}"
+echo -e "${COLOR_YELLOW}${COLOR_BOLD}  Vérification de Santé du VPS - v5.0.0${COLOR_RESET}"
 echo -e "${COLOR_CYAN}  ------------------------------------------------${COLOR_RESET}\n"
 
 # Affichage des paramètres

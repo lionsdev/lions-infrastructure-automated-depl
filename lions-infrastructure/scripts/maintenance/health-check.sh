@@ -1,17 +1,31 @@
 #!/bin/bash
-# Titre: Script de vérification de santé
+# =============================================================================
+# LIONS Infrastructure - Script de vérification de santé v5.0
+# =============================================================================
 # Description: Vérifie la santé du cluster Kubernetes et des applications
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-08
-# Version: 1.0.0
+# Version: 5.0.0
+# Date: 01/06/2025
+# Auteur: LIONS DevOps Team
+# =============================================================================
 
 set -euo pipefail
 
-# Configuration
+# Chargement des variables d'environnement
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly LOG_DIR="/var/log/lions/maintenance"
+readonly PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
+# Chargement des variables d'environnement depuis le fichier .env
+if [ -f "${PROJECT_ROOT}/.env" ]; then
+    source "${PROJECT_ROOT}/.env"
+fi
+
+# Configuration depuis variables d'environnement
+readonly LIONS_ENVIRONMENT="${LIONS_ENVIRONMENT:-development}"
+readonly LOG_DIR="${LIONS_MAINTENANCE_LOG_DIR:-${PROJECT_ROOT}/scripts/logs/maintenance}"
 readonly LOG_FILE="${LOG_DIR}/health-check-$(date +%Y%m%d-%H%M%S).log"
 readonly REPORT_FILE="${LOG_DIR}/health-report-$(date +%Y%m%d).html"
+readonly KUBE_CONFIG="${LIONS_KUBE_CONFIG_PATH:-${HOME}/.kube/config}"
+readonly KUBE_CONTEXT="${LIONS_KUBE_CONTEXT:-${LIONS_CLUSTER_NAME:-lions-k3s-cluster}}"
 
 # Création du répertoire de logs
 mkdir -p "${LOG_DIR}"
@@ -21,7 +35,7 @@ function log() {
     local level="$1"
     local message="$2"
     local timestamp="$(date +"%Y-%m-%d %H:%M:%S")"
-    
+
     echo "[${timestamp}] [${level}] ${message}"
     echo "[${timestamp}] [${level}] ${message}" >> "${LOG_FILE}"
 }
@@ -50,8 +64,8 @@ EOF
 }
 
 # Parsing des arguments
-namespace=""
-generate_report=false
+namespace="${LIONS_NAMESPACE:-}"
+generate_report="${LIONS_GENERATE_REPORT:-false}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -83,9 +97,21 @@ if ! command -v kubectl &> /dev/null; then
     exit 1
 fi
 
+# Configuration de kubectl avec le bon contexte
+export KUBECONFIG="${KUBE_CONFIG}"
+if [[ -n "${KUBE_CONTEXT}" ]]; then
+    kubectl config use-context "${KUBE_CONTEXT}" &> /dev/null || log "WARNING" "Impossible de définir le contexte ${KUBE_CONTEXT}, utilisation du contexte par défaut"
+fi
+
 # Vérification de la connexion au cluster Kubernetes
 if ! kubectl cluster-info &> /dev/null; then
     log "ERROR" "Impossible de se connecter au cluster Kubernetes"
+    exit 1
+fi
+
+# Vérification de jq
+if ! command -v jq &> /dev/null; then
+    log "ERROR" "jq n'est pas installé ou n'est pas dans le PATH"
     exit 1
 fi
 
@@ -102,17 +128,17 @@ fi
 # Fonction pour vérifier l'état des nœuds
 function verifier_noeuds() {
     log "INFO" "Vérification de l'état des nœuds..."
-    
+
     # Récupération de l'état des nœuds
     nodes_status=$(kubectl get nodes -o wide)
     log "INFO" "État des nœuds:"
     echo "${nodes_status}" | while read -r line; do
         log "INFO" "  ${line}"
     done
-    
+
     # Vérification des nœuds non prêts
     not_ready_nodes=$(kubectl get nodes -o json | jq -r '.items[] | select(.status.conditions[] | select(.type == "Ready" and .status != "True")) | .metadata.name')
-    
+
     if [[ -n "${not_ready_nodes}" ]]; then
         log "WARNING" "Nœuds non prêts trouvés:"
         echo "${not_ready_nodes}" | while read -r node; do
@@ -121,10 +147,10 @@ function verifier_noeuds() {
     else
         log "SUCCESS" "Tous les nœuds sont prêts"
     fi
-    
+
     # Vérification de la pression sur les nœuds
     pressure_nodes=$(kubectl get nodes -o json | jq -r '.items[] | select(.status.conditions[] | select(.type == "MemoryPressure" or .type == "DiskPressure" or .type == "PIDPressure" or .type == "NetworkUnavailable") | select(.status == "True")) | .metadata.name + " (" + (.status.conditions[] | select(.status == "True") | .type) + ")"')
-    
+
     if [[ -n "${pressure_nodes}" ]]; then
         log "WARNING" "Nœuds sous pression trouvés:"
         echo "${pressure_nodes}" | while read -r node; do
@@ -138,17 +164,17 @@ function verifier_noeuds() {
 # Fonction pour vérifier l'état des pods système
 function verifier_pods_systeme() {
     log "INFO" "Vérification de l'état des pods système..."
-    
+
     # Récupération de l'état des pods système
     system_pods_status=$(kubectl get pods -n kube-system)
     log "INFO" "État des pods système:"
     echo "${system_pods_status}" | while read -r line; do
         log "INFO" "  ${line}"
     done
-    
+
     # Vérification des pods système non prêts
     not_ready_system_pods=$(kubectl get pods -n kube-system -o json | jq -r '.items[] | select(.status.phase != "Running" and .status.phase != "Succeeded") | .metadata.name + " (" + .status.phase + ")"')
-    
+
     if [[ -n "${not_ready_system_pods}" ]]; then
         log "WARNING" "Pods système non prêts trouvés:"
         echo "${not_ready_system_pods}" | while read -r pod; do
@@ -162,26 +188,26 @@ function verifier_pods_systeme() {
 # Fonction pour vérifier l'état des pods
 function verifier_pods() {
     log "INFO" "Vérification de l'état des pods..."
-    
+
     # Récupération de l'état des pods
     if [[ -n "${namespace}" ]]; then
         pods_status=$(kubectl get pods -n "${namespace}")
     else
         pods_status=$(kubectl get pods --all-namespaces)
     fi
-    
+
     log "INFO" "État des pods:"
     echo "${pods_status}" | while read -r line; do
         log "INFO" "  ${line}"
     done
-    
+
     # Vérification des pods non prêts
     if [[ -n "${namespace}" ]]; then
         not_ready_pods=$(kubectl get pods -n "${namespace}" -o json | jq -r '.items[] | select(.status.phase != "Running" and .status.phase != "Succeeded") | .metadata.name + " (" + .status.phase + ")"')
     else
         not_ready_pods=$(kubectl get pods --all-namespaces -o json | jq -r '.items[] | select(.status.phase != "Running" and .status.phase != "Succeeded") | .metadata.namespace + "/" + .metadata.name + " (" + .status.phase + ")"')
     fi
-    
+
     if [[ -n "${not_ready_pods}" ]]; then
         log "WARNING" "Pods non prêts trouvés:"
         echo "${not_ready_pods}" | while read -r pod; do
@@ -190,14 +216,14 @@ function verifier_pods() {
     else
         log "SUCCESS" "Tous les pods sont prêts"
     fi
-    
+
     # Vérification des pods en état CrashLoopBackOff
     if [[ -n "${namespace}" ]]; then
         crashloop_pods=$(kubectl get pods -n "${namespace}" -o json | jq -r '.items[] | select(.status.containerStatuses != null) | select(.status.containerStatuses[] | select(.state.waiting != null) | select(.state.waiting.reason == "CrashLoopBackOff")) | .metadata.name')
     else
         crashloop_pods=$(kubectl get pods --all-namespaces -o json | jq -r '.items[] | select(.status.containerStatuses != null) | select(.status.containerStatuses[] | select(.state.waiting != null) | select(.state.waiting.reason == "CrashLoopBackOff")) | .metadata.namespace + "/" + .metadata.name')
     fi
-    
+
     if [[ -n "${crashloop_pods}" ]]; then
         log "ERROR" "Pods en état CrashLoopBackOff trouvés:"
         echo "${crashloop_pods}" | while read -r pod; do
@@ -211,38 +237,57 @@ function verifier_pods() {
 # Fonction pour vérifier l'utilisation des ressources
 function verifier_ressources() {
     log "INFO" "Vérification de l'utilisation des ressources..."
-    
+
     # Vérification de l'utilisation des ressources des nœuds
     nodes_resources=$(kubectl top nodes 2>/dev/null || echo "Impossible de récupérer l'utilisation des ressources des nœuds")
     log "INFO" "Utilisation des ressources des nœuds:"
     echo "${nodes_resources}" | while read -r line; do
         log "INFO" "  ${line}"
     done
-    
+
     # Vérification de l'utilisation des ressources des pods
     if [[ -n "${namespace}" ]]; then
         pods_resources=$(kubectl top pods -n "${namespace}" 2>/dev/null || echo "Impossible de récupérer l'utilisation des ressources des pods")
     else
         pods_resources=$(kubectl top pods --all-namespaces 2>/dev/null || echo "Impossible de récupérer l'utilisation des ressources des pods")
     fi
-    
+
     log "INFO" "Utilisation des ressources des pods:"
     echo "${pods_resources}" | while read -r line; do
         log "INFO" "  ${line}"
     done
+
+    # Vérification des pods avec une utilisation élevée de ressources
+    local cpu_threshold="${LIONS_CPU_THRESHOLD:-80}"
+    local memory_threshold="${LIONS_MEMORY_THRESHOLD:-80}"
+
+    if [[ -n "${namespace}" ]]; then
+        high_resource_pods=$(kubectl top pods -n "${namespace}" --no-headers 2>/dev/null | awk -v cpu_threshold="$cpu_threshold" -v memory_threshold="$memory_threshold" '{if ($2 > cpu_threshold || $3 > memory_threshold) print $1 " (CPU: " $2 "m, Mémoire: " $3 ")"}')
+    else
+        high_resource_pods=$(kubectl top pods --all-namespaces --no-headers 2>/dev/null | awk -v cpu_threshold="$cpu_threshold" -v memory_threshold="$memory_threshold" '{if ($3 > cpu_threshold || $4 > memory_threshold) print $1 "/" $2 " (CPU: " $3 "m, Mémoire: " $4 ")"}')
+    fi
+
+    if [[ -n "${high_resource_pods}" ]]; then
+        log "WARNING" "Pods avec une utilisation élevée de ressources trouvés:"
+        echo "${high_resource_pods}" | while read -r pod; do
+            log "WARNING" "  - ${pod}"
+        done
+    else
+        log "SUCCESS" "Aucun pod avec une utilisation élevée de ressources"
+    fi
 }
 
 # Fonction pour vérifier les services
 function verifier_services() {
     log "INFO" "Vérification des services..."
-    
+
     # Récupération de l'état des services
     if [[ -n "${namespace}" ]]; then
         services_status=$(kubectl get services -n "${namespace}")
     else
         services_status=$(kubectl get services --all-namespaces)
     fi
-    
+
     log "INFO" "État des services:"
     echo "${services_status}" | while read -r line; do
         log "INFO" "  ${line}"
@@ -252,26 +297,26 @@ function verifier_services() {
 # Fonction pour vérifier les déploiements
 function verifier_deployments() {
     log "INFO" "Vérification des déploiements..."
-    
+
     # Récupération de l'état des déploiements
     if [[ -n "${namespace}" ]]; then
         deployments_status=$(kubectl get deployments -n "${namespace}")
     else
         deployments_status=$(kubectl get deployments --all-namespaces)
     fi
-    
+
     log "INFO" "État des déploiements:"
     echo "${deployments_status}" | while read -r line; do
         log "INFO" "  ${line}"
     done
-    
+
     # Vérification des déploiements non disponibles
     if [[ -n "${namespace}" ]]; then
         unavailable_deployments=$(kubectl get deployments -n "${namespace}" -o json | jq -r '.items[] | select(.status.availableReplicas < .status.replicas or .status.availableReplicas == null) | .metadata.name + " (" + (.status.availableReplicas | tostring) + "/" + (.status.replicas | tostring) + ")"')
     else
         unavailable_deployments=$(kubectl get deployments --all-namespaces -o json | jq -r '.items[] | select(.status.availableReplicas < .status.replicas or .status.availableReplicas == null) | .metadata.namespace + "/" + .metadata.name + " (" + (.status.availableReplicas | tostring) + "/" + (.status.replicas | tostring) + ")"')
     fi
-    
+
     if [[ -n "${unavailable_deployments}" ]]; then
         log "WARNING" "Déploiements non disponibles trouvés:"
         echo "${unavailable_deployments}" | while read -r deployment; do
@@ -285,7 +330,7 @@ function verifier_deployments() {
 # Fonction pour générer un rapport HTML
 function generer_rapport() {
     log "INFO" "Génération du rapport HTML..."
-    
+
     # Création du rapport HTML
     cat > "${REPORT_FILE}" << EOF
 <!DOCTYPE html>
@@ -367,15 +412,15 @@ function generer_rapport() {
             <h1>Rapport de Santé - Infrastructure LIONS</h1>
             <p>Généré le $(date +"%Y-%m-%d à %H:%M:%S")</p>
         </div>
-        
+
         <div class="section">
             <h2>État des Nœuds</h2>
             <pre>$(kubectl get nodes -o wide)</pre>
-            
+
             <h3>Nœuds Non Prêts</h3>
             <ul>
 EOF
-    
+
     # Ajout des nœuds non prêts
     not_ready_nodes=$(kubectl get nodes -o json | jq -r '.items[] | select(.status.conditions[] | select(.type == "Ready" and .status != "True")) | .metadata.name')
     if [[ -n "${not_ready_nodes}" ]]; then
@@ -385,14 +430,14 @@ EOF
     else
         echo "                <li class=\"success\">Tous les nœuds sont prêts</li>" >> "${REPORT_FILE}"
     fi
-    
+
     cat >> "${REPORT_FILE}" << EOF
             </ul>
-            
+
             <h3>Nœuds Sous Pression</h3>
             <ul>
 EOF
-    
+
     # Ajout des nœuds sous pression
     pressure_nodes=$(kubectl get nodes -o json | jq -r '.items[] | select(.status.conditions[] | select(.type == "MemoryPressure" or .type == "DiskPressure" or .type == "PIDPressure" or .type == "NetworkUnavailable") | select(.status == "True")) | .metadata.name + " (" + (.status.conditions[] | select(.status == "True") | .type) + ")"')
     if [[ -n "${pressure_nodes}" ]]; then
@@ -402,19 +447,19 @@ EOF
     else
         echo "                <li class=\"success\">Aucun nœud sous pression</li>" >> "${REPORT_FILE}"
     fi
-    
+
     cat >> "${REPORT_FILE}" << EOF
             </ul>
         </div>
-        
+
         <div class="section">
             <h2>État des Pods Système</h2>
             <pre>$(kubectl get pods -n kube-system)</pre>
-            
+
             <h3>Pods Système Non Prêts</h3>
             <ul>
 EOF
-    
+
     # Ajout des pods système non prêts
     not_ready_system_pods=$(kubectl get pods -n kube-system -o json | jq -r '.items[] | select(.status.phase != "Running" and .status.phase != "Succeeded") | .metadata.name + " (" + .status.phase + ")"')
     if [[ -n "${not_ready_system_pods}" ]]; then
@@ -424,26 +469,26 @@ EOF
     else
         echo "                <li class=\"success\">Tous les pods système sont prêts</li>" >> "${REPORT_FILE}"
     fi
-    
+
     cat >> "${REPORT_FILE}" << EOF
             </ul>
         </div>
-        
+
         <div class="section">
             <h2>État des Pods</h2>
             <pre>$(kubectl get pods ${namespace_option})</pre>
-            
+
             <h3>Pods Non Prêts</h3>
             <ul>
 EOF
-    
+
     # Ajout des pods non prêts
     if [[ -n "${namespace}" ]]; then
         not_ready_pods=$(kubectl get pods -n "${namespace}" -o json | jq -r '.items[] | select(.status.phase != "Running" and .status.phase != "Succeeded") | .metadata.name + " (" + .status.phase + ")"')
     else
         not_ready_pods=$(kubectl get pods --all-namespaces -o json | jq -r '.items[] | select(.status.phase != "Running" and .status.phase != "Succeeded") | .metadata.namespace + "/" + .metadata.name + " (" + .status.phase + ")"')
     fi
-    
+
     if [[ -n "${not_ready_pods}" ]]; then
         echo "${not_ready_pods}" | while read -r pod; do
             echo "                <li class=\"warning\">${pod}</li>" >> "${REPORT_FILE}"
@@ -451,21 +496,21 @@ EOF
     else
         echo "                <li class=\"success\">Tous les pods sont prêts</li>" >> "${REPORT_FILE}"
     fi
-    
+
     cat >> "${REPORT_FILE}" << EOF
             </ul>
-            
+
             <h3>Pods en état CrashLoopBackOff</h3>
             <ul>
 EOF
-    
+
     # Ajout des pods en état CrashLoopBackOff
     if [[ -n "${namespace}" ]]; then
         crashloop_pods=$(kubectl get pods -n "${namespace}" -o json | jq -r '.items[] | select(.status.containerStatuses != null) | select(.status.containerStatuses[] | select(.state.waiting != null) | select(.state.waiting.reason == "CrashLoopBackOff")) | .metadata.name')
     else
         crashloop_pods=$(kubectl get pods --all-namespaces -o json | jq -r '.items[] | select(.status.containerStatuses != null) | select(.status.containerStatuses[] | select(.state.waiting != null) | select(.state.waiting.reason == "CrashLoopBackOff")) | .metadata.namespace + "/" + .metadata.name')
     fi
-    
+
     if [[ -n "${crashloop_pods}" ]]; then
         echo "${crashloop_pods}" | while read -r pod; do
             echo "                <li class=\"error\">${pod}</li>" >> "${REPORT_FILE}"
@@ -473,35 +518,35 @@ EOF
     else
         echo "                <li class=\"success\">Aucun pod en état CrashLoopBackOff</li>" >> "${REPORT_FILE}"
     fi
-    
+
     cat >> "${REPORT_FILE}" << EOF
             </ul>
         </div>
-        
+
         <div class="section">
             <h2>Utilisation des Ressources</h2>
             <h3>Ressources des Nœuds</h3>
             <pre>$(kubectl top nodes 2>/dev/null || echo "Impossible de récupérer l'utilisation des ressources des nœuds")</pre>
-            
+
             <h3>Ressources des Pods</h3>
             <pre>$(kubectl top pods ${namespace_option} 2>/dev/null || echo "Impossible de récupérer l'utilisation des ressources des pods")</pre>
         </div>
-        
+
         <div class="section">
             <h2>État des Déploiements</h2>
             <pre>$(kubectl get deployments ${namespace_option})</pre>
-            
+
             <h3>Déploiements Non Disponibles</h3>
             <ul>
 EOF
-    
+
     # Ajout des déploiements non disponibles
     if [[ -n "${namespace}" ]]; then
         unavailable_deployments=$(kubectl get deployments -n "${namespace}" -o json | jq -r '.items[] | select(.status.availableReplicas < .status.replicas or .status.availableReplicas == null) | .metadata.name + " (" + (.status.availableReplicas | tostring) + "/" + (.status.replicas | tostring) + ")"')
     else
         unavailable_deployments=$(kubectl get deployments --all-namespaces -o json | jq -r '.items[] | select(.status.availableReplicas < .status.replicas or .status.availableReplicas == null) | .metadata.namespace + "/" + .metadata.name + " (" + (.status.availableReplicas | tostring) + "/" + (.status.replicas | tostring) + ")"')
     fi
-    
+
     if [[ -n "${unavailable_deployments}" ]]; then
         echo "${unavailable_deployments}" | while read -r deployment; do
             echo "                <li class=\"warning\">${deployment}</li>" >> "${REPORT_FILE}"
@@ -509,11 +554,11 @@ EOF
     else
         echo "                <li class=\"success\">Tous les déploiements sont disponibles</li>" >> "${REPORT_FILE}"
     fi
-    
+
     cat >> "${REPORT_FILE}" << EOF
             </ul>
         </div>
-        
+
         <div class="section">
             <h2>Résumé</h2>
             <p>Rapport généré le $(date +"%Y-%m-%d à %H:%M:%S")</p>
@@ -523,7 +568,7 @@ EOF
 </body>
 </html>
 EOF
-    
+
     log "SUCCESS" "Rapport HTML généré: ${REPORT_FILE}"
 }
 
@@ -540,7 +585,35 @@ if [[ "${generate_report}" == "true" ]]; then
     generer_rapport
 fi
 
+# Rotation des logs si activée
+if [[ "${LIONS_LOG_ROTATION_ENABLED:-true}" == "true" ]]; then
+    log "INFO" "Rotation des logs..."
+
+    # Suppression des logs plus anciens que X jours
+    log_retention_days="${LIONS_LOG_RETENTION_DAYS:-7}"
+    find "${LOG_DIR}" -name "health-check-*.log" -type f -mtime +${log_retention_days} -delete || log "WARNING" "Échec de la rotation des logs"
+    find "${LOG_DIR}" -name "health-report-*.html" -type f -mtime +${log_retention_days} -delete || log "WARNING" "Échec de la rotation des rapports"
+
+    log "INFO" "Rotation des logs terminée"
+fi
+
 log "SUCCESS" "Vérification de santé terminée avec succès"
 log "INFO" "Journal de vérification: ${LOG_FILE}"
+if [[ "${generate_report}" == "true" ]]; then
+    log "INFO" "Rapport HTML disponible: ${REPORT_FILE}"
+
+    # Ouverture automatique du rapport si configuré
+    if [[ "${LIONS_AUTO_OPEN_REPORT:-false}" == "true" ]]; then
+        if command -v xdg-open &> /dev/null; then
+            xdg-open "${REPORT_FILE}" &> /dev/null || log "WARNING" "Impossible d'ouvrir automatiquement le rapport"
+        elif command -v open &> /dev/null; then
+            open "${REPORT_FILE}" &> /dev/null || log "WARNING" "Impossible d'ouvrir automatiquement le rapport"
+        elif command -v start &> /dev/null; then
+            start "${REPORT_FILE}" &> /dev/null || log "WARNING" "Impossible d'ouvrir automatiquement le rapport"
+        else
+            log "WARNING" "Impossible d'ouvrir automatiquement le rapport (aucune commande d'ouverture trouvée)"
+        fi
+    fi
+fi
 
 exit 0

@@ -1,27 +1,43 @@
 #!/bin/bash
-# Titre: Script de sauvegarde et restauration pour LIONS Infrastructure
+# =============================================================================
+# LIONS Infrastructure - Script de sauvegarde et restauration v5.0
+# =============================================================================
 # Description: Sauvegarde et restaure les données importantes du cluster Kubernetes
-# Auteur: Équipe LIONS Infrastructure
-# Date: 2025-05-16
-# Version: 1.0.0
+# Version: 5.0.0
+# Date: 01/06/2025
+# Auteur: LIONS DevOps Team
+# =============================================================================
 
 set -euo pipefail
 
-# Couleurs
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
+# Chargement des variables d'environnement
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-# Variables
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-BACKUP_DIR="${PROJECT_ROOT}/backups"
+# Chargement des variables d'environnement depuis le fichier .env
+if [ -f "${PROJECT_ROOT}/.env" ]; then
+    source "${PROJECT_ROOT}/.env"
+fi
+
+# Couleurs
+readonly GREEN='\033[0;32m'
+readonly RED='\033[0;31m'
+readonly YELLOW='\033[1;33m'
+readonly BLUE='\033[0;34m'
+readonly NC='\033[0m'
+
+# Configuration depuis variables d'environnement
+readonly LIONS_ENVIRONMENT="${LIONS_ENVIRONMENT:-development}"
+readonly BACKUP_DIR="${LIONS_BACKUP_DIR:-${PROJECT_ROOT}/backups}"
+readonly KUBE_CONFIG="${LIONS_KUBE_CONFIG_PATH:-${HOME}/.kube/config}"
+readonly KUBE_CONTEXT="${LIONS_KUBE_CONTEXT:-${LIONS_CLUSTER_NAME:-lions-k3s-cluster}}"
+readonly BACKUP_RETENTION_DAYS="${LIONS_BACKUP_RETENTION_DAYS:-30}"
+
+# Paramètres par défaut ou depuis les arguments
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-ENVIRONMENT="${1:-development}"
-ACTION="${2:-backup}"
-BACKUP_NAME="${3:-${TIMESTAMP}}"
+ENVIRONMENT="${1:-${LIONS_ENVIRONMENT}}"
+ACTION="${2:-${LIONS_BACKUP_ACTION:-backup}}"
+BACKUP_NAME="${3:-${LIONS_BACKUP_NAME:-${TIMESTAMP}}}"
 
 # Création des répertoires de sauvegarde
 mkdir -p "${BACKUP_DIR}/${ENVIRONMENT}"
@@ -45,7 +61,7 @@ echo -e "║     ██████╔╝██║  ██║╚█████�
 echo -e "║     ╚═════╝ ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝ ╚═════╝ ╚═╝                 ║"
 echo -e "║                                                                   ║"
 echo -e "╚═══════════════════════════════════════════════════════════════════╝${NC}"
-echo -e "${YELLOW}     Sauvegarde et Restauration LIONS - v1.0.0${NC}"
+echo -e "${YELLOW}     Sauvegarde et Restauration LIONS - v5.0.0${NC}"
 echo -e "${BLUE}  ════════════════════════════════════════════════════════${NC}\n"
 
 # Vérification des prérequis
@@ -55,6 +71,12 @@ echo -e "${GREEN}[INFO]${NC} Vérification des prérequis..."
 if ! command -v kubectl &> /dev/null; then
     echo -e "${RED}[ERROR]${NC} kubectl n'est pas installé ou n'est pas dans le PATH"
     exit 1
+fi
+
+# Configuration de kubectl avec le bon contexte
+export KUBECONFIG="${KUBE_CONFIG}"
+if [[ -n "${KUBE_CONTEXT}" ]]; then
+    kubectl config use-context "${KUBE_CONTEXT}" &> /dev/null || echo -e "${YELLOW}[WARNING]${NC} Impossible de définir le contexte ${KUBE_CONTEXT}, utilisation du contexte par défaut"
 fi
 
 # Vérification de l'accès au cluster Kubernetes
@@ -282,7 +304,7 @@ case "${ACTION}" in
         echo -e "${GREEN}[INFO]${NC} Démarrage de la sauvegarde pour l'environnement ${ENVIRONMENT}..."
 
         # Liste des namespaces à sauvegarder
-        NAMESPACES=(
+        NAMESPACES=(${LIONS_BACKUP_NAMESPACES:-
             "postgres-${ENVIRONMENT}"
             "pgadmin-${ENVIRONMENT}"
             "gitea-${ENVIRONMENT}"
@@ -293,7 +315,7 @@ case "${ACTION}" in
             "kubernetes-dashboard"
             "lions-infrastructure"
             "development"
-        )
+        })
 
         # Sauvegarde des ressources dans chaque namespace
         for namespace in "${NAMESPACES[@]}"; do
@@ -335,7 +357,32 @@ case "${ACTION}" in
         # Nettoyage des fichiers temporaires
         rm -rf "${BACKUP_DIR}/${ENVIRONMENT}/${BACKUP_NAME}"
 
+        # Rotation des sauvegardes
+        if [[ "${LIONS_BACKUP_ROTATION_ENABLED:-true}" == "true" ]]; then
+            echo -e "${GREEN}[INFO]${NC} Rotation des sauvegardes..."
+
+            # Suppression des sauvegardes plus anciennes que X jours
+            find "${BACKUP_DIR}/${ENVIRONMENT}" -name "*.tar.gz" -type f -mtime +${BACKUP_RETENTION_DAYS} -delete || echo -e "${YELLOW}[WARNING]${NC} Échec de la rotation des sauvegardes"
+
+            echo -e "${GREEN}[INFO]${NC} Rotation des sauvegardes terminée"
+        fi
+
+        # Création d'un fichier de métadonnées
+        echo -e "${GREEN}[INFO]${NC} Création du fichier de métadonnées..."
+        cat > "${BACKUP_DIR}/${ENVIRONMENT}/${BACKUP_NAME}.json" << EOF
+{
+  "backup_name": "${BACKUP_NAME}",
+  "backup_date": "$(date -Iseconds)",
+  "environment": "${ENVIRONMENT}",
+  "backup_size": "$(du -h "${BACKUP_DIR}/${ENVIRONMENT}/${BACKUP_NAME}.tar.gz" | awk '{print $1}')",
+  "kubernetes_version": "$(kubectl version --short | grep Server | awk '{print $3}')",
+  "namespaces": [$(kubectl get namespaces -o jsonpath='{range .items[*]}{.metadata.name}{", "}{end}' | sed 's/, $//')],
+  "created_by": "${USER:-unknown}"
+}
+EOF
+
         echo -e "${GREEN}[SUCCESS]${NC} Sauvegarde terminée avec succès: ${BACKUP_DIR}/${ENVIRONMENT}/${BACKUP_NAME}.tar.gz"
+        echo -e "${GREEN}[INFO]${NC} Taille de la sauvegarde: $(du -h "${BACKUP_DIR}/${ENVIRONMENT}/${BACKUP_NAME}.tar.gz" | awk '{print $1}')"
         ;;
 
     restore)
@@ -375,6 +422,23 @@ case "${ACTION}" in
         rm -rf "${BACKUP_DIR}/${ENVIRONMENT}/${BACKUP_NAME}"
 
         echo -e "${GREEN}[SUCCESS]${NC} Restauration terminée avec succès depuis ${BACKUP_DIR}/${ENVIRONMENT}/${BACKUP_NAME}.tar.gz"
+
+        # Vérification de l'état du cluster après restauration
+        if [[ "${LIONS_POST_RESTORE_CHECK:-true}" == "true" ]]; then
+            echo -e "${GREEN}[INFO]${NC} Vérification de l'état du cluster après restauration..."
+
+            # Vérification des pods
+            echo -e "${GREEN}[INFO]${NC} Vérification des pods..."
+            kubectl get pods --all-namespaces | grep -v "Running\|Completed" || echo -e "${GREEN}[SUCCESS]${NC} Tous les pods sont en état Running ou Completed"
+
+            # Vérification des services
+            echo -e "${GREEN}[INFO]${NC} Vérification des services..."
+            kubectl get services --all-namespaces
+
+            # Vérification des PVCs
+            echo -e "${GREEN}[INFO]${NC} Vérification des PVCs..."
+            kubectl get pvc --all-namespaces | grep -v "Bound" || echo -e "${GREEN}[SUCCESS]${NC} Tous les PVCs sont liés"
+        fi
         ;;
 
     *)

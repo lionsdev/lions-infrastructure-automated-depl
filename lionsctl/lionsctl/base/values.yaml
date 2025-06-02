@@ -1,22 +1,22 @@
 container:
-  registryUri: registry.development.lions.dev
-  tag: "v1.0.0"
-  memory: "1Gi"
-  storage: "1Gi"
+  registryUri: {{ .Values.registryUri | default "registry.development.lions.dev" }}
+  tag: {{ .Values.tag | default "v1.0.0" }}
+  memory: {{ .Values.memory | default "1Gi" }}
+  storage: {{ .Values.storage | default "1Gi" }}
 hostAlias:
-  ip: 176.57.150.2
-  hostname: api.dev.lions.dev
+  ip: {{ .Values.hostIp | default "127.0.0.1" }}
+  hostname: {{ .Values.apiDomain | default "api.dev.lions.dev" }}
 
 image:
-  repository: registry.development.lions.dev/app-name
-  tag: latest
-  pullPolicy: IfNotPresent
+  repository: {{ .Values.registryUri | default "registry.development.lions.dev" }}/{{ .Values.name }}
+  tag: {{ .Values.imageTag | default "latest" }}
+  pullPolicy: {{ .Values.pullPolicy | default "IfNotPresent" }}
 
 service:
-  port: 8080
+  port: {{ .Values.servicePort | default 8080 }}
 
-replicaCount: 1
+replicaCount: {{ .Values.replicas | default 1 }}
 
-namespace: default
-name: app-name
-environment: development
+namespace: {{ .Values.namespace | default "default" }}
+name: {{ .Values.name | default "app-name" }}
+environment: {{ .Values.environment | default "development" }}

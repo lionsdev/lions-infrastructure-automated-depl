@@ -1,9 +1,0 @@
-apiVersion: v1
-kind: ConfigMap
-data:
-  SIIB_ENVIRONMENT: {{ .Release.Namespace }}
-  SIIB_DB_SID: SIB
-  KEYCLOAK_REALM: SIIB
-  KEYCLOAK_CLIENT: {{ .Release.Name }}
-metadata:
-  name: {{ .Release.Name }}

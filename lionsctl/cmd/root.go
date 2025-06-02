@@ -70,7 +70,6 @@ func init() {
 
 // initConfig reads in config file and ENV variables if set.
 func initConfig() {
-
 	home, err := os.UserHomeDir()
 	if err != nil {
 		log.Fatal(err)
@@ -81,23 +80,49 @@ func initConfig() {
 	viper.SetConfigName(configFile)
 	viper.SetConfigType(configFileType)
 
+	// Configure Viper to use environment variables with LIONS_ prefix
+	viper.SetEnvPrefix("LIONS")
+	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	viper.AutomaticEnv() // read in environment variables that match
 
-	// If a config file is found, read it in.
+	// Map environment variables to config keys
+	// Docker configuration
+	viper.BindEnv("DOCKER.REGISTRY_URL", "LIONS_DOCKER_REGISTRY_URL")
 
+	// Git configuration
+	viper.BindEnv("GIT.CFG_USERNAME", "LIONS_GIT_USERNAME")
+	viper.BindEnv("GIT.CFG_EMAIL", "LIONS_GIT_EMAIL")
+	viper.BindEnv("GIT.CFG_PASSWORD", "LIONS_GIT_PASSWORD")
+	viper.BindEnv("GIT.CFG_DEFAULT_BRNCH", "LIONS_GIT_DEFAULT_BRANCH")
+	viper.BindEnv("GIT.DOMAIN", "LIONS_GIT_DOMAIN")
+	viper.BindEnv("GIT.BASE_URL", "LIONS_GIT_BASE_URL")
+	viper.BindEnv("GIT.ENV_URL", "LIONS_GIT_ENV_URL")
+	viper.BindEnv("GIT.USER_API_ENDPOINT", "LIONS_GIT_USER_API_ENDPOINT")
+	viper.BindEnv("GIT.REPO_API_ENDPOINT", "LIONS_GIT_REPO_API_ENDPOINT")
+	viper.BindEnv("GIT.ACCESS_TOKENS", "LIONS_GIT_ACCESS_TOKEN")
+
+	// Helm configuration
+	viper.BindEnv("HELM.CONFIG_REPO_URL", "LIONS_HELM_CONFIG_REPO_URL")
+	viper.BindEnv("HELM.CONFIG_REPO_TOKEN", "LIONS_HELM_CONFIG_REPO_TOKEN")
+
+	// Notification configuration
+	viper.BindEnv("NOTIFICATION.FROM_URL", "LIONS_NOTIFICATION_FROM")
+	viper.BindEnv("NOTIFICATION.SMTP_URL", "LIONS_NOTIFICATION_SMTP_URL")
+	viper.BindEnv("NOTIFICATION.SERVER_TOKEN", "LIONS_NOTIFICATION_SERVER_TOKEN")
+
+	// If a config file is found, read it in.
 	if err := viper.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
-			// Config file not found; ignore error if desired
-			log.Print("Config file not found")
-			log.Fatal(err)
+			// Config file not found; using environment variables only
+			log.Print("Config file not found, using environment variables")
 		} else {
 			// Config file was found but another error was produced
 			log.Fatal(err)
 		}
+	} else {
+		// Config file found and successfully parsed
+		log.Print("Using config file:", viper.ConfigFileUsed())
 	}
-
-	// Config file found and successfully parsed
-
 }
 
 //go:embed lionsctl.yaml

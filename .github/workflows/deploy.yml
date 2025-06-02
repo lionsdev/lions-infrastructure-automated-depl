@@ -91,31 +91,28 @@ jobs:
         run: |
           pip install pytest pytest-kubernetes pytest-html requests
 
-      - name: Configure lionsctl
+      - name: Configure environment variables for lionsctl
         run: |
-          mkdir -p $HOME
-          cat > $HOME/.lionsctl.yaml << EOF
-          DOCKER:
-             REGISTRY_URL: "${{ secrets.DOCKER_REGISTRY_URL }}"
-          GIT:
-             CFG_USERNAME: ${{ secrets.GIT_USERNAME }}
-             CFG_EMAIL: ${{ secrets.GIT_EMAIL }}
-             CFG_PASSWORD: ${{ secrets.GIT_PASSWORD }}
-             CFG_DEFAULT_BRNCH: main
-             DOMAIN: "github.com"
-             BASE_URL: "https://github.com"
-             ENV_URL: https://github.com/lionsdev/
-             USER_API_ENDPOINT: "/api/v3/user/repos"
-             REPO_API_ENDPOINT: "/api/v3/repos"
-             ACCESS_TOKENS: "${{ secrets.GITHUB_TOKEN }}"
-          HELM:
-            CONFIG_REPO_URL: https://github.com/lionsdev/config
-            CONFIG_REPO_TOKEN: "${{ secrets.CONFIG_REPO_TOKEN }}"
-          NOTIFICATION:
-            FROM_URL: ${{ secrets.NOTIFICATION_FROM }}
-            SMTP_URL: "${{ secrets.SMTP_URL }}"
-            SERVER_TOKEN: "${{ secrets.SMTP_TOKEN }}"
-          EOF
+          # Export environment variables with LIONS_ prefix
+          echo "LIONS_DOCKER_REGISTRY_URL=${{ secrets.DOCKER_REGISTRY_URL }}" >> $GITHUB_ENV
+          echo "LIONS_GIT_USERNAME=${{ secrets.GIT_USERNAME }}" >> $GITHUB_ENV
+          echo "LIONS_GIT_EMAIL=${{ secrets.GIT_EMAIL }}" >> $GITHUB_ENV
+          echo "LIONS_GIT_PASSWORD=${{ secrets.GIT_PASSWORD }}" >> $GITHUB_ENV
+          echo "LIONS_GIT_DEFAULT_BRANCH=main" >> $GITHUB_ENV
+          echo "LIONS_GIT_DOMAIN=github.com" >> $GITHUB_ENV
+          echo "LIONS_GIT_BASE_URL=https://github.com" >> $GITHUB_ENV
+          echo "LIONS_GIT_ENV_URL=https://github.com/lionsdev/" >> $GITHUB_ENV
+          echo "LIONS_GIT_USER_API_ENDPOINT=/api/v3/user/repos" >> $GITHUB_ENV
+          echo "LIONS_GIT_REPO_API_ENDPOINT=/api/v3/repos" >> $GITHUB_ENV
+          echo "LIONS_GIT_ACCESS_TOKEN=${{ secrets.GITHUB_TOKEN }}" >> $GITHUB_ENV
+          echo "LIONS_HELM_CONFIG_REPO_URL=https://github.com/lionsdev/config" >> $GITHUB_ENV
+          echo "LIONS_HELM_CONFIG_REPO_TOKEN=${{ secrets.CONFIG_REPO_TOKEN }}" >> $GITHUB_ENV
+          echo "LIONS_NOTIFICATION_FROM=${{ secrets.NOTIFICATION_FROM }}" >> $GITHUB_ENV
+          echo "LIONS_NOTIFICATION_SMTP_URL=${{ secrets.SMTP_URL }}" >> $GITHUB_ENV
+          echo "LIONS_NOTIFICATION_SERVER_TOKEN=${{ secrets.SMTP_TOKEN }}" >> $GITHUB_ENV
+          echo "LIONS_ENVIRONMENT=${{ needs.determine-environment.outputs.environment }}" >> $GITHUB_ENV
+          echo "LIONS_KUBECTL_VERSION=v1.28.0" >> $GITHUB_ENV
+          echo "LIONS_HELM_VERSION=v3.12.0" >> $GITHUB_ENV
 
       - name: Initialize application (if not already initialized)
         run: |
