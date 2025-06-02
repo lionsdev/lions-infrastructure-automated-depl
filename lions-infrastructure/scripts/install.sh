@@ -3980,7 +3980,8 @@ function run_with_timeout() {
     local interactive=false
 
     # Vérifier si la commande est interactive (nécessite une entrée utilisateur)
-    if [[ "${cmd_str}" == *"--ask-become-pass"* || "${cmd_str}" == *"--ask-pass"* || "${cmd_str}" == *"-K"* || "${cmd_str}" == *"-k"* ]]; then
+    # Ne pas considérer --ask-become-pass comme interactif si on est en exécution locale
+    if [[ ("${cmd_str}" == *"--ask-become-pass"* && "${IS_LOCAL_EXECUTION}" != "true") || "${cmd_str}" == *"--ask-pass"* || "${cmd_str}" == *"-K"* || "${cmd_str}" == *"-k"* ]]; then
         interactive=true
         log "INFO" "Commande interactive détectée, l'entrée utilisateur sera requise"
     fi
@@ -4042,8 +4043,13 @@ function run_with_timeout() {
 
         # Traitement spécial pour Windows/WSL pour toutes les commandes interactives
         if [[ "${os_name}" == *"MINGW"* || "${os_name}" == *"MSYS"* || "${os_name}" == *"CYGWIN"* || "${os_name}" == *"Windows"* || "${os_name}" == *"Linux"*"microsoft"* ]]; then
-            log "INFO" "Système Windows/WSL détecté, définition de la variable d'environnement ANSIBLE_BECOME_ASK_PASS"
-            export ANSIBLE_BECOME_ASK_PASS=True
+            # Ne pas définir ANSIBLE_BECOME_ASK_PASS si on est en exécution locale
+            if [[ "${IS_LOCAL_EXECUTION}" != "true" ]]; then
+                log "INFO" "Système Windows/WSL détecté, définition de la variable d'environnement ANSIBLE_BECOME_ASK_PASS"
+                export ANSIBLE_BECOME_ASK_PASS=True
+            else
+                log "INFO" "Système Windows/WSL détecté en exécution locale, ANSIBLE_BECOME_ASK_PASS non défini"
+            fi
         fi
 
         if [[ "${interactive}" == "true" ]]; then
