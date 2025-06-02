@@ -4,7 +4,7 @@
 # =============================================================================
 # Description: Vérifie la santé du cluster Kubernetes et des applications
 # Version: 5.0.0
-# Date: 02/06/2023
+# Date: 01/06/2025
 # Auteur: LIONS DevOps Team
 # =============================================================================
 

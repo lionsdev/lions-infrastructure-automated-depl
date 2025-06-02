@@ -2,7 +2,7 @@
 # Titre: Règles d'alerte par défaut
 # Description: Définit les règles d'alerte par défaut pour toutes les applications
 # Auteur: Équipe LIONS Infrastructure
-# Date: 2023-06-02
+# Date: 2025-05-07
 # Version: 1.0.0
 
 apiVersion: monitoring.coreos.com/v1

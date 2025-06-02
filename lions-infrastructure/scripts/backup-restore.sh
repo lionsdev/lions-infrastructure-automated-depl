@@ -4,7 +4,7 @@
 # =============================================================================
 # Description: Sauvegarde et restaure les données importantes du cluster Kubernetes
 # Version: 5.0.0
-# Date: 02/06/2023
+# Date: 01/06/2025
 # Auteur: LIONS DevOps Team
 # =============================================================================
 
