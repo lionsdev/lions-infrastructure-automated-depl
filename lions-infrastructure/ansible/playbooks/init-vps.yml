@@ -10,7 +10,7 @@
 
 - name: "LIONS Infrastructure 5.0 - Initialisation VPS {{ inventory_hostname }}"
   hosts: "{{ target_hosts | default('all') }}"
-  become: true
+  become: "{{ ansible_user != 'root' }}"
   gather_facts: true
 
   vars:
@@ -63,7 +63,7 @@
 
         - name: "Vérification des privilèges sudo"
           command: whoami
-          become: true
+          become: "{{ ansible_user != 'root' }}"
           register: sudo_test
           changed_when: false
 
