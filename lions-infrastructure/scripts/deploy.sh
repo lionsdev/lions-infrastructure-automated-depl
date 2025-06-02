@@ -502,9 +502,9 @@ EOF
     # Commande Ansible avec les options appropriées
     local ansible_cmd="ansible-playbook ${ANSIBLE_PLAYBOOK} --extra-vars @${vars_file}"
 
-    # Si exécution locale, utiliser la connexion locale
+    # Si exécution locale, utiliser la connexion locale et désactiver le mode become
     if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
-        ansible_cmd="${ansible_cmd} -c local"
+        ansible_cmd="${ansible_cmd} -c local --become=no"
     fi
 
     # Ajouter l'option --ask-become-pass seulement si l'exécution n'est pas locale

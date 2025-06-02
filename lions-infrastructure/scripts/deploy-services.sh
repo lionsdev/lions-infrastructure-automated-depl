@@ -141,9 +141,9 @@ echo -e "${GREEN}[INFO]${NC} Exécution du playbook de déploiement des services
 # Construction de la commande Ansible
 ansible_cmd="ansible-playbook \"${ANSIBLE_DIR}/playbooks/deploy-application-services.yml\" --extra-vars \"target_env=${ENVIRONMENT}\""
 
-# Si exécution locale, utiliser la connexion locale
+# Si exécution locale, utiliser la connexion locale et désactiver le mode become
 if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
-    ansible_cmd="${ansible_cmd} -c local"
+    ansible_cmd="${ansible_cmd} -c local --become=no"
     echo -e "${GREEN}[INFO]${NC} Utilisation de la connexion locale pour Ansible"
 else
     ansible_cmd="${ansible_cmd} --ask-become-pass"

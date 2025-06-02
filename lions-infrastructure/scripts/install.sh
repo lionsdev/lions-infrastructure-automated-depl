@@ -673,9 +673,9 @@ function handle_error() {
                     # Tentative avec des options plus sûres pour Ansible
                     local ansible_cmd="ansible-playbook -i \"${ANSIBLE_DIR}/${inventory_file}\" \"${ANSIBLE_DIR}/playbooks/init-vps.yml\" --forks=1 --timeout=60"
 
-                    # Si exécution locale, utiliser la connexion locale
+                    # Si exécution locale, utiliser la connexion locale et désactiver le mode become
                     if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
-                        ansible_cmd="${ansible_cmd} -c local"
+                        ansible_cmd="${ansible_cmd} -c local --become=no"
                     fi
 
                     # Ajouter l'option --ask-become-pass seulement si l'exécution n'est pas locale
@@ -695,9 +695,9 @@ function handle_error() {
                     # Tentative avec des options plus sûres pour Ansible
                     local ansible_cmd="ansible-playbook -i \"${ANSIBLE_DIR}/${inventory_file}\" \"${ANSIBLE_DIR}/playbooks/install-k3s.yml\" --forks=1 --timeout=60"
 
-                    # Si exécution locale, utiliser la connexion locale
+                    # Si exécution locale, utiliser la connexion locale et désactiver le mode become
                     if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
-                        ansible_cmd="${ansible_cmd} -c local"
+                        ansible_cmd="${ansible_cmd} -c local --become=no"
                     fi
 
                     # Ajouter l'option --ask-become-pass seulement si l'exécution n'est pas locale
@@ -5295,9 +5295,9 @@ function initialiser_vps() {
     # Construction de la commande Ansible avec options configurables
     local ansible_cmd="ansible-playbook -i \"${inventory_path}\" \"${playbook_path}\""
 
-    # Si exécution locale, utiliser la connexion locale
+    # Si exécution locale, utiliser la connexion locale et désactiver le mode become
     if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
-        ansible_cmd="${ansible_cmd} -c local"
+        ansible_cmd="${ansible_cmd} -c local --become=no"
     fi
 
     # Ajout des options supplémentaires configurables
@@ -5817,9 +5817,9 @@ function reinstall_k3s() {
 
     local ansible_cmd="ansible-playbook -i \"${inventory_path}\" \"${playbook_path}\""
 
-    # Si exécution locale, utiliser la connexion locale
+    # Si exécution locale, utiliser la connexion locale et désactiver le mode become
     if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
-        ansible_cmd="${ansible_cmd} -c local"
+        ansible_cmd="${ansible_cmd} -c local --become=no"
     fi
 
     # Ajouter l'option --ask-become-pass seulement si l'exécution n'est pas locale
@@ -6024,9 +6024,9 @@ function installer_vault() {
 
     local ansible_cmd="ansible-playbook -i \"${inventory_path}\" \"${playbook_path}\""
 
-    # Si exécution locale, utiliser la connexion locale
+    # Si exécution locale, utiliser la connexion locale et désactiver le mode become
     if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
-        ansible_cmd="${ansible_cmd} -c local"
+        ansible_cmd="${ansible_cmd} -c local --become=no"
     fi
 
     # Ajouter l'option --ask-become-pass seulement si l'exécution n'est pas locale
@@ -6197,9 +6197,9 @@ function installer_k3s() {
 
     local ansible_cmd="ansible-playbook -i \"${inventory_path}\" \"${playbook_path}\""
 
-    # Si exécution locale, utiliser la connexion locale
+    # Si exécution locale, utiliser la connexion locale et désactiver le mode become
     if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
-        ansible_cmd="${ansible_cmd} -c local"
+        ansible_cmd="${ansible_cmd} -c local --become=no"
     fi
 
     # Ajouter l'option --ask-become-pass seulement si l'exécution n'est pas locale
@@ -8041,9 +8041,9 @@ else
 
     ansible_cmd="ansible-playbook -i \"${ANSIBLE_DIR}/${inventory_file}\" \"${playbook_path}\" --extra-vars \"target_env=${environment}\""
 
-    # Si exécution locale, utiliser la connexion locale
+    # Si exécution locale, utiliser la connexion locale et désactiver le mode become
     if [[ "${IS_LOCAL_EXECUTION}" == "true" ]]; then
-        ansible_cmd="${ansible_cmd} -c local"
+        ansible_cmd="${ansible_cmd} -c local --become=no"
     fi
 
     # Ajouter l'option --ask-become-pass seulement si l'exécution n'est pas locale
