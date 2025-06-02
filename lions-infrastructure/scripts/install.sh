@@ -671,7 +671,14 @@ function handle_error() {
                 if [[ "${command_name}" == "ansible_playbook" ]]; then
                     log "INFO" "Tentative de reprise avec des options plus sûres..."
                     # Tentative avec des options plus sûres pour Ansible
-                    ansible-playbook -i "${ANSIBLE_DIR}/${inventory_file}" "${ANSIBLE_DIR}/playbooks/init-vps.yml" --ask-become-pass --forks=1 --timeout=60
+                    local ansible_cmd="ansible-playbook -i \"${ANSIBLE_DIR}/${inventory_file}\" \"${ANSIBLE_DIR}/playbooks/init-vps.yml\" --forks=1 --timeout=60"
+
+                    # Ajouter l'option --ask-become-pass seulement si l'exécution n'est pas locale
+                    if [[ "${IS_LOCAL_EXECUTION}" != "true" ]]; then
+                        ansible_cmd="${ansible_cmd} --ask-become-pass"
+                    fi
+
+                    eval "${ansible_cmd}"
                 else
                     initialiser_vps
                 fi
@@ -681,7 +688,14 @@ function handle_error() {
                 if [[ "${command_name}" == "ansible_playbook" ]]; then
                     log "INFO" "Tentative de reprise avec des options plus sûres..."
                     # Tentative avec des options plus sûres pour Ansible
-                    ansible-playbook -i "${ANSIBLE_DIR}/${inventory_file}" "${ANSIBLE_DIR}/playbooks/install-k3s.yml" --ask-become-pass --forks=1 --timeout=60
+                    local ansible_cmd="ansible-playbook -i \"${ANSIBLE_DIR}/${inventory_file}\" \"${ANSIBLE_DIR}/playbooks/install-k3s.yml\" --forks=1 --timeout=60"
+
+                    # Ajouter l'option --ask-become-pass seulement si l'exécution n'est pas locale
+                    if [[ "${IS_LOCAL_EXECUTION}" != "true" ]]; then
+                        ansible_cmd="${ansible_cmd} --ask-become-pass"
+                    fi
+
+                    eval "${ansible_cmd}"
                 else
                     installer_k3s
                 fi
